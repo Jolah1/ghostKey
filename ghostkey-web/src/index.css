@@ -2,18 +2,96 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Subtle scrollbar trim for dark mode. */
 @layer base {
+  :root {
+    color-scheme: light;
+  }
+
   html {
-    color-scheme: dark;
+    scroll-behavior: smooth;
   }
+
   body {
-    font-family:
-      ui-sans-serif,
-      system-ui,
-      -apple-system,
-      "Segoe UI",
-      Roboto,
-      sans-serif;
+    @apply bg-paper text-ink font-sans antialiased;
   }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-display font-bold;
+  }
+
+  ::selection {
+    background-color: theme("colors.lime");
+    color: theme("colors.ink");
+  }
+}
+
+/*
+ * Neo-brutalist component utilities.
+ *
+ * Visual rules:
+ *  - 4 px solid black borders, hard offset shadows (no blur).
+ *  - Hover lifts the element by -2/-2 px and grows the shadow.
+ *  - Tap simulates a press by moving toward the shadow (translate +2/+2).
+ *  - No gradients, no glass, no soft shadows. Flat saturated accents.
+ */
+@layer components {
+  .neo-border {
+    @apply border-4 border-ink;
+  }
+
+  .neo-card {
+    @apply bg-paper neo-border rounded-2xl shadow-neo-md
+           transition-transform duration-150 ease-out;
+  }
+  .neo-card-interactive {
+    @apply neo-card hover:-translate-x-0.5 hover:-translate-y-0.5
+           hover:shadow-neo-lg
+           active:translate-x-0 active:translate-y-0
+           active:shadow-neo-sm
+           focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ink/20;
+  }
+
+  .neo-button {
+    @apply inline-flex items-center justify-center gap-2
+           neo-border rounded-xl bg-paper text-ink
+           px-5 py-3
+           font-display font-bold uppercase tracking-wider
+           shadow-neo-sm
+           transition-all duration-150 ease-out
+           hover:-translate-x-0.5 hover:-translate-y-0.5 hover:shadow-neo-md
+           active:translate-x-0 active:translate-y-0 active:shadow-none
+           disabled:cursor-not-allowed disabled:opacity-50
+           focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ink/20;
+  }
+  .neo-button-lime  { @apply neo-button bg-lime; }
+  .neo-button-cyan  { @apply neo-button bg-cyan; }
+  .neo-button-pink  { @apply neo-button bg-pink; }
+  .neo-button-ink   { @apply neo-button bg-ink text-paper; }
+
+  .neo-input {
+    @apply w-full neo-border rounded-xl bg-paper px-4 py-3
+           font-sans font-medium text-base text-ink
+           shadow-neo-sm
+           transition-all duration-150 ease-out
+           placeholder:text-muted-foreground
+           focus:outline-none focus:-translate-x-0.5 focus:-translate-y-0.5 focus:shadow-neo-md;
+  }
+
+  .neo-badge {
+    @apply inline-flex items-center gap-1.5
+           neo-border rounded-full
+           px-3 py-1
+           font-display text-xs font-bold uppercase tracking-widest
+           shadow-neo-sm;
+  }
+
+  .neo-section-lime  { @apply bg-lime; }
+  .neo-section-cyan  { @apply bg-cyan; }
+  .neo-section-yellow { @apply bg-yellow; }
+}
+
+@layer utilities {
+  /* Tilted ornaments used on landing/feature cards. */
+  .tilt-left  { transform: rotate(-1deg); }
+  .tilt-right { transform: rotate(1.5deg); }
 }

@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/VaultCard.tsx","./src/api.ts","./src/main.tsx","./src/time.ts","./vite.config.ts"],"version":"5.9.3"}
+{"root":["./src/AddVaultWizard.tsx","./src/App.tsx","./src/Brand.tsx","./src/Dashboard.tsx","./src/DetailDrawer.tsx","./src/Landing.tsx","./src/ServerOfflineBanner.tsx","./src/StatusPill.tsx","./src/VaultCard.tsx","./src/VaultHero.tsx","./src/api.ts","./src/main.tsx","./src/time.ts","./src/vocab.ts","./vite.config.ts"],"version":"5.9.3"}
