@@ -271,6 +271,90 @@ In this case keep `const BASE = "/api"` in `api.ts` (no env var needed) and `scp
 
 ---
 
+## Alternative: Fly.io (recommended for hands-off deploys)
+
+Fly.io builds the image from the `Dockerfile` at the repo root, runs it on
+a small VM, and gives you `<app>.fly.dev` + free TLS. Roughly $0–$3/mo
+for a single 256 MB shared-CPU machine.
+
+### One-time setup
+
+```sh
+# Install flyctl and sign in.
+curl -L https://fly.io/install.sh | sh
+fly auth signup    # or `fly auth login`
+
+# From the repo root:
+fly launch --no-deploy --copy-config --name ghostkey --region ams
+# (Picks the app name/region. Already-existing fly.toml is reused.)
+
+# Provision the persistent volume BEFORE the first deploy. SQLite lives
+# here and must survive restarts.
+fly volumes create ghostkey_data --region ams --size 1   # 1 GB is plenty
+```
+
+### Deploy
+
+```sh
+fly deploy
+fly status
+fly logs                      # tail the server log
+curl https://ghostkey.fly.dev/health
+```
+
+### Field-by-field for the Fly Launcher UI
+
+If you're using the web Launcher (instead of `flyctl`), the screen you
+showed maps to these values:
+
+| Field | Value |
+|---|---|
+| **App name** | `ghostkey` |
+| **Branch** | `main` (or whichever branch carries `Dockerfile` + `fly.toml`) |
+| **Region** | Any — pick the one closest to your users. `ams` is the example. |
+| **Internal port** | `8080` |
+| **CPU** | `shared-cpu-1x` |
+| **Memory** | `256 MB` (bump to 512 MB if you start running into OOM kills) |
+| **Environment variables** | None needed; `fly.toml` sets them. If you must add one in the UI: `GHOSTKEY_BIND=0.0.0.0:8080`. |
+| **Managed Postgres** | **OFF** — the server uses SQLite on a volume, not Postgres. |
+| **Working directory** | Leave blank (defaults to `./`). |
+| **Config path** | Leave blank (defaults to `./fly.toml`). |
+
+After the first deploy, attach a custom domain:
+
+```sh
+fly certs add api.example.com
+# Then add the A/AAAA records Fly tells you to.
+```
+
+### Updating
+
+```sh
+git push                  # whatever your normal flow is
+fly deploy
+```
+
+The image rebuilds, the volume reattaches with the existing SQLite
+file, no manual migration step.
+
+### Things to know
+
+- **Region pinned to the volume**. Once you create the volume in `ams`,
+  the app machine must run in `ams`. To move regions you'd snapshot the
+  volume, create a new one in the target region, and switch over.
+- **No horizontal scale**. The volume is local NVMe; you can't run more
+  than one machine against the same SQLite file. The server is small
+  enough that one machine handles thousands of vaults easily.
+- **Auto-stop is on**. `fly.toml` sets `auto_stop_machines = "stop"`,
+  which spins the machine down when idle and brings it back on the
+  first request (~500 ms cold start). Turn it off (`"off"`) if you want
+  a faster first byte.
+- **Backups**. Add a cron via `fly machine exec` or a tiny sidecar that
+  uploads `/data/ghostkey.sqlite` to S3/B2 nightly. The Fly volume
+  itself is single-host SSD with no built-in backups.
+
+---
+
 ## Common pitfalls
 
 | Symptom | Cause | Fix |

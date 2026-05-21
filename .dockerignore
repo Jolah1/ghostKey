@@ -1,0 +1,30 @@
+# Build artifacts
+target/
+**/*.rs.bk
+
+# Local state
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+.ghostkey/
+data/
+
+# Node (frontend stays out of the server image)
+ghostkey-web/node_modules/
+ghostkey-web/dist/
+ghostkey-web/.vite/
+
+# Editor / OS
+.git/
+.github/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Docs aren't needed inside the runtime image either.
+README.md
+ARCHITECTURE.md
+DEPLOY.md
+fly.toml

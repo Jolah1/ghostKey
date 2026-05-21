@@ -1,0 +1,58 @@
+# fly.toml — ghostkey-server deployment configuration for Fly.io.
+#
+# Region "ams" is a sensible default for Europe-leaning users; pick the
+# closest region with `fly platform regions` if you'd prefer somewhere
+# else. The notifier service is stateless beyond its SQLite file, so
+# a single small machine is enough for the foreseeable future.
+
+app           = "ghostkey"
+primary_region = "ams"
+
+[build]
+  # Build from the Dockerfile at the repo root.
+  dockerfile = "Dockerfile"
+
+[env]
+  # Bind to all interfaces inside the container so Fly's edge proxy
+  # can reach us.
+  GHOSTKEY_BIND     = "0.0.0.0:8080"
+  GHOSTKEY_TICK_SECS = "30"
+  # The volume mounted at /data persists the SQLite file across
+  # restarts and deploys. See [mounts] below.
+  DATABASE_URL      = "sqlite:///data/ghostkey.sqlite?mode=rwc"
+  RUST_LOG          = "ghostkey_server=info,tower_http=info,info"
+
+# Persistent storage. Fly volumes are local NVMe SSDs attached to a
+# single machine, which is fine here — the server isn't replicated.
+#
+# Provision the volume BEFORE the first deploy:
+#   fly volumes create ghostkey_data --region ams --size 1
+[mounts]
+  source      = "ghostkey_data"
+  destination = "/data"
+
+# HTTP listener. Fly auto-issues a TLS certificate for *.fly.dev and
+# any custom domain you add later via `fly certs add <domain>`.
+[http_service]
+  internal_port      = 8080
+  force_https        = true
+  auto_stop_machines = "stop"      # spin down when idle
+  auto_start_machines = true       # spin back up on the first request
+  min_machines_running = 0
+
+  # Health probe; ghostkey-server exposes GET /health that returns
+  # {"ok":true,"version":"..."}.
+  [[http_service.checks]]
+    grace_period  = "10s"
+    interval      = "30s"
+    method        = "GET"
+    path          = "/health"
+    protocol      = "http"
+    timeout       = "5s"
+
+# Small machine. Bump to "performance-1x" / 512 MB if you ever see OOM
+# kills under traffic.
+[[vm]]
+  cpu_kind = "shared"
+  cpus     = 1
+  memory_mb = 256
