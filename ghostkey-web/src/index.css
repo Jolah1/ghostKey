@@ -2,96 +2,191 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  :root {
-    color-scheme: light;
-  }
+/*
+ * Design tokens. Mirrors tailwind.config.js intentionally so the base
+ * layer is independent of any custom utility class. If you change a
+ * brand color, change it in BOTH places (Tailwind reads the config for
+ * class generation; the rules below use literals so they don't depend
+ * on `@apply` finding our custom classes during dev hot-reload).
+ */
+:root {
+  color-scheme: light;
+  --bitcoin: #f7931b;
+  --bitcoin-50: #fff7eb;
+  --bitcoin-600: #d97306;
+  --bitcoin-800: #92450b;
+  --bitcoin-900: #783a0c;
+  --cream: #fbf7f0;
+  --cream-soft: #fefdfb;
+  --ink: #1a1a1a;
+  --ink-400: #737373;
+  --ink-500: #525252;
+}
 
+@layer base {
   html {
     scroll-behavior: smooth;
   }
-
   body {
-    @apply bg-paper text-ink font-sans antialiased;
+    background-color: var(--cream);
+    color: var(--ink);
+    font-family: "Inter", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
-
   h1, h2, h3, h4, h5, h6 {
-    @apply font-display font-bold;
+    font-family: "Inter Tight", "Inter", system-ui, sans-serif;
+    letter-spacing: -0.02em;
   }
-
   ::selection {
-    background-color: theme("colors.lime");
-    color: theme("colors.ink");
+    background-color: var(--bitcoin);
+    color: white;
   }
 }
 
 /*
- * Neo-brutalist component utilities.
- *
- * Visual rules:
- *  - 4 px solid black borders, hard offset shadows (no blur).
- *  - Hover lifts the element by -2/-2 px and grows the shadow.
- *  - Tap simulates a press by moving toward the shadow (translate +2/+2).
- *  - No gradients, no glass, no soft shadows. Flat saturated accents.
+ * Component utilities — Tando-style restraint. Soft shadows, rounded
+ * corners, single accent. No gradients, no neon.
  */
 @layer components {
-  .neo-border {
-    @apply border-4 border-ink;
-  }
 
-  .neo-card {
-    @apply bg-paper neo-border rounded-2xl shadow-neo-md
-           transition-transform duration-150 ease-out;
-  }
-  .neo-card-interactive {
-    @apply neo-card hover:-translate-x-0.5 hover:-translate-y-0.5
-           hover:shadow-neo-lg
-           active:translate-x-0 active:translate-y-0
-           active:shadow-neo-sm
-           focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ink/20;
-  }
+  /* Buttons ---------------------------------------------------------- */
 
-  .neo-button {
+  .btn {
     @apply inline-flex items-center justify-center gap-2
-           neo-border rounded-xl bg-paper text-ink
-           px-5 py-3
-           font-display font-bold uppercase tracking-wider
-           shadow-neo-sm
-           transition-all duration-150 ease-out
-           hover:-translate-x-0.5 hover:-translate-y-0.5 hover:shadow-neo-md
-           active:translate-x-0 active:translate-y-0 active:shadow-none
+           rounded-full px-5 py-2.5
+           font-medium text-sm
+           transition-all duration-200 ease-out
            disabled:cursor-not-allowed disabled:opacity-50
-           focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ink/20;
+           focus-visible:outline-none focus-visible:ring-2
+           focus-visible:ring-offset-2;
+    font-family: "Inter", system-ui, sans-serif;
   }
-  .neo-button-lime  { @apply neo-button bg-lime; }
-  .neo-button-cyan  { @apply neo-button bg-cyan; }
-  .neo-button-pink  { @apply neo-button bg-pink; }
-  .neo-button-ink   { @apply neo-button bg-ink text-paper; }
-
-  .neo-input {
-    @apply w-full neo-border rounded-xl bg-paper px-4 py-3
-           font-sans font-medium text-base text-ink
-           shadow-neo-sm
-           transition-all duration-150 ease-out
-           placeholder:text-muted-foreground
-           focus:outline-none focus:-translate-x-0.5 focus:-translate-y-0.5 focus:shadow-neo-md;
+  .btn:focus-visible {
+    --tw-ring-color: var(--bitcoin);
+    --tw-ring-offset-color: var(--cream);
   }
-
-  .neo-badge {
-    @apply inline-flex items-center gap-1.5
-           neo-border rounded-full
-           px-3 py-1
-           font-display text-xs font-bold uppercase tracking-widest
-           shadow-neo-sm;
+  .btn-primary {
+    @apply btn text-white shadow-soft-sm;
+    background-color: var(--bitcoin);
+  }
+  .btn-primary:hover:not(:disabled) {
+    background-color: var(--bitcoin-600);
+    box-shadow: 0 8px 24px -8px rgba(26,26,26,.08),
+                0 2px 6px -2px rgba(26,26,26,.06);
+  }
+  .btn-primary:active:not(:disabled) {
+    transform: translateY(1px);
   }
 
-  .neo-section-lime  { @apply bg-lime; }
-  .neo-section-cyan  { @apply bg-cyan; }
-  .neo-section-yellow { @apply bg-yellow; }
+  .btn-secondary {
+    @apply btn shadow-soft-sm;
+    background-color: var(--ink);
+    color: var(--cream);
+  }
+  .btn-secondary:hover:not(:disabled) {
+    background-color: #2b2b2b;
+  }
+
+  .btn-ghost {
+    @apply btn bg-transparent;
+    color: var(--ink);
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background-color: rgba(26,26,26,.05);
+  }
+
+  .btn-outline {
+    @apply btn bg-white shadow-soft-sm;
+    color: var(--ink);
+    border: 1px solid rgba(26,26,26,.15);
+  }
+  .btn-outline:hover:not(:disabled) {
+    border-color: rgba(26,26,26,.30);
+  }
+
+  /* Cards ------------------------------------------------------------ */
+
+  .card {
+    @apply rounded-2xl bg-white shadow-soft;
+    border: 1px solid rgba(26,26,26,.05);
+  }
+
+  /* Inputs ----------------------------------------------------------- */
+
+  .input {
+    @apply w-full rounded-xl bg-white px-4 py-3
+           text-base shadow-soft-sm
+           transition-all duration-200;
+    color: var(--ink);
+    border: 1px solid rgba(26,26,26,.15);
+    font-family: "Inter", system-ui, sans-serif;
+  }
+  .input::placeholder {
+    color: #9a9a9a;
+  }
+  .input:focus {
+    outline: none;
+    border-color: var(--bitcoin);
+    box-shadow: 0 0 0 3px rgba(247,147,27,.20);
+  }
+  .textarea {
+    @apply input resize-y leading-relaxed text-xs;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  /* Badges ----------------------------------------------------------- */
+
+  .badge {
+    @apply inline-flex items-center gap-1.5 rounded-full px-3 py-1
+           text-xs font-medium;
+    background-color: var(--bitcoin-50);
+    color: var(--bitcoin-800);
+    border: 1px solid rgba(247,147,27,.20);
+  }
+
+  /* Nav -------------------------------------------------------------- */
+
+  .nav-link {
+    @apply text-sm font-medium transition-colors duration-150;
+    color: var(--ink-500);
+  }
+  .nav-link:hover {
+    color: var(--ink);
+  }
+  .nav-link-active {
+    color: var(--ink);
+  }
 }
 
 @layer utilities {
-  /* Tilted ornaments used on landing/feature cards. */
-  .tilt-left  { transform: rotate(-1deg); }
-  .tilt-right { transform: rotate(1.5deg); }
+  /* Soft, warm shadows. No hard offsets. */
+  .shadow-soft-sm {
+    box-shadow: 0 2px 8px -2px rgba(26,26,26,.06);
+  }
+  .shadow-soft {
+    box-shadow: 0 8px 24px -8px rgba(26,26,26,.08),
+                0 2px 6px -2px rgba(26,26,26,.06);
+  }
+  .shadow-soft-lg {
+    box-shadow: 0 16px 48px -12px rgba(26,26,26,.10),
+                0 4px 12px -4px rgba(26,26,26,.06);
+  }
+  .shadow-glow {
+    box-shadow: 0 0 32px -8px rgba(247,147,27,.45);
+  }
+
+  /* Tando-style ambient swoosh used by the hero. */
+  .bg-swoosh {
+    background-image:
+      radial-gradient(ellipse at 80% 0%, rgba(247,147,27,.15), transparent 60%),
+      radial-gradient(ellipse at 0% 100%, rgba(247,147,27,.10), transparent 50%);
+  }
+
+  /* Animated cascade delays for the hero word stack. */
+  .anim-delay-1 { animation-delay: 0.06s; }
+  .anim-delay-2 { animation-delay: 0.12s; }
+  .anim-delay-3 { animation-delay: 0.18s; }
+  .anim-delay-4 { animation-delay: 0.24s; }
+  .anim-delay-5 { animation-delay: 0.30s; }
 }

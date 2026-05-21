@@ -1,53 +1,74 @@
 /**
- * Family-friendly vocabulary mapping.
+ * User-facing vocabulary for the app.
  *
- * Single source of truth for every user-facing string in the app. The
- * underlying protocol uses words like "vault", "check-in", "heir",
- * "timelock", and "descriptor" — all accurate, all opaque to a
- * non-technical user. This file translates each of those concepts into
- * plain language a 12-year-old can follow.
+ * The product is for anyone who has someone they want to pass Bitcoin
+ * onto — that includes families, but also partners, business
+ * co-founders, charities, friends. We deliberately avoid the word
+ * "family" as the *default* framing, but keep warmth in the tone.
  *
- * Anywhere in the UI that needs to talk about the protocol must import
- * from here instead of inlining a string, so a single change ripples
- * out cleanly.
+ * Underlying protocol vocabulary       → User-facing word
+ *   vault                              → savings
+ *   check-in                           → "I'm OK today" tap
+ *   owner                              → you
+ *   heir                               → who you've named
+ *   timelock                           → waiting period
+ *   deadline                           → reminder
  */
 
 import type { VaultStatus } from "./api";
 
-/** App-wide identity. */
 export const brand = {
   name: "GhostKey",
-  tagline: "Bitcoin savings your family can inherit.",
+  tagline: "Bitcoin savings the people you've named can inherit.",
   longTagline:
-    "Set aside money in a way that your family can claim if you ever can't — without lawyers, without giving anyone your password.",
+    "Set aside Bitcoin so that someone you've named — a partner, child, co-founder, friend, charity — can inherit it if you ever can't. No lawyers, no shared passwords.",
 };
 
-/** Protocol concept ↔ family-friendly word. */
-export const term = {
-  /** "Vault" → a pot of family savings. */
-  vault: "family savings",
-  vaults: "family savings",
-  /** "Check-in" → tapping the "I'm OK" button. */
-  checkin: "I'm OK today",
-  checkinShort: "I'm OK",
-  checkinVerb: "say I'm OK",
-  /** "Owner" → the parent / saver. */
-  owner: "you",
-  /** "Heir" → who you've named. */
-  heir: "who inherits",
-  /** "Timelock" → wait period. */
-  timelock: "waiting period",
-  /** "Deadline" → reminder day. */
-  deadline: "reminder",
-  /** "Status" levels. */
-  ok: "all good",
-  warning: "remember to tap soon",
-  alarmed: "reminder missed",
-  timelockStarted: "waiting period started",
-  claimed: "passed to family",
+/**
+ * Animated cascading hero words. Order matters; each appears with a
+ * 60ms delay.
+ */
+export const heroWords = [
+  { text: "Bitcoin",       color: "bitcoin" as const },
+  { text: "that outlives", color: "ink"     as const },
+  { text: "you.",          color: "ink"     as const },
+];
+
+/** Plain-language explanation pieces, reused across landing + portals. */
+export const explain = {
+  whatIsThis:
+    "Put aside Bitcoin you want someone else to inherit. Once a week (or however often you choose) you tap a button to say you're still around. If you ever stop tapping, the person you've named can claim the money on their own — no lawyers, no permission needed.",
+  whyTrust:
+    "The rules live on Bitcoin itself, not on our website. Even if this project disappeared tomorrow, the promise to whoever you named is still safe.",
+  privacy:
+    "Your password (the seed phrase) never leaves your computer. This website only sees the public part — enough to track reminders, never enough to spend.",
+  notAWill:
+    "GhostKey is not a legal will. It's a programmable way to leave Bitcoin to someone. Most people use it alongside a regular will.",
 };
 
-/** Map a server VaultStatus to its friendly label + tone. */
+/** Title + blurb + CTA for each top-level portal. */
+export const portals = {
+  setup: {
+    title: "Set up savings",
+    blurb:
+      "Create a new pot of Bitcoin savings and choose who would inherit it. Takes about 10 minutes.",
+    cta: "Start setting up",
+  },
+  checkin: {
+    title: "I'm OK today",
+    blurb:
+      "Tap below to reset the reminder timer and confirm you're still around.",
+    cta: "Tap to say I'm OK",
+  },
+  inherit: {
+    title: "Inherit savings",
+    blurb:
+      "If you've been named to inherit Bitcoin savings, look them up here. We'll tell you when you can claim.",
+    cta: "Look up savings",
+  },
+};
+
+/** Map server VaultStatus → friendly label + tone. */
 export function statusCopy(status: VaultStatus): {
   label: string;
   tone: "ok" | "warning" | "alarmed" | "neutral";
@@ -57,51 +78,34 @@ export function statusCopy(status: VaultStatus): {
     case "ok":
       return {
         label: "All good",
-        longLabel: "Your family is safe.",
+        longLabel: "The savings are safe and active.",
         tone: "ok",
       };
     case "warning":
       return {
         label: "Tap soon",
-        longLabel: "Remember to tap \"I'm OK\" soon.",
+        longLabel: "Remember to tap I'm OK soon.",
         tone: "warning",
       };
     case "alarmed":
       return {
         label: "Reminder missed",
         longLabel:
-          "You missed a reminder. Tap \"I'm OK\" now to reset everything.",
+          "A reminder was missed. Tap I'm OK now to reset everything.",
         tone: "alarmed",
       };
     case "timelock_started":
       return {
         label: "Waiting period running",
         longLabel:
-          "The countdown to your family receiving the money has started.",
+          "The countdown to the inheritor receiving the money has started.",
         tone: "alarmed",
       };
     case "claimed":
       return {
-        label: "Passed to family",
-        longLabel: "These savings have been claimed by your family.",
+        label: "Passed on",
+        longLabel: "These savings have already been claimed.",
         tone: "neutral",
       };
   }
 }
-
-/**
- * Short, declarative explanations used in tooltips, empty states, and
- * the landing page. Each is one or two plain sentences.
- */
-export const explain = {
-  whatIsThis:
-    "Put aside Bitcoin you want your family to inherit. Once a week, you tap a button to say you're still here. If you ever stop tapping, your family can claim the money on their own — no lawyers, no permission needed.",
-  whyTrust:
-    "The rules live on Bitcoin itself, not on our website. Even if this site disappeared tomorrow, your family's promise is still safe.",
-  howCheckin:
-    "Tapping \"I'm OK\" is just like waving hello. It tells the system you're still around. Do it on a schedule you pick — daily, weekly, monthly.",
-  howInherit:
-    "Pick someone you trust to inherit the money — usually a partner, child, or sibling. They get nothing while you're tapping. The day you stop, a countdown starts. When it ends, the money is theirs to claim.",
-  privacy:
-    "Your password (we call it a seed phrase) never leaves your computer. This website only sees the public part — enough to track reminders, never enough to spend.",
-};

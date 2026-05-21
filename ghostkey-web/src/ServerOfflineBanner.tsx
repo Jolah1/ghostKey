@@ -1,32 +1,30 @@
 /**
  * Persistent banner shown when the API is unreachable.
  *
- * Spelled out in plain language: the family shouldn't panic if the
- * dashboard can't talk to its server — the on-chain promise is still
- * good.
+ * Bitcoin-themed (orange), top-of-page, reassuring tone.
  */
 import { WifiOff } from "lucide-react";
 
-interface Props {
-  message?: string;
-}
-
-export function ServerOfflineBanner({ message }: Props) {
+export function ServerOfflineBanner({ message }: { message?: string }) {
   return (
     <div
       role="alert"
-      className="sticky top-0 z-30 border-b-4 border-ink bg-yellow"
+      className="sticky top-0 z-40 border-b border-bitcoin/30 bg-bitcoin-50"
     >
-      <div className="mx-auto flex max-w-6xl items-start gap-3 px-6 py-3 text-sm">
-        <WifiOff className="mt-0.5 h-4 w-4 shrink-0" />
-        <div>
-          <p className="font-bold">Can't reach the reminders service.</p>
-          <p className="text-ink/70">
-            Your money is safe — it lives on Bitcoin, not here. You'll be
-            able to tap "I'm OK" again as soon as the service is back.
+      <div className="mx-auto flex max-w-6xl items-start gap-3 px-5 py-2.5 text-sm md:px-8">
+        <WifiOff className="mt-0.5 h-4 w-4 shrink-0 text-bitcoin" />
+        <div className="min-w-0">
+          <p className="font-semibold text-bitcoin-900">
+            Can't reach the reminders service.
+          </p>
+          <p className="text-bitcoin-900/80">
+            Your money is safe — it lives on Bitcoin, not here. Try again in
+            a minute.
           </p>
           {message && (
-            <p className="mt-1 font-mono text-[10px] text-ink/50">{message}</p>
+            <p className="mt-0.5 truncate font-mono text-[10px] text-bitcoin-900/50">
+              {message}
+            </p>
           )}
         </div>
       </div>

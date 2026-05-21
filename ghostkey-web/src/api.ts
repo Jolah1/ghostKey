@@ -73,11 +73,16 @@ export class ApiError extends Error {
 }
 
 /**
- * Base URL of the API. In dev mode Vite proxies `/api` to the server,
- * so the default `/api` works both locally and in production behind a
- * reverse proxy mounted at the same path.
+ * Base URL of the API.
+ *
+ * - In dev: Vite proxies `/api/*` to the local server, so `/api` works.
+ * - In prod on a single host: keep `/api` and reverse-proxy at the edge.
+ * - In prod with split hosts (e.g. Cloudflare Pages + VPS): set
+ *   `VITE_API_BASE=https://api.example.com` in the build environment.
  */
-const BASE = "/api";
+const BASE: string =
+  ((import.meta as unknown as { env?: { VITE_API_BASE?: string } }).env
+    ?.VITE_API_BASE ?? "/api");
 
 async function request<T>(
   path: string,
