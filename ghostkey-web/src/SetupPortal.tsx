@@ -1,62 +1,55 @@
 /**
- * Add-savings wizard.
+ * Setup portal — Tando-style restyle of the v1 4-step wizard.
  *
- * Four steps, each a single decision:
- *   1. Name it ("My retirement", "Kids' college", …)
- *   2. How often to tap "I'm OK"
- *   3. Paste the technical bits from the CLI
- *   4. Review + confirm → POST /vaults
+ * Steps:
+ *   1. Name + Bitcoin network
+ *   2. Reminder cadence, grace, waiting period
+ *   3. Paste descriptor pair from CLI's vault.json
+ *   4. Review + POST /vaults
  *
- * Step 3 is the unavoidable hard step: the server's POST /vaults
- * requires a full Taproot descriptor pair, and producing those needs
- * the offline CLI. We show clear, illustrated instructions on the page
- * so the user knows what to paste and where it comes from. Future
- * scope: add a server-side helper that derives descriptors from
- * xpubs+timelock so this step gets simpler.
+ * The wizard is intentionally still a wizard rather than a one-screen
+ * form: a non-technical user is more comfortable with one decision per
+ * screen than a long page of inputs.
  */
 import { useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
   Check,
+  AlertTriangle,
   Sparkles,
   Heart,
-  AlertTriangle,
-  X,
+  Terminal,
 } from "lucide-react";
 import { ApiError, api, type VaultListItem } from "./api";
-import { Brand } from "./Brand";
 
 type Network = "regtest" | "testnet" | "signet" | "bitcoin";
 
 interface Draft {
   label: string;
   network: Network;
-  /** Reminder cadence, in seconds. */
   checkinPeriodSecs: number;
-  /** Grace period before alarm, in seconds. */
   gracePeriodSecs: number;
-  /** Family waiting period, in blocks. */
   timelockBlocks: number;
   descriptorExternal: string;
   descriptorInternal: string;
 }
 
-const DEFAULT_DRAFT: Draft = {
+const DEFAULT: Draft = {
   label: "",
   network: "regtest",
-  checkinPeriodSecs: 7 * 86_400, // weekly
-  gracePeriodSecs: 86_400,        // 1 day grace
-  timelockBlocks: 1008,           // ~1 week of blocks
+  checkinPeriodSecs: 7 * 86_400,
+  gracePeriodSecs: 86_400,
+  timelockBlocks: 1008,
   descriptorExternal: "",
   descriptorInternal: "",
 };
 
 const STEPS = [
-  { n: 1, key: "name", label: "Name it" },
-  { n: 2, key: "timing", label: "Reminders" },
+  { n: 1, key: "name",      label: "Name it" },
+  { n: 2, key: "timing",    label: "Reminders" },
   { n: 3, key: "addresses", label: "Technical bits" },
-  { n: 4, key: "review", label: "Review" },
+  { n: 4, key: "review",    label: "Review" },
 ] as const;
 
 interface Props {
@@ -64,9 +57,9 @@ interface Props {
   onCreated: (v: VaultListItem) => void;
 }
 
-export function AddVaultWizard({ onCancel, onCreated }: Props) {
+export function SetupPortal({ onCancel, onCreated }: Props) {
   const [step, setStep] = useState(0);
-  const [draft, setDraft] = useState<Draft>(DEFAULT_DRAFT);
+  const [draft, setDraft] = useState<Draft>(DEFAULT);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -137,66 +130,56 @@ export function AddVaultWizard({ onCancel, onCreated }: Props) {
   }
 
   return (
-    <div className="min-h-full bg-paper">
-      {/* Header */}
-      <header className="border-b-4 border-ink bg-paper">
-        <div className="mx-auto flex max-w-3xl items-center justify-between gap-3 px-6 py-4">
-          <Brand size="sm" />
-          <button
-            onClick={onCancel}
-            className="neo-button !px-3 !py-2 text-xs"
-            aria-label="Cancel"
-          >
-            <X className="h-4 w-4" /> Cancel
-          </button>
-        </div>
-      </header>
+    <main className="bg-cream py-12 md:py-16">
+      <div className="mx-auto max-w-2xl px-5 md:px-8">
+        <header className="mb-8 text-center">
+          <p className="badge">Step {step + 1} of {STEPS.length}</p>
+          <h1 className="mt-3 font-display text-3xl font-bold tracking-tight md:text-4xl">
+            Set up savings
+          </h1>
+          <p className="mt-2 text-ink-500">
+            One decision per screen. Takes about 10 minutes.
+          </p>
+        </header>
 
-      <main className="mx-auto max-w-3xl px-6 py-8 md:py-12">
         <Stepper current={step} />
 
-        <div className="mt-10 neo-card p-6 md:p-8 animate-slide-up">
-          {step === 0 && (
-            <StepName draft={draft} onChange={patch} />
-          )}
-          {step === 1 && (
-            <StepTiming draft={draft} onChange={patch} />
-          )}
-          {step === 2 && (
-            <StepAddresses draft={draft} onChange={patch} />
-          )}
+        <section className="mt-8 card p-6 md:p-8">
+          {step === 0 && <StepName draft={draft} onChange={patch} />}
+          {step === 1 && <StepTiming draft={draft} onChange={patch} />}
+          {step === 2 && <StepAddresses draft={draft} onChange={patch} />}
           {step === 3 && <StepReview draft={draft} />}
 
           {error && (
-            <div className="mt-6 flex items-start gap-3 rounded-xl border-4 border-red bg-red/10 p-4">
-              <AlertTriangle className="h-5 w-5 shrink-0 text-red" />
-              <p className="text-sm font-medium text-red">{error}</p>
+            <div className="mt-6 flex items-start gap-3 rounded-xl border border-bitcoin/30 bg-bitcoin-50 p-4">
+              <AlertTriangle className="h-5 w-5 shrink-0 text-bitcoin-800" />
+              <p className="text-sm text-bitcoin-900">{error}</p>
             </div>
           )}
 
-          {/* Footer */}
           <div className="mt-8 flex items-center justify-between gap-3">
             {step > 0 ? (
               <button
                 onClick={prev}
                 disabled={busy}
-                className="neo-button text-sm"
+                className="btn-outline"
               >
                 <ArrowLeft className="h-4 w-4" /> Back
               </button>
             ) : (
-              <span />
-            )}
-            {step < STEPS.length - 1 && (
-              <button onClick={next} className="neo-button-lime text-sm">
-                Continue <ArrowRight className="h-4 w-4" />
+              <button onClick={onCancel} className="btn-ghost">
+                Cancel
               </button>
             )}
-            {step === STEPS.length - 1 && (
+            {step < STEPS.length - 1 ? (
+              <button onClick={next} className="btn-primary">
+                Continue <ArrowRight className="h-4 w-4" />
+              </button>
+            ) : (
               <button
                 onClick={submit}
                 disabled={busy}
-                className="neo-button-lime text-sm"
+                className="btn-primary"
               >
                 {busy ? (
                   <>
@@ -210,49 +193,45 @@ export function AddVaultWizard({ onCancel, onCreated }: Props) {
               </button>
             )}
           </div>
-        </div>
-      </main>
-    </div>
+        </section>
+      </div>
+    </main>
   );
 }
 
-/* ------------------------------ Stepper ------------------------------ */
+/* --------------------------------- Stepper -------------------------------- */
 
 function Stepper({ current }: { current: number }) {
   return (
-    <ol className="flex items-center justify-between gap-3">
+    <ol className="flex items-center gap-2">
       {STEPS.map((s, i) => {
         const state =
           i < current ? "done" : i === current ? "current" : "pending";
         return (
           <li
             key={s.key}
-            className="flex flex-1 items-center gap-3 last:flex-none"
+            className="flex flex-1 items-center gap-2 last:flex-none"
           >
             <span
-              className={`flex h-10 w-10 items-center justify-center rounded-full neo-border font-display text-sm font-bold ${
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold transition-all ${
                 state === "done"
-                  ? "bg-lime"
+                  ? "bg-bitcoin text-white"
                   : state === "current"
-                    ? "bg-lime shadow-neo-sm"
-                    : "bg-paper text-muted-foreground"
+                    ? "bg-bitcoin text-white shadow-glow"
+                    : "border border-ink/15 bg-white text-ink-400"
               }`}
             >
-              {state === "done" ? (
-                <Check className="h-4 w-4" strokeWidth={3} />
-              ) : (
-                s.n
-              )}
+              {state === "done" ? <Check className="h-4 w-4" /> : s.n}
             </span>
             <span
-              className={`hidden text-xs font-bold uppercase tracking-widest md:inline ${
-                state === "pending" ? "text-muted-foreground" : "text-ink"
+              className={`hidden text-xs font-medium md:inline ${
+                state === "pending" ? "text-ink-400" : "text-ink"
               }`}
             >
               {s.label}
             </span>
             {i < STEPS.length - 1 && (
-              <span className="flex-1 border-t-4 border-ink/20" />
+              <span className="flex-1 border-t border-ink/10" />
             )}
           </li>
         );
@@ -261,7 +240,7 @@ function Stepper({ current }: { current: number }) {
   );
 }
 
-/* ------------------------------ Step 1 ------------------------------ */
+/* --------------------------------- Steps ---------------------------------- */
 
 function StepName({
   draft,
@@ -272,39 +251,38 @@ function StepName({
 }) {
   return (
     <div>
-      <h2 className="font-display text-3xl font-bold leading-tight md:text-4xl">
+      <h2 className="font-display text-2xl font-bold tracking-tight md:text-3xl">
         Give your savings a name.
       </h2>
-      <p className="mt-3 text-muted-foreground">
-        Something memorable, in your own words. You can have more than one
-        pot — for example one for your partner and one for your kids.
+      <p className="mt-2 text-ink-500">
+        Something memorable, in your own words.
       </p>
 
-      <div className="mt-8 space-y-5">
+      <div className="mt-6 space-y-5">
         <Field
           label="What should we call these savings?"
-          hint="Examples: 'Family rainy day fund', 'Kids' college', 'Mom's gift'"
+          hint="Examples: 'Rainy day fund', 'Kids' college', 'Co-founder buyout'"
         >
           <input
             type="text"
             autoFocus
             maxLength={120}
             value={draft.label}
-            placeholder="Family rainy day fund"
+            placeholder="Rainy day fund"
             onChange={(e) => onChange({ label: e.target.value })}
-            className="neo-input"
+            className="input"
           />
         </Field>
         <Field
           label="Which Bitcoin network?"
-          hint="Use 'regtest' or 'testnet' until you've practiced. Pick 'bitcoin' only when you're ready for real money."
+          hint="Practice on 'regtest' or 'testnet'. Pick 'bitcoin' only when you're ready for real money."
         >
           <select
             value={draft.network}
             onChange={(e) =>
               onChange({ network: e.target.value as Network })
             }
-            className="neo-input"
+            className="input"
           >
             <option value="regtest">Regtest (practice)</option>
             <option value="testnet">Testnet (practice)</option>
@@ -317,8 +295,6 @@ function StepName({
   );
 }
 
-/* ------------------------------ Step 2 ------------------------------ */
-
 function StepTiming({
   draft,
   onChange,
@@ -328,16 +304,16 @@ function StepTiming({
 }) {
   return (
     <div>
-      <h2 className="font-display text-3xl font-bold leading-tight md:text-4xl">
+      <h2 className="font-display text-2xl font-bold tracking-tight md:text-3xl">
         How often should we remind you?
       </h2>
-      <p className="mt-3 text-muted-foreground">
+      <p className="mt-2 text-ink-500">
         Pick a rhythm that fits your life. Weekly is a good starting point.
       </p>
 
-      <div className="mt-8 space-y-5">
+      <div className="mt-6 space-y-5">
         <Field
-          label="Tap 'I'm OK' every"
+          label="Tap I'm OK every"
           hint="If you miss a reminder, the grace period starts."
         >
           <PresetGroup
@@ -369,8 +345,8 @@ function StepTiming({
         </Field>
 
         <Field
-          label="Family's waiting period after you stop tapping"
-          hint="Once you stop completely, your family must wait this many Bitcoin blocks before they can claim. A Bitcoin block is about 10 minutes."
+          label="Waiting period before the inheritor can claim"
+          hint="Once you stop tapping completely, the person you named must wait this many Bitcoin blocks before they can claim. A block is about 10 minutes."
         >
           <PresetGroup
             value={draft.timelockBlocks}
@@ -388,8 +364,6 @@ function StepTiming({
   );
 }
 
-/* ------------------------------ Step 3 ------------------------------ */
-
 function StepAddresses({
   draft,
   onChange,
@@ -399,31 +373,44 @@ function StepAddresses({
 }) {
   return (
     <div>
-      <h2 className="font-display text-3xl font-bold leading-tight md:text-4xl">
+      <h2 className="font-display text-2xl font-bold tracking-tight md:text-3xl">
         Paste the technical bits.
       </h2>
-      <p className="mt-3 text-muted-foreground">
+      <p className="mt-2 text-ink-500">
         Run the GhostKey app on your computer first to create your
-        password (the seed phrase) and the matching public addresses.
-        Then open the file it created and paste the two lines below.
+        password and matching public addresses. Then paste the two lines
+        below.
       </p>
 
-      <div className="mt-6 neo-card bg-cyan p-4">
-        <p className="text-xs font-bold uppercase tracking-widest">
-          Where to find this
-        </p>
-        <ol className="mt-2 list-decimal space-y-1 pl-4 text-sm">
+      <div className="mt-6 rounded-2xl border border-bitcoin/20 bg-bitcoin-50/70 p-4">
+        <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-bitcoin-900">
+          <Terminal className="h-4 w-4" /> Where to find this
+        </div>
+        <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-bitcoin-900">
           <li>
-            On your computer, run:{" "}
-            <code className="font-mono">ghostkey ... make-vault ...</code>
+            Run{" "}
+            <code className="rounded bg-white px-1.5 py-0.5 font-mono text-xs">
+              ghostkey ... make-vault ...
+            </code>{" "}
+            on your computer.
           </li>
           <li>
-            Open the file{" "}
-            <code className="font-mono">.ghostkey/&lt;profile&gt;/vault.json</code>
+            Open{" "}
+            <code className="rounded bg-white px-1.5 py-0.5 font-mono text-xs">
+              .ghostkey/&lt;profile&gt;/vault.json
+            </code>
+            .
           </li>
           <li>
-            Copy the values of <code className="font-mono">descriptor_external</code>{" "}
-            and <code className="font-mono">descriptor_internal</code> below.
+            Copy the values of{" "}
+            <code className="rounded bg-white px-1.5 py-0.5 font-mono text-xs">
+              descriptor_external
+            </code>{" "}
+            and{" "}
+            <code className="rounded bg-white px-1.5 py-0.5 font-mono text-xs">
+              descriptor_internal
+            </code>{" "}
+            below.
           </li>
         </ol>
       </div>
@@ -440,7 +427,7 @@ function StepAddresses({
             }
             rows={4}
             placeholder="tr(50929b...,or_d(pk([.../0/*)..."
-            className="neo-input font-mono text-xs leading-snug"
+            className="textarea"
           />
         </Field>
         <Field
@@ -454,7 +441,7 @@ function StepAddresses({
             }
             rows={4}
             placeholder="tr(50929b...,or_d(pk([.../1/*)..."
-            className="neo-input font-mono text-xs leading-snug"
+            className="textarea"
           />
         </Field>
       </div>
@@ -462,19 +449,17 @@ function StepAddresses({
   );
 }
 
-/* ------------------------------ Step 4 ------------------------------ */
-
 function StepReview({ draft }: { draft: Draft }) {
   return (
     <div>
-      <h2 className="font-display text-3xl font-bold leading-tight md:text-4xl">
+      <h2 className="font-display text-2xl font-bold tracking-tight md:text-3xl">
         Looks good?
       </h2>
-      <p className="mt-3 text-muted-foreground">
-        Have a quick look and tap "Create my savings" to set it live.
+      <p className="mt-2 text-ink-500">
+        Quick look, then tap "Create my savings" to set it live.
       </p>
 
-      <dl className="mt-8 divide-y-2 divide-ink/10 border-y-4 border-ink">
+      <dl className="mt-6 divide-y divide-ink/5 rounded-2xl border border-ink/5 bg-cream/40">
         <ReviewRow k="Name" v={draft.label} />
         <ReviewRow k="Bitcoin network" v={draft.network} />
         <ReviewRow
@@ -486,7 +471,7 @@ function StepReview({ draft }: { draft: Draft }) {
           v={prettyDuration(draft.gracePeriodSecs)}
         />
         <ReviewRow
-          k="Family waiting period"
+          k="Waiting period"
           v={`${draft.timelockBlocks} blocks (≈ ${prettyDuration(draft.timelockBlocks * 600)})`}
         />
       </dl>
@@ -494,18 +479,7 @@ function StepReview({ draft }: { draft: Draft }) {
   );
 }
 
-function ReviewRow({ k, v }: { k: string; v: string }) {
-  return (
-    <div className="flex items-baseline justify-between py-3 text-sm">
-      <dt className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
-        {k}
-      </dt>
-      <dd className="font-medium">{v}</dd>
-    </div>
-  );
-}
-
-/* ------------------------------ Bits ------------------------------ */
+/* --------------------------------- Bits ----------------------------------- */
 
 function Field({
   label,
@@ -518,13 +492,11 @@ function Field({
 }) {
   return (
     <label className="block">
-      <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+      <span className="text-xs font-semibold uppercase tracking-widest text-ink-400">
         {label}
       </span>
       <div className="mt-2">{children}</div>
-      {hint && (
-        <p className="mt-2 text-xs text-muted-foreground">{hint}</p>
-      )}
+      {hint && <p className="mt-2 text-xs text-ink-400">{hint}</p>}
     </label>
   );
 }
@@ -539,7 +511,7 @@ function PresetGroup<T extends number>({
   presets: { label: string; value: T }[];
 }) {
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
       {presets.map((p) => {
         const selected = p.value === value;
         return (
@@ -547,14 +519,27 @@ function PresetGroup<T extends number>({
             key={p.label}
             type="button"
             onClick={() => onChange(p.value)}
-            className={`neo-button !px-3 !py-3 text-xs ${
-              selected ? "bg-lime" : ""
+            className={`rounded-xl border px-3 py-2.5 text-sm font-medium transition-all ${
+              selected
+                ? "border-bitcoin bg-bitcoin text-white shadow-glow"
+                : "border-ink/15 bg-white text-ink hover:border-ink/30"
             }`}
           >
             {p.label}
           </button>
         );
       })}
+    </div>
+  );
+}
+
+function ReviewRow({ k, v }: { k: string; v: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 px-4 py-3 text-sm">
+      <dt className="text-xs font-semibold uppercase tracking-widest text-ink-400">
+        {k}
+      </dt>
+      <dd className="text-right font-medium">{v}</dd>
     </div>
   );
 }

@@ -1,221 +1,116 @@
 /**
- * Top-level orchestration.
+ * Top-level orchestration for the v2 site.
  *
- * Views:
- *  - `landing`   — first-run hero. Shown when the server reports zero
- *                  vaults (or the user clicks "About").
- *  - `dashboard` — the main vault view. Shown as soon as there's ≥1
- *                  vault.
- *  - `wizard`    — the add-vault flow. Always reachable via the
- *                  "Add savings" / "Set up" buttons.
+ * Routing is single-page state: the user picks a portal from the nav
+ * and we render exactly one of {landing, setup, checkin, inherit}.
  *
- * Server polling lives here and pushes data down to the active view.
- * Each card is responsible for its own check-in side effects; this
- * shell only refreshes the list as a result.
+ * No automatic dashboard; the user always lands on `landing` (unless
+ * deep-linked via a hash, see `routeFromHash`).
+ *
+ * We deliberately don't fetch the vault list anywhere — the visitor
+ * looks things up by ID. Future work: surface a "your vaults"
+ * affordance once we have wallet-bound discovery.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, api, type VaultListItem } from "./api";
+import { useEffect, useState } from "react";
+import { NavBar } from "./NavBar";
 import { Landing } from "./Landing";
-import { Dashboard } from "./Dashboard";
-import { AddVaultWizard } from "./AddVaultWizard";
+import { SetupPortal } from "./SetupPortal";
+import { CheckinPortal } from "./CheckinPortal";
+import { InheritPortal } from "./InheritPortal";
 import { ServerOfflineBanner } from "./ServerOfflineBanner";
+import { api } from "./api";
+import type { WalletIdentity } from "./wallet";
 
-type View = "landing" | "dashboard" | "wizard";
+export type Route = "landing" | "setup" | "checkin" | "inherit";
 
-type LoadState =
-  | { kind: "loading" }
-  | { kind: "loaded"; vaults: VaultListItem[] }
-  | { kind: "error"; message: string };
+const VALID_ROUTES: Route[] = ["landing", "setup", "checkin", "inherit"];
 
-const POLL_MS = 5_000;
+function routeFromHash(): Route {
+  if (typeof window === "undefined") return "landing";
+  const slug = window.location.hash.replace(/^#\/?/, "") as Route;
+  return VALID_ROUTES.includes(slug) ? slug : "landing";
+}
 
 export default function App() {
-  const [view, setView] = useState<View>("landing");
-  const [state, setState] = useState<LoadState>({ kind: "loading" });
-  // After the first successful load we know whether to default to
-  // landing or dashboard. Use a ref so the polling effect doesn't
-  // override the user's explicit navigation.
-  const userOverrode = useRef(false);
+  const [route, setRoute] = useState<Route>(routeFromHash);
+  const [wallet, setWallet] = useState<WalletIdentity | null>(null);
+  const [health, setHealth] = useState<"unknown" | "ok" | "offline">(
+    "unknown",
+  );
 
-  const refresh = useCallback(async () => {
-    try {
-      const list = await api.listVaults();
-      setState({ kind: "loaded", vaults: list });
-      if (!userOverrode.current) {
-        setView(list.length === 0 ? "landing" : "dashboard");
-      }
-    } catch (e) {
-      const msg = e instanceof ApiError ? e.message : String(e);
-      setState({ kind: "error", message: msg });
+  // Sync URL hash with the current route, both directions.
+  useEffect(() => {
+    const wanted = `#/${route}`;
+    if (window.location.hash !== wanted) {
+      window.history.replaceState(null, "", wanted);
     }
+  }, [route]);
+
+  useEffect(() => {
+    const onHash = () => setRoute(routeFromHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  // Initial fetch + polling loop.
+  // Health probe. We don't poll — once the user takes an action the
+  // portals will surface any error themselves. This is just for the
+  // "server offline" banner.
   useEffect(() => {
     let alive = true;
     let timer: number | null = null;
-
-    async function tick() {
-      if (!alive) return;
-      await refresh();
-      if (alive) timer = window.setTimeout(tick, POLL_MS);
+    async function probe() {
+      try {
+        await api.health();
+        if (alive) setHealth("ok");
+      } catch {
+        if (alive) setHealth("offline");
+      }
+      if (alive) timer = window.setTimeout(probe, 15_000);
     }
-    void tick();
+    void probe();
     return () => {
       alive = false;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [refresh]);
-
-  function goTo(v: View) {
-    userOverrode.current = true;
-    setView(v);
-  }
-
-  // Stable callbacks for child views.
-  const onAddVault = useCallback(() => goTo("wizard"), []);
-  const onShowLanding = useCallback(() => goTo("landing"), []);
-  const onShowDashboard = useCallback(() => goTo("dashboard"), []);
-
-  const isOffline =
-    state.kind === "error" &&
-    /Failed to fetch|ECONNREFUSED|NetworkError/i.test(state.message);
+  }, []);
 
   return (
-    <div className="min-h-full">
-      {isOffline && <ServerOfflineBanner message={state.message} />}
+    <div className="min-h-full bg-cream">
+      {health === "offline" && <ServerOfflineBanner />}
+      <NavBar
+        route={route}
+        onNavigate={setRoute}
+        wallet={wallet}
+        onWalletChange={setWallet}
+      />
 
-      {view === "wizard" && (
-        <AddVaultWizard
-          onCancel={() => {
-            const hasVaults =
-              state.kind === "loaded" && state.vaults.length > 0;
-            goTo(hasVaults ? "dashboard" : "landing");
-          }}
-          onCreated={() => {
-            void refresh();
-            goTo("dashboard");
+      {route === "landing" && <Landing onNavigate={setRoute} />}
+
+      {route === "setup" && (
+        <SetupPortal
+          onCancel={() => setRoute("landing")}
+          onCreated={(v) => {
+            // After creating, take the user to "I'm OK" pre-filled
+            // with their new vault id, so they can verify the green
+            // status sentence and see how a tap feels.
+            if (typeof window !== "undefined") {
+              window.sessionStorage.setItem("gk:lastVaultId", v.id);
+            }
+            setRoute("checkin");
           }}
         />
       )}
 
-      {view === "landing" && (
-        <Landing onAddVault={onAddVault} />
+      {route === "checkin" && (
+        <CheckinPortal initialId={readLastVaultId()} />
       )}
 
-      {view === "dashboard" && state.kind === "loading" && (
-        <LoadingScreen />
-      )}
-
-      {view === "dashboard" &&
-        state.kind === "loaded" &&
-        state.vaults.length === 0 && (
-          <EmptyDashboard
-            onAddVault={onAddVault}
-            onShowLanding={onShowLanding}
-          />
-        )}
-
-      {view === "dashboard" &&
-        state.kind === "loaded" &&
-        state.vaults.length > 0 && (
-          <Dashboard
-            vaults={state.vaults}
-            onAddVault={onAddVault}
-            onShowLanding={onShowLanding}
-            onRefresh={() => void refresh()}
-          />
-        )}
-
-      {view === "dashboard" && state.kind === "error" && !isOffline && (
-        <FatalErrorScreen
-          message={state.message}
-          onRetry={() => void refresh()}
-          onShowLanding={onShowLanding}
-        />
-      )}
-
-      {/* When the user clicks "About" from the dashboard header but
-          there are no vaults yet, we fall through to landing above. */}
-      {view === "landing" &&
-        state.kind === "loaded" &&
-        state.vaults.length > 0 && (
-          <button
-            onClick={onShowDashboard}
-            className="fixed bottom-6 right-6 neo-button-lime z-10 !px-4 !py-3 text-sm"
-          >
-            ← Back to my savings
-          </button>
-        )}
+      {route === "inherit" && <InheritPortal />}
     </div>
   );
 }
 
-function LoadingScreen() {
-  return (
-    <div className="flex h-screen items-center justify-center">
-      <div className="text-center">
-        <div className="mx-auto h-12 w-12 animate-pulse-glow rounded-2xl neo-border bg-lime" />
-        <p className="mt-6 text-xs font-bold uppercase tracking-widest text-muted-foreground">
-          Loading…
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function EmptyDashboard({
-  onAddVault,
-  onShowLanding,
-}: {
-  onAddVault: () => void;
-  onShowLanding: () => void;
-}) {
-  return (
-    <div className="flex min-h-screen items-center justify-center px-6">
-      <div className="text-center">
-        <h2 className="font-display text-3xl font-bold md:text-4xl">
-          You don't have any savings yet.
-        </h2>
-        <p className="mt-3 text-muted-foreground">
-          Set up your first one in about 10 minutes.
-        </p>
-        <div className="mt-8 flex justify-center gap-3">
-          <button onClick={onAddVault} className="neo-button-lime text-sm">
-            Set one up
-          </button>
-          <button onClick={onShowLanding} className="neo-button text-sm">
-            How does it work?
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function FatalErrorScreen({
-  message,
-  onRetry,
-  onShowLanding,
-}: {
-  message: string;
-  onRetry: () => void;
-  onShowLanding: () => void;
-}) {
-  return (
-    <div className="flex min-h-screen items-center justify-center px-6">
-      <div className="max-w-md text-center">
-        <h2 className="font-display text-3xl font-bold">Something went wrong</h2>
-        <p className="mt-3 font-mono text-sm text-muted-foreground">{message}</p>
-        <div className="mt-8 flex justify-center gap-3">
-          <button onClick={onRetry} className="neo-button-lime text-sm">
-            Try again
-          </button>
-          <button onClick={onShowLanding} className="neo-button text-sm">
-            Back to start
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+function readLastVaultId(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  return window.sessionStorage.getItem("gk:lastVaultId") ?? undefined;
 }
