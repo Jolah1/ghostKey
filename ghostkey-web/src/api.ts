@@ -34,6 +34,18 @@ export interface VaultView {
   next_deadline_at: string;
 }
 
+export interface CreateVaultRequest {
+  label: string | null;
+  network: string;
+  descriptor_external: string;
+  descriptor_internal: string;
+  timelock_blocks: number;
+  checkin_period_secs: number;
+  grace_period_secs: number;
+  owner_contact?: string | null;
+  heir_contact?: string | null;
+}
+
 export interface CheckinResponse {
   vault_id: string;
   last_checkin_at: string;
@@ -94,6 +106,11 @@ export const api = {
   health: () => request<{ ok: boolean; version: string }>("/health"),
   listVaults: () => request<VaultListItem[]>("/vaults"),
   getVault: (id: string) => request<VaultView>(`/vaults/${id}`),
+  createVault: (req: CreateVaultRequest) =>
+    request<VaultView>("/vaults", {
+      method: "POST",
+      body: JSON.stringify(req),
+    }),
   checkin: (id: string) =>
     request<CheckinResponse>(`/vaults/${id}/checkin`, { method: "POST" }),
   listEvents: (id: string) => request<VaultEvent[]>(`/vaults/${id}/events`),

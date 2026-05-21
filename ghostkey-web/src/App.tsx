@@ -1,291 +1,221 @@
-import { useEffect, useState } from "react";
-import {
-  ApiError,
-  api,
-  type VaultListItem,
-  type VaultStatus,
-  type VaultView,
-} from "./api";
-import { VaultCard } from "./VaultCard";
+/**
+ * Top-level orchestration.
+ *
+ * Views:
+ *  - `landing`   — first-run hero. Shown when the server reports zero
+ *                  vaults (or the user clicks "About").
+ *  - `dashboard` — the main vault view. Shown as soon as there's ≥1
+ *                  vault.
+ *  - `wizard`    — the add-vault flow. Always reachable via the
+ *                  "Add savings" / "Set up" buttons.
+ *
+ * Server polling lives here and pushes data down to the active view.
+ * Each card is responsible for its own check-in side effects; this
+ * shell only refreshes the list as a result.
+ */
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiError, api, type VaultListItem } from "./api";
+import { Landing } from "./Landing";
+import { Dashboard } from "./Dashboard";
+import { AddVaultWizard } from "./AddVaultWizard";
+import { ServerOfflineBanner } from "./ServerOfflineBanner";
+
+type View = "landing" | "dashboard" | "wizard";
 
 type LoadState =
   | { kind: "loading" }
-  | { kind: "error"; message: string }
-  | { kind: "loaded"; vaults: VaultListItem[] };
+  | { kind: "loaded"; vaults: VaultListItem[] }
+  | { kind: "error"; message: string };
 
 const POLL_MS = 5_000;
 
 export default function App() {
+  const [view, setView] = useState<View>("landing");
   const [state, setState] = useState<LoadState>({ kind: "loading" });
-  const [selected, setSelected] = useState<VaultView | null>(null);
-  const [health, setHealth] = useState<string | null>(null);
+  // After the first successful load we know whether to default to
+  // landing or dashboard. Use a ref so the polling effect doesn't
+  // override the user's explicit navigation.
+  const userOverrode = useRef(false);
 
-  // List polling.
+  const refresh = useCallback(async () => {
+    try {
+      const list = await api.listVaults();
+      setState({ kind: "loaded", vaults: list });
+      if (!userOverrode.current) {
+        setView(list.length === 0 ? "landing" : "dashboard");
+      }
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.message : String(e);
+      setState({ kind: "error", message: msg });
+    }
+  }, []);
+
+  // Initial fetch + polling loop.
   useEffect(() => {
     let alive = true;
     let timer: number | null = null;
 
     async function tick() {
-      try {
-        const list = await api.listVaults();
-        if (!alive) return;
-        setState({ kind: "loaded", vaults: list });
-      } catch (e) {
-        if (!alive) return;
-        const msg = e instanceof Error ? e.message : String(e);
-        setState({ kind: "error", message: msg });
-      } finally {
-        if (alive) timer = window.setTimeout(tick, POLL_MS);
-      }
+      if (!alive) return;
+      await refresh();
+      if (alive) timer = window.setTimeout(tick, POLL_MS);
     }
     void tick();
     return () => {
       alive = false;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, []);
+  }, [refresh]);
 
-  // Cheap health badge.
-  useEffect(() => {
-    api
-      .health()
-      .then((h) => setHealth(`v${h.version}`))
-      .catch(() => setHealth(null));
-  }, []);
+  function goTo(v: View) {
+    userOverrode.current = true;
+    setView(v);
+  }
+
+  // Stable callbacks for child views.
+  const onAddVault = useCallback(() => goTo("wizard"), []);
+  const onShowLanding = useCallback(() => goTo("landing"), []);
+  const onShowDashboard = useCallback(() => goTo("dashboard"), []);
+
+  const isOffline =
+    state.kind === "error" &&
+    /Failed to fetch|ECONNREFUSED|NetworkError/i.test(state.message);
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-8">
-      <Header health={health} />
-      <main className="mt-8">
-        {state.kind === "loading" && <p className="text-zinc-400">Loading vaults…</p>}
-        {state.kind === "error" && <ErrorPanel message={state.message} />}
-        {state.kind === "loaded" && state.vaults.length === 0 && (
-          <EmptyState />
-        )}
-        {state.kind === "loaded" && state.vaults.length > 0 && (
-          <ul className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {state.vaults.map((v) => (
-              <li key={v.id}>
-                <VaultCard
-                  summary={v}
-                  onOpen={(detail) => setSelected(detail)}
-                  onAfterCheckin={() => {
-                    // Optimistically refresh the list.
-                    api
-                      .listVaults()
-                      .then((vs) => setState({ kind: "loaded", vaults: vs }))
-                      .catch(() => {
-                        /* next poll will catch it */
-                      });
-                  }}
-                />
-              </li>
-            ))}
-          </ul>
-        )}
-      </main>
-      {selected && (
-        <DetailDrawer vault={selected} onClose={() => setSelected(null)} />
+    <div className="min-h-full">
+      {isOffline && <ServerOfflineBanner message={state.message} />}
+
+      {view === "wizard" && (
+        <AddVaultWizard
+          onCancel={() => {
+            const hasVaults =
+              state.kind === "loaded" && state.vaults.length > 0;
+            goTo(hasVaults ? "dashboard" : "landing");
+          }}
+          onCreated={() => {
+            void refresh();
+            goTo("dashboard");
+          }}
+        />
       )}
-    </div>
-  );
-}
 
-function Header({ health }: { health: string | null }) {
-  return (
-    <header className="flex items-center justify-between border-b border-zinc-800 pb-4">
-      <div className="flex items-center gap-3">
-        <Logo />
-        <div>
-          <h1 className="text-xl font-semibold">GhostKey</h1>
-          <p className="text-sm text-zinc-400">
-            Bitcoin-native inheritance vaults
-          </p>
-        </div>
-      </div>
-      <div className="text-right text-xs text-zinc-500">
-        {health ? (
-          <span className="rounded bg-zinc-800 px-2 py-1 font-mono">
-            server {health}
-          </span>
-        ) : (
-          <span className="rounded bg-red-900/40 px-2 py-1 font-mono text-red-300">
-            server unreachable
-          </span>
+      {view === "landing" && (
+        <Landing onAddVault={onAddVault} />
+      )}
+
+      {view === "dashboard" && state.kind === "loading" && (
+        <LoadingScreen />
+      )}
+
+      {view === "dashboard" &&
+        state.kind === "loaded" &&
+        state.vaults.length === 0 && (
+          <EmptyDashboard
+            onAddVault={onAddVault}
+            onShowLanding={onShowLanding}
+          />
         )}
-      </div>
-    </header>
-  );
-}
 
-function Logo() {
-  return (
-    <svg
-      viewBox="0 0 32 32"
-      className="h-8 w-8"
-      aria-hidden="true"
-      role="img"
-    >
-      <path
-        d="M16 6 L24 11 L24 21 L16 26 L8 21 L8 11 Z"
-        fill="none"
-        stroke="#a1a1aa"
-        strokeWidth="2"
-      />
-      <circle cx="16" cy="16" r="3" fill="#10b981" />
-    </svg>
-  );
-}
+      {view === "dashboard" &&
+        state.kind === "loaded" &&
+        state.vaults.length > 0 && (
+          <Dashboard
+            vaults={state.vaults}
+            onAddVault={onAddVault}
+            onShowLanding={onShowLanding}
+            onRefresh={() => void refresh()}
+          />
+        )}
 
-function EmptyState() {
-  return (
-    <div className="rounded border border-zinc-800 bg-zinc-900/40 px-6 py-12 text-center">
-      <h2 className="text-lg font-medium">No vaults registered</h2>
-      <p className="mt-2 text-sm text-zinc-400">
-        Register a vault with the CLI or via{" "}
-        <code className="font-mono text-zinc-300">POST /vaults</code> and
-        it will appear here.
-      </p>
-    </div>
-  );
-}
+      {view === "dashboard" && state.kind === "error" && !isOffline && (
+        <FatalErrorScreen
+          message={state.message}
+          onRetry={() => void refresh()}
+          onShowLanding={onShowLanding}
+        />
+      )}
 
-function ErrorPanel({ message }: { message: string }) {
-  return (
-    <div className="rounded border border-red-900 bg-red-950/40 px-4 py-3 text-sm text-red-200">
-      <p className="font-medium">Failed to load vaults</p>
-      <p className="mt-1 font-mono text-xs">{message}</p>
-    </div>
-  );
-}
-
-function DetailDrawer({
-  vault,
-  onClose,
-}: {
-  vault: VaultView;
-  onClose: () => void;
-}) {
-  const [events, setEvents] = useState<
-    { id: number; kind: string; created_at: string }[] | null
-  >(null);
-  const [eventsError, setEventsError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    api
-      .listEvents(vault.id)
-      .then((es) => {
-        if (alive) setEvents(es);
-      })
-      .catch((e) => {
-        if (alive) {
-          setEventsError(e instanceof ApiError ? e.message : String(e));
-        }
-      });
-    return () => {
-      alive = false;
-    };
-  }, [vault.id]);
-
-  return (
-    <div
-      className="fixed inset-0 z-10 bg-black/60"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-    >
-      <aside
-        className="absolute right-0 top-0 h-full w-full max-w-md overflow-y-auto border-l border-zinc-800 bg-zinc-950 px-6 py-6"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-start justify-between">
-          <div>
-            <h2 className="text-lg font-semibold">
-              {vault.label ?? "(no label)"}
-            </h2>
-            <p className="font-mono text-xs text-zinc-500">{vault.id}</p>
-          </div>
+      {/* When the user clicks "About" from the dashboard header but
+          there are no vaults yet, we fall through to landing above. */}
+      {view === "landing" &&
+        state.kind === "loaded" &&
+        state.vaults.length > 0 && (
           <button
-            onClick={onClose}
-            className="rounded px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
-            aria-label="close"
+            onClick={onShowDashboard}
+            className="fixed bottom-6 right-6 neo-button-lime z-10 !px-4 !py-3 text-sm"
           >
-            ×
+            ← Back to my savings
+          </button>
+        )}
+    </div>
+  );
+}
+
+function LoadingScreen() {
+  return (
+    <div className="flex h-screen items-center justify-center">
+      <div className="text-center">
+        <div className="mx-auto h-12 w-12 animate-pulse-glow rounded-2xl neo-border bg-lime" />
+        <p className="mt-6 text-xs font-bold uppercase tracking-widest text-muted-foreground">
+          Loading…
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function EmptyDashboard({
+  onAddVault,
+  onShowLanding,
+}: {
+  onAddVault: () => void;
+  onShowLanding: () => void;
+}) {
+  return (
+    <div className="flex min-h-screen items-center justify-center px-6">
+      <div className="text-center">
+        <h2 className="font-display text-3xl font-bold md:text-4xl">
+          You don't have any savings yet.
+        </h2>
+        <p className="mt-3 text-muted-foreground">
+          Set up your first one in about 10 minutes.
+        </p>
+        <div className="mt-8 flex justify-center gap-3">
+          <button onClick={onAddVault} className="neo-button-lime text-sm">
+            Set one up
+          </button>
+          <button onClick={onShowLanding} className="neo-button text-sm">
+            How does it work?
           </button>
         </div>
-        <dl className="mt-6 grid grid-cols-2 gap-3 text-sm">
-          <DescPair k="network" v={vault.network} />
-          <DescPair k="status" v={<StatusPill status={vault.status} />} />
-          <DescPair
-            k="timelock"
-            v={`${vault.timelock_blocks} blocks`}
-          />
-          <DescPair
-            k="cadence"
-            v={`${vault.checkin_period_secs}s + ${vault.grace_period_secs}s grace`}
-          />
-          <DescPair k="created" v={vault.created_at} />
-          <DescPair
-            k="last check-in"
-            v={vault.last_checkin_at ?? "—"}
-          />
-          <DescPair
-            k="next deadline"
-            v={vault.next_deadline_at}
-          />
-        </dl>
-        <h3 className="mt-8 text-sm font-medium uppercase tracking-wide text-zinc-400">
-          Event log
-        </h3>
-        {eventsError && (
-          <p className="mt-2 text-sm text-red-300">{eventsError}</p>
-        )}
-        {events === null && !eventsError ? (
-          <p className="mt-2 text-sm text-zinc-500">Loading…</p>
-        ) : (
-          <ol className="mt-2 divide-y divide-zinc-800 border-y border-zinc-800">
-            {(events ?? []).map((e) => (
-              <li
-                key={e.id}
-                className="flex items-baseline justify-between py-2 text-sm"
-              >
-                <span className="font-mono">{e.kind}</span>
-                <span className="text-xs text-zinc-500">{e.created_at}</span>
-              </li>
-            ))}
-            {(events ?? []).length === 0 && !eventsError && (
-              <li className="py-2 text-sm text-zinc-500">No events yet.</li>
-            )}
-          </ol>
-        )}
-      </aside>
+      </div>
     </div>
   );
 }
 
-function DescPair({ k, v }: { k: string; v: React.ReactNode }) {
+function FatalErrorScreen({
+  message,
+  onRetry,
+  onShowLanding,
+}: {
+  message: string;
+  onRetry: () => void;
+  onShowLanding: () => void;
+}) {
   return (
-    <>
-      <dt className="text-xs uppercase tracking-wide text-zinc-500">{k}</dt>
-      <dd className="text-right font-mono text-xs text-zinc-200">{v}</dd>
-    </>
-  );
-}
-
-function StatusPill({ status }: { status: VaultStatus }) {
-  const palette: Record<VaultStatus, string> = {
-    ok: "bg-ok/15 text-ok",
-    warning: "bg-warning/15 text-warning",
-    alarmed: "bg-alarmed/15 text-alarmed",
-    timelock_started: "bg-alarmed/15 text-alarmed",
-    claimed: "bg-zinc-700/40 text-zinc-300",
-  };
-  return (
-    <span
-      className={`inline-block rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${palette[status]}`}
-    >
-      {status}
-    </span>
+    <div className="flex min-h-screen items-center justify-center px-6">
+      <div className="max-w-md text-center">
+        <h2 className="font-display text-3xl font-bold">Something went wrong</h2>
+        <p className="mt-3 font-mono text-sm text-muted-foreground">{message}</p>
+        <div className="mt-8 flex justify-center gap-3">
+          <button onClick={onRetry} className="neo-button-lime text-sm">
+            Try again
+          </button>
+          <button onClick={onShowLanding} className="neo-button text-sm">
+            Back to start
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
