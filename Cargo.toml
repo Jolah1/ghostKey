@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ghostkey-core",
+    "crates/ghostkey-cli",
+    "crates/ghostkey-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/anomalyco/ghostKey"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Bitcoin stack
+bdk_wallet = { version = "1.0.0", features = ["keys-bip39"] }
+bdk_esplora = { version = "0.19", features = ["blocking", "async-https"] }
+bdk_bitcoind_rpc = "0.18"
+bitcoin = { version = "0.32", features = ["rand-std", "serde"] }
+miniscript = { version = "12", features = ["serde"] }
+
+# Async + server
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid", "macros", "migrate"] }
+
+# Shared
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+hex = "0.4"
+rand = "0.8"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

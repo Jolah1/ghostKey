@@ -1,0 +1,23 @@
+[package]
+name = "ghostkey-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Bitcoin-native inheritance protocol: descriptors, PSBT flows, and timelocked vault primitives"
+
+[dependencies]
+bitcoin = { workspace = true }
+miniscript = { workspace = true }
+bdk_wallet = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+bdk_bitcoind_rpc = { workspace = true }
+bitcoincore-rpc = "0.19"
+serde_json = { workspace = true }
+tempfile = "3"

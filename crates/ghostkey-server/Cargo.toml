@@ -1,0 +1,32 @@
+[package]
+name = "ghostkey-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Watch-only notifier + check-in tracker for the GhostKey inheritance protocol"
+
+[[bin]]
+name = "ghostkey-server"
+path = "src/main.rs"
+
+[dependencies]
+ghostkey-core = { path = "../ghostkey-core" }
+bitcoin = { workspace = true }
+bdk_wallet = { workspace = true }
+bdk_esplora = { workspace = true }
+miniscript = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tokio = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+reqwest = { workspace = true }

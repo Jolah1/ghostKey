@@ -1,0 +1,31 @@
+[package]
+name = "ghostkey-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CLI for the GhostKey Bitcoin inheritance protocol"
+
+[[bin]]
+name = "ghostkey"
+path = "src/main.rs"
+
+[dependencies]
+ghostkey-core = { path = "../ghostkey-core" }
+bitcoin = { workspace = true }
+bdk_wallet = { workspace = true }
+bdk_esplora = { workspace = true }
+bdk_bitcoind_rpc = { workspace = true }
+bitcoincore-rpc = "0.19"
+miniscript = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+bip39 = "2"
+chrono = { workspace = true }

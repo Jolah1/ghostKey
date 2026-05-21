@@ -1,0 +1,33 @@
+# Build artifacts
+target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Env / secrets
+.env
+.env.local
+*.secret
+
+# Local state
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+.ghostkey/
+data/
+
+# Node
+node_modules/
+dist/
+.parcel-cache/
+.vite/
+
+# Logs
+*.log
