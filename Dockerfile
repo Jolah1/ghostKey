@@ -18,7 +18,7 @@
 
 # ---- builder ---------------------------------------------------------
 
-FROM rust:1.83-slim-bookworm AS builder
+FROM rust:1.86-slim-bookworm AS builder
 
 # System deps for sqlx (needs libsqlite3) and rustls (needs ca-certificates).
 RUN apt-get update \
