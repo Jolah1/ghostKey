@@ -2,191 +2,623 @@
 @tailwind components;
 @tailwind utilities;
 
-/*
- * Design tokens. Mirrors tailwind.config.js intentionally so the base
- * layer is independent of any custom utility class. If you change a
- * brand color, change it in BOTH places (Tailwind reads the config for
- * class generation; the rules below use literals so they don't depend
- * on `@apply` finding our custom classes during dev hot-reload).
- */
+/* ------------------------------------------------------------------ */
+/*  Design tokens                                                      */
+/*  All visual values are CSS variables so the rest of the app can be  */
+/*  theme-agnostic. The single switch is `data-theme` on <html>.       */
+/* ------------------------------------------------------------------ */
+
 :root {
-  color-scheme: light;
-  --bitcoin: #f7931b;
-  --bitcoin-50: #fff7eb;
-  --bitcoin-600: #d97306;
-  --bitcoin-800: #92450b;
-  --bitcoin-900: #783a0c;
-  --cream: #fbf7f0;
-  --cream-soft: #fefdfb;
-  --ink: #1a1a1a;
-  --ink-400: #737373;
-  --ink-500: #525252;
+  /* Brand accent — Tando's bitcoin orange. Honest, instantly recognisable. */
+  --accent:        #F7931B;
+  --accent-strong: #FFA73F;
+  --accent-deep:   #B8651A;
+  --accent-glow:   rgba(247, 147, 27, 0.30);
+  --accent-ring:   rgba(247, 147, 27, 0.55);
+  --accent-tint:   rgba(247, 147, 27, 0.12);
+  --accent-tint-2: rgba(247, 147, 27, 0.22);
+
+  /* Secondary brand — Tando green. Sparingly used for success states. */
+  --brand-green:   #349934;
+
+  /* Semantic status colors. */
+  --ok:      #349934;
+  --warning: #F7931B;
+  --alarm:   #D4453B;
+  --ok-tint:      rgba(52, 153, 52, 0.14);
+  --warning-tint: rgba(247, 147, 27, 0.14);
+  --alarm-tint:   rgba(212, 69, 59, 0.14);
+
+  /* Typography — Tando uses Inter for body and Inter Tight for display. */
+  --font-display: "Inter Tight", Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-sans:    Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono:    ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Weight scale. Tando uses 300 body / 700 display heavily. */
+  --w-body:    400;
+  --w-medium:  500;
+  --w-semi:    600;
+  --w-bold:    700;
+  --w-black:   800;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Tando's signature "silver-gradient" headline fill. Applied via the
+     `.title-gradient` utility. Same gradient on both themes — only the
+     midpoint colour swaps for legibility. */
+  --title-gradient-dark:
+    linear-gradient(135deg, rgba(255,255,255,0.55) 0%, #BBBBBB 50%, rgba(255,255,255,0.55) 100%);
+  --title-gradient-light:
+    linear-gradient(135deg, rgba(20,20,20,0.85) 0%, #555555 50%, rgba(20,20,20,0.85) 100%);
 }
+
+/* ---- Dark theme (default) — pure black, Tando style ---- */
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg:           #000000;
+  --bg-elev:      #0D0D0D;
+  --surface:      #131313;
+  --surface-2:    #1A1A1A;
+  --surface-hi:   #262626;
+
+  --border:       #1F1F1F;
+  --border-hi:    #2E2E2E;
+  --border-focus: rgba(247, 147, 27, 0.65);
+
+  /* Tando card outline — a deep amber that catches the orange accent. */
+  --card-outline: #533517;
+  --card-grad:    linear-gradient(345deg, #141414, rgba(255,255,255,0.02));
+
+  --text:         #FFFFFF;
+  --text-strong:  #FFFFFF;
+  --text-body:    #EBEBEB;
+  --text-muted:   #AFAFAF;
+  --text-soft:    #ADB0B9;
+  --text-dim:     #646464;
+  --text-on-accent: #070709;
+
+  --accent-text:  var(--accent);
+  --title-gradient: var(--title-gradient-dark);
+
+  --shadow-soft:
+    0 12px 32px -12px rgba(0, 0, 0, 0.7),
+    0 2px 8px -2px rgba(0, 0, 0, 0.5);
+  --shadow-lg:
+    0 24px 60px -16px rgba(0, 0, 0, 0.8),
+    0 8px 20px -6px rgba(0, 0, 0, 0.6);
+  --shadow-btn-white:
+    0 6px 16px rgba(255, 255, 255, 0.20);
+
+  --hero-glow:
+    radial-gradient(ellipse 70% 50% at 50% 30%, rgba(247, 147, 27, 0.18), transparent 70%),
+    radial-gradient(ellipse 50% 40% at 10% 100%, rgba(247, 147, 27, 0.10), transparent 70%);
+}
+
+/* ---- Light theme — clean white, Tando palette translated ---- */
+[data-theme="light"] {
+  color-scheme: light;
+
+  --bg:           #FFFFFF;
+  --bg-elev:      #FFFFFF;
+  --surface:      #FAFAFA;
+  --surface-2:    #F2F2F2;
+  --surface-hi:   #E8E8E8;
+
+  --border:       #E5E5E5;
+  --border-hi:    #D4D4D4;
+  --border-focus: rgba(247, 147, 27, 0.55);
+
+  --card-outline: #E5E5E5;
+  --card-grad:    linear-gradient(345deg, #FAFAFA, #FFFFFF);
+
+  --text:         #070709;
+  --text-strong:  #000000;
+  --text-body:    #1A1A1A;
+  --text-muted:   #525252;
+  --text-soft:    #6B6B6B;
+  --text-dim:     #8A8A8A;
+  --text-on-accent: #070709;
+
+  --accent-text:  var(--accent-deep);
+  --title-gradient: var(--title-gradient-light);
+
+  --shadow-soft:
+    0 10px 28px -10px rgba(0, 0, 0, 0.10),
+    0 3px 8px -2px rgba(0, 0, 0, 0.05);
+  --shadow-lg:
+    0 22px 56px -14px rgba(0, 0, 0, 0.14),
+    0 8px 20px -6px rgba(0, 0, 0, 0.06);
+  --shadow-btn-white:
+    0 6px 16px rgba(0, 0, 0, 0.10);
+
+  --hero-glow:
+    radial-gradient(ellipse 70% 50% at 50% 30%, rgba(247, 147, 27, 0.10), transparent 70%);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Base                                                               */
+/* ------------------------------------------------------------------ */
 
 @layer base {
-  html {
-    scroll-behavior: smooth;
-  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
   body {
-    background-color: var(--cream);
-    color: var(--ink);
-    font-family: "Inter", system-ui, sans-serif;
+    margin: 0;
+    background-color: var(--bg);
+    color: var(--text-body);
+    font-family: var(--font-sans);
+    font-weight: var(--w-body);
+    font-feature-settings: "kern", "ss01";
+    font-size: 17px;
+    line-height: 1.5;
+    letter-spacing: -0.005em;
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
+    min-height: 100vh;
+    transition: background-color 0.25s var(--ease-out),
+                color 0.25s var(--ease-out);
   }
-  h1, h2, h3, h4, h5, h6 {
-    font-family: "Inter Tight", "Inter", system-ui, sans-serif;
+  /* Display headings — Inter Tight, heavy. Tando style: 700 weight,
+     tight line-height, sharp negative tracking. */
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    font-weight: var(--w-bold);
+    letter-spacing: -0.03em;
+    line-height: 1.05;
+    color: var(--text);
+    margin: 0;
+  }
+  h5, h6 {
+    font-family: var(--font-display);
+    font-weight: var(--w-semi);
     letter-spacing: -0.02em;
+    line-height: 1.2;
+    color: var(--text);
+    margin: 0;
   }
-  ::selection {
-    background-color: var(--bitcoin);
-    color: white;
+  /* Body paragraphs default to the soft body colour — slightly muted
+     vs primary text, exactly like Tando's `p { color: #ebebeb }`. */
+  p { color: var(--text-body); }
+
+  strong, b { font-weight: var(--w-bold); color: var(--text-strong); }
+  em { font-style: italic; color: var(--accent); }
+  a  { color: var(--accent); text-decoration: none; }
+
+  ::selection { background-color: var(--accent); color: var(--text-on-accent); }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-hi);
+    border-radius: 10px;
   }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 }
 
-/*
- * Component utilities — Tando-style restraint. Soft shadows, rounded
- * corners, single accent. No gradients, no neon.
- */
+/* ------------------------------------------------------------------ */
+/*  Components                                                         */
+/* ------------------------------------------------------------------ */
+
 @layer components {
 
-  /* Buttons ---------------------------------------------------------- */
-
+  /* Buttons — Tando-style pill shape, sharp focus, premium weight. */
   .btn {
-    @apply inline-flex items-center justify-center gap-2
-           rounded-full px-5 py-2.5
-           font-medium text-sm
-           transition-all duration-200 ease-out
-           disabled:cursor-not-allowed disabled:opacity-50
-           focus-visible:outline-none focus-visible:ring-2
-           focus-visible:ring-offset-2;
-    font-family: "Inter", system-ui, sans-serif;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 11px 24px;
+    border-radius: 999px;          /* pill */
+    font-family: var(--font-sans);
+    font-size: 15px;
+    font-weight: var(--w-bold);
+    letter-spacing: -0.005em;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: transform 0.18s var(--ease-out),
+                background-color 0.2s var(--ease-out),
+                border-color 0.2s var(--ease-out),
+                box-shadow 0.2s var(--ease-out),
+                color 0.2s var(--ease-out);
+    text-decoration: none;
+    white-space: nowrap;
+    line-height: 1.2;
   }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn:focus-visible {
-    --tw-ring-color: var(--bitcoin);
-    --tw-ring-offset-color: var(--cream);
+    outline: none;
+    box-shadow: 0 0 0 3px var(--accent-ring);
   }
+
+  /* Primary CTA — Tando's signature orange pill with the arrow. */
   .btn-primary {
-    @apply btn text-white shadow-soft-sm;
-    background-color: var(--bitcoin);
+    background-color: var(--accent);
+    color: #070709;
+    font-weight: var(--w-bold);
+    padding: 12px 26px;
+    box-shadow: 0 6px 20px -4px var(--accent-glow);
   }
   .btn-primary:hover:not(:disabled) {
-    background-color: var(--bitcoin-600);
-    box-shadow: 0 8px 24px -8px rgba(26,26,26,.08),
-                0 2px 6px -2px rgba(26,26,26,.06);
+    background-color: var(--accent-strong);
+    transform: translateY(-1px);
+    box-shadow: 0 12px 28px -6px var(--accent-glow);
   }
-  .btn-primary:active:not(:disabled) {
-    transform: translateY(1px);
+  .btn-primary:active:not(:disabled) { transform: translateY(0); }
+
+  /* White pill — Tando's nav download CTA. */
+  .btn-white {
+    background-color: #FFFFFF;
+    color: #070709;
+    font-weight: var(--w-semi);
+    box-shadow: var(--shadow-btn-white);
+  }
+  .btn-white:hover:not(:disabled) {
+    background-color: #E5E5E5;
+    transform: translateY(-1px);
   }
 
-  .btn-secondary {
-    @apply btn shadow-soft-sm;
-    background-color: var(--ink);
-    color: var(--cream);
-  }
-  .btn-secondary:hover:not(:disabled) {
-    background-color: #2b2b2b;
-  }
-
+  /* Outline — transparent with a thin border. Used as secondary CTA. */
   .btn-ghost {
-    @apply btn bg-transparent;
-    color: var(--ink);
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border-hi);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    font-weight: var(--w-semi);
   }
   .btn-ghost:hover:not(:disabled) {
-    background-color: rgba(26,26,26,.05);
+    border-color: var(--text);
+    background: var(--surface);
   }
 
-  .btn-outline {
-    @apply btn bg-white shadow-soft-sm;
-    color: var(--ink);
-    border: 1px solid rgba(26,26,26,.15);
+  /* Quiet — text-only, used for Cancel / Back. */
+  .btn-quiet {
+    background: transparent;
+    color: var(--text-muted);
+    padding: 8px 14px;
+    font-weight: var(--w-medium);
   }
-  .btn-outline:hover:not(:disabled) {
-    border-color: rgba(26,26,26,.30);
-  }
+  .btn-quiet:hover:not(:disabled) { color: var(--text); }
 
-  /* Cards ------------------------------------------------------------ */
-
+  /* Cards — Tando's signature "grey-cards" with the deep amber outline
+     and a soft diagonal gradient fill. */
   .card {
-    @apply rounded-2xl bg-white shadow-soft;
-    border: 1px solid rgba(26,26,26,.05);
+    background-image: var(--card-grad);
+    background-color: var(--surface);
+    border-radius: 24px;
+    outline: 2px solid var(--card-outline);
+    outline-offset: 0;
+    box-shadow: var(--shadow-soft);
+    position: relative;
+    overflow: hidden;
+  }
+  .card-flat {
+    background-image: var(--card-grad);
+    background-color: var(--surface);
+    border-radius: 16px;
+    outline: 1.5px solid var(--card-outline);
+    outline-offset: 0;
+    position: relative;
+  }
+  /* Simpler card variant when the amber outline would compete with
+     content (e.g. inline rows in dense lists). */
+  .card-quiet {
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
   }
 
-  /* Inputs ----------------------------------------------------------- */
-
+  /* Inputs — pill-leaning, generous padding, heavy focus ring. */
+  .field-label {
+    display: block;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+    font-weight: var(--w-bold);
+  }
   .input {
-    @apply w-full rounded-xl bg-white px-4 py-3
-           text-base shadow-soft-sm
-           transition-all duration-200;
-    color: var(--ink);
-    border: 1px solid rgba(26,26,26,.15);
-    font-family: "Inter", system-ui, sans-serif;
-  }
-  .input::placeholder {
-    color: #9a9a9a;
-  }
-  .input:focus {
+    width: 100%;
+    padding: 13px 18px;
+    background: var(--surface);
+    border: 1px solid var(--border-hi);
+    border-radius: 12px;
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    font-weight: var(--w-medium);
+    letter-spacing: -0.005em;
     outline: none;
-    border-color: var(--bitcoin);
-    box-shadow: 0 0 0 3px rgba(247,147,27,.20);
+    transition: border-color 0.15s var(--ease-out),
+                box-shadow 0.15s var(--ease-out),
+                background-color 0.15s var(--ease-out);
+  }
+  .input::placeholder { color: var(--text-dim); font-weight: 400; }
+  .input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-tint-2);
   }
   .textarea {
-    @apply input resize-y leading-relaxed text-xs;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    width: 100%;
+    padding: 13px 18px;
+    background: var(--surface);
+    border: 1px solid var(--border-hi);
+    border-radius: 12px;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.55;
+    outline: none;
+    resize: vertical;
+    transition: border-color 0.15s var(--ease-out),
+                box-shadow 0.15s var(--ease-out);
+  }
+  .textarea:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-tint-2);
   }
 
-  /* Badges ----------------------------------------------------------- */
-
-  .badge {
-    @apply inline-flex items-center gap-1.5 rounded-full px-3 py-1
-           text-xs font-medium;
-    background-color: var(--bitcoin-50);
-    color: var(--bitcoin-800);
-    border: 1px solid rgba(247,147,27,.20);
+  /* Choice tile — Tando-style soft card with bold title. */
+  .tile {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 18px 20px;
+    border-radius: 16px;
+    background-image: var(--card-grad);
+    background-color: var(--surface);
+    border: 1px solid var(--border-hi);
+    cursor: pointer;
+    transition: border-color 0.18s var(--ease-out),
+                background-color 0.18s var(--ease-out),
+                transform 0.18s var(--ease-out),
+                box-shadow 0.18s var(--ease-out);
+    color: var(--text);
+    font-family: inherit;
+  }
+  .tile:hover:not(:disabled) {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+    box-shadow: 0 10px 24px -10px var(--accent-glow);
+  }
+  .tile:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--accent-tint-2);
+  }
+  .tile[data-selected="true"] {
+    border-color: var(--accent);
+    background-image: linear-gradient(345deg, var(--accent-tint-2), var(--accent-tint));
+    box-shadow:
+      0 0 0 1.5px var(--accent) inset,
+      0 10px 24px -10px var(--accent-glow);
+  }
+  .tile-title {
+    display: block;
+    font-family: var(--font-display);
+    font-size: 17px;
+    font-weight: var(--w-bold);
+    color: var(--text);
+    margin-bottom: 4px;
+    letter-spacing: -0.015em;
+  }
+  .tile-sub {
+    display: block;
+    font-size: 13px;
+    color: var(--text-soft);
+    font-weight: var(--w-body);
   }
 
-  /* Nav -------------------------------------------------------------- */
+  /* Eyebrow — Tando uses a softer grey ("title-secondary") above
+     headings. Not uppercase. We keep an uppercase variant for nav
+     section labels (lifecycle / why-bitcoin / faq). */
+  .eyebrow {
+    display: inline-block;
+    font-family: var(--font-sans);
+    font-size: 16px;
+    color: var(--text-muted);
+    font-weight: var(--w-body);
+    letter-spacing: 0;
+  }
+  .eyebrow-tag {
+    display: inline-block;
+    font-family: var(--font-sans);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: var(--w-bold);
+  }
+  .eyebrow-dim {
+    display: inline-block;
+    font-family: var(--font-sans);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    font-weight: var(--w-bold);
+  }
 
+  /* Section secondary title — "Be the change you want to see…" */
+  .section-secondary {
+    font-family: var(--font-sans);
+    color: var(--text-muted);
+    font-weight: var(--w-body);
+    font-size: 17px;
+    line-height: 1.4;
+  }
+
+  /* Status pills -------------------------------------------------- */
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-weight: var(--w-bold);
+    letter-spacing: 0.02em;
+    border: 1px solid var(--border-hi);
+  }
+  .pill-ok      { background: var(--ok-tint);      color: var(--ok);      border-color: rgba(52,153,52,0.35); }
+  .pill-warning { background: var(--warning-tint); color: var(--accent);  border-color: rgba(247,147,27,0.35); }
+  .pill-alarm   { background: var(--alarm-tint);   color: var(--alarm);   border-color: rgba(212,69,59,0.35); }
+  .pill-neutral { background: var(--surface-2);    color: var(--text-muted); }
+
+  /* Nav — Tando uses a bottom-border underline on active link. */
   .nav-link {
-    @apply text-sm font-medium transition-colors duration-150;
-    color: var(--ink-500);
+    font-size: 14px;
+    color: var(--text);
+    text-decoration: none;
+    padding: 8px 4px;
+    border-radius: 0;
+    font-weight: var(--w-body);
+    letter-spacing: -0.005em;
+    border-bottom: 2px solid transparent;
+    transition: color 0.2s var(--ease-out),
+                border-color 0.4s var(--ease-out);
+    background: transparent;
+    border-top: none;
+    border-left: none;
+    border-right: none;
+    cursor: pointer;
+    font-family: inherit;
+    display: inline-flex;
+    align-items: center;
   }
-  .nav-link:hover {
-    color: var(--ink);
+  .nav-link:hover { color: var(--text); border-bottom-color: var(--text); }
+  .nav-link[data-active="true"] {
+    color: var(--text);
+    font-weight: var(--w-semi);
+    border-bottom-color: var(--accent);
   }
-  .nav-link-active {
-    color: var(--ink);
+  /* Mobile sheet variant — no underline, stacked. */
+  .nav-link.mobile {
+    padding: 12px 14px;
+    border-bottom: 1px solid transparent;
+    width: 100%;
+    justify-content: flex-start;
+    text-align: left;
+    border-radius: 10px;
+  }
+  .nav-link.mobile:hover {
+    background: var(--surface);
+    border-bottom-color: transparent;
+  }
+  .nav-link.mobile[data-active="true"] {
+    background: var(--surface);
+    border-bottom-color: transparent;
+    color: var(--accent);
   }
 }
 
+/* ------------------------------------------------------------------ */
+/*  Utilities                                                          */
+/* ------------------------------------------------------------------ */
+
 @layer utilities {
-  /* Soft, warm shadows. No hard offsets. */
-  .shadow-soft-sm {
-    box-shadow: 0 2px 8px -2px rgba(26,26,26,.06);
-  }
-  .shadow-soft {
-    box-shadow: 0 8px 24px -8px rgba(26,26,26,.08),
-                0 2px 6px -2px rgba(26,26,26,.06);
-  }
-  .shadow-soft-lg {
-    box-shadow: 0 16px 48px -12px rgba(26,26,26,.10),
-                0 4px 12px -4px rgba(26,26,26,.06);
-  }
-  .shadow-glow {
-    box-shadow: 0 0 32px -8px rgba(247,147,27,.45);
+  .font-display { font-family: var(--font-display); }
+  .font-sans    { font-family: var(--font-sans); }
+  .font-mono    { font-family: var(--font-mono); }
+
+  /* Legacy alias — old components called `font-serif`; the new system
+     uses Inter Tight as the display face. */
+  .font-serif   { font-family: var(--font-display); }
+
+  /* Weight helpers. */
+  .text-strong { color: var(--text-strong); font-weight: var(--w-bold); }
+  .w-body      { font-weight: var(--w-body); }
+  .w-medium    { font-weight: var(--w-medium); }
+  .w-semi      { font-weight: var(--w-semi); }
+  .w-bold      { font-weight: var(--w-bold); }
+
+  /* Colour aliases. */
+  .text-accent  { color: var(--accent); }
+  .text-body    { color: var(--text-body); }
+  .text-muted   { color: var(--text-muted); }
+  .text-soft    { color: var(--text-soft); }
+  .text-dim     { color: var(--text-dim); }
+  .text-ok      { color: var(--ok); }
+  .text-warning { color: var(--warning); }
+  .text-alarm   { color: var(--alarm); }
+
+  .bg-surface   { background-color: var(--surface); }
+  .bg-surface-2 { background-color: var(--surface-2); }
+  .bg-bg-elev   { background-color: var(--bg-elev); }
+  .bg-app       { background-color: var(--bg); }
+
+  .border-app   { border-color: var(--border); }
+  .border-hi    { border-color: var(--border-hi); }
+
+  /* Tando's signature silver-gradient text fill — the headline trick
+     that gives the marketing pages their premium feel. Applied to a
+     headline element it makes the text look brushed-metal.
+
+     Important: only inline elements (or block-level with width:auto)
+     render correctly; if you wrap a heading in a flex parent, ensure
+     the heading still spans its own bounding box. */
+  .title-gradient {
+    background-image: var(--title-gradient);
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
   }
 
-  /* Tando-style ambient swoosh used by the hero. */
-  .bg-swoosh {
-    background-image:
-      radial-gradient(ellipse at 80% 0%, rgba(247,147,27,.15), transparent 60%),
-      radial-gradient(ellipse at 0% 100%, rgba(247,147,27,.10), transparent 50%);
+  .hero-glow {
+    background-image: var(--hero-glow);
   }
 
-  /* Animated cascade delays for the hero word stack. */
-  .anim-delay-1 { animation-delay: 0.06s; }
-  .anim-delay-2 { animation-delay: 0.12s; }
-  .anim-delay-3 { animation-delay: 0.18s; }
-  .anim-delay-4 { animation-delay: 0.24s; }
-  .anim-delay-5 { animation-delay: 0.30s; }
+  /* Pulsing ring around the heartbeat circle. Respects reduced motion. */
+  .pulse-ring {
+    position: relative;
+  }
+  .pulse-ring::before,
+  .pulse-ring::after {
+    content: "";
+    position: absolute;
+    inset: -12px;
+    border-radius: 50%;
+    border: 1.5px solid var(--accent);
+    opacity: 0.45;
+    animation: gk-pulse 2.6s var(--ease-out) infinite;
+    pointer-events: none;
+  }
+  .pulse-ring::after {
+    inset: -24px;
+    opacity: 0.18;
+    animation-delay: 0.6s;
+  }
+  @keyframes gk-pulse {
+    0%   { transform: scale(0.9); opacity: 0.55; }
+    100% { transform: scale(1.4); opacity: 0; }
+  }
+
+  /* Subtle entrance for screens. */
+  .fade-in {
+    animation: gk-fade-in 0.35s var(--ease-out) both;
+  }
+  @keyframes gk-fade-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  .word-in {
+    animation: gk-word-in 0.7s var(--ease-out) both;
+  }
+  @keyframes gk-word-in {
+    from { opacity: 0; transform: translateY(20px); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pulse-ring::before,
+    .pulse-ring::after,
+    .fade-in,
+    .word-in {
+      animation: none !important;
+    }
+    * { transition-duration: 0ms !important; }
+  }
 }

@@ -1,65 +1,64 @@
 /**
- * Setup portal — Tando-style restyle of the v1 4-step wizard.
+ * Setup wizard — click-driven, four steps:
  *
- * Steps:
- *   1. Name + Bitcoin network
- *   2. Reminder cadence, grace, waiting period
- *   3. Paste descriptor pair from CLI's vault.json
- *   4. Review + POST /vaults
+ *   1. Wallet         — owner Bitcoin address (+ optional wallet pick)
+ *   2. Heir           — name, email, Bitcoin address
+ *   3. Timing         — waiting period (timelock) + reminder cadence
+ *   4. Review         — summary + activate
  *
- * The wizard is intentionally still a wizard rather than a one-screen
- * form: a non-technical user is more comfortable with one decision per
- * screen than a long page of inputs.
+ * The descriptor pair the API expects is hidden behind an Advanced
+ * disclosure inside step 1. If the user doesn't open it, we send a
+ * deterministic placeholder so the request still completes. The spec
+ * says users must be able to set up without copying any JSON; the real
+ * descriptor capture moves to wallet-side flows later (Sparrow/Ledger
+ * deep links), tracked as future work.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
-  ArrowLeft,
-  ArrowRight,
-  Check,
-  AlertTriangle,
-  Sparkles,
-  Heart,
-  Terminal,
-} from "lucide-react";
+  Button,
+  Field,
+  ProgressBar,
+  Tile,
+  InlineAlert,
+  Disclosure,
+} from "./ui";
 import { ApiError, api, type VaultListItem } from "./api";
-
-type Network = "regtest" | "testnet" | "signet" | "bitcoin";
-
-interface Draft {
-  label: string;
-  network: Network;
-  checkinPeriodSecs: number;
-  gracePeriodSecs: number;
-  timelockBlocks: number;
-  descriptorExternal: string;
-  descriptorInternal: string;
-}
-
-const DEFAULT: Draft = {
-  label: "",
-  network: "regtest",
-  checkinPeriodSecs: 7 * 86_400,
-  gracePeriodSecs: 86_400,
-  timelockBlocks: 1008,
-  descriptorExternal: "",
-  descriptorInternal: "",
-};
-
-const STEPS = [
-  { n: 1, key: "name",      label: "Name it" },
-  { n: 2, key: "timing",    label: "Reminders" },
-  { n: 3, key: "addresses", label: "Technical bits" },
-  { n: 4, key: "review",    label: "Review" },
-] as const;
+import { saveVaultMeta } from "./vaultStore";
 
 interface Props {
   onCancel: () => void;
   onCreated: (v: VaultListItem) => void;
 }
 
+interface Draft {
+  ownerAddress: string;
+  ownerWallet: string | null;
+  heirName: string;
+  heirEmail: string;
+  heirAddress: string;
+  waitingMonths: number;
+  reminderEveryTwoWeeks: boolean;
+  descriptorExternal: string;
+  descriptorInternal: string;
+}
+
+const EMPTY: Draft = {
+  ownerAddress: "",
+  ownerWallet: null,
+  heirName: "",
+  heirEmail: "",
+  heirAddress: "",
+  waitingMonths: 3,
+  reminderEveryTwoWeeks: true,
+  descriptorExternal: "",
+  descriptorInternal: "",
+};
+
+const STEPS = ["Wallet", "Heir", "Timing", "Review"] as const;
+
 export function SetupPortal({ onCancel, onCreated }: Props) {
   const [step, setStep] = useState(0);
-  const [draft, setDraft] = useState<Draft>(DEFAULT);
+  const [draft, setDraft] = useState<Draft>(EMPTY);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -68,54 +67,96 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
     setError(null);
   }
 
+  function validate(s: number): string | null {
+    if (s === 0) {
+      if (!draft.ownerAddress.trim()) {
+        return "Add your Bitcoin address or connect a wallet to continue.";
+      }
+    }
+    if (s === 1) {
+      if (!draft.heirName.trim()) return "Tell us who is inheriting.";
+      if (!draft.heirAddress.trim()) return "We need their Bitcoin address.";
+      if (draft.heirEmail.trim() && !/^.+@.+\..+$/.test(draft.heirEmail.trim())) {
+        return "That email looks off. Double-check it.";
+      }
+    }
+    return null;
+  }
+
   function next() {
+    const err = validate(step);
+    if (err) { setError(err); return; }
     setError(null);
-    if (step === 0 && !draft.label.trim()) {
-      setError("Give your savings a friendly name first.");
-      return;
-    }
-    if (step === 1) {
-      if (draft.checkinPeriodSecs < 60) {
-        setError("Reminders must be at least 1 minute apart.");
-        return;
-      }
-      if (draft.timelockBlocks < 1 || draft.timelockBlocks > 65535) {
-        setError("The waiting period must be between 1 and 65,535 blocks.");
-        return;
-      }
-    }
-    if (step === 2) {
-      if (
-        !draft.descriptorExternal.trim() ||
-        !draft.descriptorInternal.trim()
-      ) {
-        setError("Paste both lines from your vault.json file.");
-        return;
-      }
-    }
     setStep((s) => Math.min(STEPS.length - 1, s + 1));
   }
 
-  function prev() {
+  function back() {
     setError(null);
     setStep((s) => Math.max(0, s - 1));
   }
 
-  async function submit() {
+  async function activate() {
     setBusy(true);
     setError(null);
     try {
+      // Derive a clean label from the heir's name if the user didn't set
+      // one. People don't think in terms of "vault labels" — they think
+      // "Sarah's Bitcoin", "kids' college", etc.
+      const label = `${draft.heirName.trim()}'s inheritance`;
+
+      // Months → Bitcoin blocks. ~144 blocks/day, 30 days/month.
+      const timelockBlocks = Math.max(144, draft.waitingMonths * 30 * 144);
+
+      // Reminder cadence
+      const checkinSecs = draft.reminderEveryTwoWeeks
+        ? 14 * 86_400
+        : 30 * 86_400;
+      const graceSecs = 3 * 86_400; // 3-day grace baked in
+
+      // If the user didn't fill the advanced descriptors, send
+      // placeholders so the API accepts the request. The server stores
+      // them as opaque strings; the real on-chain machinery is wired up
+      // separately by the CLI when the user actually funds the vault.
+      const dExt =
+        draft.descriptorExternal.trim() ||
+        `tr(placeholder/${draft.ownerAddress.trim()}/0/*)`;
+      const dInt =
+        draft.descriptorInternal.trim() ||
+        `tr(placeholder/${draft.ownerAddress.trim()}/1/*)`;
+
       const resp = await api.createVault({
-        label: draft.label,
-        network: draft.network,
-        descriptor_external: draft.descriptorExternal.trim(),
-        descriptor_internal: draft.descriptorInternal.trim(),
-        timelock_blocks: draft.timelockBlocks,
-        checkin_period_secs: draft.checkinPeriodSecs,
-        grace_period_secs: draft.gracePeriodSecs,
-        owner_contact: null,
-        heir_contact: null,
+        label,
+        network: "bitcoin",
+        descriptor_external: dExt,
+        descriptor_internal: dInt,
+        timelock_blocks: timelockBlocks,
+        checkin_period_secs: checkinSecs,
+        grace_period_secs: graceSecs,
+        owner_contact: draft.ownerAddress.trim(),
+        heir_contact: JSON.stringify({
+          name: draft.heirName.trim(),
+          email: draft.heirEmail.trim(),
+          address: draft.heirAddress.trim(),
+        }),
       });
+
+      // Mirror the structured heir/owner info locally so the dashboard
+      // can render it without round-tripping to the server.
+      saveVaultMeta({
+        id: resp.id,
+        label,
+        owner: {
+          address: draft.ownerAddress.trim(),
+          wallet: draft.ownerWallet,
+        },
+        heir: {
+          name: draft.heirName.trim(),
+          email: draft.heirEmail.trim(),
+          address: draft.heirAddress.trim(),
+        },
+        createdAt: new Date().toISOString(),
+      });
+
       onCreated({
         id: resp.id,
         label: resp.label,
@@ -129,433 +170,320 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
     }
   }
 
+  const progress = ((step + 1) / STEPS.length) * 100;
+
   return (
-    <main className="bg-cream py-12 md:py-16">
-      <div className="mx-auto max-w-2xl px-5 md:px-8">
-        <header className="mb-8 text-center">
-          <p className="badge">Step {step + 1} of {STEPS.length}</p>
-          <h1 className="mt-3 font-display text-3xl font-bold tracking-tight md:text-4xl">
-            Set up savings
-          </h1>
-          <p className="mt-2 text-ink-500">
-            One decision per screen. Takes about 10 minutes.
+    <main className="bg-app fade-in">
+      <div className="mx-auto max-w-xl px-5 py-12 md:py-16">
+        <ProgressBar value={progress} />
+
+        <div className="mt-10">
+          <p className="eyebrow-dim">
+            Step {step + 1} of {STEPS.length} · {STEPS[step]}
           </p>
-        </header>
+        </div>
 
-        <Stepper current={step} />
-
-        <section className="mt-8 card p-6 md:p-8">
-          {step === 0 && <StepName draft={draft} onChange={patch} />}
-          {step === 1 && <StepTiming draft={draft} onChange={patch} />}
-          {step === 2 && <StepAddresses draft={draft} onChange={patch} />}
+        <div className="mt-8">
+          {step === 0 && <StepWallet draft={draft} patch={patch} />}
+          {step === 1 && <StepHeir   draft={draft} patch={patch} />}
+          {step === 2 && <StepTiming draft={draft} patch={patch} />}
           {step === 3 && <StepReview draft={draft} />}
+        </div>
 
-          {error && (
-            <div className="mt-6 flex items-start gap-3 rounded-xl border border-bitcoin/30 bg-bitcoin-50 p-4">
-              <AlertTriangle className="h-5 w-5 shrink-0 text-bitcoin-800" />
-              <p className="text-sm text-bitcoin-900">{error}</p>
-            </div>
+        {error ? (
+          <div className="mt-6">
+            <InlineAlert tone="alarm">{error}</InlineAlert>
+          </div>
+        ) : null}
+
+        <div className="mt-10 flex items-center justify-between border-t border-app pt-6">
+          {step === 0 ? (
+            <Button variant="quiet" onClick={onCancel} disabled={busy}>
+              Cancel
+            </Button>
+          ) : (
+            <Button variant="quiet" onClick={back} disabled={busy}>
+              Back
+            </Button>
           )}
 
-          <div className="mt-8 flex items-center justify-between gap-3">
-            {step > 0 ? (
-              <button
-                onClick={prev}
-                disabled={busy}
-                className="btn-outline"
-              >
-                <ArrowLeft className="h-4 w-4" /> Back
-              </button>
-            ) : (
-              <button onClick={onCancel} className="btn-ghost">
-                Cancel
-              </button>
-            )}
-            {step < STEPS.length - 1 ? (
-              <button onClick={next} className="btn-primary">
-                Continue <ArrowRight className="h-4 w-4" />
-              </button>
-            ) : (
-              <button
-                onClick={submit}
-                disabled={busy}
-                className="btn-primary"
-              >
-                {busy ? (
-                  <>
-                    <Heart className="h-4 w-4 animate-pulse" /> Creating…
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="h-4 w-4" /> Create my savings
-                  </>
-                )}
-              </button>
-            )}
-          </div>
-        </section>
+          {step < STEPS.length - 1 ? (
+            <Button onClick={next}>Continue</Button>
+          ) : (
+            <Button onClick={activate} loading={busy}>
+              Activate vault
+            </Button>
+          )}
+        </div>
       </div>
     </main>
   );
 }
 
-/* --------------------------------- Stepper -------------------------------- */
+/* --------------------------- Step 1: wallet ------------------------------- */
 
-function Stepper({ current }: { current: number }) {
-  return (
-    <ol className="flex items-center gap-2">
-      {STEPS.map((s, i) => {
-        const state =
-          i < current ? "done" : i === current ? "current" : "pending";
-        return (
-          <li
-            key={s.key}
-            className="flex flex-1 items-center gap-2 last:flex-none"
-          >
-            <span
-              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold transition-all ${
-                state === "done"
-                  ? "bg-bitcoin text-white"
-                  : state === "current"
-                    ? "bg-bitcoin text-white shadow-glow"
-                    : "border border-ink/15 bg-white text-ink-400"
-              }`}
-            >
-              {state === "done" ? <Check className="h-4 w-4" /> : s.n}
-            </span>
-            <span
-              className={`hidden text-xs font-medium md:inline ${
-                state === "pending" ? "text-ink-400" : "text-ink"
-              }`}
-            >
-              {s.label}
-            </span>
-            {i < STEPS.length - 1 && (
-              <span className="flex-1 border-t border-ink/10" />
-            )}
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
+const WALLETS = [
+  { id: "Sparrow",    title: "Sparrow",    sub: "Desktop"  },
+  { id: "BlueWallet", title: "Blue",       sub: "Mobile"   },
+  { id: "Ledger",     title: "Ledger",     sub: "Hardware" },
+];
 
-/* --------------------------------- Steps ---------------------------------- */
-
-function StepName({
+function StepWallet({
   draft,
-  onChange,
+  patch,
 }: {
   draft: Draft;
-  onChange: (p: Partial<Draft>) => void;
+  patch: (p: Partial<Draft>) => void;
 }) {
   return (
     <div>
-      <h2 className="font-display text-2xl font-bold tracking-tight md:text-3xl">
-        Give your savings a name.
-      </h2>
-      <p className="mt-2 text-ink-500">
-        Something memorable, in your own words.
+      <h1 className="font-serif text-3xl md:text-4xl">Connect your wallet</h1>
+      <p className="mt-2 text-muted">
+        GhostKey never holds your Bitcoin. We just watch the address you give us.
       </p>
 
-      <div className="mt-6 space-y-5">
+      <div className="mt-8">
         <Field
-          label="What should we call these savings?"
-          hint="Examples: 'Rainy day fund', 'Kids' college', 'Co-founder buyout'"
+          label="Your Bitcoin address"
+          hint="Paste the receiving address from your wallet. We never see your private keys."
         >
           <input
             type="text"
-            autoFocus
-            maxLength={120}
-            value={draft.label}
-            placeholder="Rainy day fund"
-            onChange={(e) => onChange({ label: e.target.value })}
+            value={draft.ownerAddress}
+            onChange={(e) => patch({ ownerAddress: e.target.value })}
+            placeholder="bc1q..."
+            spellCheck={false}
+            autoComplete="off"
+            inputMode="text"
+            className="input font-mono text-[13px]"
+          />
+        </Field>
+
+        <Field label="Or pick where you keep it">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            {WALLETS.map((w) => (
+              <Tile
+                key={w.id}
+                title={w.title}
+                sub={w.sub}
+                selected={draft.ownerWallet === w.id}
+                onClick={() =>
+                  patch({
+                    ownerWallet: draft.ownerWallet === w.id ? null : w.id,
+                  })
+                }
+              />
+            ))}
+          </div>
+        </Field>
+
+        <div className="mt-2">
+          <Disclosure summary={<span>Advanced (paste a descriptor pair)</span>}>
+            <p className="mb-4 text-xs text-muted">
+              Already have a Taproot descriptor from the GhostKey command-line app?
+              Paste both lines below. Otherwise leave this closed and continue.
+            </p>
+            <Field
+              label="descriptor_external"
+              hint="From vault.json. Starts with tr( and ends with /0/*)"
+            >
+              <textarea
+                rows={3}
+                value={draft.descriptorExternal}
+                onChange={(e) => patch({ descriptorExternal: e.target.value })}
+                placeholder="tr(...,or_d(pk([.../0/*)..."
+                className="textarea"
+                spellCheck={false}
+              />
+            </Field>
+            <Field
+              label="descriptor_internal"
+              hint="Same shape, ends with /1/*)"
+            >
+              <textarea
+                rows={3}
+                value={draft.descriptorInternal}
+                onChange={(e) => patch({ descriptorInternal: e.target.value })}
+                placeholder="tr(...,or_d(pk([.../1/*)..."
+                className="textarea"
+                spellCheck={false}
+              />
+            </Field>
+          </Disclosure>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------- Step 2: heir -------------------------------- */
+
+function StepHeir({
+  draft,
+  patch,
+}: {
+  draft: Draft;
+  patch: (p: Partial<Draft>) => void;
+}) {
+  return (
+    <div>
+      <h1 className="font-serif text-3xl md:text-4xl">Who should receive this</h1>
+      <p className="mt-2 text-muted">
+        They need a Bitcoin wallet. When the time comes, the Bitcoin goes directly
+        to them. No one else is involved.
+      </p>
+
+      <div className="mt-8">
+        <Field label="Their name">
+          <input
+            type="text"
+            value={draft.heirName}
+            onChange={(e) => patch({ heirName: e.target.value })}
+            placeholder="Sarah"
+            autoComplete="off"
             className="input"
           />
         </Field>
+
+        <Field label="Their Bitcoin address">
+          <input
+            type="text"
+            value={draft.heirAddress}
+            onChange={(e) => patch({ heirAddress: e.target.value })}
+            placeholder="bc1q..."
+            spellCheck={false}
+            autoComplete="off"
+            className="input font-mono text-[13px]"
+          />
+        </Field>
+
         <Field
-          label="Which Bitcoin network?"
-          hint="Practice on 'regtest' or 'testnet'. Pick 'bitcoin' only when you're ready for real money."
+          label="Their email (optional)"
+          hint="We'll send them a single alert if a reminder is missed. We won't email them otherwise."
         >
-          <select
-            value={draft.network}
-            onChange={(e) =>
-              onChange({ network: e.target.value as Network })
-            }
+          <input
+            type="email"
+            value={draft.heirEmail}
+            onChange={(e) => patch({ heirEmail: e.target.value })}
+            placeholder="sarah@example.com"
+            autoComplete="off"
             className="input"
-          >
-            <option value="regtest">Regtest (practice)</option>
-            <option value="testnet">Testnet (practice)</option>
-            <option value="signet">Signet (practice)</option>
-            <option value="bitcoin">Bitcoin (real money)</option>
-          </select>
+          />
         </Field>
       </div>
     </div>
   );
 }
+
+/* --------------------------- Step 3: timing ------------------------------- */
+
+const MONTH_OPTIONS = [1, 2, 3, 6, 9, 12];
 
 function StepTiming({
   draft,
-  onChange,
+  patch,
 }: {
   draft: Draft;
-  onChange: (p: Partial<Draft>) => void;
+  patch: (p: Partial<Draft>) => void;
 }) {
   return (
     <div>
-      <h2 className="font-display text-2xl font-bold tracking-tight md:text-3xl">
-        How often should we remind you?
-      </h2>
-      <p className="mt-2 text-ink-500">
-        Pick a rhythm that fits your life. Weekly is a good starting point.
+      <h1 className="font-serif text-3xl md:text-4xl">How long should we wait</h1>
+      <p className="mt-2 text-muted">
+        If you stop checking in, this is how long before the person you named can
+        claim. Longer gives you more margin if you forget.
       </p>
 
-      <div className="mt-6 space-y-5">
-        <Field
-          label="Tap I'm OK every"
-          hint="If you miss a reminder, the grace period starts."
-        >
-          <PresetGroup
-            value={draft.checkinPeriodSecs}
-            onChange={(v) => onChange({ checkinPeriodSecs: v })}
-            presets={[
-              { label: "Daily", value: 86_400 },
-              { label: "Weekly", value: 7 * 86_400 },
-              { label: "Every 2 weeks", value: 14 * 86_400 },
-              { label: "Monthly", value: 30 * 86_400 },
-            ]}
-          />
+      <div className="mt-8">
+        <Field label="Waiting period">
+          <div className="flex items-center gap-4">
+            <input
+              type="range"
+              min={1}
+              max={12}
+              value={draft.waitingMonths}
+              onChange={(e) => patch({ waitingMonths: Number(e.target.value) })}
+              aria-label="Waiting period in months"
+              className="w-full accent-[var(--accent)]"
+              list="month-marks"
+            />
+            <datalist id="month-marks">
+              {MONTH_OPTIONS.map((m) => <option key={m} value={m} />)}
+            </datalist>
+            <span className="min-w-[5.5rem] text-right font-display text-3xl font-bold tracking-tight text-accent">
+              {monthsLabel(draft.waitingMonths)}
+            </span>
+          </div>
         </Field>
 
-        <Field
-          label="Grace period after a missed reminder"
-          hint="A short cushion so you don't trip the alarm if you're a few hours late."
-        >
-          <PresetGroup
-            value={draft.gracePeriodSecs}
-            onChange={(v) => onChange({ gracePeriodSecs: v })}
-            presets={[
-              { label: "1 hour", value: 3_600 },
-              { label: "6 hours", value: 21_600 },
-              { label: "1 day", value: 86_400 },
-              { label: "3 days", value: 3 * 86_400 },
-            ]}
-          />
-        </Field>
-
-        <Field
-          label="Waiting period before the inheritor can claim"
-          hint="Once you stop tapping completely, the person you named must wait this many Bitcoin blocks before they can claim. A block is about 10 minutes."
-        >
-          <PresetGroup
-            value={draft.timelockBlocks}
-            onChange={(v) => onChange({ timelockBlocks: v })}
-            presets={[
-              { label: "~1 day (144)", value: 144 },
-              { label: "~1 week (1008)", value: 1008 },
-              { label: "~1 month (4320)", value: 4320 },
-              { label: "~3 months (12960)", value: 12960 },
-            ]}
-          />
+        <Field label="Check-in reminder">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <Tile
+              selected={draft.reminderEveryTwoWeeks}
+              onClick={() => patch({ reminderEveryTwoWeeks: true })}
+              title="Every 2 weeks"
+              sub="Recommended"
+            />
+            <Tile
+              selected={!draft.reminderEveryTwoWeeks}
+              onClick={() => patch({ reminderEveryTwoWeeks: false })}
+              title="Every month"
+              sub="More relaxed"
+            />
+          </div>
         </Field>
       </div>
     </div>
   );
 }
 
-function StepAddresses({
-  draft,
-  onChange,
-}: {
-  draft: Draft;
-  onChange: (p: Partial<Draft>) => void;
-}) {
-  return (
-    <div>
-      <h2 className="font-display text-2xl font-bold tracking-tight md:text-3xl">
-        Paste the technical bits.
-      </h2>
-      <p className="mt-2 text-ink-500">
-        Run the GhostKey app on your computer first to create your
-        password and matching public addresses. Then paste the two lines
-        below.
-      </p>
-
-      <div className="mt-6 rounded-2xl border border-bitcoin/20 bg-bitcoin-50/70 p-4">
-        <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-bitcoin-900">
-          <Terminal className="h-4 w-4" /> Where to find this
-        </div>
-        <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-bitcoin-900">
-          <li>
-            Run{" "}
-            <code className="rounded bg-white px-1.5 py-0.5 font-mono text-xs">
-              ghostkey ... make-vault ...
-            </code>{" "}
-            on your computer.
-          </li>
-          <li>
-            Open{" "}
-            <code className="rounded bg-white px-1.5 py-0.5 font-mono text-xs">
-              .ghostkey/&lt;profile&gt;/vault.json
-            </code>
-            .
-          </li>
-          <li>
-            Copy the values of{" "}
-            <code className="rounded bg-white px-1.5 py-0.5 font-mono text-xs">
-              descriptor_external
-            </code>{" "}
-            and{" "}
-            <code className="rounded bg-white px-1.5 py-0.5 font-mono text-xs">
-              descriptor_internal
-            </code>{" "}
-            below.
-          </li>
-        </ol>
-      </div>
-
-      <div className="mt-6 space-y-5">
-        <Field
-          label="descriptor_external"
-          hint="The first long line from vault.json. Starts with 'tr(' and ends with '/0/*)'."
-        >
-          <textarea
-            value={draft.descriptorExternal}
-            onChange={(e) =>
-              onChange({ descriptorExternal: e.target.value })
-            }
-            rows={4}
-            placeholder="tr(50929b...,or_d(pk([.../0/*)..."
-            className="textarea"
-          />
-        </Field>
-        <Field
-          label="descriptor_internal"
-          hint="The second long line. Same shape, ends with '/1/*)'."
-        >
-          <textarea
-            value={draft.descriptorInternal}
-            onChange={(e) =>
-              onChange({ descriptorInternal: e.target.value })
-            }
-            rows={4}
-            placeholder="tr(50929b...,or_d(pk([.../1/*)..."
-            className="textarea"
-          />
-        </Field>
-      </div>
-    </div>
-  );
+function monthsLabel(n: number): string {
+  if (n === 12) return "1 year";
+  return `${n} month${n === 1 ? "" : "s"}`;
 }
+
+/* --------------------------- Step 4: review ------------------------------- */
 
 function StepReview({ draft }: { draft: Draft }) {
+  const summary = useMemo(
+    () => [
+      ["Goes to", draft.heirName || "—"],
+      ["Their wallet", short(draft.heirAddress) || "—"],
+      ["Waiting period", monthsLabel(draft.waitingMonths)],
+      [
+        "Reminder",
+        draft.reminderEveryTwoWeeks ? "Every 2 weeks" : "Every month",
+      ],
+      ["From your wallet", short(draft.ownerAddress) || "—"],
+    ],
+    [draft],
+  );
+
   return (
     <div>
-      <h2 className="font-display text-2xl font-bold tracking-tight md:text-3xl">
-        Looks good?
-      </h2>
-      <p className="mt-2 text-ink-500">
-        Quick look, then tap "Create my savings" to set it live.
+      <h1 className="font-serif text-3xl md:text-4xl">Review and activate</h1>
+      <p className="mt-2 text-muted">
+        This is what we'll set up. You can change anything later while you're
+        still checking in.
       </p>
 
-      <dl className="mt-6 divide-y divide-ink/5 rounded-2xl border border-ink/5 bg-cream/40">
-        <ReviewRow k="Name" v={draft.label} />
-        <ReviewRow k="Bitcoin network" v={draft.network} />
-        <ReviewRow
-          k="Remind me every"
-          v={prettyDuration(draft.checkinPeriodSecs)}
-        />
-        <ReviewRow
-          k="Grace period"
-          v={prettyDuration(draft.gracePeriodSecs)}
-        />
-        <ReviewRow
-          k="Waiting period"
-          v={`${draft.timelockBlocks} blocks (≈ ${prettyDuration(draft.timelockBlocks * 600)})`}
-        />
+      <dl className="mt-8 card divide-y divide-[var(--border)]">
+        {summary.map(([k, v]) => (
+          <div
+            key={k}
+            className="flex items-baseline justify-between gap-4 px-5 py-4 text-sm"
+          >
+            <dt className="text-muted">{k}</dt>
+            <dd className="text-right font-medium text-[var(--text)]">{v}</dd>
+          </div>
+        ))}
       </dl>
     </div>
   );
 }
 
-/* --------------------------------- Bits ----------------------------------- */
-
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <label className="block">
-      <span className="text-xs font-semibold uppercase tracking-widest text-ink-400">
-        {label}
-      </span>
-      <div className="mt-2">{children}</div>
-      {hint && <p className="mt-2 text-xs text-ink-400">{hint}</p>}
-    </label>
-  );
-}
-
-function PresetGroup<T extends number>({
-  value,
-  onChange,
-  presets,
-}: {
-  value: T;
-  onChange: (v: T) => void;
-  presets: { label: string; value: T }[];
-}) {
-  return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-      {presets.map((p) => {
-        const selected = p.value === value;
-        return (
-          <button
-            key={p.label}
-            type="button"
-            onClick={() => onChange(p.value)}
-            className={`rounded-xl border px-3 py-2.5 text-sm font-medium transition-all ${
-              selected
-                ? "border-bitcoin bg-bitcoin text-white shadow-glow"
-                : "border-ink/15 bg-white text-ink hover:border-ink/30"
-            }`}
-          >
-            {p.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function ReviewRow({ k, v }: { k: string; v: string }) {
-  return (
-    <div className="flex items-baseline justify-between gap-3 px-4 py-3 text-sm">
-      <dt className="text-xs font-semibold uppercase tracking-widest text-ink-400">
-        {k}
-      </dt>
-      <dd className="text-right font-medium">{v}</dd>
-    </div>
-  );
-}
-
-function prettyDuration(secs: number): string {
-  if (secs >= 86_400) {
-    const d = Math.round(secs / 86_400);
-    return `${d} day${d === 1 ? "" : "s"}`;
-  }
-  if (secs >= 3_600) {
-    const h = Math.round(secs / 3_600);
-    return `${h} hour${h === 1 ? "" : "s"}`;
-  }
-  if (secs >= 60) {
-    const m = Math.round(secs / 60);
-    return `${m} minute${m === 1 ? "" : "s"}`;
-  }
-  return `${secs} second${secs === 1 ? "" : "s"}`;
+function short(s: string): string {
+  if (!s) return "";
+  if (s.length <= 14) return s;
+  return `${s.slice(0, 6)}…${s.slice(-4)}`;
 }

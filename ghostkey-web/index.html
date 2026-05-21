@@ -1,20 +1,39 @@
 <!doctype html>
-<html lang="en" class="h-full">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#F7931B" />
-    <title>GhostKey — Bitcoin savings your family can inherit</title>
+    <meta
+      name="description"
+      content="GhostKey lets your Bitcoin live on after you. Tap once a month. If you ever stop, the people you chose can claim what's theirs."
+    />
+    <title>GhostKey — Your Bitcoin lives on after you</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Inter+Tight:wght@500;600;700;800&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Inter+Tight:wght@400;500;600;700;800&display=swap"
     />
+    <script>
+      // Resolve theme before paint to avoid flash-of-wrong-theme.
+      (function () {
+        try {
+          var stored = localStorage.getItem("gk:theme");
+          var sysDark =
+            window.matchMedia &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches;
+          var theme = stored || (sysDark ? "dark" : "dark"); // dark default per spec
+          document.documentElement.setAttribute("data-theme", theme);
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      })();
+    </script>
   </head>
-  <body class="h-full bg-cream">
-    <div id="root" class="h-full"></div>
+  <body>
+    <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

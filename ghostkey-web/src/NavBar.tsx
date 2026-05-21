@@ -1,177 +1,109 @@
 /**
- * Top navigation bar. Always visible on every view.
+ * Top navigation bar. Minimal, always visible.
  *
- * Items (left to right): brand · Set up · I'm OK today · Inherit · Connect wallet.
- *
- * Mobile: brand + hamburger; menu opens as a sheet under the bar.
+ * Layout follows Tando: wordmark · center links · right-side CTA + theme.
+ * Mobile collapses to wordmark + CTA + hamburger; the sheet slides
+ * under the bar with the same links.
  */
 import { useEffect, useState } from "react";
-import { Menu, X, Wallet, Sparkles, Heart, HandHeart } from "lucide-react";
 import { Brand } from "./Brand";
 import type { Route } from "./App";
-import { ApiError } from "./api";
-import { WalletError, connect, hasProvider, type WalletIdentity } from "./wallet";
-
-interface Props {
-  route: Route;
-  onNavigate: (r: Route) => void;
-  wallet: WalletIdentity | null;
-  onWalletChange: (w: WalletIdentity | null) => void;
-}
+import { useTheme } from "./theme";
 
 interface NavItem {
   key: Route;
   label: string;
-  icon: typeof Sparkles;
 }
 
 const ITEMS: NavItem[] = [
-  { key: "setup",   label: "Set up",          icon: Sparkles },
-  { key: "checkin", label: "I'm OK today",    icon: Heart },
-  { key: "inherit", label: "Inherit",         icon: HandHeart },
+  { key: "setup",     label: "Set up" },
+  { key: "checkin",   label: "Check in" },
+  { key: "inherit",   label: "Inherit" },
+  { key: "dashboard", label: "Dashboard" },
 ];
 
-export function NavBar({ route, onNavigate, wallet, onWalletChange }: Props) {
+interface Props {
+  route: Route;
+  onNavigate: (r: Route) => void;
+}
+
+export function NavBar({ route, onNavigate }: Props) {
   const [open, setOpen] = useState(false);
-  const [walletBusy, setWalletBusy] = useState(false);
-  const [walletError, setWalletError] = useState<string | null>(null);
+  const { theme, toggle } = useTheme();
 
-  // Auto-close mobile menu when the route changes.
-  useEffect(() => {
-    setOpen(false);
-  }, [route]);
-
-  async function onConnect() {
-    setWalletBusy(true);
-    setWalletError(null);
-    try {
-      if (wallet) {
-        onWalletChange(null);
-        return;
-      }
-      const id = await connect();
-      onWalletChange(id);
-    } catch (e) {
-      const msg =
-        e instanceof WalletError || e instanceof ApiError
-          ? e.message
-          : e instanceof Error
-            ? e.message
-            : String(e);
-      setWalletError(msg);
-    } finally {
-      setWalletBusy(false);
-    }
-  }
+  useEffect(() => { setOpen(false); }, [route]);
 
   return (
-    <header className="sticky top-0 z-30 border-b border-ink/5 bg-cream/85 backdrop-blur-md">
-      <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-5 py-3.5">
-        <Brand size="sm" onClick={() => onNavigate("landing")} />
+    <header
+      className="sticky top-0 z-30 border-b border-app backdrop-blur-md"
+      style={{ backgroundColor: "color-mix(in srgb, var(--bg) 80%, transparent)" }}
+    >
+      <div className="mx-auto flex h-[60px] max-w-6xl items-center justify-between gap-4 px-5 md:px-8">
+        <Brand size="md" onClick={() => onNavigate("landing")} />
 
-        {/* Desktop nav */}
-        <nav className="hidden items-center gap-1 md:flex" aria-label="Main">
-          {ITEMS.map((item) => {
-            const Icon = item.icon;
-            const active = item.key === route;
-            return (
-              <button
-                key={item.key}
-                onClick={() => onNavigate(item.key)}
-                className={`nav-link inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 ${
-                  active ? "nav-link-active bg-ink/5" : ""
-                }`}
-              >
-                <Icon className="h-3.5 w-3.5" strokeWidth={2.25} />
-                {item.label}
-              </button>
-            );
-          })}
+        <nav
+          className="hidden h-full items-center gap-7 md:flex"
+          aria-label="Primary"
+        >
+          {ITEMS.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => onNavigate(item.key)}
+              data-active={item.key === route || undefined}
+              className="nav-link h-full"
+              aria-current={item.key === route ? "page" : undefined}
+            >
+              {item.label}
+            </button>
+          ))}
         </nav>
 
-        {/* Wallet button (desktop) + hamburger (mobile) */}
         <div className="flex items-center gap-2">
+          <ThemeToggle theme={theme} onToggle={toggle} />
+          {route !== "setup" && (
+            <button
+              type="button"
+              onClick={() => onNavigate("setup")}
+              className="btn btn-ghost hidden md:inline-flex"
+            >
+              Set up
+            </button>
+          )}
           <button
-            onClick={onConnect}
-            disabled={walletBusy}
-            className={`hidden md:inline-flex ${
-              wallet ? "btn-outline" : "btn-primary"
-            }`}
-            title={wallet ? "Disconnect" : "Connect a Lightning wallet"}
-          >
-            <Wallet className="h-4 w-4" />
-            {walletBusy ? "Connecting…" : wallet ? truncate(wallet.alias, 12) : "Connect wallet"}
-          </button>
-
-          <button
+            type="button"
             onClick={() => setOpen((v) => !v)}
-            className="btn-outline !rounded-full !px-3 md:hidden"
             aria-expanded={open}
             aria-controls="mobile-menu"
-            aria-label="Open menu"
+            aria-label={open ? "Close menu" : "Open menu"}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full text-[var(--text)] md:hidden"
+            style={{ border: "1px solid var(--border-hi)" }}
           >
-            {open ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+            {open ? <CloseIcon /> : <MenuIcon />}
           </button>
         </div>
       </div>
 
-      {/* Wallet error toast (under the bar) */}
-      {walletError && (
-        <div className="mx-auto max-w-6xl px-5 pb-3">
-          <div className="rounded-xl border border-bitcoin/30 bg-bitcoin-50 px-3 py-2 text-xs text-bitcoin-900">
-            <p className="font-semibold">{walletError}</p>
-            {!hasProvider() && (
-              <p className="mt-1 text-bitcoin-800/80">
-                Install{" "}
-                <a
-                  href="https://getalby.com/"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="underline"
-                >
-                  Alby
-                </a>{" "}
-                or another Lightning browser wallet to connect.
-              </p>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Mobile sheet */}
       {open && (
-        <div
-          id="mobile-menu"
-          className="border-t border-ink/5 bg-cream md:hidden"
-        >
+        <div id="mobile-menu" className="border-t border-app md:hidden">
           <nav className="mx-auto flex max-w-6xl flex-col gap-1 px-5 py-3">
-            {ITEMS.map((item) => {
-              const Icon = item.icon;
-              const active = item.key === route;
-              return (
-                <button
-                  key={item.key}
-                  onClick={() => onNavigate(item.key)}
-                  className={`inline-flex items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm font-medium ${
-                    active ? "bg-ink/5 text-ink" : "text-ink-500"
-                  }`}
-                >
-                  <Icon className="h-4 w-4" strokeWidth={2.25} />
-                  {item.label}
-                </button>
-              );
-            })}
+            {ITEMS.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => onNavigate(item.key)}
+                data-active={item.key === route || undefined}
+                className="nav-link mobile"
+              >
+                {item.label}
+              </button>
+            ))}
             <button
-              onClick={onConnect}
-              disabled={walletBusy}
-              className={`mt-2 ${wallet ? "btn-outline" : "btn-primary"}`}
+              type="button"
+              onClick={() => onNavigate("setup")}
+              className="btn btn-primary mt-2"
             >
-              <Wallet className="h-4 w-4" />
-              {walletBusy
-                ? "Connecting…"
-                : wallet
-                  ? `Disconnect ${truncate(wallet.alias, 14)}`
-                  : "Connect wallet"}
+              Set up your vault
             </button>
           </nav>
         </div>
@@ -180,6 +112,49 @@ export function NavBar({ route, onNavigate, wallet, onWalletChange }: Props) {
   );
 }
 
-function truncate(s: string, n: number) {
-  return s.length <= n ? s : `${s.slice(0, n - 1)}…`;
+function ThemeToggle({ theme, onToggle }: { theme: "dark" | "light"; onToggle: () => void }) {
+  const isDark = theme === "dark";
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="inline-flex h-9 w-9 items-center justify-center rounded-full text-[var(--text)] transition-colors hover:bg-[var(--surface-2)]"
+      style={{ border: "1px solid var(--border-hi)" }}
+      aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+      title={isDark ? "Light mode" : "Dark mode"}
+    >
+      {isDark ? <SunIcon /> : <MoonIcon />}
+    </button>
+  );
+}
+
+/* Inline icons keep the nav bar zero-dependency. */
+function SunIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+    </svg>
+  );
+}
+function MoonIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+    </svg>
+  );
+}
+function MenuIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
+      <path d="M4 7h16M4 12h16M4 17h16" />
+    </svg>
+  );
+}
+function CloseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
+      <path d="M6 6l12 12M18 6L6 18" />
+    </svg>
+  );
 }

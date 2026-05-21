@@ -1,23 +1,22 @@
 /**
- * Landing page. Always rendered at the top-level route `landing`.
+ * Landing page.
  *
- * Sections in order:
- *  - Hero with animated cascading words and a "shadow" call-to-action.
- *  - Feature cards ("How it works") — three cards, soft shadows.
- *  - "Why trust this" two-column band.
- *  - FAQ accordion.
- *  - Final CTA + footer.
+ * Sections (top to bottom):
+ *   1. Hero            — headline, CTA, trust row
+ *   2. How it works    — 4 numbered steps
+ *   3. Vault lifecycle — 5 stages of a vault, plus emergency withdraw note
+ *   4. Why Bitcoin     — 6 reason cards
+ *   5. Comparison      — small table positioning GhostKey vs alternatives
+ *   6. FAQ             — accordion of common questions
+ *   7. Final CTA       — one-liner + buttons
+ *   8. Footer          — sitemap + legal disclaimer
+ *
+ * Style: Inter Tight headings with the silver-gradient title fill and
+ * the orange accent picked out on the punchline word. Tando-inspired.
+ * Tone: emotional, no jargon, no AI tells.
  */
-import { useState } from "react";
-import {
-  ArrowRight,
-  ShieldCheck,
-  Heart,
-  HandHeart,
-  ChevronDown,
-  type LucideIcon,
-} from "lucide-react";
-import { brand, explain, heroWords } from "./vocab";
+import { Disclosure, Eyebrow } from "./ui";
+import { brand } from "./vocab";
 import type { Route } from "./App";
 
 interface Props {
@@ -26,202 +25,443 @@ interface Props {
 
 export function Landing({ onNavigate }: Props) {
   return (
-    <main className="bg-cream">
+    <main>
       <Hero onNavigate={onNavigate} />
-      <Features />
-      <WhyTrust />
+      <HowItWorks onNavigate={onNavigate} />
+      <Lifecycle />
+      <WhyBitcoin />
+      <Comparison />
       <FAQ />
-      <CallToAction onNavigate={onNavigate} />
+      <FinalCTA onNavigate={onNavigate} />
       <Footer />
     </main>
   );
 }
 
-/* ---------------------------------- Hero ---------------------------------- */
+/* --------------------------------- Hero ----------------------------------- */
 
 function Hero({ onNavigate }: Props) {
   return (
-    <section className="relative overflow-x-clip bg-swoosh">
-      <div className="mx-auto grid max-w-6xl items-center gap-12 px-5 py-16 md:grid-cols-12 md:px-8 md:py-24 lg:py-28">
-        <div className="md:col-span-7">
-          <p className="badge animate-fade-up">
-            For everyone with someone to inherit
-          </p>
+    <section className="relative overflow-hidden hero-glow">
+      <div className="mx-auto flex max-w-5xl flex-col items-center px-5 py-20 text-center md:px-8 md:py-28">
+        <Eyebrow>Bitcoin inheritance, without the lawyers</Eyebrow>
 
-          <h1 className="mt-6 break-words font-display text-4xl font-bold leading-[0.95] tracking-tighter sm:text-5xl md:text-7xl lg:text-8xl">
-            {heroWords.map((w, i) => (
-              <span
-                key={i}
-                className={`block animate-word-in anim-delay-${i + 1} ${
-                  w.color === "bitcoin" ? "text-bitcoin" : "text-ink"
-                }`}
-                style={{ perspective: "800px" }}
-              >
-                {w.text}
-              </span>
-            ))}
-          </h1>
+        <h1 className="word-in mt-7 max-w-3xl font-display text-[clamp(44px,7vw,96px)] font-bold leading-[1.04] tracking-tight">
+          <span className="title-gradient">Your </span>
+          <span className="text-accent">Bitcoin</span>
+          <br />
+          <span className="title-gradient">lives on after you</span>
+        </h1>
 
-          <p className="mt-8 max-w-xl text-lg leading-relaxed text-ink-500 animate-fade-up anim-delay-5 md:text-xl">
-            {brand.longTagline}
-          </p>
+        <p className="mt-8 max-w-xl text-lg text-body md:text-xl">
+          {brand.longTagline}
+        </p>
 
-          <div className="mt-10 flex flex-col gap-3 sm:flex-row animate-fade-up anim-delay-5">
-            <button
-              onClick={() => onNavigate("setup")}
-              className="btn-primary !px-6 !py-3 text-base"
-            >
-              Set up savings
-              <ArrowRight className="h-5 w-5" />
-            </button>
-            <a href="#how" className="btn-ghost !px-6 !py-3 text-base">
-              How does it work?
-            </a>
-          </div>
+        <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
+          <button
+            type="button"
+            onClick={() => onNavigate("setup")}
+            className="btn btn-primary"
+          >
+            Set up your vault
+            <ArrowRight />
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate("inherit")}
+            className="btn btn-ghost"
+          >
+            I was named to inherit
+          </button>
         </div>
 
-        {/* Decorative card stack — illustrative, not interactive. */}
-        <div className="md:col-span-5">
-          <HeroIllustration />
-        </div>
+        <TrustRow />
       </div>
     </section>
   );
 }
 
-function HeroIllustration() {
-  // Stable flex stack — no absolute positioning, so the cards can't
-  // overlap or escape their container even on narrow viewports. Each
-  // card has a small cosmetic tilt that's intentionally tiny (≤2deg)
-  // so it reads as "playful" without breaking neighboring layout.
+function TrustRow() {
+  const items = [
+    { strong: "0",        sub: "Third parties" },
+    { strong: "100%",     sub: "Non-custodial" },
+    { strong: "On-chain", sub: "Guaranteed" },
+  ];
   return (
-    <div className="mx-auto w-full max-w-sm space-y-4 md:max-w-md">
-      <article
-        className="card -rotate-1 p-5 animate-fade-up"
-        style={{ animationDelay: "0.4s" }}
-      >
-        <p className="text-xs font-semibold uppercase tracking-widest text-ink-400">
-          Savings
-        </p>
-        <p className="mt-1.5 font-display text-xl font-semibold">
-          Rainy day fund
-        </p>
-        <p className="mt-2 font-mono text-2xl tabular-nums text-bitcoin">
-          ₿ 0.50
-        </p>
-        <div className="mt-3 flex items-center gap-2 text-xs text-ink-400">
-          <span className="h-2 w-2 rounded-full bg-ok" />
-          All good
-        </div>
-      </article>
-
-      <article
-        className="card rotate-1 p-5 animate-fade-up"
-        style={{ animationDelay: "0.55s" }}
-      >
-        <p className="text-xs font-semibold uppercase tracking-widest text-ink-400">
-          Next reminder
-        </p>
-        <p className="mt-1.5 font-display text-2xl font-semibold">in 4 days</p>
-        <p className="mt-2 text-sm text-ink-400">
-          Tap once a week and your savings stay protected.
-        </p>
-      </article>
-
-      <div
-        className="flex justify-center animate-fade-up"
-        style={{ animationDelay: "0.7s" }}
-      >
-        <div className="relative">
-          <span
-            aria-hidden
-            className="pointer-events-none absolute inset-0 -z-10 rounded-full bg-bitcoin/40 blur-2xl"
-          />
-          <div className="btn-primary cursor-default !px-6 !py-3 text-base shadow-glow">
-            <Heart className="h-5 w-5" fill="currentColor" /> I'm OK today
-          </div>
-        </div>
-      </div>
-    </div>
+    <ul
+      role="list"
+      className="mt-20 flex flex-wrap items-center justify-center gap-x-10 gap-y-6 text-center"
+    >
+      {items.map((it) => (
+        <li key={it.sub} className="flex flex-col items-center gap-1">
+          <span className="font-display text-3xl font-bold tracking-tight title-gradient">{it.strong}</span>
+          <span className="text-xs uppercase tracking-wider text-muted">
+            {it.sub}
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
-/* ------------------------------- Features --------------------------------- */
+/* ----------------------------- How it works ------------------------------- */
 
-function Features() {
-  return (
-    <section id="how" className="bg-white py-20 md:py-28">
-      <div className="mx-auto max-w-6xl px-5 md:px-8">
-        <div className="mx-auto max-w-2xl text-center">
-          <p className="badge">How it works</p>
-          <h2 className="mt-4 font-display text-3xl font-bold tracking-tight md:text-5xl">
-            Three small habits.{" "}
-            <span className="text-bitcoin">One big peace of mind.</span>
-          </h2>
-        </div>
-        <div className="mt-14 grid grid-cols-1 gap-6 md:grid-cols-3">
-          <Feature
-            icon={ShieldCheck}
-            title="Put money aside"
-            body="Decide how much Bitcoin to set aside and name the people who would inherit it."
-          />
-          <Feature
-            icon={Heart}
-            title="Tap I'm OK"
-            body="Every week (or however often you choose) just tap a button. That's it."
-          />
-          <Feature
-            icon={HandHeart}
-            title="They get what's theirs"
-            body="If you ever stop tapping, the people you named can claim the money automatically."
-          />
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function Feature({
-  icon: Icon,
-  title,
-  body,
-}: {
-  icon: LucideIcon;
+interface Step {
   title: string;
   body: string;
-}) {
-  return (
-    <article className="card p-6 transition-all duration-300 hover:-translate-y-1 hover:shadow-soft-lg">
-      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-bitcoin-50">
-        <Icon className="h-6 w-6 text-bitcoin" strokeWidth={2} />
-      </div>
-      <h3 className="mt-5 font-display text-xl font-semibold">{title}</h3>
-      <p className="mt-2 text-sm leading-relaxed text-ink-500">{body}</p>
-    </article>
-  );
 }
 
-/* ------------------------------- Why trust -------------------------------- */
+const STEPS: Step[] = [
+  {
+    title: "You set up your vault",
+    body: "Connect a Bitcoin wallet and choose who inherits. About five minutes. No documents, no lawyers, no terminal commands.",
+  },
+  {
+    title: "You tap once a month",
+    body: "That's the whole job. One tap says you're still here and resets the clock. Miss it for long enough and the countdown begins.",
+  },
+  {
+    title: "Your people get what you left them",
+    body: "When the time comes, the person you named gets a notification. They claim it themselves, from anywhere, without asking anyone's permission.",
+  },
+  {
+    title: "The rules live on Bitcoin, not on us",
+    body: "If GhostKey shut down tomorrow, the person you named could still claim. The instructions are written into Bitcoin itself.",
+  },
+];
 
-function WhyTrust() {
+function HowItWorks({ onNavigate }: Props) {
   return (
-    <section className="bg-cream py-20 md:py-28">
-      <div className="mx-auto grid max-w-6xl gap-10 px-5 md:grid-cols-12 md:gap-16 md:px-8">
-        <div className="md:col-span-5">
-          <p className="badge">Why you can trust this</p>
-          <h2 className="mt-4 font-display text-3xl font-bold tracking-tight md:text-5xl">
-            The promise lives on{" "}
-            <span className="text-bitcoin">Bitcoin</span>, not on our
-            website.
-          </h2>
-        </div>
-        <div className="space-y-4 text-lg leading-relaxed text-ink-500 md:col-span-7 md:text-xl">
-          <p>{explain.whyTrust}</p>
-          <p>{explain.privacy}</p>
-          <p className="text-sm text-ink-400">{explain.notAWill}</p>
+    <section id="how" className="border-t border-app bg-app">
+      <div className="mx-auto max-w-3xl px-5 py-20 md:px-8 md:py-28">
+        <Eyebrow dim>How it works</Eyebrow>
+
+        <ol className="mt-12 space-y-0">
+          {STEPS.map((s, i) => {
+            const last = i === STEPS.length - 1;
+            return (
+              <li key={s.title} className="relative grid grid-cols-[48px_1fr] gap-x-6 gap-y-2">
+                {!last && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute left-6 top-12 bottom-0 w-px -translate-x-1/2 bg-[var(--border-hi)]"
+                  />
+                )}
+                <span
+                  aria-hidden="true"
+                  className="relative z-[1] flex h-12 w-12 items-center justify-center rounded-full bg-surface font-display text-lg font-bold text-accent"
+                  style={{ border: "1px solid var(--border-hi)" }}
+                >
+                  {i + 1}
+                </span>
+                <div className="pb-12 pt-2">
+                  <h3 className="font-display text-2xl font-bold tracking-tight md:text-3xl">{s.title}</h3>
+                  <p className="mt-2 max-w-prose text-base text-soft md:text-lg">
+                    {s.body}
+                  </p>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+
+        <div className="flex justify-start">
+          <button
+            type="button"
+            onClick={() => onNavigate("setup")}
+            className="btn btn-primary"
+          >
+            Set up your vault
+            <ArrowRight />
+          </button>
         </div>
       </div>
     </section>
+  );
+}
+
+/* -------------------------- Vault lifecycle ------------------------------- */
+
+interface Stage {
+  tag: string;
+  title: string;
+  body: string;
+}
+
+const STAGES: Stage[] = [
+  {
+    tag: "Created",
+    title: "Deposit and name your people",
+    body: "You set the rules and decide who inherits. Nothing happens on-chain until you fund the vault.",
+  },
+  {
+    tag: "Active",
+    title: "Heartbeat running",
+    body: "You tap once a month. Each tap resets the clock. The Bitcoin sits in your wallet, untouched.",
+  },
+  {
+    tag: "Grace",
+    title: "A reminder is missed",
+    body: "A short grace period kicks in. You can still tap to reset everything. Nothing moves yet.",
+  },
+  {
+    tag: "Claimable",
+    title: "Heirs can claim",
+    body: "After the waiting period passes on-chain, the person you named can spend what's theirs.",
+  },
+  {
+    tag: "Closed",
+    title: "Passed on",
+    body: "The Bitcoin has moved to your heir. The vault is done.",
+  },
+];
+
+function Lifecycle() {
+  return (
+    <section className="border-t border-app bg-app">
+      <div className="mx-auto max-w-5xl px-5 py-20 md:px-8 md:py-28">
+        <div className="max-w-2xl">
+          <Eyebrow dim>Vault lifecycle</Eyebrow>
+          <h2 className="mt-4 font-display text-4xl font-bold leading-[1.05] tracking-tight md:text-6xl">
+            <span className="title-gradient">From heartbeat to </span>
+            <span className="text-accent">inheritance</span>
+          </h2>
+        </div>
+
+        <ol
+          role="list"
+          className="mt-12 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5"
+        >
+          {STAGES.map((s, i) => (
+            <li key={s.tag} className="card-flat relative p-5">
+              <span
+                aria-hidden="true"
+                className="absolute right-4 top-4 text-[10px] font-mono text-dim"
+              >
+                {String(i + 1).padStart(2, "0")}
+              </span>
+              <p className="eyebrow-tag text-[10px]">{s.tag}</p>
+              <h3 className="mt-3 font-display text-xl font-bold leading-tight tracking-tight">{s.title}</h3>
+              <p className="mt-2 text-[13px] text-soft leading-relaxed">{s.body}</p>
+            </li>
+          ))}
+        </ol>
+
+        <aside
+          className="mt-8 flex items-start gap-4 rounded-2xl border border-app p-5"
+          style={{ background: "var(--accent-tint)" }}
+        >
+          <span
+            aria-hidden="true"
+            className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full"
+            style={{ background: "var(--accent)", color: "var(--text-on-accent)" }}
+          >
+            <ShieldIcon />
+          </span>
+          <div>
+            <p className="font-display text-xl font-bold tracking-tight">Always in control</p>
+            <p className="mt-1 text-sm text-soft">
+              You can reclaim everything at any moment before the heir claims.
+              No approvals, no waiting. It's still your Bitcoin.
+            </p>
+          </div>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+/* ----------------------------- Why Bitcoin -------------------------------- */
+
+interface Reason {
+  tag: string;
+  title: string;
+  body: string;
+}
+
+const REASONS: Reason[] = [
+  {
+    tag: "Hardened",
+    title: "Fifteen years live",
+    body: "Bitcoin has settled trillions of dollars in value without a single protocol-level failure. The base layer your inheritance sits on is the most battle-tested ledger in the world.",
+  },
+  {
+    tag: "Precise",
+    title: "On-chain timelocks",
+    body: "Waiting periods are enforced by Bitcoin itself using OP_CSV. Once set, no one — not us, not them, not anyone — can move funds before the timer runs out.",
+  },
+  {
+    tag: "Private",
+    title: "Taproot by default",
+    body: "Vaults use Taproot scripts so the inheritance rules stay hidden on-chain. A casual observer sees an ordinary Bitcoin transaction.",
+  },
+  {
+    tag: "Portable",
+    title: "PSBT standard",
+    body: "Funding and claiming use Partially Signed Bitcoin Transactions. Sparrow, BlueWallet, Ledger, Coldcard — any modern wallet works.",
+  },
+  {
+    tag: "Trustless",
+    title: "Self-custodied keys",
+    body: "Your private key never leaves your device. GhostKey only watches public addresses to send reminders. We can never spend your Bitcoin.",
+  },
+  {
+    tag: "Durable",
+    title: "Survives us",
+    body: "Even if this site disappears tomorrow, the rules live on the chain. Your heir can still claim using any Bitcoin wallet that speaks Taproot.",
+  },
+];
+
+function WhyBitcoin() {
+  return (
+    <section className="border-t border-app bg-app">
+      <div className="mx-auto max-w-5xl px-5 py-20 md:px-8 md:py-28">
+        <div className="max-w-2xl">
+          <Eyebrow dim>Why Bitcoin</Eyebrow>
+          <h2 className="mt-4 font-display text-4xl font-bold leading-[1.05] tracking-tight md:text-6xl">
+            <span className="title-gradient">Built on the chain that </span>
+            <span className="text-accent">doesn't break</span>
+          </h2>
+        </div>
+
+        <div className="mt-12 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {REASONS.map((r) => (
+            <article key={r.title} className="card-flat p-6">
+              <p className="eyebrow-tag text-[10px]">{r.tag}</p>
+              <h3 className="mt-3 font-display text-xl font-bold leading-tight tracking-tight">{r.title}</h3>
+              <p className="mt-2 text-sm text-soft leading-relaxed">{r.body}</p>
+            </article>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ------------------------------ Comparison -------------------------------- */
+
+interface CompRow {
+  name: string;
+  selfCustody: "yes" | "partial" | "no";
+  trustless:   "yes" | "partial" | "no";
+  onChain:     "yes" | "partial" | "no";
+  highlight?:  boolean;
+}
+
+const COMP: CompRow[] = [
+  { name: "Seed phrase in a safe",   selfCustody: "yes",     trustless: "no",      onChain: "no" },
+  { name: "Casa inheritance",        selfCustody: "partial", trustless: "no",      onChain: "no" },
+  { name: "Sarcophagus (Ethereum)",  selfCustody: "yes",     trustless: "yes",     onChain: "yes" },
+  { name: "Safe Haven",              selfCustody: "partial", trustless: "partial", onChain: "yes" },
+  { name: "GhostKey",                selfCustody: "yes",     trustless: "yes",     onChain: "yes", highlight: true },
+];
+
+function Comparison() {
+  return (
+    <section className="border-t border-app bg-app">
+      <div className="mx-auto max-w-5xl px-5 py-20 md:px-8 md:py-28">
+        <div className="max-w-2xl">
+          <Eyebrow dim>Comparison</Eyebrow>
+          <h2 className="mt-4 font-display text-4xl font-bold leading-[1.05] tracking-tight md:text-6xl">
+            <span className="title-gradient">Nothing else </span>
+            <span className="text-accent">comes close</span>
+          </h2>
+        </div>
+
+        <div className="mt-12 overflow-x-auto">
+          <table className="w-full min-w-[560px] border-separate border-spacing-0 text-sm">
+            <thead>
+              <tr className="text-left text-xs uppercase tracking-wider text-dim">
+                <th scope="col" className="py-3 pr-4 font-medium">Solution</th>
+                <th scope="col" className="py-3 px-4 font-medium">Self-custodial</th>
+                <th scope="col" className="py-3 px-4 font-medium">Trustless</th>
+                <th scope="col" className="py-3 px-4 font-medium">On-chain</th>
+              </tr>
+            </thead>
+            <tbody>
+              {COMP.map((row, i) => {
+                const last = i === COMP.length - 1;
+                return (
+                  <tr
+                    key={row.name}
+                    className={
+                      row.highlight
+                        ? "relative"
+                        : ""
+                    }
+                    style={
+                      row.highlight
+                        ? {
+                            background: "var(--accent-tint)",
+                          }
+                        : undefined
+                    }
+                  >
+                    <th
+                      scope="row"
+                      className={`border-t border-app py-4 pr-4 text-left font-medium ${last ? "rounded-bl-xl" : ""}`}
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        {row.name}
+                        {row.highlight && (
+                          <span
+                            className="rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider"
+                            style={{
+                              background: "var(--accent)",
+                              color: "var(--text-on-accent)",
+                            }}
+                          >
+                            Best
+                          </span>
+                        )}
+                      </span>
+                    </th>
+                    <td className="border-t border-app py-4 px-4">
+                      <Mark v={row.selfCustody} />
+                    </td>
+                    <td className="border-t border-app py-4 px-4">
+                      <Mark v={row.trustless} />
+                    </td>
+                    <td className={`border-t border-app py-4 px-4 ${last && row.highlight ? "rounded-br-xl" : ""}`}>
+                      <Mark v={row.onChain} />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <p className="mt-6 text-xs text-dim">
+          Comparisons reflect each project's public documentation at time of writing.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function Mark({ v }: { v: "yes" | "partial" | "no" }) {
+  if (v === "yes") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-ok">
+        <CheckIcon />
+        <span className="sr-only">Yes</span>
+      </span>
+    );
+  }
+  if (v === "partial") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-warning">
+        <DotIcon />
+        <span className="text-xs">Partial</span>
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 text-dim">
+      <DashIcon />
+      <span className="sr-only">No</span>
+    </span>
   );
 }
 
@@ -229,136 +469,243 @@ function WhyTrust() {
 
 const FAQS = [
   {
-    q: "What does this actually do?",
-    a: "GhostKey lets you put aside Bitcoin in a way the person you've named can claim if you stop checking in. You stay in complete control while you're active.",
+    q: "What happens if I lose access to my wallet?",
+    a: "Treat the GhostKey vault like any other Bitcoin wallet — back up your seed phrase. If you lose both your wallet and your backup, no one can recover the funds. That includes us. This is the trade-off of true self-custody.",
   },
   {
-    q: "How often do I have to tap I'm OK?",
-    a: "Whatever you choose during setup. Weekly is a good starting point. You can pick daily, weekly, monthly, or any custom rhythm.",
+    q: "Can I change my heir after creating a vault?",
+    a: "Yes, while you're still checking in. From the dashboard you can rotate the heir, the waiting period, or the cadence. The change takes effect at the next on-chain spend.",
   },
   {
-    q: "What happens if I miss a reminder?",
-    a: "A short grace period kicks in. After that, a waiting period (also of your choosing) starts. Once it ends, the people you named can claim the money. You can still tap I'm OK any time before then to reset everything.",
+    q: "What does a check-in cost?",
+    a: "Nothing. The monthly tap is a web action that resets a timer on our reminder service. No transaction is broadcast and no Bitcoin moves.",
   },
   {
-    q: "Can the person I named claim early?",
-    a: "No. The waiting period is enforced by Bitcoin itself. Until it ends, no one — not them, not us, not anyone — can move the money.",
+    q: "Are there protocol fees?",
+    a: "GhostKey takes no protocol fee. You pay only the standard Bitcoin network fee when you fund the vault and again when your heir eventually claims.",
   },
   {
-    q: "Do I need a wallet?",
-    a: "For setting up the savings, yes — you'll use the GhostKey app on your computer. For the website itself, a Lightning wallet like Alby is optional. It only proves your identity, not your spending power.",
+    q: "Can my heir claim early?",
+    a: "No. The waiting period is enforced by Bitcoin itself using OP_CSV. Until the timer fully runs out on-chain, no one can move the funds. Not them, not us.",
+  },
+  {
+    q: "What kinds of Bitcoin can I deposit?",
+    a: "Any spendable Bitcoin in a Taproot-capable wallet. You don't move it to us — you keep it in your wallet, and the inheritance rules live as a script alongside it.",
   },
   {
     q: "Is this a legal will?",
-    a: "No. It's a programmable way to leave Bitcoin to someone you've named. Most people use it alongside a regular will.",
+    a: "No. GhostKey is programmable self-custody continuity. Most people use it alongside a traditional will, which still handles other assets and legal formalities.",
+  },
+  {
+    q: "Can I reclaim my Bitcoin after creating a vault?",
+    a: "Always. Until your heir actually claims, you have full spending power over the funds with your own key. Emergency withdraw is one transaction away.",
+  },
+  {
+    q: "What if GhostKey shuts down?",
+    a: "Your heir can still claim. The conditions are written into Bitcoin itself, not into our database. Any wallet that speaks Taproot can spend from the vault when the waiting period ends.",
   },
 ];
 
 function FAQ() {
-  const [open, setOpen] = useState<number | null>(0);
   return (
-    <section className="bg-white py-20 md:py-28">
-      <div className="mx-auto max-w-3xl px-5 md:px-8">
+    <section className="border-t border-app bg-app">
+      <div className="mx-auto max-w-3xl px-5 py-20 md:px-8 md:py-28">
         <div className="text-center">
-          <p className="badge">Common questions</p>
-          <h2 className="mt-4 font-display text-3xl font-bold tracking-tight md:text-5xl">
-            Things people ask.
+          <Eyebrow dim>FAQ</Eyebrow>
+          <h2 className="mt-4 font-display text-4xl font-bold leading-[1.05] tracking-tight md:text-6xl">
+            <span className="title-gradient">Common </span>
+            <span className="text-accent">questions</span>
           </h2>
         </div>
+
         <div className="mt-12 space-y-3">
-          {FAQS.map((item, i) => {
-            const isOpen = open === i;
-            return (
-              <div
-                key={item.q}
-                className="card overflow-hidden p-0 transition-all"
-              >
-                <button
-                  onClick={() => setOpen(isOpen ? null : i)}
-                  className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left"
-                  aria-expanded={isOpen}
-                >
-                  <span className="font-display text-base font-semibold md:text-lg">
-                    {item.q}
-                  </span>
-                  <ChevronDown
-                    className={`h-5 w-5 text-ink-400 transition-transform ${
-                      isOpen ? "rotate-180" : ""
-                    }`}
-                  />
-                </button>
-                <div
-                  className={`grid transition-all duration-300 ${
-                    isOpen
-                      ? "grid-rows-[1fr] opacity-100"
-                      : "grid-rows-[0fr] opacity-0"
-                  }`}
-                >
-                  <div className="overflow-hidden">
-                    <p className="px-5 pb-5 text-sm leading-relaxed text-ink-500 md:text-base">
-                      {item.a}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+          {FAQS.map((item) => (
+            <Disclosure
+              key={item.q}
+              summary={
+                <span className="font-display text-base font-semibold text-[var(--text)] md:text-lg">
+                  {item.q}
+                </span>
+              }
+            >
+              <p className="text-sm leading-relaxed text-muted md:text-base">
+                {item.a}
+              </p>
+            </Disclosure>
+          ))}
         </div>
       </div>
     </section>
   );
 }
 
-/* --------------------------------- CTA ------------------------------------ */
+/* ------------------------------ Final CTA --------------------------------- */
 
-function CallToAction({ onNavigate }: Props) {
+function FinalCTA({ onNavigate }: Props) {
   return (
-    <section className="bg-cream py-20 md:py-28">
-      <div className="mx-auto max-w-3xl px-5 text-center md:px-8">
-        <h2 className="font-display text-4xl font-bold tracking-tighter md:text-6xl">
-          Ready to take care of{" "}
-          <span className="text-bitcoin">someone?</span>
+    <section className="border-t border-app bg-app">
+      <div className="mx-auto max-w-3xl px-5 py-20 text-center md:px-8 md:py-28">
+        <h2 className="font-display text-4xl font-bold leading-[1.05] tracking-tight md:text-6xl">
+          <span className="title-gradient">Don't let your Bitcoin </span>
+          <span className="text-accent">die with you</span>
         </h2>
-        <p className="mx-auto mt-5 max-w-xl text-lg text-ink-500">
-          Set up takes about 10 minutes. After that, it's one tap, once a
-          week.
+        <p className="mx-auto mt-4 max-w-md text-muted">
+          Set up your vault in minutes. The people you named will thank you,
+          even if they never have to use it.
         </p>
-        <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
+        <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
           <button
+            type="button"
             onClick={() => onNavigate("setup")}
-            className="btn-primary !px-6 !py-3 text-base"
+            className="btn btn-primary"
           >
-            Set up savings
-            <ArrowRight className="h-5 w-5" />
+            Set up your vault
+            <ArrowRight />
           </button>
-          <button
-            onClick={() => onNavigate("checkin")}
-            className="btn-outline !px-6 !py-3 text-base"
+          <a
+            href="https://github.com/Jolah1/ghostKey"
+            target="_blank"
+            rel="noreferrer noopener"
+            className="btn btn-ghost"
           >
-            Already set up? Tap I'm OK
-          </button>
+            Read the docs
+          </a>
         </div>
       </div>
     </section>
   );
 }
 
-/* -------------------------------- Footer ---------------------------------- */
+/* --------------------------------- Footer --------------------------------- */
+
+interface FooterLink {
+  label: string;
+  href: string;
+  external?: boolean;
+}
+interface FooterCol {
+  title: string;
+  links: FooterLink[];
+}
+
+const FOOTER_COLS: FooterCol[] = [
+  {
+    title: "Protocol",
+    links: [
+      { label: "Documentation",   href: "https://github.com/Jolah1/ghostKey#readme",                external: true },
+      { label: "On-chain scripts", href: "https://github.com/Jolah1/ghostKey/tree/main/crates/ghostkey-core", external: true },
+      { label: "GitHub",          href: "https://github.com/Jolah1/ghostKey",                       external: true },
+      { label: "Audit report",    href: "https://github.com/Jolah1/ghostKey#audits",                external: true },
+    ],
+  },
+  {
+    title: "Use it",
+    links: [
+      { label: "Set up a vault", href: "#/setup" },
+      { label: "Check in",        href: "#/checkin" },
+      { label: "Inherit",         href: "#/inherit" },
+      { label: "Dashboard",       href: "#/dashboard" },
+    ],
+  },
+  {
+    title: "Community",
+    links: [
+      { label: "Twitter / X",   href: "https://twitter.com",                  external: true },
+      { label: "Discord",       href: "https://discord.com",                  external: true },
+      { label: "Bitcoin forum", href: "https://bitcointalk.org",              external: true },
+      { label: "Blog",          href: "https://github.com/Jolah1/ghostKey#blog", external: true },
+    ],
+  },
+];
 
 function Footer() {
   return (
-    <footer className="border-t border-ink/5 bg-ink py-10 text-cream">
-      <div className="mx-auto flex max-w-6xl flex-col items-start gap-6 px-5 md:flex-row md:items-center md:justify-between md:px-8">
-        <div>
-          <p className="font-display text-xl font-bold tracking-tight">
-            {brand.name}
-          </p>
-          <p className="mt-1 text-sm text-cream/70">{brand.tagline}</p>
+    <footer className="border-t border-app">
+      <div className="mx-auto max-w-6xl px-5 py-14 md:px-8">
+        <div className="grid grid-cols-1 gap-10 md:grid-cols-12">
+          <div className="md:col-span-5">
+            <p className="font-display text-2xl font-bold tracking-tight">
+              Ghost<span className="text-accent">Key</span>
+            </p>
+            <p className="mt-3 max-w-sm text-sm text-muted">
+              Heartbeat-based Bitcoin inheritance. Your Bitcoin doesn't die with
+              you. The rules live on the chain, not on us.
+            </p>
+          </div>
+          {FOOTER_COLS.map((col) => (
+            <div key={col.title} className="md:col-span-2 lg:col-span-2">
+              <p className="text-[11px] uppercase tracking-wider text-dim">
+                {col.title}
+              </p>
+              <ul role="list" className="mt-4 space-y-2.5">
+                {col.links.map((l) => (
+                  <li key={l.label}>
+                    <a
+                      href={l.href}
+                      target={l.external ? "_blank" : undefined}
+                      rel={l.external ? "noreferrer noopener" : undefined}
+                      className="text-sm text-muted transition-colors hover:text-[var(--text)]"
+                    >
+                      {l.label}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </div>
-        <p className="max-w-md text-xs text-cream/50">
-          {explain.notAWill}
-        </p>
+
+        <div className="mt-12 flex flex-col gap-3 border-t border-app pt-6 text-xs text-dim md:flex-row md:items-center md:justify-between">
+          <p>
+            GhostKey is not a legal will. It is programmable self-custody
+            continuity for Bitcoin.
+          </p>
+          <p>© {new Date().getFullYear()} GhostKey</p>
+        </div>
       </div>
     </footer>
+  );
+}
+
+/* --------------------------------- Icons ---------------------------------- */
+
+function ArrowRight() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+      <path d="M5 12h14M13 6l6 6-6 6" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+      <path d="M20 6L9 17l-5-5" />
+    </svg>
+  );
+}
+
+function DashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
+      <path d="M6 12h12" />
+    </svg>
+  );
+}
+
+function DotIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className="h-2 w-2" aria-hidden="true">
+      <circle cx="12" cy="12" r="6" />
+    </svg>
+  );
+}
+
+function ShieldIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+      <path d="M12 3l8 3v5c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-3z" />
+      <path d="M9 12l2 2 4-4" />
+    </svg>
   );
 }
