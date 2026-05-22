@@ -34,6 +34,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/vaults/:id/events", get(list_events))
         .route("/vaults/:id/issue-claim", post(issue_claim))
         .route("/claim/:token", get(resolve_claim))
+        .route("/claim/:token/build-psbt", post(crate::psbt_routes::build_claim_psbt))
+        .route("/claim/:token/broadcast", post(crate::psbt_routes::broadcast_claim))
         .layer(TraceLayer::new_for_http())
         .layer(
             CorsLayer::new()
@@ -146,6 +148,9 @@ async fn create_vault(
     let now_s = now.to_rfc3339();
     let next_s = next_deadline.to_rfc3339();
     let timelock = req.timelock_blocks as i64;
+    let claim_eligible =
+        next_deadline + Duration::seconds(req.grace_period_secs);
+    let claim_eligible_s = claim_eligible.to_rfc3339();
 
     sqlx::query(
         r#"INSERT INTO vaults (
@@ -154,8 +159,9 @@ async fn create_vault(
             timelock_blocks,
             checkin_period_secs, grace_period_secs,
             owner_contact, heir_contact,
-            created_at, next_deadline_at, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok')"#,
+            created_at, next_deadline_at, status,
+            claim_eligible_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok', ?)"#,
     )
     .bind(&id)
     .bind(&req.label)
@@ -169,6 +175,7 @@ async fn create_vault(
     .bind(&req.heir_contact)
     .bind(&now_s)
     .bind(&next_s)
+    .bind(&claim_eligible_s)
     .execute(&state.db)
     .await?;
 
@@ -322,6 +329,14 @@ async fn create_vault_from_xpub(
     let ciphertext_b64 = sealed.as_ref().map(|s| s.ciphertext_b64.clone());
     let nonce_b64 = sealed.as_ref().map(|s| s.nonce_b64.clone());
 
+    // When may the scheduler issue a claim token? We add one extra
+    // grace window past `next_deadline_at` (which already includes
+    // the first grace period). That gives the owner a real chance
+    // to come back from the dead before we email the heir.
+    let claim_eligible =
+        next_deadline + Duration::seconds(req.grace_period_secs);
+    let claim_eligible_s = claim_eligible.to_rfc3339();
+
     sqlx::query(
         r#"INSERT INTO vaults (
             id, label, network,
@@ -333,10 +348,12 @@ async fn create_vault_from_xpub(
             owner_xpub_fragment_external, owner_xpub_fragment_internal,
             heir_xpub_fragment_external,  heir_xpub_fragment_internal,
             heir_contact_channel,
-            heir_contact_ciphertext, heir_contact_nonce
+            heir_contact_ciphertext, heir_contact_nonce,
+            claim_eligible_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'ok',
                   ?, ?, ?, ?, ?,
-                  ?, ?)"#,
+                  ?, ?,
+                  ?)"#,
     )
     .bind(&id)
     .bind(&req.label)
@@ -356,6 +373,7 @@ async fn create_vault_from_xpub(
     .bind(&req.heir_contact_channel)
     .bind(&ciphertext_b64)
     .bind(&nonce_b64)
+    .bind(&claim_eligible_s)
     .execute(&state.db)
     .await?;
 
@@ -533,18 +551,29 @@ async fn checkin(
 
     let now = Utc::now();
     let next = now + Duration::seconds(row.0 + row.1);
+    // Reset the claim-eligibility gate too. If the owner missed the
+    // previous window and was within an inch of having a token issued,
+    // checking in now pushes the gate back into the future and clears
+    // any stale claim_token_hash so a follow-on alarm starts fresh.
+    let claim_eligible = next + Duration::seconds(row.1);
     let now_s = now.to_rfc3339();
     let next_s = next.to_rfc3339();
+    let claim_eligible_s = claim_eligible.to_rfc3339();
 
     sqlx::query(
         r#"UPDATE vaults
-              SET last_checkin_at = ?,
-                  next_deadline_at = ?,
-                  status = 'ok'
+              SET last_checkin_at      = ?,
+                  next_deadline_at     = ?,
+                  status               = 'ok',
+                  claim_eligible_at    = ?,
+                  claim_token_hash     = NULL,
+                  claim_token_issued_at = NULL,
+                  claim_token_used_at  = NULL
             WHERE id = ?"#,
     )
     .bind(&now_s)
     .bind(&next_s)
+    .bind(&claim_eligible_s)
     .bind(&id)
     .execute(&state.db)
     .await?;
@@ -603,10 +632,13 @@ async fn list_events(
  *      think of "issue" as "replace".                                        *
  *                                                                            *
  *  GET /claim/:token                                                         *
- *      Resolves a token to its vault, decrypts the heir contact, and         *
- *      marks the token consumed on first successful resolve. Returns         *
- *      404 for unknown tokens, 409 if already used, 410 if the vault is     *
- *      no longer in a claimable state.                                       *
+ *      Resolves a token to its vault and decrypts the heir contact for       *
+ *      display. The token is NOT consumed on resolve — the heir typically    *
+ *      revisits the page to copy a PSBT into their wallet and come back to   *
+ *      paste the signed PSBT. Consumption happens on a successful            *
+ *      `/claim/:token/broadcast` (see `psbt_routes`). Returns 404 for        *
+ *      unknown tokens, 409 if the broadcast already happened, 410 if the    *
+ *      vault is no longer in a claimable state.                              *
  * -------------------------------------------------------------------------- */
 
 #[derive(Debug, Serialize)]
@@ -769,14 +801,11 @@ async fn resolve_claim(
         _ => (None, channel),
     };
 
-    // Mark the token consumed. We do this *after* the successful decrypt
-    // so a server-side failure doesn't burn the heir's one-shot link.
-    let now_s = Utc::now().to_rfc3339();
-    sqlx::query("UPDATE vaults SET claim_token_used_at = ? WHERE id = ?")
-        .bind(&now_s)
-        .bind(&vault_id)
-        .execute(&state.db)
-        .await?;
+    // We deliberately do NOT mark the token consumed here. The heir
+    // needs to come back to this URL repeatedly during the claim flow
+    // (to build a PSBT, then to broadcast a signed one). The token
+    // becomes "used" only when /claim/:token/broadcast lands a tx on
+    // the network; see psbt_routes::broadcast_claim.
 
     record_event(
         &state.db,
