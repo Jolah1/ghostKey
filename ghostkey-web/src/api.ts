@@ -46,6 +46,38 @@ export interface CreateVaultRequest {
   heir_contact?: string | null;
 }
 
+/**
+ * One party's xpub material. Either supply `fingerprint` alongside a
+ * bare xpub string, or paste an origin-tagged xpub
+ * (`[fingerprint/86'/0'/0']xpub6C...`) and leave `fingerprint` undefined.
+ *
+ * Sparrow, BlueWallet desktop, Specter, and Coldcard all export the
+ * origin-tagged form by default. Mobile BlueWallet exports the bare
+ * form plus a separate fingerprint string.
+ */
+export interface PartyXpub {
+  xpub: string;
+  fingerprint?: string | null;
+}
+
+/**
+ * The web-friendly setup request: the server builds the Taproot
+ * descriptor itself from the two xpubs. See
+ * `crates/ghostkey-server/src/routes.rs::create_vault_from_xpub`.
+ */
+export interface CreateVaultFromXpubRequest {
+  label: string | null;
+  network: string;
+  owner: PartyXpub;
+  heir: PartyXpub;
+  timelock_blocks: number;
+  checkin_period_secs: number;
+  grace_period_secs: number;
+  owner_contact?: string | null;
+  heir_contact?: string | null;
+  heir_contact_channel?: "sms" | "email" | "whatsapp" | null;
+}
+
 export interface CheckinResponse {
   vault_id: string;
   last_checkin_at: string;
@@ -113,6 +145,11 @@ export const api = {
   getVault: (id: string) => request<VaultView>(`/vaults/${id}`),
   createVault: (req: CreateVaultRequest) =>
     request<VaultView>("/vaults", {
+      method: "POST",
+      body: JSON.stringify(req),
+    }),
+  createVaultFromXpub: (req: CreateVaultFromXpubRequest) =>
+    request<VaultView>("/vaults/from-xpub", {
       method: "POST",
       body: JSON.stringify(req),
     }),

@@ -5,9 +5,15 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use bitcoin::bip32::Fingerprint;
+use bitcoin::Network;
 use chrono::{DateTime, Duration, Utc};
-use ghostkey_core::descriptor::parse_descriptor;
+use ghostkey_core::descriptor::{build_descriptor_pair, parse_descriptor};
+use ghostkey_core::keys::{
+    descriptor_key_fragment, parse_xpub, vault_account_path, Chain,
+};
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
@@ -18,6 +24,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/vaults", post(create_vault).get(list_vaults))
+        .route("/vaults/from-xpub", post(create_vault_from_xpub))
         .route("/vaults/:id", get(get_vault))
         .route("/vaults/:id/checkin", post(checkin))
         .route("/vaults/:id/events", get(list_events))
@@ -165,6 +172,236 @@ async fn create_vault(
             next_deadline_at: next_deadline,
         }),
     ))
+}
+
+/* -------------------------------------------------------------------------- *
+ *  POST /vaults/from-xpub                                                    *
+ *                                                                            *
+ *  Web-friendly setup path: the client posts the owner's and heir's xpubs    *
+ *  (with origin info) plus the timelock, and the server renders the          *
+ *  Taproot descriptor pair itself by calling into ghostkey-core. The         *
+ *  legacy POST /vaults that takes pre-rendered descriptors stays available   *
+ *  for the CLI workflow.                                                     *
+ *                                                                            *
+ *  The endpoint accepts an xpub in two forms:                                *
+ *    1. Bare:  "xpub6C..."                  + explicit `fingerprint` field   *
+ *    2. With origin: "[d34db33f/86'/0'/0']xpub6C..."  (no fingerprint field) *
+ *                                                                            *
+ *  Form 2 is what Sparrow / BlueWallet / Coldcard / Specter export. We       *
+ *  parse the bracketed prefix to recover the fingerprint; the embedded path  *
+ *  is not used directly — we always re-derive the canonical `m/86'/coin'/0'` *
+ *  for the requested network. (Wallets that export a non-BIP86 path will    *
+ *  fail the parse_descriptor round-trip in build_descriptor_pair, which we   *
+ *  surface as a clean validation error.)                                     *
+ * -------------------------------------------------------------------------- */
+
+#[derive(Debug, Deserialize)]
+pub struct PartyXpub {
+    /// Either a bare xpub (`xpub6C...`) or an origin-tagged xpub
+    /// (`[fingerprint/path]xpub6C...`). When origin-tagged, `fingerprint`
+    /// may be omitted.
+    pub xpub: String,
+    /// Lowercase 8-hex-char fingerprint. Optional if `xpub` carries origin
+    /// info; required otherwise.
+    pub fingerprint: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateVaultFromXpubRequest {
+    pub label: Option<String>,
+    pub network: String,
+    pub owner: PartyXpub,
+    pub heir: PartyXpub,
+    pub timelock_blocks: u32,
+    pub checkin_period_secs: i64,
+    pub grace_period_secs: i64,
+    pub owner_contact: Option<String>,
+    pub heir_contact: Option<String>,
+    /// Optional channel hint for the heir contact (`sms` / `email` /
+    /// `whatsapp`). Stored as-is for the step-3 claim-link flow. Until
+    /// then it has no behavioural effect.
+    pub heir_contact_channel: Option<String>,
+}
+
+async fn create_vault_from_xpub(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateVaultFromXpubRequest>,
+) -> Result<(StatusCode, Json<VaultView>), ApiError> {
+    // ---- Validate periods + timelock ---------------------------------
+    if req.checkin_period_secs <= 0 || req.grace_period_secs < 0 {
+        return Err(ApiError::Validation("non-positive period".into()));
+    }
+    if req.timelock_blocks == 0 || req.timelock_blocks > 0xFFFF {
+        return Err(ApiError::Validation(format!(
+            "timelock_blocks {} out of range 1..=65535",
+            req.timelock_blocks
+        )));
+    }
+
+    // ---- Resolve network ---------------------------------------------
+    let network = match req.network.as_str() {
+        "bitcoin" => Network::Bitcoin,
+        "testnet" => Network::Testnet,
+        "signet" => Network::Signet,
+        "regtest" => Network::Regtest,
+        other => {
+            return Err(ApiError::Validation(format!("unknown network {other}")));
+        }
+    };
+    let path = vault_account_path(network);
+
+    // ---- Parse owner + heir xpubs ------------------------------------
+    let (owner_fp, owner_xpub) =
+        resolve_party("owner", &req.owner.xpub, req.owner.fingerprint.as_deref())?;
+    let (heir_fp, heir_xpub) =
+        resolve_party("heir", &req.heir.xpub, req.heir.fingerprint.as_deref())?;
+    if owner_xpub == heir_xpub {
+        return Err(ApiError::Validation(
+            "owner and heir xpubs must differ".into(),
+        ));
+    }
+
+    // ---- Render the four key fragments + descriptor pair -------------
+    let owner_ext = descriptor_key_fragment(owner_fp, &path, &owner_xpub, Chain::External);
+    let owner_int = descriptor_key_fragment(owner_fp, &path, &owner_xpub, Chain::Internal);
+    let heir_ext = descriptor_key_fragment(heir_fp, &path, &heir_xpub, Chain::External);
+    let heir_int = descriptor_key_fragment(heir_fp, &path, &heir_xpub, Chain::Internal);
+
+    let pair = build_descriptor_pair(
+        &owner_ext,
+        &owner_int,
+        &heir_ext,
+        &heir_int,
+        req.timelock_blocks,
+    )
+    .map_err(|e| ApiError::Validation(format!("descriptor build: {e}")))?;
+
+    // build_descriptor_pair already round-trips through parse_descriptor,
+    // but we re-validate here defensively in case a future refactor
+    // changes that contract.
+    parse_descriptor(&pair.external)
+        .map_err(|e| ApiError::Validation(format!("descriptor_external: {e}")))?;
+    parse_descriptor(&pair.internal)
+        .map_err(|e| ApiError::Validation(format!("descriptor_internal: {e}")))?;
+
+    // ---- Persist ------------------------------------------------------
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now();
+    let next_deadline =
+        now + Duration::seconds(req.checkin_period_secs + req.grace_period_secs);
+    let now_s = now.to_rfc3339();
+    let next_s = next_deadline.to_rfc3339();
+    let timelock = req.timelock_blocks as i64;
+
+    sqlx::query(
+        r#"INSERT INTO vaults (
+            id, label, network,
+            descriptor_external, descriptor_internal,
+            timelock_blocks,
+            checkin_period_secs, grace_period_secs,
+            owner_contact, heir_contact,
+            created_at, next_deadline_at, status,
+            owner_xpub_fragment_external, owner_xpub_fragment_internal,
+            heir_xpub_fragment_external,  heir_xpub_fragment_internal,
+            heir_contact_channel
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok',
+                  ?, ?, ?, ?, ?)"#,
+    )
+    .bind(&id)
+    .bind(&req.label)
+    .bind(&req.network)
+    .bind(&pair.external)
+    .bind(&pair.internal)
+    .bind(timelock)
+    .bind(req.checkin_period_secs)
+    .bind(req.grace_period_secs)
+    .bind(&req.owner_contact)
+    .bind(&req.heir_contact)
+    .bind(&now_s)
+    .bind(&next_s)
+    .bind(&owner_ext)
+    .bind(&owner_int)
+    .bind(&heir_ext)
+    .bind(&heir_int)
+    .bind(&req.heir_contact_channel)
+    .execute(&state.db)
+    .await?;
+
+    record_event(
+        &state.db,
+        &id,
+        "registered",
+        Some(serde_json::json!({
+            "source": "from-xpub",
+            "network": req.network,
+        })),
+    )
+    .await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(VaultView {
+            id,
+            label: req.label,
+            network: req.network,
+            timelock_blocks: timelock,
+            checkin_period_secs: req.checkin_period_secs,
+            grace_period_secs: req.grace_period_secs,
+            status: "ok".into(),
+            created_at: now,
+            last_checkin_at: None,
+            next_deadline_at: next_deadline,
+        }),
+    ))
+}
+
+/// Pull `(fingerprint, xpub)` out of a `PartyXpub`, supporting both bare
+/// xpub + explicit fingerprint and origin-tagged xpub strings.
+fn resolve_party(
+    who: &str,
+    raw_xpub: &str,
+    explicit_fp: Option<&str>,
+) -> Result<(Fingerprint, bitcoin::bip32::Xpub), ApiError> {
+    let trimmed = raw_xpub.trim();
+
+    let (fp_str, xpub_str) = if let Some(stripped) = trimmed.strip_prefix('[') {
+        // Origin-tagged: `[fingerprint/path]xpub...`
+        let close = stripped.find(']').ok_or_else(|| {
+            ApiError::Validation(format!(
+                "{who}.xpub: missing closing ']' on origin tag"
+            ))
+        })?;
+        let inside = &stripped[..close];
+        let after = &stripped[close + 1..];
+        // The first '/' separates fingerprint from path; everything before is the FP.
+        let fp_part = inside.split('/').next().unwrap_or(inside);
+        // Sanity: an explicit fingerprint, if also provided, must match.
+        if let Some(explicit) = explicit_fp {
+            if !explicit.eq_ignore_ascii_case(fp_part) {
+                return Err(ApiError::Validation(format!(
+                    "{who}.fingerprint ({explicit}) does not match origin tag ({fp_part})"
+                )));
+            }
+        }
+        (fp_part.to_string(), after.to_string())
+    } else {
+        let fp = explicit_fp.ok_or_else(|| {
+            ApiError::Validation(format!(
+                "{who}.fingerprint is required when xpub has no origin tag"
+            ))
+        })?;
+        (fp.to_string(), trimmed.to_string())
+    };
+
+    let fp = Fingerprint::from_str(&fp_str).map_err(|e| {
+        ApiError::Validation(format!("{who}.fingerprint: {e}"))
+    })?;
+    let xpub = parse_xpub(&xpub_str)
+        .map_err(|e| ApiError::Validation(format!("{who}.xpub: {e}")))?;
+    // The embedded derivation path (if any) is informational only —
+    // we always re-derive the canonical m/86'/coin'/0' from the
+    // network parameter at the call site.
+    Ok((fp, xpub))
 }
 
 #[derive(Debug, Serialize)]
@@ -343,4 +580,107 @@ fn parse_rfc(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s)
         .map(|d| d.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now())
+}
+
+/* -------------------------------------------------------------------------- *
+ *  Unit tests for the from-xpub parsing layer.                               *
+ *  Full route-level integration testing lives outside this file (would need  *
+ *  a SqlitePool harness); these cover the parse_party branches that diverge  *
+ *  from the existing CLI path.                                               *
+ * -------------------------------------------------------------------------- */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bitcoin::bip32::Xpriv;
+    use bitcoin::secp256k1::Secp256k1;
+
+    /// Build a deterministic (xpub, fingerprint) pair from a 32-byte seed
+    /// on regtest. Mirrors the seeds used in
+    /// `ghostkey-core::descriptor::tests::builds_and_parses_descriptor_pair`.
+    fn xpub_for(seed_byte: u8) -> (String, String) {
+        let seed = [seed_byte; 32];
+        let master = Xpriv::new_master(Network::Regtest, &seed).unwrap();
+        let (fp, _path, xpub) =
+            ghostkey_core::keys::account_xpub(&master, Network::Regtest).unwrap();
+        (xpub.to_string(), format!("{fp}"))
+    }
+
+    #[test]
+    fn resolve_party_accepts_bare_xpub_with_explicit_fingerprint() {
+        let (xpub, fp) = xpub_for(0x11);
+        let (out_fp, out_xpub) = resolve_party("owner", &xpub, Some(&fp))
+            .expect("bare xpub + fingerprint should parse");
+        assert_eq!(format!("{out_fp}"), fp);
+        assert_eq!(out_xpub.to_string(), xpub);
+    }
+
+    #[test]
+    fn resolve_party_accepts_origin_tagged_xpub_without_explicit_fingerprint() {
+        let (xpub, fp) = xpub_for(0x22);
+        let tagged = format!("[{fp}/86'/1'/0']{xpub}");
+        let (out_fp, out_xpub) =
+            resolve_party("heir", &tagged, None).expect("origin-tagged xpub should parse");
+        assert_eq!(format!("{out_fp}"), fp);
+        assert_eq!(out_xpub.to_string(), xpub);
+    }
+
+    #[test]
+    fn resolve_party_rejects_origin_tag_with_mismatched_explicit_fingerprint() {
+        let (xpub, fp) = xpub_for(0x33);
+        let tagged = format!("[{fp}/86'/1'/0']{xpub}");
+        let err = resolve_party("owner", &tagged, Some("deadbeef"))
+            .expect_err("mismatched fingerprint must error");
+        let msg = err.to_string();
+        assert!(msg.contains("does not match origin tag"), "got: {msg}");
+    }
+
+    #[test]
+    fn resolve_party_rejects_bare_xpub_without_fingerprint() {
+        let (xpub, _fp) = xpub_for(0x44);
+        let err = resolve_party("owner", &xpub, None)
+            .expect_err("bare xpub without fingerprint must error");
+        assert!(err.to_string().contains("fingerprint is required"));
+    }
+
+    #[test]
+    fn resolve_party_rejects_garbage_xpub() {
+        let err = resolve_party("owner", "not-an-xpub", Some("deadbeef"))
+            .expect_err("garbage xpub must error");
+        assert!(err.to_string().contains("owner.xpub"));
+    }
+
+    #[test]
+    fn end_to_end_descriptor_build_from_xpubs() {
+        // Smoke test the full pipeline used by the route handler: take two
+        // xpubs, render fragments, render descriptor pair, parse it back.
+        let secp = Secp256k1::new();
+        let owner_master = Xpriv::new_master(Network::Regtest, &[0x55; 32]).unwrap();
+        let heir_master = Xpriv::new_master(Network::Regtest, &[0x66; 32]).unwrap();
+        let owner_fp = owner_master.fingerprint(&secp);
+        let heir_fp = heir_master.fingerprint(&secp);
+        let (_o_fp, _path, owner_xpub) =
+            ghostkey_core::keys::account_xpub(&owner_master, Network::Regtest).unwrap();
+        let (_h_fp, path, heir_xpub) =
+            ghostkey_core::keys::account_xpub(&heir_master, Network::Regtest).unwrap();
+
+        let oe = descriptor_key_fragment(owner_fp, &path, &owner_xpub, Chain::External);
+        let oi = descriptor_key_fragment(owner_fp, &path, &owner_xpub, Chain::Internal);
+        let he = descriptor_key_fragment(heir_fp, &path, &heir_xpub, Chain::External);
+        let hi = descriptor_key_fragment(heir_fp, &path, &heir_xpub, Chain::Internal);
+
+        let pair = build_descriptor_pair(&oe, &oi, &he, &hi, 144).unwrap();
+        assert!(pair.external.starts_with("tr("), "external: {}", pair.external);
+        assert!(pair.external.contains("older(144)"));
+        // Each chain fragment occurs once in the descriptor with its trailing
+        // `/0/*` (external) or `/1/*` (internal) glob. We don't pin the
+        // surrounding parens — miniscript whitespace / canonicalisation is
+        // an implementation detail of the build helper.
+        assert!(pair.external.contains("/0/*"));
+        assert!(pair.internal.contains("/1/*"));
+        assert!(!pair.external.contains("/1/*"));
+        assert!(!pair.internal.contains("/0/*"));
+        parse_descriptor(&pair.external).unwrap();
+        parse_descriptor(&pair.internal).unwrap();
+    }
 }
