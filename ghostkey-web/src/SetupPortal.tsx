@@ -1,17 +1,23 @@
 /**
  * Setup wizard — click-driven, four steps:
  *
- *   1. Wallet         — owner Bitcoin address (+ optional wallet pick)
- *   2. Heir           — name, email, Bitcoin address
- *   3. Timing         — waiting period (timelock) + reminder cadence
- *   4. Review         — summary + activate
+ *   1. Wallet  — owner's xpub (with origin info or fingerprint + bare xpub)
+ *   2. Heir    — name, contact (sms / email / whatsapp), and their xpub
+ *   3. Timing  — waiting period (timelock) + reminder cadence
+ *   4. Review  — summary + activate
  *
- * The descriptor pair the API expects is hidden behind an Advanced
- * disclosure inside step 1. If the user doesn't open it, we send a
- * deterministic placeholder so the request still completes. The spec
- * says users must be able to set up without copying any JSON; the real
- * descriptor capture moves to wallet-side flows later (Sparrow/Ledger
- * deep links), tracked as future work.
+ * The xpubs flow through POST /vaults/from-xpub, which the Rust server
+ * uses to render the real Taproot inheritance descriptor. The legacy
+ * "paste a raw descriptor pair" path is still available behind the
+ * Advanced disclosure on step 1 for users who came from the CLI and
+ * already have descriptors in hand.
+ *
+ * Why the paste? An xpub is a public key — it cannot spend, only watch
+ * — but it is the unique piece of information the wallet has to share
+ * for GhostKey to build the inheritance script. There is no programmatic
+ * API for Cake / Sparrow / BlueWallet / Coldcard to hand it over, so
+ * paste is the universal connector. The "What is this?" disclosure
+ * tells the user where to find it in each wallet.
  */
 import { useMemo, useState } from "react";
 import {
@@ -22,7 +28,12 @@ import {
   InlineAlert,
   Disclosure,
 } from "./ui";
-import { ApiError, api, type VaultListItem } from "./api";
+import {
+  ApiError,
+  api,
+  type VaultListItem,
+  type PartyXpub,
+} from "./api";
 import { saveVaultMeta } from "./vaultStore";
 
 interface Props {
@@ -30,24 +41,39 @@ interface Props {
   onCreated: (v: VaultListItem) => void;
 }
 
+type ContactChannel = "sms" | "email" | "whatsapp";
+
 interface Draft {
-  ownerAddress: string;
-  ownerWallet: string | null;
+  // Owner side
+  ownerXpub: string;            // bare or origin-tagged
+  ownerFingerprint: string;     // optional when ownerXpub is origin-tagged
+  ownerWallet: string | null;   // soft hint, not used in payload
+
+  // Heir side
   heirName: string;
-  heirEmail: string;
-  heirAddress: string;
+  heirContact: string;
+  heirContactChannel: ContactChannel;
+  heirXpub: string;
+  heirFingerprint: string;
+
+  // Timing
   waitingMonths: number;
   reminderEveryTwoWeeks: boolean;
+
+  // Legacy fallback (Advanced disclosure)
   descriptorExternal: string;
   descriptorInternal: string;
 }
 
 const EMPTY: Draft = {
-  ownerAddress: "",
+  ownerXpub: "",
+  ownerFingerprint: "",
   ownerWallet: null,
   heirName: "",
-  heirEmail: "",
-  heirAddress: "",
+  heirContact: "",
+  heirContactChannel: "sms",
+  heirXpub: "",
+  heirFingerprint: "",
   waitingMonths: 3,
   reminderEveryTwoWeeks: true,
   descriptorExternal: "",
@@ -55,6 +81,43 @@ const EMPTY: Draft = {
 };
 
 const STEPS = ["Wallet", "Heir", "Timing", "Review"] as const;
+
+/* ------------------------ xpub parsing helpers ----------------------------- */
+
+/**
+ * Quick client-side shape check. Accepts:
+ *   - bare xpub starting with `xpub`, `tpub`, `vpub`, `upub`, `ypub`, `zpub`
+ *   - origin-tagged `[FP/path]xpub...`
+ *
+ * We do NOT validate the BIP32 checksum on the client — that's the
+ * server's job. The purpose of this check is to catch obvious typos
+ * before round-tripping to the API.
+ */
+function looksLikeXpub(s: string): boolean {
+  const t = s.trim();
+  if (!t) return false;
+  const body = t.startsWith("[")
+    ? t.replace(/^\[[^\]]+\]/, "")
+    : t;
+  return /^[xtvuyz]pub[1-9A-HJ-NP-Za-km-z]{50,}$/.test(body);
+}
+
+/** True if the string is origin-tagged (`[FP/path]xpub...`). */
+function isOriginTagged(s: string): boolean {
+  return s.trim().startsWith("[");
+}
+
+/** Extract the fingerprint from an origin tag, or null if not tagged. */
+function extractFingerprint(s: string): string | null {
+  const m = s.trim().match(/^\[([0-9a-fA-F]{8})\//);
+  return m ? m[1].toLowerCase() : null;
+}
+
+function isHexFingerprint(s: string): boolean {
+  return /^[0-9a-fA-F]{8}$/.test(s.trim());
+}
+
+/* ----------------------------- Component ----------------------------------- */
 
 export function SetupPortal({ onCancel, onCreated }: Props) {
   const [step, setStep] = useState(0);
@@ -68,16 +131,49 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
   }
 
   function validate(s: number): string | null {
+    const hasAdvancedDescriptor =
+      draft.descriptorExternal.trim() && draft.descriptorInternal.trim();
+
     if (s === 0) {
-      if (!draft.ownerAddress.trim()) {
-        return "Add your Bitcoin address or connect a wallet to continue.";
+      // If the user is going down the Advanced (paste descriptor) path,
+      // we don't require an xpub — the descriptors already encode it.
+      if (hasAdvancedDescriptor) return null;
+
+      if (!draft.ownerXpub.trim()) {
+        return "Paste your wallet's xpub to continue.";
+      }
+      if (!looksLikeXpub(draft.ownerXpub)) {
+        return "That doesn't look like an xpub. It should start with xpub, tpub, or vpub.";
+      }
+      if (!isOriginTagged(draft.ownerXpub) && !isHexFingerprint(draft.ownerFingerprint)) {
+        return "Your xpub has no origin tag. Add your wallet's fingerprint (8 hex characters).";
       }
     }
     if (s === 1) {
       if (!draft.heirName.trim()) return "Tell us who is inheriting.";
-      if (!draft.heirAddress.trim()) return "We need their Bitcoin address.";
-      if (draft.heirEmail.trim() && !/^.+@.+\..+$/.test(draft.heirEmail.trim())) {
+      if (!draft.heirContact.trim()) {
+        return "Add a phone number or email so we can reach them when the time comes.";
+      }
+      if (draft.heirContactChannel === "email" &&
+          !/^.+@.+\..+$/.test(draft.heirContact.trim())) {
         return "That email looks off. Double-check it.";
+      }
+      if (hasAdvancedDescriptor) return null;
+
+      if (!draft.heirXpub.trim()) {
+        return "Paste the heir's xpub. They never have to know — you get this from them in advance, or from any wallet you set aside for them.";
+      }
+      if (!looksLikeXpub(draft.heirXpub)) {
+        return "That doesn't look like an xpub. It should start with xpub, tpub, or vpub.";
+      }
+      if (!isOriginTagged(draft.heirXpub) && !isHexFingerprint(draft.heirFingerprint)) {
+        return "Heir's xpub has no origin tag. Add the wallet's fingerprint (8 hex characters).";
+      }
+      if (
+        draft.ownerXpub.trim() &&
+        draft.ownerXpub.trim() === draft.heirXpub.trim()
+      ) {
+        return "Owner and heir xpubs must be different.";
       }
     }
     return null;
@@ -99,60 +195,64 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
     setBusy(true);
     setError(null);
     try {
-      // Derive a clean label from the heir's name if the user didn't set
-      // one. People don't think in terms of "vault labels" — they think
-      // "Sarah's Bitcoin", "kids' college", etc.
       const label = `${draft.heirName.trim()}'s inheritance`;
-
       // Months → Bitcoin blocks. ~144 blocks/day, 30 days/month.
       const timelockBlocks = Math.max(144, draft.waitingMonths * 30 * 144);
-
-      // Reminder cadence
       const checkinSecs = draft.reminderEveryTwoWeeks
         ? 14 * 86_400
         : 30 * 86_400;
-      const graceSecs = 3 * 86_400; // 3-day grace baked in
+      const graceSecs = 3 * 86_400;
 
-      // If the user didn't fill the advanced descriptors, send
-      // placeholders so the API accepts the request. The server stores
-      // them as opaque strings; the real on-chain machinery is wired up
-      // separately by the CLI when the user actually funds the vault.
-      const dExt =
-        draft.descriptorExternal.trim() ||
-        `tr(placeholder/${draft.ownerAddress.trim()}/0/*)`;
-      const dInt =
-        draft.descriptorInternal.trim() ||
-        `tr(placeholder/${draft.ownerAddress.trim()}/1/*)`;
-
-      const resp = await api.createVault({
-        label,
-        network: "bitcoin",
-        descriptor_external: dExt,
-        descriptor_internal: dInt,
-        timelock_blocks: timelockBlocks,
-        checkin_period_secs: checkinSecs,
-        grace_period_secs: graceSecs,
-        owner_contact: draft.ownerAddress.trim(),
-        heir_contact: JSON.stringify({
-          name: draft.heirName.trim(),
-          email: draft.heirEmail.trim(),
-          address: draft.heirAddress.trim(),
-        }),
+      const heirContactPayload = JSON.stringify({
+        name: draft.heirName.trim(),
+        contact: draft.heirContact.trim(),
+        channel: draft.heirContactChannel,
       });
 
-      // Mirror the structured heir/owner info locally so the dashboard
-      // can render it without round-tripping to the server.
+      const advExt = draft.descriptorExternal.trim();
+      const advInt = draft.descriptorInternal.trim();
+      const useAdvanced = advExt && advInt;
+
+      const resp = useAdvanced
+        ? await api.createVault({
+            label,
+            network: "bitcoin",
+            descriptor_external: advExt,
+            descriptor_internal: advInt,
+            timelock_blocks: timelockBlocks,
+            checkin_period_secs: checkinSecs,
+            grace_period_secs: graceSecs,
+            owner_contact: null,
+            heir_contact: heirContactPayload,
+          })
+        : await api.createVaultFromXpub({
+            label,
+            network: "bitcoin",
+            owner: partyFromDraft(draft.ownerXpub, draft.ownerFingerprint),
+            heir: partyFromDraft(draft.heirXpub, draft.heirFingerprint),
+            timelock_blocks: timelockBlocks,
+            checkin_period_secs: checkinSecs,
+            grace_period_secs: graceSecs,
+            owner_contact: null,
+            heir_contact: heirContactPayload,
+            heir_contact_channel: draft.heirContactChannel,
+          });
+
+      // Mirror the structured heir info locally so the dashboard can
+      // render it without round-tripping to the server. We deliberately
+      // do NOT mirror the xpub here — it's enough that the server holds
+      // the descriptors; the device-local store is just for friendly UI.
       saveVaultMeta({
         id: resp.id,
         label,
         owner: {
-          address: draft.ownerAddress.trim(),
+          address: draft.ownerXpub.trim() || advExt,
           wallet: draft.ownerWallet,
         },
         heir: {
           name: draft.heirName.trim(),
-          email: draft.heirEmail.trim(),
-          address: draft.heirAddress.trim(),
+          email: draft.heirContactChannel === "email" ? draft.heirContact.trim() : "",
+          address: draft.heirXpub.trim() || "",
         },
         createdAt: new Date().toISOString(),
       });
@@ -220,12 +320,23 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
   );
 }
 
+/** Build the PartyXpub payload, dropping the explicit fingerprint when
+ *  the xpub already carries an origin tag. The server accepts both. */
+function partyFromDraft(xpub: string, fingerprint: string): PartyXpub {
+  const t = xpub.trim();
+  if (isOriginTagged(t)) {
+    return { xpub: t };
+  }
+  return { xpub: t, fingerprint: fingerprint.trim().toLowerCase() };
+}
+
 /* --------------------------- Step 1: wallet ------------------------------- */
 
 const WALLETS = [
   { id: "Sparrow",    title: "Sparrow",    sub: "Desktop"  },
   { id: "BlueWallet", title: "Blue",       sub: "Mobile"   },
-  { id: "Ledger",     title: "Ledger",     sub: "Hardware" },
+  { id: "Cake",       title: "Cake",       sub: "Mobile"   },
+  { id: "Coldcard",   title: "Coldcard",   sub: "Hardware" },
 ];
 
 function StepWallet({
@@ -235,32 +346,59 @@ function StepWallet({
   draft: Draft;
   patch: (p: Partial<Draft>) => void;
 }) {
+  const hasOriginTag = isOriginTagged(draft.ownerXpub);
+  const detectedFp = hasOriginTag ? extractFingerprint(draft.ownerXpub) : null;
+
   return (
     <div>
       <h1 className="font-serif text-3xl md:text-4xl">Connect your wallet</h1>
       <p className="mt-2 text-muted">
-        GhostKey never holds your Bitcoin. We just watch the address you give us.
+        Paste your wallet's xpub. This is a public key. It can watch — it cannot
+        spend. GhostKey never sees your private keys.
       </p>
 
       <div className="mt-8">
         <Field
-          label="Your Bitcoin address"
-          hint="Paste the receiving address from your wallet. We never see your private keys."
+          label="Your xpub"
+          hint={
+            hasOriginTag && detectedFp
+              ? `Fingerprint detected: ${detectedFp}`
+              : "Most wallets export this from a 'Show xpub' or 'Account info' screen."
+          }
         >
-          <input
-            type="text"
-            value={draft.ownerAddress}
-            onChange={(e) => patch({ ownerAddress: e.target.value })}
-            placeholder="bc1q..."
+          <textarea
+            rows={3}
+            value={draft.ownerXpub}
+            onChange={(e) => patch({ ownerXpub: e.target.value })}
+            placeholder="[d34db33f/86'/0'/0']xpub6C..."
             spellCheck={false}
             autoComplete="off"
-            inputMode="text"
-            className="input font-mono text-[13px]"
+            className="textarea"
           />
         </Field>
 
-        <Field label="Or pick where you keep it">
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        {!hasOriginTag && draft.ownerXpub.trim() ? (
+          <Field
+            label="Wallet fingerprint"
+            hint="Eight hex characters. Sparrow shows it under 'Settings → Keystore'. Coldcard shows it on the home screen."
+          >
+            <input
+              type="text"
+              value={draft.ownerFingerprint}
+              onChange={(e) =>
+                patch({ ownerFingerprint: e.target.value.replace(/\s+/g, "") })
+              }
+              placeholder="d34db33f"
+              spellCheck={false}
+              autoComplete="off"
+              maxLength={8}
+              className="input font-mono text-[13px] uppercase"
+            />
+          </Field>
+        ) : null}
+
+        <Field label="Which wallet did this come from?">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {WALLETS.map((w) => (
               <Tile
                 key={w.id}
@@ -277,11 +415,43 @@ function StepWallet({
           </div>
         </Field>
 
-        <div className="mt-2">
+        <div className="mt-2 space-y-2">
+          <Disclosure summary={<span>What is an xpub, and where do I get it?</span>}>
+            <p className="mb-3 text-sm text-muted">
+              An xpub (extended public key) is a string that starts with{" "}
+              <code className="font-mono">xpub</code>,{" "}
+              <code className="font-mono">tpub</code>, or{" "}
+              <code className="font-mono">vpub</code>. It lets GhostKey watch
+              every address your wallet ever generates and build an inheritance
+              script around them. It cannot move funds.
+            </p>
+            <ul className="space-y-2 pl-4 text-sm text-muted list-disc">
+              <li>
+                <strong className="text-[var(--text)]">Sparrow:</strong>{" "}
+                File → New Wallet → existing wallet → Settings → Keystores → Show xpub.
+              </li>
+              <li>
+                <strong className="text-[var(--text)]">BlueWallet:</strong>{" "}
+                Wallet → ⋯ → Wallet details → Show xpub.
+              </li>
+              <li>
+                <strong className="text-[var(--text)]">Cake Wallet:</strong>{" "}
+                Menu → Wallets → Show keys → Public key. (Cake exports a single
+                xpub per account.)
+              </li>
+              <li>
+                <strong className="text-[var(--text)]">Coldcard:</strong>{" "}
+                Advanced/Tools → Export Wallet → Generic JSON → copy the{" "}
+                <code className="font-mono">bip86</code> entry.
+              </li>
+            </ul>
+          </Disclosure>
+
           <Disclosure summary={<span>Advanced (paste a descriptor pair)</span>}>
             <p className="mb-4 text-xs text-muted">
-              Already have a Taproot descriptor from the GhostKey command-line app?
-              Paste both lines below. Otherwise leave this closed and continue.
+              Already have a Taproot descriptor pair from the GhostKey
+              command-line app? Paste both lines below — we'll skip the xpub
+              step entirely.
             </p>
             <Field
               label="descriptor_external"
@@ -318,6 +488,12 @@ function StepWallet({
 
 /* ---------------------------- Step 2: heir -------------------------------- */
 
+const CHANNELS: { id: ContactChannel; title: string; sub: string; placeholder: string }[] = [
+  { id: "sms",      title: "SMS",      sub: "Phone number", placeholder: "+234 800 000 0000" },
+  { id: "whatsapp", title: "WhatsApp", sub: "Same number",  placeholder: "+234 800 000 0000" },
+  { id: "email",    title: "Email",    sub: "Inbox",        placeholder: "sarah@example.com" },
+];
+
 function StepHeir({
   draft,
   patch,
@@ -325,12 +501,17 @@ function StepHeir({
   draft: Draft;
   patch: (p: Partial<Draft>) => void;
 }) {
+  const channelMeta =
+    CHANNELS.find((c) => c.id === draft.heirContactChannel) ?? CHANNELS[0];
+  const hasOriginTag = isOriginTagged(draft.heirXpub);
+  const detectedFp = hasOriginTag ? extractFingerprint(draft.heirXpub) : null;
+
   return (
     <div>
       <h1 className="font-serif text-3xl md:text-4xl">Who should receive this</h1>
       <p className="mt-2 text-muted">
-        They need a Bitcoin wallet. When the time comes, the Bitcoin goes directly
-        to them. No one else is involved.
+        They never have to know about this until the time comes. When it does,
+        we reach them on the channel you pick below and they claim from there.
       </p>
 
       <div className="mt-8">
@@ -345,31 +526,74 @@ function StepHeir({
           />
         </Field>
 
-        <Field label="Their Bitcoin address">
+        <Field label="How should we reach them">
+          <div className="grid grid-cols-3 gap-2">
+            {CHANNELS.map((c) => (
+              <Tile
+                key={c.id}
+                title={c.title}
+                sub={c.sub}
+                selected={draft.heirContactChannel === c.id}
+                onClick={() => patch({ heirContactChannel: c.id })}
+              />
+            ))}
+          </div>
+        </Field>
+
+        <Field
+          label={
+            draft.heirContactChannel === "email"
+              ? "Their email"
+              : "Their phone number"
+          }
+          hint="Stored encrypted. We don't message them until the alarm fires."
+        >
           <input
-            type="text"
-            value={draft.heirAddress}
-            onChange={(e) => patch({ heirAddress: e.target.value })}
-            placeholder="bc1q..."
-            spellCheck={false}
+            type={draft.heirContactChannel === "email" ? "email" : "tel"}
+            value={draft.heirContact}
+            onChange={(e) => patch({ heirContact: e.target.value })}
+            placeholder={channelMeta.placeholder}
             autoComplete="off"
-            className="input font-mono text-[13px]"
+            inputMode={draft.heirContactChannel === "email" ? "email" : "tel"}
+            className="input"
           />
         </Field>
 
         <Field
-          label="Their email (optional)"
-          hint="We'll send them a single alert if a reminder is missed. We won't email them otherwise."
+          label="Their xpub"
+          hint={
+            hasOriginTag && detectedFp
+              ? `Fingerprint detected: ${detectedFp}`
+              : "Same kind of key as yours. If they don't have a wallet yet, set one up on a spare phone, export the xpub, and keep that phone safe."
+          }
         >
-          <input
-            type="email"
-            value={draft.heirEmail}
-            onChange={(e) => patch({ heirEmail: e.target.value })}
-            placeholder="sarah@example.com"
+          <textarea
+            rows={3}
+            value={draft.heirXpub}
+            onChange={(e) => patch({ heirXpub: e.target.value })}
+            placeholder="[c0ffee01/86'/0'/0']xpub6C..."
+            spellCheck={false}
             autoComplete="off"
-            className="input"
+            className="textarea"
           />
         </Field>
+
+        {!hasOriginTag && draft.heirXpub.trim() ? (
+          <Field label="Their wallet fingerprint">
+            <input
+              type="text"
+              value={draft.heirFingerprint}
+              onChange={(e) =>
+                patch({ heirFingerprint: e.target.value.replace(/\s+/g, "") })
+              }
+              placeholder="c0ffee01"
+              spellCheck={false}
+              autoComplete="off"
+              maxLength={8}
+              className="input font-mono text-[13px] uppercase"
+            />
+          </Field>
+        ) : null}
       </div>
     </div>
   );
@@ -445,18 +669,26 @@ function monthsLabel(n: number): string {
 /* --------------------------- Step 4: review ------------------------------- */
 
 function StepReview({ draft }: { draft: Draft }) {
+  const usedAdvanced =
+    draft.descriptorExternal.trim() && draft.descriptorInternal.trim();
+
   const summary = useMemo(
     () => [
       ["Goes to", draft.heirName || "—"],
-      ["Their wallet", short(draft.heirAddress) || "—"],
+      ["Reach them by",
+        draft.heirContactChannel === "sms" ? "SMS"
+        : draft.heirContactChannel === "whatsapp" ? "WhatsApp"
+        : "Email"],
+      ["Their contact", short(draft.heirContact) || "—"],
+      ["Their xpub", usedAdvanced ? "(in descriptor)" : (short(draft.heirXpub) || "—")],
       ["Waiting period", monthsLabel(draft.waitingMonths)],
       [
         "Reminder",
         draft.reminderEveryTwoWeeks ? "Every 2 weeks" : "Every month",
       ],
-      ["From your wallet", short(draft.ownerAddress) || "—"],
+      ["Your xpub", usedAdvanced ? "(in descriptor)" : (short(draft.ownerXpub) || "—")],
     ],
-    [draft],
+    [draft, usedAdvanced],
   );
 
   return (
