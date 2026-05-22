@@ -93,6 +93,27 @@ export interface VaultEvent {
   created_at: string;
 }
 
+/**
+ * What the heir sees after clicking their claim link.
+ *
+ * The server omits any field that would be useful to an attacker or
+ * unhelpful to the heir (descriptor strings, owner xpub, raw contact
+ * value). Channel is a hint about how the link arrived; display name
+ * is the heir's own name as the owner typed it during setup.
+ *
+ * Backed by `crates/ghostkey-server/src/routes.rs::ClaimView`.
+ */
+export interface ClaimView {
+  vault_id: string;
+  label: string | null;
+  network: string;
+  status: VaultStatus;
+  timelock_blocks: number;
+  next_deadline_at: string;
+  heir_channel: string | null;
+  heir_display_name: string | null;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -156,4 +177,6 @@ export const api = {
   checkin: (id: string) =>
     request<CheckinResponse>(`/vaults/${id}/checkin`, { method: "POST" }),
   listEvents: (id: string) => request<VaultEvent[]>(`/vaults/${id}/events`),
+  resolveClaim: (token: string) =>
+    request<ClaimView>(`/claim/${encodeURIComponent(token)}`),
 };
