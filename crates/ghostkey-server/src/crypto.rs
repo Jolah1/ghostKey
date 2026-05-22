@@ -26,9 +26,13 @@
 //! When the scheduler decides it's time to reach the heir, a fresh
 //! 32-byte random token is generated. The token itself is sent to the
 //! heir in the claim link (in the URL path); only the SHA-256 hash of
-//! the token is stored in the database. First successful resolve marks
-//! the token consumed via `claim_token_used_at`; subsequent attempts
-//! refuse with a clean "already used" error.
+//! the token is stored in the database. The token is consumed via
+//! `claim_token_used_at` only when the heir successfully broadcasts
+//! their claim transaction (`POST /claim/:token/broadcast`); resolving
+//! the link to display the page does not burn it, because the heir
+//! typically revisits the URL while signing their PSBT offline.
+//! Subsequent attempts after a successful broadcast refuse with a
+//! clean "already used" error.
 //!
 //! Tokens are not bound to a session, IP, or device — they are a bearer
 //! credential by design. The heir is the only person who has the

@@ -114,6 +114,43 @@ export interface ClaimView {
   heir_display_name: string | null;
 }
 
+/**
+ * Heir-claim PSBT build request. The heir supplies the destination
+ * Bitcoin address (where the funds should land) and optionally a fee
+ * rate in sat/vB. The server reconstructs the vault from its stored
+ * descriptor pair, scans the chain for UTXOs at vault addresses, and
+ * returns an unsigned PSBT that takes the timelocked recovery branch.
+ *
+ * Backed by `crates/ghostkey-server/src/psbt_routes.rs::BuildClaimPsbtRequest`.
+ */
+export interface BuildClaimPsbtRequest {
+  destination: string;
+  fee_rate_sat_per_vb?: number | null;
+}
+
+export interface BuildClaimPsbtResponse {
+  psbt_b64: string;
+  total_input_sats: number;
+  output_sats: number;
+  fee_sats: number;
+  network: string;
+  /**
+   * Whether the server was able to finalise the PSBT without the
+   * heir's signature. For a watch-only build this is always false —
+   * the heir's wallet still has to sign before broadcast.
+   */
+  finalized: boolean;
+}
+
+export interface BroadcastClaimRequest {
+  signed_psbt_b64: string;
+}
+
+export interface BroadcastClaimResponse {
+  txid: string;
+  explorer_url: string;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -179,4 +216,14 @@ export const api = {
   listEvents: (id: string) => request<VaultEvent[]>(`/vaults/${id}/events`),
   resolveClaim: (token: string) =>
     request<ClaimView>(`/claim/${encodeURIComponent(token)}`),
+  buildClaimPsbt: (token: string, req: BuildClaimPsbtRequest) =>
+    request<BuildClaimPsbtResponse>(
+      `/claim/${encodeURIComponent(token)}/build-psbt`,
+      { method: "POST", body: JSON.stringify(req) },
+    ),
+  broadcastClaim: (token: string, req: BroadcastClaimRequest) =>
+    request<BroadcastClaimResponse>(
+      `/claim/${encodeURIComponent(token)}/broadcast`,
+      { method: "POST", body: JSON.stringify(req) },
+    ),
 };

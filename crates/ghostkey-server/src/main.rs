@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 mod crypto;
 mod db;
+mod psbt_routes;
 mod routes;
 mod scheduler;
 
