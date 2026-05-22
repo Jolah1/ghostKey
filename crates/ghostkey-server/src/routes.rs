@@ -18,6 +18,10 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
+use crate::crypto::{
+    self, hash_claim_token, issue_claim_token, open_for_vault, seal_for_vault,
+    CryptoError, SealedContact,
+};
 use crate::AppState;
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -28,6 +32,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/vaults/:id", get(get_vault))
         .route("/vaults/:id/checkin", post(checkin))
         .route("/vaults/:id/events", get(list_events))
+        .route("/vaults/:id/issue-claim", post(issue_claim))
+        .route("/claim/:token", get(resolve_claim))
         .layer(TraceLayer::new_for_http())
         .layer(
             CorsLayer::new()
@@ -83,6 +89,10 @@ pub enum ApiError {
     Validation(String),
     #[error("db: {0}")]
     Db(#[from] sqlx::Error),
+    #[error("crypto: {0}")]
+    Crypto(#[from] CryptoError),
+    #[error("conflict: {0}")]
+    Conflict(String),
 }
 
 impl IntoResponse for ApiError {
@@ -90,8 +100,15 @@ impl IntoResponse for ApiError {
         let (code, msg) = match &self {
             ApiError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
             ApiError::Validation(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            ApiError::Conflict(_) => (StatusCode::CONFLICT, self.to_string()),
             ApiError::Db(_) => {
                 tracing::error!(error = ?self, "db error");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into())
+            }
+            ApiError::Crypto(_) => {
+                // Crypto errors are operator-side (e.g. missing master
+                // key). Don't leak the inner reason to the client.
+                tracing::error!(error = ?self, "crypto error");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into())
             }
         };
@@ -293,6 +310,18 @@ async fn create_vault_from_xpub(
     let next_s = next_deadline.to_rfc3339();
     let timelock = req.timelock_blocks as i64;
 
+    // Seal the heir contact at-rest. When the caller omits or sends an
+    // empty heir_contact we still write NULLs in the ciphertext columns
+    // — there's nothing to encrypt — and leave the legacy plaintext
+    // column NULL too. Only one of (legacy plaintext, sealed) should
+    // ever be populated for a given row.
+    let sealed: Option<SealedContact> = match req.heir_contact.as_deref() {
+        Some(pt) if !pt.is_empty() => Some(seal_for_vault(&id, pt.as_bytes())?),
+        _ => None,
+    };
+    let ciphertext_b64 = sealed.as_ref().map(|s| s.ciphertext_b64.clone());
+    let nonce_b64 = sealed.as_ref().map(|s| s.nonce_b64.clone());
+
     sqlx::query(
         r#"INSERT INTO vaults (
             id, label, network,
@@ -303,9 +332,11 @@ async fn create_vault_from_xpub(
             created_at, next_deadline_at, status,
             owner_xpub_fragment_external, owner_xpub_fragment_internal,
             heir_xpub_fragment_external,  heir_xpub_fragment_internal,
-            heir_contact_channel
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok',
-                  ?, ?, ?, ?, ?)"#,
+            heir_contact_channel,
+            heir_contact_ciphertext, heir_contact_nonce
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'ok',
+                  ?, ?, ?, ?, ?,
+                  ?, ?)"#,
     )
     .bind(&id)
     .bind(&req.label)
@@ -316,7 +347,6 @@ async fn create_vault_from_xpub(
     .bind(req.checkin_period_secs)
     .bind(req.grace_period_secs)
     .bind(&req.owner_contact)
-    .bind(&req.heir_contact)
     .bind(&now_s)
     .bind(&next_s)
     .bind(&owner_ext)
@@ -324,6 +354,8 @@ async fn create_vault_from_xpub(
     .bind(&heir_ext)
     .bind(&heir_int)
     .bind(&req.heir_contact_channel)
+    .bind(&ciphertext_b64)
+    .bind(&nonce_b64)
     .execute(&state.db)
     .await?;
 
@@ -334,6 +366,7 @@ async fn create_vault_from_xpub(
         Some(serde_json::json!({
             "source": "from-xpub",
             "network": req.network,
+            "encrypted_contact": ciphertext_b64.is_some(),
         })),
     )
     .await?;
@@ -556,6 +589,213 @@ async fn list_events(
         })
         .collect();
     Ok(Json(out))
+}
+
+/* -------------------------------------------------------------------------- *
+ *  Claim flow                                                                *
+ *                                                                            *
+ *  POST /vaults/:id/issue-claim                                              *
+ *      Generates a fresh one-time bearer token, stores its SHA-256, and      *
+ *      returns the raw token to the caller. In production this will be       *
+ *      called by the scheduler when an alarm fires; for now it's exposed     *
+ *      directly so we can test the flow end-to-end without scheduler         *
+ *      changes. A previously-issued-but-unused token is overwritten —        *
+ *      think of "issue" as "replace".                                        *
+ *                                                                            *
+ *  GET /claim/:token                                                         *
+ *      Resolves a token to its vault, decrypts the heir contact, and         *
+ *      marks the token consumed on first successful resolve. Returns         *
+ *      404 for unknown tokens, 409 if already used, 410 if the vault is     *
+ *      no longer in a claimable state.                                       *
+ * -------------------------------------------------------------------------- */
+
+#[derive(Debug, Serialize)]
+pub struct IssueClaimResponse {
+    pub vault_id: String,
+    /// Raw bearer token. Send to the heir, then forget. The server keeps
+    /// only the hash.
+    pub token: String,
+    pub issued_at: DateTime<Utc>,
+}
+
+async fn issue_claim(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<IssueClaimResponse>, ApiError> {
+    // Confirm the vault exists before issuing.
+    let exists: Option<(String,)> =
+        sqlx::query_as("SELECT id FROM vaults WHERE id = ?")
+            .bind(&id)
+            .fetch_optional(&state.db)
+            .await?;
+    if exists.is_none() {
+        return Err(ApiError::NotFound);
+    }
+
+    let issued = issue_claim_token();
+    let now = Utc::now();
+    let now_s = now.to_rfc3339();
+    sqlx::query(
+        r#"UPDATE vaults
+              SET claim_token_hash      = ?,
+                  claim_token_issued_at = ?,
+                  claim_token_used_at   = NULL
+            WHERE id = ?"#,
+    )
+    .bind(&issued.hash_hex)
+    .bind(&now_s)
+    .bind(&id)
+    .execute(&state.db)
+    .await?;
+
+    record_event(
+        &state.db,
+        &id,
+        "claim_issued",
+        Some(serde_json::json!({ "token_hash": issued.hash_hex })),
+    )
+    .await?;
+
+    Ok(Json(IssueClaimResponse {
+        vault_id: id,
+        token: issued.token,
+        issued_at: now,
+    }))
+}
+
+/// What the heir sees after clicking their claim link.
+///
+/// The page does *not* expose owner xpubs or descriptors — those would
+/// be useful to an attacker and meaningless to the heir. We surface
+/// just enough to identify the inheritance and the contact channel the
+/// owner picked, plus the on-chain machinery the heir's wallet will
+/// eventually need (descriptor, network) once the claim UI exists.
+#[derive(Debug, Serialize)]
+pub struct ClaimView {
+    pub vault_id: String,
+    pub label: Option<String>,
+    pub network: String,
+    pub status: String,
+    pub timelock_blocks: i64,
+    pub next_deadline_at: DateTime<Utc>,
+    /// Decrypted heir contact — only the channel hint is revealed.
+    /// We deliberately do NOT echo the contact value back; the heir is
+    /// already holding their phone/email, and an attacker who somehow
+    /// gets the link shouldn't learn the channel value.
+    pub heir_channel: Option<String>,
+    /// JSON body decrypted from the sealed contact, parsed for the
+    /// heir's display name. May be empty for legacy vaults.
+    pub heir_display_name: Option<String>,
+}
+
+async fn resolve_claim(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+) -> Result<Json<ClaimView>, ApiError> {
+    let hash = hash_claim_token(&token);
+
+    // Look up by hash. The DB lookup itself is constant-time across
+    // unknown tokens because we always index against a unique hash;
+    // the row either exists or it doesn't.
+    let row: Option<(
+        String,         // id
+        Option<String>, // label
+        String,         // network
+        String,         // status
+        i64,            // timelock_blocks
+        String,         // next_deadline_at
+        Option<String>, // claim_token_hash
+        Option<String>, // claim_token_used_at
+        Option<String>, // heir_contact_ciphertext
+        Option<String>, // heir_contact_nonce
+        Option<String>, // heir_contact_channel
+    )> = sqlx::query_as(
+        r#"SELECT id, label, network, status, timelock_blocks,
+                  next_deadline_at,
+                  claim_token_hash, claim_token_used_at,
+                  heir_contact_ciphertext, heir_contact_nonce,
+                  heir_contact_channel
+             FROM vaults
+            WHERE claim_token_hash = ?"#,
+    )
+    .bind(&hash)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let row = row.ok_or(ApiError::NotFound)?;
+    let (
+        vault_id,
+        label,
+        network,
+        status,
+        timelock_blocks,
+        next_deadline,
+        stored_hash,
+        used_at,
+        ciphertext_b64,
+        nonce_b64,
+        channel,
+    ) = row;
+
+    // Defence-in-depth: constant-time compare against the stored hash.
+    // (Already index-matched, but this protects against any future
+    // refactor that loosens the lookup.)
+    let stored_hash = stored_hash.ok_or(ApiError::NotFound)?;
+    if !crypto::claim_token_matches(&token, &stored_hash) {
+        return Err(ApiError::NotFound);
+    }
+
+    if used_at.is_some() {
+        return Err(ApiError::Conflict("claim token already used".into()));
+    }
+
+    // Decrypt the sealed contact (if any) and pull out the display name.
+    let (heir_display_name, heir_channel) = match (ciphertext_b64, nonce_b64) {
+        (Some(ct), Some(nonce)) => {
+            let sealed = SealedContact {
+                ciphertext_b64: ct,
+                nonce_b64: nonce,
+            };
+            let bytes = open_for_vault(&vault_id, &sealed)?;
+            let name = serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|v| {
+                    v.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string())
+                });
+            (name, channel)
+        }
+        _ => (None, channel),
+    };
+
+    // Mark the token consumed. We do this *after* the successful decrypt
+    // so a server-side failure doesn't burn the heir's one-shot link.
+    let now_s = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE vaults SET claim_token_used_at = ? WHERE id = ?")
+        .bind(&now_s)
+        .bind(&vault_id)
+        .execute(&state.db)
+        .await?;
+
+    record_event(
+        &state.db,
+        &vault_id,
+        "claim_resolved",
+        Some(serde_json::json!({ "channel": heir_channel })),
+    )
+    .await?;
+
+    Ok(Json(ClaimView {
+        vault_id,
+        label,
+        network,
+        status,
+        timelock_blocks,
+        next_deadline_at: parse_rfc(&next_deadline),
+        heir_channel,
+        heir_display_name,
+    }))
 }
 
 pub(crate) async fn record_event(

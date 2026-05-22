@@ -17,6 +17,7 @@ use clap::Parser;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+mod crypto;
 mod db;
 mod routes;
 mod scheduler;
@@ -55,6 +56,12 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+
+    // Fail loudly if encryption-at-rest is misconfigured. We'd rather
+    // refuse to start than write plaintext heir contacts to the DB.
+    crypto::ensure_master_key_loaded()
+        .map_err(|e| anyhow::anyhow!("crypto setup: {e}"))?;
+
     let pool = db::connect(&args.database_url).await?;
     let state = Arc::new(AppState { db: pool.clone() });
 
