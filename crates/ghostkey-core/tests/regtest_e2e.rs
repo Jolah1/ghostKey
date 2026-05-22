@@ -147,15 +147,16 @@ fn ensure_node_wallet(node: &Bitcoind, name: &str) -> Result<Client> {
             "createwallet",
             &[
                 serde_json::Value::String(name.to_string()),
-                serde_json::Value::Bool(false),       // disable_private_keys
-                serde_json::Value::Bool(false),       // blank
+                serde_json::Value::Bool(false), // disable_private_keys
+                serde_json::Value::Bool(false), // blank
                 serde_json::Value::String(String::new()), // passphrase
-                serde_json::Value::Bool(false),       // avoid_reuse
-                serde_json::Value::Bool(true),        // descriptors
+                serde_json::Value::Bool(false), // avoid_reuse
+                serde_json::Value::Bool(true),  // descriptors
             ],
         );
         if create_res.is_err() {
-            let _: serde_json::Value = bare.call("loadwallet", &[serde_json::Value::String(name.to_string())])?;
+            let _: serde_json::Value =
+                bare.call("loadwallet", &[serde_json::Value::String(name.to_string())])?;
         }
     }
     // Return a wallet-scoped RPC client.
@@ -220,7 +221,10 @@ fn owner_checkin_then_heir_claim() -> Result<()> {
     let node_w = ensure_node_wallet(&node, "miner")?;
     mine_blocks(&node_w, 101)?;
     let funded = node_w.get_balance(None, None)?;
-    assert!(funded.to_sat() > 0, "node should be funded after 101 blocks");
+    assert!(
+        funded.to_sat() > 0,
+        "node should be funded after 101 blocks"
+    );
 
     // 2. Construct the vault and a watch + owner-signing wallet pair.
     let (vault, owner_m, heir_m) = build_vault_and_keys()?;
@@ -230,12 +234,16 @@ fn owner_checkin_then_heir_claim() -> Result<()> {
     // Both wallets should reveal identical first vault addresses.
     let vault_addr_1 = watch.reveal_next_address(KeychainKind::External).address;
     let mirror = owner_w.reveal_next_address(KeychainKind::External).address;
-    assert_eq!(vault_addr_1, mirror, "watch & owner-signing must agree on derivation");
+    assert_eq!(
+        vault_addr_1, mirror,
+        "watch & owner-signing must agree on derivation"
+    );
     println!("vault deposit addr = {vault_addr_1}");
 
     // 3. Fund the vault.
     let deposit = Amount::from_btc(0.5)?;
-    let txid_fund = node_w.send_to_address(&vault_addr_1, deposit, None, None, None, None, None, None)?;
+    let txid_fund =
+        node_w.send_to_address(&vault_addr_1, deposit, None, None, None, None, None, None)?;
     println!("deposit txid = {txid_fund}");
     mine_blocks(&node_w, 1)?;
 
@@ -303,9 +311,15 @@ fn owner_checkin_then_heir_claim() -> Result<()> {
     // 7. Mine the timelock and try again — this time it must succeed.
     mine_blocks(&node_w, TIMELOCK_BLOCKS.into())?;
     let _ = sync_wallet(&mut heir_w, &bare)?;
-    println!("after timelock mine, heir tip = {}", heir_w.latest_checkpoint().height());
+    println!(
+        "after timelock mine, heir tip = {}",
+        heir_w.latest_checkpoint().height()
+    );
     let claim = build_heir_claim(&mut heir_w, &vault, &recipient, fee_rate())?;
-    assert!(claim.finalized, "heir claim must finalize after timelock elapses");
+    assert!(
+        claim.finalized,
+        "heir claim must finalize after timelock elapses"
+    );
     let claim_tx = claim.psbt.extract_tx()?;
     let claim_txid = claim_tx.compute_txid();
     println!("claim txid = {claim_txid}");
@@ -333,10 +347,7 @@ fn owner_checkin_then_heir_claim() -> Result<()> {
 fn broadcast_tx(rpc: &Client, tx: &bitcoin::Transaction) -> Result<bitcoin::Txid> {
     use bitcoin::consensus::encode::serialize_hex;
     let raw = serialize_hex(tx);
-    let txid: bitcoin::Txid = rpc.call(
-        "sendrawtransaction",
-        &[serde_json::Value::String(raw)],
-    )?;
+    let txid: bitcoin::Txid = rpc.call("sendrawtransaction", &[serde_json::Value::String(raw)])?;
     Ok(txid)
 }
 

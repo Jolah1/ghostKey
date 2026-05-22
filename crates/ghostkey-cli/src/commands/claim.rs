@@ -34,7 +34,10 @@ pub fn run(profile_dir: &Path, args: Args) -> Result<()> {
     let cfg = state::read_vault(profile_dir)?;
     let vault = Vault::from_config(cfg)?;
     if vault.role() != VaultRole::Heir {
-        bail!("claim requires the heir profile (this vault is role={:?})", vault.role());
+        bail!(
+            "claim requires the heir profile (this vault is role={:?})",
+            vault.role()
+        );
     }
 
     let recipient: Address = Address::from_str(&args.to)
@@ -53,13 +56,11 @@ pub fn run(profile_dir: &Path, args: Args) -> Result<()> {
     let tip = sync_wallet(&mut w, &rpc, start)?;
     tracing::info!(tip, "synced before claim");
 
-    let fee_rate = FeeRate::from_sat_per_vb(args.feerate_sat_vb)
-        .ok_or_else(|| anyhow!("bad fee rate"))?;
+    let fee_rate =
+        FeeRate::from_sat_per_vb(args.feerate_sat_vb).ok_or_else(|| anyhow!("bad fee rate"))?;
     let built = build_heir_claim(&mut w, &vault, &recipient, fee_rate)?;
     if !built.finalized {
-        bail!(
-            "PSBT not fully signed (possibly the timelock hasn't elapsed for every UTXO yet)"
-        );
+        bail!("PSBT not fully signed (possibly the timelock hasn't elapsed for every UTXO yet)");
     }
 
     let tx = built.psbt.extract_tx()?;

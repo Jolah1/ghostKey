@@ -42,18 +42,8 @@ pub fn build_signing(vault: &Vault, signer_master: &Xpriv) -> Result<Wallet> {
     // while keeping the same `[origin]` and chain suffix. BDK accepts:
     //   [fp/86'/coin'/0']tprv.../0/*
     // and will produce identical pubkeys.
-    let ext = splice_xpriv(
-        vault.descriptor_for(Chain::External),
-        fp,
-        &path,
-        &xpriv_str,
-    )?;
-    let int_ = splice_xpriv(
-        vault.descriptor_for(Chain::Internal),
-        fp,
-        &path,
-        &xpriv_str,
-    )?;
+    let ext = splice_xpriv(vault.descriptor_for(Chain::External), fp, &path, &xpriv_str)?;
+    let int_ = splice_xpriv(vault.descriptor_for(Chain::Internal), fp, &path, &xpriv_str)?;
 
     Wallet::create(ext, int_)
         .network(vault.network())
@@ -83,9 +73,9 @@ fn splice_xpriv(
     let after_origin = start + origin.len();
 
     // The xpub runs until the next '/' (which begins `/0/*` or `/1/*`).
-    let suffix_off = descriptor[after_origin..]
-        .find('/')
-        .ok_or_else(|| Error::InvalidDescriptor("malformed key fragment: no chain suffix".into()))?;
+    let suffix_off = descriptor[after_origin..].find('/').ok_or_else(|| {
+        Error::InvalidDescriptor("malformed key fragment: no chain suffix".into())
+    })?;
     let xpub_end = after_origin + suffix_off;
 
     let mut out = String::with_capacity(descriptor.len() + xpriv_str.len());

@@ -42,10 +42,7 @@ pub fn wallet_state_path(profile_dir: &Path) -> PathBuf {
 pub fn write_mnemonic(profile_dir: &Path, words: &str) -> Result<()> {
     let p = mnemonic_path(profile_dir);
     if p.exists() {
-        bail!(
-            "mnemonic already exists at {:?}; refusing to overwrite",
-            p
-        );
+        bail!("mnemonic already exists at {:?}; refusing to overwrite", p);
     }
     fs::write(&p, format!("{}\n", words.trim()))
         .with_context(|| format!("writing mnemonic to {:?}", p))?;

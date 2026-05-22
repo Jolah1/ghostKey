@@ -25,7 +25,10 @@ pub fn run(profile_dir: &Path, args: Args) -> Result<()> {
     let mn = Mnemonic::from_entropy_in(Language::English, &entropy)?;
 
     state::write_mnemonic(profile_dir, &mn.to_string())?;
-    println!("mnemonic written to {:?}", state::mnemonic_path(profile_dir));
+    println!(
+        "mnemonic written to {:?}",
+        state::mnemonic_path(profile_dir)
+    );
     println!("WARNING: anyone with this file can spend your funds. Back it up offline.");
     println!();
     println!("Words ({}-word):", args.words);

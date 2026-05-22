@@ -18,8 +18,11 @@ impl RpcConfig {
     }
 
     pub fn connect(&self) -> Result<Client> {
-        Client::new(&self.url, Auth::UserPass(self.user.clone(), self.pass.clone()))
-            .with_context(|| format!("connecting to bitcoind at {}", self.url))
+        Client::new(
+            &self.url,
+            Auth::UserPass(self.user.clone(), self.pass.clone()),
+        )
+        .with_context(|| format!("connecting to bitcoind at {}", self.url))
     }
 }
 
@@ -51,7 +54,7 @@ pub fn sync_wallet(wallet: &mut Wallet, rpc: &Client, start_height: u32) -> Resu
     }
 
     let mempool = emitter.mempool()?;
-    wallet.apply_unconfirmed_txs(mempool.into_iter().map(|(t, ts)| (t, ts)));
+    wallet.apply_unconfirmed_txs(mempool);
 
     let tip = wallet.latest_checkpoint().height();
     Ok(tip)

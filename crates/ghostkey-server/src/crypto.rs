@@ -84,8 +84,7 @@ fn master_key() -> Result<&'static [u8; 32], CryptoError> {
 }
 
 fn load_master_key_from_env() -> Result<[u8; 32], CryptoError> {
-    let raw = std::env::var("GHOSTKEY_MASTER_KEY")
-        .map_err(|_| CryptoError::MasterKeyMissing)?;
+    let raw = std::env::var("GHOSTKEY_MASTER_KEY").map_err(|_| CryptoError::MasterKeyMissing)?;
     let bytes = B64
         .decode(raw.trim())
         .map_err(|e| CryptoError::MasterKeyMalformed(format!("not base64: {e}")))?;
@@ -170,10 +169,7 @@ pub fn seal_for_vault(vault_id: &str, plaintext: &[u8]) -> Result<SealedContact,
 /// or an error that is deliberately non-specific about *why* it failed
 /// (wrong key vs tampering vs truncation are all `Decrypt`) to avoid
 /// leaking decision bits.
-pub fn open_for_vault(
-    vault_id: &str,
-    sealed: &SealedContact,
-) -> Result<Vec<u8>, CryptoError> {
+pub fn open_for_vault(vault_id: &str, sealed: &SealedContact) -> Result<Vec<u8>, CryptoError> {
     let key = vault_contact_key(vault_id)?;
     let cipher = XChaCha20Poly1305::new(&key.into());
     let nonce = B64
@@ -189,7 +185,9 @@ pub fn open_for_vault(
     let ct = B64
         .decode(&sealed.ciphertext_b64)
         .map_err(|e| CryptoError::Malformed(format!("ciphertext: {e}")))?;
-    cipher.decrypt(nonce, ct.as_ref()).map_err(|_| CryptoError::Decrypt)
+    cipher
+        .decrypt(nonce, ct.as_ref())
+        .map_err(|_| CryptoError::Decrypt)
 }
 
 /* -------------------------------------------------------------------------- *
@@ -241,7 +239,10 @@ pub fn hash_claim_token(token: &str) -> String {
 /// fishing for hash collisions or DB confusion).
 pub fn claim_token_matches(presented: &str, stored_hash_hex: &str) -> bool {
     let presented_hash = hash_claim_token(presented);
-    presented_hash.as_bytes().ct_eq(stored_hash_hex.as_bytes()).into()
+    presented_hash
+        .as_bytes()
+        .ct_eq(stored_hash_hex.as_bytes())
+        .into()
 }
 
 /* -------------------------------------------------------------------------- *
@@ -266,7 +267,9 @@ mod tests {
             let zeros = [0u8; 32];
             let b64 = B64.encode(zeros);
             // SAFETY: we are in tests, before any handler runs.
-            unsafe { std::env::set_var("GHOSTKEY_MASTER_KEY", &b64); }
+            unsafe {
+                std::env::set_var("GHOSTKEY_MASTER_KEY", &b64);
+            }
         }
     }
 
@@ -284,8 +287,10 @@ mod tests {
         ensure_test_master_key();
         let sealed = seal_for_vault("vault-1", b"secret-1").expect("seal");
         let err = open_for_vault("vault-2", &sealed);
-        assert!(matches!(err, Err(CryptoError::Decrypt)),
-            "wrong-vault open must fail with Decrypt, got {err:?}");
+        assert!(
+            matches!(err, Err(CryptoError::Decrypt)),
+            "wrong-vault open must fail with Decrypt, got {err:?}"
+        );
     }
 
     #[test]
@@ -297,7 +302,10 @@ mod tests {
         bytes[0] = if bytes[0] == b'A' { b'B' } else { b'A' };
         sealed.ciphertext_b64 = String::from_utf8(bytes).unwrap();
         let err = open_for_vault("vault-z", &sealed);
-        assert!(matches!(err, Err(CryptoError::Decrypt) | Err(CryptoError::Malformed(_))));
+        assert!(matches!(
+            err,
+            Err(CryptoError::Decrypt) | Err(CryptoError::Malformed(_))
+        ));
     }
 
     #[test]
@@ -306,8 +314,10 @@ mod tests {
         let a = seal_for_vault("vault-q", b"same").expect("seal");
         let b = seal_for_vault("vault-q", b"same").expect("seal");
         assert_ne!(a.nonce_b64, b.nonce_b64, "nonces must be unique");
-        assert_ne!(a.ciphertext_b64, b.ciphertext_b64,
-            "AEAD output must vary with nonce even for identical plaintexts");
+        assert_ne!(
+            a.ciphertext_b64, b.ciphertext_b64,
+            "AEAD output must vary with nonce even for identical plaintexts"
+        );
     }
 
     #[test]

@@ -30,7 +30,10 @@ pub fn run(profile_dir: &Path, args: Args) -> Result<()> {
     let cfg = state::read_vault(profile_dir)?;
     let vault = Vault::from_config(cfg)?;
     if vault.role() != VaultRole::Owner {
-        bail!("check-in requires the owner profile (this vault is role={:?})", vault.role());
+        bail!(
+            "check-in requires the owner profile (this vault is role={:?})",
+            vault.role()
+        );
     }
 
     let mn = state::read_mnemonic(profile_dir)?;

@@ -2,9 +2,9 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-mod state;
 mod chain;
 mod commands;
+mod state;
 
 /// GhostKey CLI — owner/heir operations against a Bitcoin node.
 ///
@@ -17,7 +17,12 @@ pub struct Cli {
     pub profile: String,
 
     /// Directory that holds all profiles.
-    #[arg(long, env = "GHOSTKEY_DATA_DIR", default_value = ".ghostkey", global = true)]
+    #[arg(
+        long,
+        env = "GHOSTKEY_DATA_DIR",
+        default_value = ".ghostkey",
+        global = true
+    )]
     pub data_dir: PathBuf,
 
     #[command(subcommand)]

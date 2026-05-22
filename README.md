@@ -12,11 +12,11 @@ The rules are written into Bitcoin itself. Even if GhostKey shut down tomorrow, 
 
 ## How it works
 
-**You set it up once.** Link your Bitcoin wallet (just paste your address — no seed phrase, no password). Name who inherits. Choose how long to wait before they can claim.
+**You set it up once.** Link your Bitcoin wallet by pasting its public key (an "xpub" — most wallets can export one in a few taps, and we'll show you where to find it). Name who inherits. Choose how long to wait before they can claim.
 
-**You tap once a month.** That's the whole job. One tap resets the clock. You can do it from the website, by email link, or by sending 1 sat from any Lightning wallet.
+**You tap once a month.** That's the whole job. One tap from the website resets the clock. Email-link and Lightning check-ins are on the roadmap; today the website tap is the only path.
 
-**If you stop tapping,** the countdown begins. When it ends, your heir gets a message with a link. They open it, follow the steps, and the Bitcoin is theirs — sent directly by Bitcoin, not by us.
+**If you stop tapping,** the countdown begins. When it ends, your heir is sent a one-time link. They open it, follow the steps, and the Bitcoin is theirs — sent directly on Bitcoin, not by us. (Today an operator delivers the link manually; automatic SMS / email / WhatsApp delivery is the next thing being built.)
 
 **You stay in control** for as long as you're tapping. Change your heir, change the timelock, change your mind — it's your Bitcoin.
 
@@ -47,7 +47,7 @@ After that, one tap a month is all it takes.
 
 Go to **[ghostkeyapp.vercel.app](https://ghostkeyapp.vercel.app)** and follow the wizard.
 
-You need: a Bitcoin address. That's it. No Bitcoin Core. No command line. No technical setup.
+You need: your wallet's extended public key ("xpub"). Most wallets can export one — the wizard tells you exactly where to find it in Sparrow, BlueWallet, Specter, and others. No Bitcoin Core. No command line. No technical setup.
 
 ---
 
@@ -55,7 +55,7 @@ You need: a Bitcoin address. That's it. No Bitcoin Core. No command line. No tec
 
 ### Prerequisites
 
-- Rust 1.75+
+- Rust 1.85+
 - Node 20+ (for the web dashboard only)
 - No Bitcoin Core required — GhostKey uses Esplora by default
 
@@ -109,7 +109,7 @@ A single Taproot output with two spend paths:
 or_d( pk(OWNER), and_v( v:pk(HEIR), older(N) ) )
 ```
 
-- Owner can spend at any time (checking in moves the UTXO to a new address, resetting N).
+- Owner can spend at any time. An on-chain check-in (via the CLI) moves the UTXO to a freshly derived vault address, which resets N. The website's "I'm still here" button is a *server-side* check-in: it only tells our notifier the owner is alive, and does not touch the chain. For real-money mainnet use, the two are combined: light website check-ins most weeks, occasional on-chain re-vaulting to reset the BIP68 timer.
 - Heir can spend only after N blocks have elapsed since the UTXO was confirmed (BIP68 / OP_CSV).
 - The keypath uses an unspendable NUMS point — both spend paths are explicit scripts.
 
@@ -119,8 +119,10 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full threat model and design ra
 
 ## What's not built yet
 
-- **Notification fan-out.** The server records alarm events but doesn't yet send SMS, email, or Lightning messages to the heir. This is the top priority.
-- **Heir claim UI.** The link-based claim flow for heirs (no account required) is in progress.
+- **Notification fan-out.** The server records alarm events and generates a one-time claim link, but doesn't yet deliver that link automatically (SMS, email, WhatsApp). Today an operator pulls the link from the events log and forwards it. Automatic delivery is the top priority.
+- **Server authentication.** Mutation endpoints (check-in, vault listing) currently rely on the secrecy of vault UUIDs. Bearer-token auth per vault is being added.
+- **Address-only setup.** The wizard requires an xpub today. A bare-address mode (for users who can't easily export an xpub) is planned.
+- **Lightning check-in.** Paying 1 sat to a per-vault Lightning address as proof of life. Planned, not yet built.
 - **Cold signing.** CLI signs in-process today. PSBT export for hardware wallets is planned.
 - **Multiple heirs.** The descriptor builder currently supports one heir.
 - **Mainnet checklist.** The cryptography is sound and tested. The operational infrastructure (auth, notifications, key ceremony) is not yet production-ready. Treat this as alpha.

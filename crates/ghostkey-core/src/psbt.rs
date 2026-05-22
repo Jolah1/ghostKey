@@ -90,7 +90,10 @@ pub fn build_heir_claim(
 ) -> Result<BuiltPsbt> {
     // Address must match the vault's network. `as_unchecked` is a cheap
     // type punning that lets us reuse the NetworkUnchecked check API.
-    if !recipient.as_unchecked().is_valid_for_network(vault.network()) {
+    if !recipient
+        .as_unchecked()
+        .is_valid_for_network(vault.network())
+    {
         return Err(Error::Psbt(format!(
             "recipient address is not valid for vault network {:?}",
             vault.network()

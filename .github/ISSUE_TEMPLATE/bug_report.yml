@@ -1,0 +1,82 @@
+name: Bug report
+description: Something isn't working the way it should.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug.
+
+        **If this is a security issue, do NOT file it here.** See
+        [SECURITY.md](../blob/main/SECURITY.md) instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A short, plain description of what went wrong.
+      placeholder: When I clicked "Prepare transaction", the page showed an error instead of a PSBT.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+      placeholder: I expected to see an unsigned PSBT I could copy into my wallet.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps so we can hit the same path you did.
+      placeholder: |
+        1. Open https://ghostkeyapp.vercel.app/#claim/abc...
+        2. Paste my bc1q... address
+        3. Click "Prepare transaction"
+        4. See the error
+    validations:
+      required: true
+
+  - type: input
+    id: where
+    attributes:
+      label: Where did this happen?
+      description: Production URL, local dev, regtest end-to-end, etc.
+      placeholder: ghostkeyapp.vercel.app on Firefox 124, Ubuntu 22.04
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, screenshots, or error messages
+      description: |
+        Browser console errors, server logs, screenshots — anything you have.
+        Paste long logs inside triple-backtick fences.
+      render: shell
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: How blocked are you?
+      options:
+        - "Cosmetic: I noticed but it's not stopping me"
+        - "Annoying: I worked around it"
+        - "Blocked: I can't use the feature at all"
+        - "Critical: I lost data or money is at risk"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and didn't find a duplicate.
+          required: true
+        - label: This is not a security vulnerability (if it is, I'll email security@ghostkey.app instead).
+          required: true

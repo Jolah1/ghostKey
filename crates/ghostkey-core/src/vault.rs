@@ -51,6 +51,13 @@ pub struct Vault {
 
 impl Vault {
     /// Construct a vault from per-chain owner/heir key fragments.
+    //
+    // The eight args are inherent to the vault's identity (four key
+    // fragments + timelock + network + role + label). Collapsing them
+    // into a builder would not improve call sites materially. Allowing
+    // the lint locally with this note is preferable to either churn
+    // or a blanket project-wide allow.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         owner_external: &str,
         owner_internal: &str,

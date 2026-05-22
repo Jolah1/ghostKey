@@ -1,0 +1,73 @@
+name: Feature request
+description: Suggest something new, or a meaningful change to something existing.
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before opening a feature request, please skim
+        [DESIGN.md § 9](../blob/main/DESIGN.md#9-what-wed-build-next) —
+        we keep a prioritised list of work there. If your idea is
+        already on the list, +1 the existing issue (if there is one)
+        rather than opening a duplicate.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: |
+        Describe the user-facing problem first, before any solution.
+        A good answer starts with "As a [type of user] I want to..."
+      placeholder: As an owner whose wallet doesn't support xpub export, I want to register a vault using just a Bitcoin address.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: What would you build?
+      description: Your proposed solution. Concrete is better than abstract.
+      placeholder: |
+        Add an "I only have an address" toggle in the setup wizard.
+        When toggled, accept a bc1...* address instead of an xpub.
+        Server tracks a single address per vault in this mode (no derivation).
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What else did you consider?
+      description: If you thought of other approaches and rejected them, tell us why.
+      placeholder: We could ask users to install Sparrow first to export their xpub, but most non-technical owners won't do this.
+
+  - type: dropdown
+    id: audience
+    attributes:
+      label: Who is this for?
+      multiple: true
+      options:
+        - "End users (owners)"
+        - "End users (heirs)"
+        - "Self-hosters / operators"
+        - "Contributors / developers"
+        - "Translators / documentation"
+
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: What are the trade-offs?
+      description: |
+        Every feature costs something — complexity, security surface,
+        maintenance, UX. What does this one cost?
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Checklist
+      options:
+        - label: I read DESIGN.md § 9 and this isn't already on the roadmap.
+          required: false
+        - label: I'd be willing to help implement this.
+          required: false

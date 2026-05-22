@@ -77,10 +77,7 @@ async fn transition_ok_to_alarmed(state: &AppState, now_iso: &str) -> anyhow::Re
 /// This means a follow-on owner check-in that fails to clear the row's
 /// hash for some reason won't cause a token reset; the operator can
 /// explicitly call POST /vaults/:id/issue-claim to force re-issue.
-async fn transition_alarmed_to_claimable(
-    state: &AppState,
-    now_iso: &str,
-) -> anyhow::Result<()> {
+async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> anyhow::Result<()> {
     let due = sqlx::query_as::<_, (String,)>(
         r#"SELECT id
              FROM vaults
@@ -201,10 +198,7 @@ mod tests {
         .expect("insert");
     }
 
-    async fn read_status_and_token_hash(
-        pool: &SqlitePool,
-        id: &str,
-    ) -> (String, Option<String>) {
+    async fn read_status_and_token_hash(pool: &SqlitePool, id: &str) -> (String, Option<String>) {
         sqlx::query_as::<_, (String, Option<String>)>(
             "SELECT status, claim_token_hash FROM vaults WHERE id = ?",
         )
@@ -285,16 +279,17 @@ mod tests {
         // Pre-seed a token hash. Even though eligibility is past, the
         // scheduler must skip this row to avoid clobbering the heir's
         // existing link.
-        sqlx::query(
-            "UPDATE vaults SET claim_token_hash = 'preexisting-hash' WHERE id = ?",
-        )
-        .bind("vault-d")
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("UPDATE vaults SET claim_token_hash = 'preexisting-hash' WHERE id = ?")
+            .bind("vault-d")
+            .execute(&pool)
+            .await
+            .unwrap();
         tick_once(&state).await.expect("tick");
         let (status, hash) = read_status_and_token_hash(&pool, "vault-d").await;
-        assert_eq!(status, "alarmed", "status untouched when token already issued");
+        assert_eq!(
+            status, "alarmed",
+            "status untouched when token already issued"
+        );
         assert_eq!(hash.as_deref(), Some("preexisting-hash"));
     }
 }

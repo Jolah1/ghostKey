@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Jolah1/ghostKey/blob/main/SECURITY.md
+    about: Do NOT file security issues here. See SECURITY.md for how to report privately.
+  - name: General question or discussion
+    url: https://github.com/Jolah1/ghostKey/discussions
+    about: For "how do I...?" or "should we...?", start a discussion instead of an issue.

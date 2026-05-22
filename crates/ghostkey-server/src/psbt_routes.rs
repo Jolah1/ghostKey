@@ -175,8 +175,7 @@ pub async fn build_claim_psbt(
             // Esplora client. Blockstream's public endpoints serve over
             // HTTPS; the env-var override may be plain HTTP for local
             // testing.
-            let client = esplora_client::Builder::new(&url)
-                .build_blocking();
+            let client = esplora_client::Builder::new(&url).build_blocking();
 
             // Full scan: walk both keychains, stop after 5 unused gap.
             let req = wallet.start_full_scan();
@@ -198,15 +197,8 @@ pub async fn build_claim_psbt(
             // BDK reports the fee on the un-built tx via the PSBT's
             // unsigned tx output sum vs the in-wallet UTXOs we drained.
             // For "drain all", fee = total - sum(output).
-            let unsigned_tx = built
-                .psbt
-                .unsigned_tx
-                .clone();
-            let output_sum: u64 = unsigned_tx
-                .output
-                .iter()
-                .map(|o| o.value.to_sat())
-                .sum();
+            let unsigned_tx = built.psbt.unsigned_tx.clone();
+            let output_sum: u64 = unsigned_tx.output.iter().map(|o| o.value.to_sat()).sum();
             let fee = total.saturating_sub(output_sum);
 
             let psbt_b64 = B64.encode(built.psbt.serialize());
@@ -515,9 +507,16 @@ mod tests {
         // share state with the crypto tests (different module), and
         // both keys are independent — the worst case is an interleave
         // that reads our value briefly, which is harmless.
-        unsafe { std::env::set_var("GHOSTKEY_ESPLORA_URL", "http://my.indexer/api"); }
+        unsafe {
+            std::env::set_var("GHOSTKEY_ESPLORA_URL", "http://my.indexer/api");
+        }
         assert_eq!(esplora_url(Network::Bitcoin), "http://my.indexer/api");
-        unsafe { std::env::remove_var("GHOSTKEY_ESPLORA_URL"); }
-        assert_eq!(esplora_url(Network::Bitcoin), "https://blockstream.info/api");
+        unsafe {
+            std::env::remove_var("GHOSTKEY_ESPLORA_URL");
+        }
+        assert_eq!(
+            esplora_url(Network::Bitcoin),
+            "https://blockstream.info/api"
+        );
     }
 }

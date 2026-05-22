@@ -1,0 +1,67 @@
+# Continuous integration for the Rust workspace.
+#
+# Runs on every push to main and every PR. Goals:
+#   - catch broken builds before they land,
+#   - keep formatting + lint clean across contributors,
+#   - keep the unit test suite green at all times.
+#
+# We deliberately do NOT run the regtest end-to-end test here.
+# That test spawns its own bitcoind process and takes ~5 s; we
+# keep it gated behind `--ignored` so contributors without a local
+# bitcoind can still iterate quickly. CI without bitcoind would
+# either have to skip it (false sense of security) or install
+# bitcoind on every run (slow). For now, regtest e2e is a manual
+# pre-release check; see DEPLOY.md.
+
+name: rust
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel older in-flight runs for the same ref so a force-push doesn't
+# pile up queue depth.
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  RUST_BACKTRACE: short
+
+jobs:
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # We accept the two pre-existing type_complexity warnings on
+      # the query_as tuples in routes.rs / psbt_routes.rs. New
+      # warnings should fail the build.
+      - run: cargo clippy --workspace --all-targets -- -D warnings -A clippy::type_complexity
+
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --locked

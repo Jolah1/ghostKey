@@ -9,9 +9,7 @@ use bitcoin::bip32::Fingerprint;
 use bitcoin::Network;
 use chrono::{DateTime, Duration, Utc};
 use ghostkey_core::descriptor::{build_descriptor_pair, parse_descriptor};
-use ghostkey_core::keys::{
-    descriptor_key_fragment, parse_xpub, vault_account_path, Chain,
-};
+use ghostkey_core::keys::{descriptor_key_fragment, parse_xpub, vault_account_path, Chain};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use tower_http::cors::{Any, CorsLayer};
@@ -19,8 +17,8 @@ use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
 use crate::crypto::{
-    self, hash_claim_token, issue_claim_token, open_for_vault, seal_for_vault,
-    CryptoError, SealedContact,
+    self, hash_claim_token, issue_claim_token, open_for_vault, seal_for_vault, CryptoError,
+    SealedContact,
 };
 use crate::AppState;
 
@@ -34,8 +32,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/vaults/:id/events", get(list_events))
         .route("/vaults/:id/issue-claim", post(issue_claim))
         .route("/claim/:token", get(resolve_claim))
-        .route("/claim/:token/build-psbt", post(crate::psbt_routes::build_claim_psbt))
-        .route("/claim/:token/broadcast", post(crate::psbt_routes::broadcast_claim))
+        .route(
+            "/claim/:token/build-psbt",
+            post(crate::psbt_routes::build_claim_psbt),
+        )
+        .route(
+            "/claim/:token/broadcast",
+            post(crate::psbt_routes::broadcast_claim),
+        )
         .layer(TraceLayer::new_for_http())
         .layer(
             CorsLayer::new()
@@ -53,7 +57,10 @@ struct Health {
 }
 
 async fn health() -> Json<Health> {
-    Json(Health { ok: true, version: env!("CARGO_PKG_VERSION") })
+    Json(Health {
+        ok: true,
+        version: env!("CARGO_PKG_VERSION"),
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,13 +150,11 @@ async fn create_vault(
 
     let id = Uuid::new_v4().to_string();
     let now = Utc::now();
-    let next_deadline =
-        now + Duration::seconds(req.checkin_period_secs + req.grace_period_secs);
+    let next_deadline = now + Duration::seconds(req.checkin_period_secs + req.grace_period_secs);
     let now_s = now.to_rfc3339();
     let next_s = next_deadline.to_rfc3339();
     let timelock = req.timelock_blocks as i64;
-    let claim_eligible =
-        next_deadline + Duration::seconds(req.grace_period_secs);
+    let claim_eligible = next_deadline + Duration::seconds(req.grace_period_secs);
     let claim_eligible_s = claim_eligible.to_rfc3339();
 
     sqlx::query(
@@ -311,8 +316,7 @@ async fn create_vault_from_xpub(
     // ---- Persist ------------------------------------------------------
     let id = Uuid::new_v4().to_string();
     let now = Utc::now();
-    let next_deadline =
-        now + Duration::seconds(req.checkin_period_secs + req.grace_period_secs);
+    let next_deadline = now + Duration::seconds(req.checkin_period_secs + req.grace_period_secs);
     let now_s = now.to_rfc3339();
     let next_s = next_deadline.to_rfc3339();
     let timelock = req.timelock_blocks as i64;
@@ -333,8 +337,7 @@ async fn create_vault_from_xpub(
     // grace window past `next_deadline_at` (which already includes
     // the first grace period). That gives the owner a real chance
     // to come back from the dead before we email the heir.
-    let claim_eligible =
-        next_deadline + Duration::seconds(req.grace_period_secs);
+    let claim_eligible = next_deadline + Duration::seconds(req.grace_period_secs);
     let claim_eligible_s = claim_eligible.to_rfc3339();
 
     sqlx::query(
@@ -418,9 +421,7 @@ fn resolve_party(
     let (fp_str, xpub_str) = if let Some(stripped) = trimmed.strip_prefix('[') {
         // Origin-tagged: `[fingerprint/path]xpub...`
         let close = stripped.find(']').ok_or_else(|| {
-            ApiError::Validation(format!(
-                "{who}.xpub: missing closing ']' on origin tag"
-            ))
+            ApiError::Validation(format!("{who}.xpub: missing closing ']' on origin tag"))
         })?;
         let inside = &stripped[..close];
         let after = &stripped[close + 1..];
@@ -444,11 +445,10 @@ fn resolve_party(
         (fp.to_string(), trimmed.to_string())
     };
 
-    let fp = Fingerprint::from_str(&fp_str).map_err(|e| {
-        ApiError::Validation(format!("{who}.fingerprint: {e}"))
-    })?;
-    let xpub = parse_xpub(&xpub_str)
-        .map_err(|e| ApiError::Validation(format!("{who}.xpub: {e}")))?;
+    let fp = Fingerprint::from_str(&fp_str)
+        .map_err(|e| ApiError::Validation(format!("{who}.fingerprint: {e}")))?;
+    let xpub =
+        parse_xpub(&xpub_str).map_err(|e| ApiError::Validation(format!("{who}.xpub: {e}")))?;
     // The embedded derivation path (if any) is informational only —
     // we always re-derive the canonical m/86'/coin'/0' from the
     // network parameter at the call site.
@@ -655,11 +655,10 @@ async fn issue_claim(
     Path(id): Path<String>,
 ) -> Result<Json<IssueClaimResponse>, ApiError> {
     // Confirm the vault exists before issuing.
-    let exists: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM vaults WHERE id = ?")
-            .bind(&id)
-            .fetch_optional(&state.db)
-            .await?;
+    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM vaults WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await?;
     if exists.is_none() {
         return Err(ApiError::NotFound);
     }
@@ -878,8 +877,8 @@ mod tests {
     #[test]
     fn resolve_party_accepts_bare_xpub_with_explicit_fingerprint() {
         let (xpub, fp) = xpub_for(0x11);
-        let (out_fp, out_xpub) = resolve_party("owner", &xpub, Some(&fp))
-            .expect("bare xpub + fingerprint should parse");
+        let (out_fp, out_xpub) =
+            resolve_party("owner", &xpub, Some(&fp)).expect("bare xpub + fingerprint should parse");
         assert_eq!(format!("{out_fp}"), fp);
         assert_eq!(out_xpub.to_string(), xpub);
     }
@@ -939,7 +938,11 @@ mod tests {
         let hi = descriptor_key_fragment(heir_fp, &path, &heir_xpub, Chain::Internal);
 
         let pair = build_descriptor_pair(&oe, &oi, &he, &hi, 144).unwrap();
-        assert!(pair.external.starts_with("tr("), "external: {}", pair.external);
+        assert!(
+            pair.external.starts_with("tr("),
+            "external: {}",
+            pair.external
+        );
         assert!(pair.external.contains("older(144)"));
         // Each chain fragment occurs once in the descriptor with its trailing
         // `/0/*` (external) or `/1/*` (internal) glob. We don't pin the

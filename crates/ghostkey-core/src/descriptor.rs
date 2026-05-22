@@ -124,7 +124,10 @@ pub fn build_descriptor_pair(
     // Validate both parse.
     let _ = parse_descriptor(&ext)?;
     let _ = parse_descriptor(&int_)?;
-    Ok(DescriptorPair { external: ext, internal: int_ })
+    Ok(DescriptorPair {
+        external: ext,
+        internal: int_,
+    })
 }
 
 /// Parse + validate a descriptor string.
@@ -156,7 +159,11 @@ mod tests {
     #[test]
     fn rejects_zero_and_overlong_timelocks() {
         let (oe, _oi, he, _hi) = fragments(Network::Regtest);
-        let mut p = DescriptorParams { owner_key: oe, heir_key: he, timelock_blocks: 0 };
+        let mut p = DescriptorParams {
+            owner_key: oe,
+            heir_key: he,
+            timelock_blocks: 0,
+        };
         assert!(p.validate().is_err());
         p.timelock_blocks = MAX_CSV_BLOCKS + 1;
         assert!(p.validate().is_err());

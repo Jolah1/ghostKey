@@ -32,7 +32,10 @@ pub fn vault_account_path(network: Network) -> DerivationPath {
 
 /// Derive an account-level xpub from a master xpriv, suitable for embedding
 /// in a vault descriptor as `[fingerprint/86'/coin'/0']xpub.../<0;1>/*`.
-pub fn account_xpub(master: &Xpriv, network: Network) -> Result<(bitcoin::bip32::Fingerprint, DerivationPath, Xpub)> {
+pub fn account_xpub(
+    master: &Xpriv,
+    network: Network,
+) -> Result<(bitcoin::bip32::Fingerprint, DerivationPath, Xpub)> {
     let secp = Secp256k1::new();
     let path = vault_account_path(network);
     let fingerprint = master.fingerprint(&secp);

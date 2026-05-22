@@ -31,7 +31,10 @@ pub fn run(profile_dir: &Path, args: Args) -> Result<()> {
     let rpc = RpcConfig::new(args.rpc_url, args.rpc_user, args.rpc_pass).connect()?;
 
     let prev = state::read_wallet_state(profile_dir)?;
-    let start = prev.as_ref().map(|s| s.last_synced_height).unwrap_or(args.start_height);
+    let start = prev
+        .as_ref()
+        .map(|s| s.last_synced_height)
+        .unwrap_or(args.start_height);
 
     let tip = sync_wallet(&mut w, &rpc, start)?;
 

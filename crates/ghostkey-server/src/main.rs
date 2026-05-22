@@ -31,7 +31,11 @@ struct Args {
     bind: SocketAddr,
 
     /// SQLite database URL (e.g. `sqlite://ghostkey.sqlite?mode=rwc`).
-    #[arg(long, env = "DATABASE_URL", default_value = "sqlite://ghostkey.sqlite?mode=rwc")]
+    #[arg(
+        long,
+        env = "DATABASE_URL",
+        default_value = "sqlite://ghostkey.sqlite?mode=rwc"
+    )]
     database_url: String,
 
     /// How often the scheduler wakes up and checks for missed deadlines.
@@ -48,10 +52,9 @@ pub struct AppState {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(
-                    "ghostkey_server=info,tower_http=info,info",
-                )),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new("ghostkey_server=info,tower_http=info,info")
+            }),
         )
         .compact()
         .init();
@@ -60,8 +63,7 @@ async fn main() -> Result<()> {
 
     // Fail loudly if encryption-at-rest is misconfigured. We'd rather
     // refuse to start than write plaintext heir contacts to the DB.
-    crypto::ensure_master_key_loaded()
-        .map_err(|e| anyhow::anyhow!("crypto setup: {e}"))?;
+    crypto::ensure_master_key_loaded().map_err(|e| anyhow::anyhow!("crypto setup: {e}"))?;
 
     let pool = db::connect(&args.database_url).await?;
     let state = Arc::new(AppState { db: pool.clone() });
