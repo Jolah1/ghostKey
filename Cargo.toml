@@ -42,6 +42,13 @@ hex = "0.4"
 rand = "0.8"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 
+# Crypto (server-side encryption-at-rest for heir contacts + claim tokens)
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc", "getrandom"] }
+hkdf  = "0.12"
+sha2  = "0.10"
+base64 = "0.22"
+subtle = "2"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
