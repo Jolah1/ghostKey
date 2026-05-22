@@ -7,6 +7,21 @@
  * proper heir table, we mirror that here in localStorage. The data
  * never leaves the device; the server already has the cryptographic
  * proof of who can claim.
+ *
+ * Per-vault `ownerToken` (the bearer credential issued at vault
+ * creation) also lives here. The server returns it exactly once in
+ * the `CreatedVault` response; if it's lost from this browser, the
+ * owner can no longer check in or list events for that vault from
+ * this device. The on-chain inheritance is still safe — the owner
+ * could create a new vault and re-register their funds — but the
+ * existing vault's notifier becomes unreachable.
+ *
+ * Why localStorage and not sessionStorage?
+ *   The check-in flow expects the dashboard to "remember" your vault
+ *   across visits. sessionStorage clears on tab close, which would
+ *   make the dashboard amnesiac. The trade-off is that any script
+ *   running on the same origin can read the token; we mitigate by
+ *   keeping CORS strict and the dashboard's surface small.
  */
 
 export interface HeirInfo {
@@ -26,6 +41,12 @@ export interface VaultMeta {
   owner: OwnerInfo;
   heir: HeirInfo;
   createdAt: string; // ISO
+  /**
+   * Bearer credential for `/vaults/:id/*` mutation routes.
+   * Optional for legacy entries created before per-vault auth shipped.
+   * New vaults always populate this.
+   */
+  ownerToken?: string;
 }
 
 const STORE_KEY = "gk:vaults";
@@ -54,6 +75,11 @@ export function saveVaultMeta(meta: VaultMeta) {
 
 export function getVaultMeta(id: string): VaultMeta | null {
   return readAll()[id] ?? null;
+}
+
+/** Returns the stored owner token for a vault, or null. */
+export function getVaultOwnerToken(id: string): string | null {
+  return readAll()[id]?.ownerToken ?? null;
 }
 
 export function listVaultMeta(): VaultMeta[] {

@@ -211,10 +211,7 @@ pub struct IssuedClaimToken {
 /// token; do not call this twice for the same vault unless you mean to
 /// invalidate the previous one.
 pub fn issue_claim_token() -> IssuedClaimToken {
-    let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
-    let hash_hex = hash_claim_token(&token);
+    let (token, hash_hex) = mint_bearer_token();
     IssuedClaimToken { token, hash_hex }
 }
 
@@ -224,10 +221,7 @@ pub fn issue_claim_token() -> IssuedClaimToken {
 /// the constant-time check happens later, in
 /// [`claim_token_matches`].
 pub fn hash_claim_token(token: &str) -> String {
-    let mut h = Sha256::new();
-    h.update(token.as_bytes());
-    let digest = h.finalize();
-    hex::encode(digest)
+    hash_token(token)
 }
 
 /// Constant-time comparison of a presented token against a stored hash.
@@ -238,7 +232,80 @@ pub fn hash_claim_token(token: &str) -> String {
 /// second hurdle (e.g. an attacker who controls the token but is
 /// fishing for hash collisions or DB confusion).
 pub fn claim_token_matches(presented: &str, stored_hash_hex: &str) -> bool {
-    let presented_hash = hash_claim_token(presented);
+    token_matches(presented, stored_hash_hex)
+}
+
+/* -------------------------------------------------------------------------- *
+ *  Owner tokens                                                              *
+ *                                                                            *
+ *  Same shape as claim tokens (32 bytes, base64-url-no-pad, SHA-256 hex)     *
+ *  but with a distinct type so the compiler refuses to mix them up. An       *
+ *  owner token authenticates a request as "the owner of vault X"; a claim    *
+ *  token authenticates a request as "the heir of vault X who clicked the     *
+ *  one-time link". They are not interchangeable.                             *
+ * -------------------------------------------------------------------------- */
+
+/// A freshly-issued owner token, returned once at vault creation.
+///
+/// Mirrors [`IssuedClaimToken`] structurally. We keep the type separate so
+/// that a future refactor can't silently swap one for the other.
+#[derive(Debug)]
+pub struct IssuedOwnerToken {
+    /// The bearer credential the owner sees. Returned in the create-vault
+    /// response body exactly once. The server only ever stores `hash_hex`.
+    pub token: String,
+    /// SHA-256 hex digest of `token`, for `vaults.owner_token_hash`.
+    pub hash_hex: String,
+}
+
+/// Issue a fresh owner token. Call once per vault, at creation.
+pub fn issue_owner_token() -> IssuedOwnerToken {
+    let (token, hash_hex) = mint_bearer_token();
+    IssuedOwnerToken { token, hash_hex }
+}
+
+/// Hash an owner token for storage / lookup. Alias of [`hash_token`].
+//
+// Mirrors `hash_claim_token`. Currently only used in tests and from
+// the `auth` module via `owner_token_matches`; expose it publicly so
+// the symmetry with claim tokens stays obvious.
+#[allow(dead_code)]
+pub fn hash_owner_token(token: &str) -> String {
+    hash_token(token)
+}
+
+/// Constant-time comparison of a presented owner token against a stored
+/// hash. See [`claim_token_matches`] for the rationale.
+pub fn owner_token_matches(presented: &str, stored_hash_hex: &str) -> bool {
+    token_matches(presented, stored_hash_hex)
+}
+
+/* -------------------------------------------------------------------------- *
+ *  Shared token primitives                                                   *
+ * -------------------------------------------------------------------------- */
+
+/// Mint a 32-byte random bearer token (base64-url-no-pad) and return it
+/// alongside its SHA-256 hex digest. Used for both claim and owner tokens.
+fn mint_bearer_token() -> (String, String) {
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    let hash_hex = hash_token(&token);
+    (token, hash_hex)
+}
+
+/// SHA-256 hex of an arbitrary token string. Same hash function for
+/// claim and owner tokens so DB lookups all share one code path.
+fn hash_token(token: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(token.as_bytes());
+    let digest = h.finalize();
+    hex::encode(digest)
+}
+
+/// Constant-time comparison of a presented token against a stored hash.
+fn token_matches(presented: &str, stored_hash_hex: &str) -> bool {
+    let presented_hash = hash_token(presented);
     presented_hash
         .as_bytes()
         .ct_eq(stored_hash_hex.as_bytes())
@@ -352,5 +419,46 @@ mod tests {
         let b = issue_claim_token();
         assert_ne!(a.token, b.token);
         assert_ne!(a.hash_hex, b.hash_hex);
+    }
+
+    #[test]
+    fn owner_token_issue_and_match() {
+        let t = issue_owner_token();
+        assert_eq!(t.token.len(), 43, "32 bytes base64-url-no-pad");
+        assert_eq!(t.hash_hex.len(), 64, "sha-256 hex");
+        assert!(owner_token_matches(&t.token, &t.hash_hex));
+        let mut bad = t.token.clone();
+        let first = bad.remove(0);
+        let replacement = if first == 'A' { 'B' } else { 'A' };
+        bad.insert(0, replacement);
+        assert!(!owner_token_matches(&bad, &t.hash_hex));
+    }
+
+    #[test]
+    fn owner_tokens_are_unique() {
+        let a = issue_owner_token();
+        let b = issue_owner_token();
+        assert_ne!(a.token, b.token);
+        assert_ne!(a.hash_hex, b.hash_hex);
+    }
+
+    /// Defense-in-depth: an owner token must not match a claim-token
+    /// hash and vice versa. They share an algorithm but live in
+    /// different columns and are used in different routes; mixing
+    /// them up would be a security regression. The strong property
+    /// here is that both column lookups index by hash, so an owner
+    /// token whose hash happens to equal a claim-token hash would
+    /// only "succeed" against the wrong route by colliding SHA-256 —
+    /// which is the inverse of "preimage resistance". This test just
+    /// asserts the engineering contract: an issued owner token's
+    /// hash is overwhelmingly unlikely to match an issued claim
+    /// token's hash.
+    #[test]
+    fn owner_and_claim_token_namespaces_do_not_overlap() {
+        let o = issue_owner_token();
+        let c = issue_claim_token();
+        assert_ne!(o.hash_hex, c.hash_hex);
+        // And the inputs themselves differ.
+        assert_ne!(o.token, c.token);
     }
 }

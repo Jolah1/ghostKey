@@ -17,6 +17,7 @@ use clap::Parser;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+mod auth;
 mod crypto;
 mod db;
 mod psbt_routes;
@@ -64,6 +65,12 @@ async fn main() -> Result<()> {
     // Fail loudly if encryption-at-rest is misconfigured. We'd rather
     // refuse to start than write plaintext heir contacts to the DB.
     crypto::ensure_master_key_loaded().map_err(|e| anyhow::anyhow!("crypto setup: {e}"))?;
+
+    // Surface the auth-disabled escape hatch at startup so it's
+    // impossible to miss in the logs. The function itself logs a
+    // warning; calling it here pins the OnceLock before any request
+    // can race on it.
+    let _ = auth::auth_disabled();
 
     let pool = db::connect(&args.database_url).await?;
     let state = Arc::new(AppState { db: pool.clone() });

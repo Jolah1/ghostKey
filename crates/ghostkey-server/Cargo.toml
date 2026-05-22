@@ -39,3 +39,9 @@ base64 = { workspace = true }
 subtle = { workspace = true }
 rand   = { workspace = true }
 hex    = { workspace = true }
+
+[dev-dependencies]
+# tower::ServiceExt::oneshot is the idiomatic way to drive an Axum
+# Router with a Request<Body> in a unit test without binding a TCP
+# port. The "util" feature flag is what exports the trait.
+tower = { workspace = true, features = ["util"] }

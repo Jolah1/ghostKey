@@ -5,6 +5,14 @@
  * (your dashboard sessionStorage is gone but you remember the vault
  * id). Renders a single big heartbeat card after a successful lookup,
  * just like the dashboard but ad-hoc.
+ *
+ * Authentication note: the server requires a per-vault owner token on
+ * `getVault`, `listEvents`, and `checkin`. We read the token from the
+ * device's local vault store, keyed by the vault id the user typed.
+ * If the user is checking in from a device that wasn't used at setup,
+ * the token won't be in localStorage and the call will fail with 401.
+ * We surface that as a specific "this device doesn't have your
+ * credentials" message rather than the generic "lookup failed".
  */
 import { useCallback, useMemo, useState } from "react";
 import {
@@ -25,12 +33,14 @@ import {
 } from "./api";
 import { countdown, parseRfc } from "./time";
 import { statusCopy } from "./vocab";
+import { getVaultOwnerToken } from "./vaultStore";
 
 type State =
   | { kind: "empty" }
   | { kind: "looking" }
   | { kind: "loaded"; vault: VaultView; events: VaultEvent[] }
   | { kind: "not-found"; id: string }
+  | { kind: "no-credentials"; id: string }
   | { kind: "error"; message: string };
 
 export function CheckinPortal({ initialId }: { initialId?: string }) {
@@ -42,18 +52,32 @@ export function CheckinPortal({ initialId }: { initialId?: string }) {
 
   const now = useTicker(1000);
 
+  const tokenFor = useCallback(
+    (id: string) => getVaultOwnerToken(id.trim()),
+    [],
+  );
+
   const lookup = useCallback(async (id: string) => {
     const trimmed = id.trim();
     if (!trimmed) return;
     setState({ kind: "looking" });
     setActionError(null);
+    const token = tokenFor(trimmed);
+    if (!token) {
+      setState({ kind: "no-credentials", id: trimmed });
+      return;
+    }
     try {
       const [v, evs] = await Promise.all([
-        api.getVault(trimmed),
-        api.listEvents(trimmed),
+        api.getVault(trimmed, token),
+        api.listEvents(trimmed, token),
       ]);
       setState({ kind: "loaded", vault: v, events: evs });
     } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        setState({ kind: "no-credentials", id: trimmed });
+        return;
+      }
       if (e instanceof ApiError && e.status === 404) {
         setState({ kind: "not-found", id: trimmed });
       } else {
@@ -63,29 +87,32 @@ export function CheckinPortal({ initialId }: { initialId?: string }) {
         });
       }
     }
-  }, []);
+  }, [tokenFor]);
 
   // Light polling while a vault is on screen.
   const refresh = useCallback(async () => {
     if (state.kind !== "loaded") return;
+    const token = tokenFor(state.vault.id);
+    if (!token) return;
     try {
       const [v, evs] = await Promise.all([
-        api.getVault(state.vault.id),
-        api.listEvents(state.vault.id),
+        api.getVault(state.vault.id, token),
+        api.listEvents(state.vault.id, token),
       ]);
       setState({ kind: "loaded", vault: v, events: evs });
     } catch {
       /* next tick */
     }
-  }, [state]);
+  }, [state, tokenFor]);
   usePolling(refresh, 8000, [state.kind === "loaded" ? (state as { vault: VaultView }).vault.id : ""]);
 
   async function onCheckin() {
     if (state.kind !== "loaded") return;
+    const token = tokenFor(state.vault.id);
     setBusy(true);
     setActionError(null);
     try {
-      await api.checkin(state.vault.id);
+      await api.checkin(state.vault.id, token);
       await refresh();
       setJustChecked(true);
       window.setTimeout(() => setJustChecked(false), 2400);
@@ -142,6 +169,20 @@ export function CheckinPortal({ initialId }: { initialId?: string }) {
           <div className="mt-6">
             <InlineAlert tone="warning">
               No vault with that ID. Double-check the ID and try again.
+            </InlineAlert>
+          </div>
+        )}
+
+        {state.kind === "no-credentials" && (
+          <div className="mt-6">
+            <InlineAlert tone="warning">
+              This device doesn't have the credentials for vault{" "}
+              <span className="font-mono">{state.id.slice(0, 8)}…</span>.
+              <br />
+              Check in from the browser you used to set up the vault, or
+              import its credentials onto this device first. (We're working
+              on a cleaner cross-device flow — for now the owner token only
+              lives on the device that created the vault.)
             </InlineAlert>
           </div>
         )}

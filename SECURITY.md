@@ -42,7 +42,8 @@ Yes:
 - A way to spoof a check-in for someone else's vault.
 - A way to leak the server's master key, decrypt heir contacts at
   rest, or recover claim tokens from stored hashes.
-- A way to bypass server authentication once it's added.
+- A way to bypass per-vault owner authentication (or admin auth on
+  `GET /vaults`).
 - A way to deny service such that legitimate alarms never fire.
 - A supply-chain compromise: a malicious dependency, a tampered
   release artefact, a build-time injection.
@@ -58,8 +59,9 @@ Not really:
 
 - Outdated dependency warnings without a known exploit. Open a
   normal PR for these.
-- "The CORS policy is permissive." Yes, we know. See the audit and
-  roadmap. Open an issue.
+- "The CORS policy is too permissive." It's now an allowlist
+  (`GHOSTKEY_ALLOWED_ORIGINS`); if you find a way to bypass it, that
+  *is* a finding — please report.
 - "There's no rate limiting." Same — known gap, open an issue.
 
 ## Scope
@@ -109,10 +111,11 @@ from the standard, please tell us.
 
 These are documented gaps, not findings:
 
-- The server has no authentication on mutation endpoints today.
-  Vault UUIDs are treated as bearer credentials. This is being
-  fixed; see `CONTRIBUTING.md` and the roadmap.
-- CORS is wide open. Same reason.
+- The server has authentication on mutation endpoints (Bearer-token,
+  per vault, hashed at rest) and on the admin list route. CORS is now
+  an allowlist driven by `GHOSTKEY_ALLOWED_ORIGINS`. A dev escape
+  hatch (`GHOSTKEY_AUTH_DISABLED=1`) exists and must not be set in
+  production.
 - No notification fan-out yet — alarms write to the events log;
   operators deliver claim links by hand.
 - No rate limiting.

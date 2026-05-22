@@ -242,6 +242,12 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
       // render it without round-tripping to the server. We deliberately
       // do NOT mirror the xpub here — it's enough that the server holds
       // the descriptors; the device-local store is just for friendly UI.
+      //
+      // The owner_token is captured here for the first and only time.
+      // It's the bearer credential needed on every authenticated
+      // route. Losing this entry means losing the ability to drive
+      // this vault's check-in from this browser; the user would have
+      // to create a new vault. Worth noting in the UI eventually.
       saveVaultMeta({
         id: resp.id,
         label,
@@ -255,6 +261,7 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
           address: draft.heirXpub.trim() || "",
         },
         createdAt: new Date().toISOString(),
+        ownerToken: resp.owner_token,
       });
 
       onCreated({

@@ -33,7 +33,7 @@ import {
 } from "./api";
 import { countdown, parseRfc } from "./time";
 import { statusCopy } from "./vocab";
-import { getActiveVaultId, getVaultMeta, type VaultMeta } from "./vaultStore";
+import { getActiveVaultId, getVaultMeta, getVaultOwnerToken, type VaultMeta } from "./vaultStore";
 import type { Route } from "./App";
 
 interface Props {
@@ -44,6 +44,15 @@ export function Dashboard({ onNavigate }: Props) {
   const activeId = useMemo(() => getActiveVaultId(), []);
   const meta = useMemo(
     () => (activeId ? getVaultMeta(activeId) : null),
+    [activeId],
+  );
+  // Owner token persists in localStorage from setup. If it's missing
+  // (e.g. the user cleared their site data, or the vault was created
+  // before per-vault auth shipped), the server will reject mutations
+  // with 401. We surface that as an inline error rather than a silent
+  // failure.
+  const ownerToken = useMemo(
+    () => (activeId ? getVaultOwnerToken(activeId) : null),
     [activeId],
   );
 
@@ -59,18 +68,25 @@ export function Dashboard({ onNavigate }: Props) {
     if (!activeId) return;
     try {
       const [v, evs] = await Promise.all([
-        api.getVault(activeId),
-        api.listEvents(activeId),
+        api.getVault(activeId, ownerToken),
+        api.listEvents(activeId, ownerToken),
       ]);
       setVault(v);
       setEvents(evs);
     } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        setError(
+          "This browser doesn't have the credentials for this vault. " +
+            "If you set it up on another device, sign in there or create a new vault.",
+        );
+        return;
+      }
       if (e instanceof ApiError && e.status === 404) {
         setError("This vault is no longer on the server.");
       }
       // Otherwise swallow; the next tick may succeed.
     }
-  }, [activeId]);
+  }, [activeId, ownerToken]);
 
   // Initial load.
   useEffect(() => {
@@ -85,7 +101,7 @@ export function Dashboard({ onNavigate }: Props) {
     setBusy(true);
     setError(null);
     try {
-      await api.checkin(vault.id);
+      await api.checkin(vault.id, ownerToken);
       await refresh();
       setJustChecked(true);
       window.setTimeout(() => setJustChecked(false), 2400);

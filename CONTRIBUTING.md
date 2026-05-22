@@ -207,8 +207,6 @@ of [`README.md`](./README.md) for the full list.
 - **Notification fan-out** (email first via Postmark / Resend / AWS
   SES; SMS via Twilio; WhatsApp via the Business API). The server
   already generates claim tokens — we just need to deliver them.
-- **Server authentication.** Owner-token Bearer auth on all mutation
-  endpoints. Designed but not yet implemented.
 - **Address-only setup.** A wizard mode that accepts a bare Bitcoin
   address instead of an xpub, for users who can't easily export an
   xpub. Requires backend work to track a single address as a vault.

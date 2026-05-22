@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::header;
+use axum::http::{Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -12,17 +13,31 @@ use ghostkey_core::descriptor::{build_descriptor_pair, parse_descriptor};
 use ghostkey_core::keys::{descriptor_key_fragment, parse_xpub, vault_account_path, Chain};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
+use crate::auth::{cors_allowed_origins, AdminAuth, OwnerAuth};
 use crate::crypto::{
-    self, hash_claim_token, issue_claim_token, open_for_vault, seal_for_vault, CryptoError,
-    SealedContact,
+    self, hash_claim_token, issue_claim_token, issue_owner_token, open_for_vault, seal_for_vault,
+    CryptoError, SealedContact,
 };
 use crate::AppState;
 
 pub fn router(state: Arc<AppState>) -> Router {
+    // Build the CORS allowlist from env (or default to local dev
+    // frontends). We tighten this from the previous Any/Any/Any
+    // configuration so a hostile site can't drive the API from a
+    // visitor's browser via XHR / fetch.
+    let origins: Vec<axum::http::HeaderValue> = cors_allowed_origins()
+        .into_iter()
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
+
     Router::new()
         .route("/health", get(health))
         .route("/vaults", post(create_vault).get(list_vaults))
@@ -41,12 +56,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(crate::psbt_routes::broadcast_claim),
         )
         .layer(TraceLayer::new_for_http())
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        )
+        .layer(cors)
         .with_state(state)
 }
 
@@ -90,6 +100,26 @@ pub struct VaultView {
     pub next_deadline_at: DateTime<Utc>,
 }
 
+/// Response shape from a successful vault creation.
+///
+/// Carries everything `VaultView` does plus the freshly issued
+/// `owner_token`. The raw token is returned exactly once here and
+/// never re-emitted by any other route. The caller must capture it;
+/// the server only stores the SHA-256 hash going forward.
+#[derive(Debug, Serialize)]
+pub struct CreatedVault {
+    #[serde(flatten)]
+    pub vault: VaultView,
+    /// The bearer credential required on `Authorization: Bearer ...`
+    /// for every authenticated route on this vault. Treat it like a
+    /// password: store it in the same place you'd store a wallet
+    /// recovery file. If you lose it, you lose the ability to
+    /// check in or list events for this vault — though the on-chain
+    /// inheritance is unaffected (the owner can still spend, the
+    /// heir can still wait out the timelock).
+    pub owner_token: String,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
     #[error("not found")]
@@ -128,7 +158,7 @@ impl IntoResponse for ApiError {
 async fn create_vault(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateVaultRequest>,
-) -> Result<(StatusCode, Json<VaultView>), ApiError> {
+) -> Result<(StatusCode, Json<CreatedVault>), ApiError> {
     if req.checkin_period_secs <= 0 || req.grace_period_secs < 0 {
         return Err(ApiError::Validation("non-positive period".into()));
     }
@@ -157,6 +187,10 @@ async fn create_vault(
     let claim_eligible = next_deadline + Duration::seconds(req.grace_period_secs);
     let claim_eligible_s = claim_eligible.to_rfc3339();
 
+    // Mint the owner token now so we can store the hash in the same
+    // INSERT and return the raw value to the caller exactly once.
+    let issued_owner = issue_owner_token();
+
     sqlx::query(
         r#"INSERT INTO vaults (
             id, label, network,
@@ -165,8 +199,9 @@ async fn create_vault(
             checkin_period_secs, grace_period_secs,
             owner_contact, heir_contact,
             created_at, next_deadline_at, status,
-            claim_eligible_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok', ?)"#,
+            claim_eligible_at,
+            owner_token_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok', ?, ?)"#,
     )
     .bind(&id)
     .bind(&req.label)
@@ -181,6 +216,7 @@ async fn create_vault(
     .bind(&now_s)
     .bind(&next_s)
     .bind(&claim_eligible_s)
+    .bind(&issued_owner.hash_hex)
     .execute(&state.db)
     .await?;
 
@@ -188,17 +224,20 @@ async fn create_vault(
 
     Ok((
         StatusCode::CREATED,
-        Json(VaultView {
-            id,
-            label: req.label,
-            network: req.network,
-            timelock_blocks: timelock,
-            checkin_period_secs: req.checkin_period_secs,
-            grace_period_secs: req.grace_period_secs,
-            status: "ok".into(),
-            created_at: now,
-            last_checkin_at: None,
-            next_deadline_at: next_deadline,
+        Json(CreatedVault {
+            vault: VaultView {
+                id,
+                label: req.label,
+                network: req.network,
+                timelock_blocks: timelock,
+                checkin_period_secs: req.checkin_period_secs,
+                grace_period_secs: req.grace_period_secs,
+                status: "ok".into(),
+                created_at: now,
+                last_checkin_at: None,
+                next_deadline_at: next_deadline,
+            },
+            owner_token: issued_owner.token,
         }),
     ))
 }
@@ -255,7 +294,7 @@ pub struct CreateVaultFromXpubRequest {
 async fn create_vault_from_xpub(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateVaultFromXpubRequest>,
-) -> Result<(StatusCode, Json<VaultView>), ApiError> {
+) -> Result<(StatusCode, Json<CreatedVault>), ApiError> {
     // ---- Validate periods + timelock ---------------------------------
     if req.checkin_period_secs <= 0 || req.grace_period_secs < 0 {
         return Err(ApiError::Validation("non-positive period".into()));
@@ -340,6 +379,10 @@ async fn create_vault_from_xpub(
     let claim_eligible = next_deadline + Duration::seconds(req.grace_period_secs);
     let claim_eligible_s = claim_eligible.to_rfc3339();
 
+    // Mint the owner token. The raw value is returned exactly once
+    // in the response; only the hash hits the database.
+    let issued_owner = issue_owner_token();
+
     sqlx::query(
         r#"INSERT INTO vaults (
             id, label, network,
@@ -352,10 +395,12 @@ async fn create_vault_from_xpub(
             heir_xpub_fragment_external,  heir_xpub_fragment_internal,
             heir_contact_channel,
             heir_contact_ciphertext, heir_contact_nonce,
-            claim_eligible_at
+            claim_eligible_at,
+            owner_token_hash
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'ok',
                   ?, ?, ?, ?, ?,
                   ?, ?,
+                  ?,
                   ?)"#,
     )
     .bind(&id)
@@ -377,6 +422,7 @@ async fn create_vault_from_xpub(
     .bind(&ciphertext_b64)
     .bind(&nonce_b64)
     .bind(&claim_eligible_s)
+    .bind(&issued_owner.hash_hex)
     .execute(&state.db)
     .await?;
 
@@ -394,17 +440,20 @@ async fn create_vault_from_xpub(
 
     Ok((
         StatusCode::CREATED,
-        Json(VaultView {
-            id,
-            label: req.label,
-            network: req.network,
-            timelock_blocks: timelock,
-            checkin_period_secs: req.checkin_period_secs,
-            grace_period_secs: req.grace_period_secs,
-            status: "ok".into(),
-            created_at: now,
-            last_checkin_at: None,
-            next_deadline_at: next_deadline,
+        Json(CreatedVault {
+            vault: VaultView {
+                id,
+                label: req.label,
+                network: req.network,
+                timelock_blocks: timelock,
+                checkin_period_secs: req.checkin_period_secs,
+                grace_period_secs: req.grace_period_secs,
+                status: "ok".into(),
+                created_at: now,
+                last_checkin_at: None,
+                next_deadline_at: next_deadline,
+            },
+            owner_token: issued_owner.token,
         }),
     ))
 }
@@ -464,6 +513,7 @@ pub struct VaultListItem {
 }
 
 async fn list_vaults(
+    _admin: AdminAuth,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<VaultListItem>>, ApiError> {
     let rows = sqlx::query_as::<_, (String, Option<String>, String, String)>(
@@ -486,9 +536,10 @@ async fn list_vaults(
 }
 
 async fn get_vault(
+    auth: OwnerAuth,
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
 ) -> Result<Json<VaultView>, ApiError> {
+    let id = auth.vault_id;
     let row = sqlx::query_as::<
         _,
         (
@@ -537,9 +588,10 @@ pub struct CheckinResponse {
 }
 
 async fn checkin(
+    auth: OwnerAuth,
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
 ) -> Result<Json<CheckinResponse>, ApiError> {
+    let id = auth.vault_id;
     // Fetch the cadence to recompute the deadline.
     let row = sqlx::query_as::<_, (i64, i64)>(
         "SELECT checkin_period_secs, grace_period_secs FROM vaults WHERE id = ?",
@@ -598,9 +650,10 @@ pub struct EventView {
 }
 
 async fn list_events(
+    auth: OwnerAuth,
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
 ) -> Result<Json<Vec<EventView>>, ApiError> {
+    let id = auth.vault_id;
     let rows = sqlx::query_as::<_, (i64, String, String, Option<String>, String)>(
         "SELECT id, vault_id, kind, detail, created_at FROM events WHERE vault_id = ? ORDER BY id ASC",
     )
@@ -651,9 +704,10 @@ pub struct IssueClaimResponse {
 }
 
 async fn issue_claim(
+    auth: OwnerAuth,
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
 ) -> Result<Json<IssueClaimResponse>, ApiError> {
+    let id = auth.vault_id;
     // Confirm the vault exists before issuing.
     let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM vaults WHERE id = ?")
         .bind(&id)

@@ -174,14 +174,33 @@ const BASE: string =
   ((import.meta as unknown as { env?: { VITE_API_BASE?: string } }).env
     ?.VITE_API_BASE ?? "/api");
 
+/**
+ * Per-vault owner authentication.
+ *
+ * Most server routes require an `Authorization: Bearer <token>` header
+ * that maps to a SHA-256 hash stored at vault creation time. The token
+ * is returned exactly once in the `CreatedVault` response and is
+ * persisted on the client (see `vaultStore.ts`). It never appears in
+ * a URL or a query string.
+ *
+ * Pass `null` or omit the argument for routes that don't need auth
+ * (`/health`, `/claim/:token/*`, the create-vault endpoints
+ * themselves).
+ */
+function authHeaders(token?: string | null): Record<string, string> {
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
+
 async function request<T>(
   path: string,
   init: RequestInit = {},
+  ownerToken?: string | null,
 ): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
     headers: {
       "content-type": "application/json",
+      ...authHeaders(ownerToken),
       ...(init.headers ?? {}),
     },
   });
@@ -197,23 +216,40 @@ async function request<T>(
   return body as T;
 }
 
+/**
+ * Response shape from `POST /vaults` and `POST /vaults/from-xpub`.
+ * The `owner_token` field is the bearer credential the caller must
+ * keep — it's never returned again by any other route.
+ */
+export interface CreatedVault extends VaultView {
+  owner_token: string;
+}
+
 export const api = {
   health: () => request<{ ok: boolean; version: string }>("/health"),
-  listVaults: () => request<VaultListItem[]>("/vaults"),
-  getVault: (id: string) => request<VaultView>(`/vaults/${id}`),
+  /** Admin-only on the server. The web app does not call this. */
+  listVaults: (adminToken: string) =>
+    request<VaultListItem[]>("/vaults", {}, adminToken),
+  getVault: (id: string, ownerToken: string | null) =>
+    request<VaultView>(`/vaults/${id}`, {}, ownerToken),
   createVault: (req: CreateVaultRequest) =>
-    request<VaultView>("/vaults", {
+    request<CreatedVault>("/vaults", {
       method: "POST",
       body: JSON.stringify(req),
     }),
   createVaultFromXpub: (req: CreateVaultFromXpubRequest) =>
-    request<VaultView>("/vaults/from-xpub", {
+    request<CreatedVault>("/vaults/from-xpub", {
       method: "POST",
       body: JSON.stringify(req),
     }),
-  checkin: (id: string) =>
-    request<CheckinResponse>(`/vaults/${id}/checkin`, { method: "POST" }),
-  listEvents: (id: string) => request<VaultEvent[]>(`/vaults/${id}/events`),
+  checkin: (id: string, ownerToken: string | null) =>
+    request<CheckinResponse>(
+      `/vaults/${id}/checkin`,
+      { method: "POST" },
+      ownerToken,
+    ),
+  listEvents: (id: string, ownerToken: string | null) =>
+    request<VaultEvent[]>(`/vaults/${id}/events`, {}, ownerToken),
   resolveClaim: (token: string) =>
     request<ClaimView>(`/claim/${encodeURIComponent(token)}`),
   buildClaimPsbt: (token: string, req: BuildClaimPsbtRequest) =>

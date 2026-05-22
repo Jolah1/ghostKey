@@ -120,7 +120,6 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full threat model and design ra
 ## What's not built yet
 
 - **Notification fan-out.** The server records alarm events and generates a one-time claim link, but doesn't yet deliver that link automatically (SMS, email, WhatsApp). Today an operator pulls the link from the events log and forwards it. Automatic delivery is the top priority.
-- **Server authentication.** Mutation endpoints (check-in, vault listing) currently rely on the secrecy of vault UUIDs. Bearer-token auth per vault is being added.
 - **Address-only setup.** The wizard requires an xpub today. A bare-address mode (for users who can't easily export an xpub) is planned.
 - **Lightning check-in.** Paying 1 sat to a per-vault Lightning address as proof of life. Planned, not yet built.
 - **Cold signing.** CLI signs in-process today. PSBT export for hardware wallets is planned.
