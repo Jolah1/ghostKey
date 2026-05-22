@@ -8,6 +8,8 @@
  *   dashboard     — active vault on this device
  *   checkin       — lookup-by-ID check-in (heir/cross-device)
  *   inherit       — heir-side status lookup
+ *   claim/<token> — heir lands here from their one-time link; not
+ *                   navigable from the nav, no localStorage state
  *
  * State that crosses routes lives in localStorage (active vault id and
  * heir metadata) via vaultStore.ts. There is no global store beyond
@@ -20,6 +22,7 @@ import { SetupPortal } from "./SetupPortal";
 import { CheckinPortal } from "./CheckinPortal";
 import { InheritPortal } from "./InheritPortal";
 import { Dashboard } from "./Dashboard";
+import { ClaimPage } from "./ClaimPage";
 import { ServerOfflineBanner } from "./ServerOfflineBanner";
 import { Button } from "./ui";
 import { api } from "./api";
@@ -42,28 +45,49 @@ const VALID: Route[] = [
   "inherit",
 ];
 
-function routeFromHash(): Route {
-  if (typeof window === "undefined") return "landing";
-  const slug = window.location.hash.replace(/^#\/?/, "") as Route;
-  return VALID.includes(slug) ? slug : "landing";
+/**
+ * Resolved hash → either a navigable Route, or a parameterised location
+ * (today: only `claim` with its token). Kept as a discriminated union so
+ * the renderer can pattern-match cleanly.
+ */
+type Location =
+  | { kind: "route"; route: Route }
+  | { kind: "claim"; token: string };
+
+function locationFromHash(): Location {
+  if (typeof window === "undefined") return { kind: "route", route: "landing" };
+  const raw = window.location.hash.replace(/^#\/?/, "");
+  // claim/<token>
+  if (raw.startsWith("claim/")) {
+    const token = raw.slice("claim/".length).trim();
+    if (token) return { kind: "claim", token };
+  }
+  const slug = raw as Route;
+  return {
+    kind: "route",
+    route: VALID.includes(slug) ? slug : "landing",
+  };
 }
 
 export default function App() {
-  const [route, setRoute] = useState<Route>(routeFromHash);
+  const [location, setLocation] = useState<Location>(locationFromHash);
   const [health, setHealth] = useState<"unknown" | "ok" | "offline">("unknown");
 
-  // Reflect route in the URL hash and sync back the other way.
+  // Sync the URL hash with the current location. Only writes back for
+  // simple routes; the claim page's token-bearing URL is owned by the
+  // initial navigation and we never rewrite it.
   useEffect(() => {
-    const wanted = `#/${route}`;
-    if (window.location.hash !== wanted) {
-      window.history.replaceState(null, "", wanted);
+    if (location.kind === "route") {
+      const wanted = `#/${location.route}`;
+      if (window.location.hash !== wanted) {
+        window.history.replaceState(null, "", wanted);
+      }
     }
-    // Reset scroll on route changes so the next screen starts at the top.
     window.scrollTo(0, 0);
-  }, [route]);
+  }, [location]);
 
   useEffect(() => {
-    const onHash = () => setRoute(routeFromHash());
+    const onHash = () => setLocation(locationFromHash());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
@@ -88,24 +112,38 @@ export default function App() {
     };
   }, []);
 
+  const setRoute = (r: Route) => setLocation({ kind: "route", route: r });
+  const isClaim = location.kind === "claim";
+
   return (
     <div className="min-h-screen bg-app">
       {health === "offline" && <ServerOfflineBanner />}
-      <NavBar route={route} onNavigate={setRoute} />
+      {/*
+        The heir claim page renders without the standard nav. The heir
+        has never seen GhostKey before; "Set up" / "Dashboard" in the
+        nav are noise that confuses the one thing they're here for.
+      */}
+      {!isClaim && (
+        <NavBar
+          route={location.kind === "route" ? location.route : "landing"}
+          onNavigate={setRoute}
+        />
+      )}
 
-      {route === "landing"   && <Landing  onNavigate={setRoute} />}
-      {route === "setup"     && (
+      {location.kind === "route" && location.route === "landing"   && <Landing  onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "setup"     && (
         <SetupPortal
           onCancel={() => setRoute("landing")}
           onCreated={() => setRoute("success")}
         />
       )}
-      {route === "success"   && <Success onNavigate={setRoute} />}
-      {route === "dashboard" && <Dashboard onNavigate={setRoute} />}
-      {route === "checkin"   && (
+      {location.kind === "route" && location.route === "success"   && <Success onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "dashboard" && <Dashboard onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "checkin"   && (
         <CheckinPortal initialId={getActiveVaultId() ?? undefined} />
       )}
-      {route === "inherit"   && <InheritPortal />}
+      {location.kind === "route" && location.route === "inherit"   && <InheritPortal />}
+      {location.kind === "claim" && <ClaimPage token={location.token} />}
     </div>
   );
 }
