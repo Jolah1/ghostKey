@@ -20,6 +20,7 @@ use std::sync::Arc;
 mod auth;
 mod crypto;
 mod db;
+mod notifier;
 mod psbt_routes;
 mod routes;
 mod scheduler;
@@ -42,6 +43,12 @@ struct Args {
     /// How often the scheduler wakes up and checks for missed deadlines.
     #[arg(long, env = "GHOSTKEY_TICK_SECS", default_value_t = 30)]
     tick_secs: u64,
+
+    /// How often the notification worker polls for pending sends.
+    /// Independent of the scheduler tick because retries / SMTP
+    /// timeouts have their own cadence. Reasonable default: 15s.
+    #[arg(long, env = "GHOSTKEY_NOTIF_TICK_SECS", default_value_t = 15)]
+    notif_tick_secs: u64,
 }
 
 #[derive(Clone)]
@@ -79,6 +86,20 @@ async fn main() -> Result<()> {
     let sched_state = state.clone();
     tokio::spawn(async move {
         scheduler::run(sched_state, std::time::Duration::from_secs(args.tick_secs)).await;
+    });
+
+    // Background notification worker. Runs on the same DB pool as
+    // the scheduler. Polls every `notif_tick_secs`. Configure SMTP
+    // via SMTP_HOST / SMTP_PORT / SMTP_FROM (and SMTP_USER / SMTP_PASS
+    // if auth is required). When SMTP_HOST is unset the worker logs
+    // a warning at startup and leaves email rows in `pending`.
+    let notif_pool = pool.clone();
+    tokio::spawn(async move {
+        notifier::run(
+            notif_pool,
+            std::time::Duration::from_secs(args.notif_tick_secs),
+        )
+        .await;
     });
 
     let app = routes::router(state);

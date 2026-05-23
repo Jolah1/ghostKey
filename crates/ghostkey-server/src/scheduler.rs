@@ -21,6 +21,7 @@ use std::time::Duration;
 use chrono::Utc;
 
 use crate::crypto::issue_claim_token;
+use crate::notifier::{self, parse_heir_contact, Channel, NotificationKind};
 use crate::routes::record_event;
 use crate::AppState;
 
@@ -78,8 +79,20 @@ async fn transition_ok_to_alarmed(state: &AppState, now_iso: &str) -> anyhow::Re
 /// hash for some reason won't cause a token reset; the operator can
 /// explicitly call POST /vaults/:id/issue-claim to force re-issue.
 async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> anyhow::Result<()> {
-    let due = sqlx::query_as::<_, (String,)>(
-        r#"SELECT id
+    // We pull the heir contact fields (encrypted) and label in the
+    // same query so we can enqueue a notification without a second
+    // round-trip per row.
+    let due = sqlx::query_as::<
+        _,
+        (
+            String,         // id
+            Option<String>, // label
+            Option<String>, // heir_contact_ciphertext
+            Option<String>, // heir_contact_nonce
+        ),
+    >(
+        r#"SELECT id, label,
+                  heir_contact_ciphertext, heir_contact_nonce
              FROM vaults
             WHERE status = 'alarmed'
               AND claim_token_hash IS NULL
@@ -90,7 +103,7 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
     .fetch_all(&state.db)
     .await?;
 
-    for (id,) in due {
+    for (id, label, ct, nn) in due {
         let token = issue_claim_token();
         tracing::warn!(
             vault_id = %id,
@@ -117,10 +130,11 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
         .await?;
         tx.commit().await?;
 
-        // The raw token is included in the event detail so the
-        // operator (or a future notifier) can pick it up and deliver
-        // it. The heir's contact stays encrypted; this is the link
-        // they'd receive.
+        // The raw token is still included in the event detail as a
+        // belt-and-braces fallback: if the notifier is broken or
+        // SMTP is down, an operator can still pull the link from
+        // the events log. Once the notifier is reliable we'll
+        // reconsider keeping the raw token here.
         record_event(
             &state.db,
             &id,
@@ -132,9 +146,108 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
             })),
         )
         .await?;
+
+        // Try to enqueue a notification for the heir. We only know
+        // how to deliver via email today; sms / whatsapp channels
+        // get logged and skipped. A vault with no encrypted heir
+        // contact (legacy, or owner declined to provide one) also
+        // skips here. None of those skips block the status
+        // transition above.
+        if let Err(e) = enqueue_claim_link(
+            state,
+            &id,
+            label.as_deref(),
+            ct.as_deref(),
+            nn.as_deref(),
+            &token.token,
+        )
+        .await
+        {
+            tracing::warn!(vault_id = %id, error = ?e, "could not enqueue claim notification");
+        }
     }
 
     Ok(())
+}
+
+/// Build a claim URL and enqueue a delivery for the heir. Returns
+/// `Ok(())` whether or not the enqueue actually happened -- a skip
+/// (no contact, wrong channel) is not an error.
+async fn enqueue_claim_link(
+    state: &AppState,
+    vault_id: &str,
+    label: Option<&str>,
+    contact_ct: Option<&str>,
+    contact_nn: Option<&str>,
+    token: &str,
+) -> anyhow::Result<()> {
+    let Some(contact) = parse_heir_contact(vault_id, contact_ct, contact_nn)? else {
+        tracing::info!(vault_id = %vault_id, "no heir contact on file; skipping notification");
+        return Ok(());
+    };
+
+    let channel = match contact.channel.as_deref() {
+        Some("email") => Channel::Email,
+        Some(other) => {
+            tracing::info!(vault_id = %vault_id, channel = %other, "heir channel not yet supported; skipping notification");
+            return Ok(());
+        }
+        None => {
+            tracing::info!(vault_id = %vault_id, "heir channel missing; skipping notification");
+            return Ok(());
+        }
+    };
+
+    let recipient = match contact.contact.as_deref() {
+        Some(c) if !c.is_empty() => c.to_string(),
+        _ => {
+            tracing::info!(vault_id = %vault_id, "heir contact address empty; skipping notification");
+            return Ok(());
+        }
+    };
+
+    let base = public_base_url();
+    let claim_url = format!("{base}/#/claim/{token}");
+
+    let display_label = label.unwrap_or("a Bitcoin inheritance");
+    let heir_name = contact.name.as_deref().unwrap_or("there");
+    let subject = "A message for you about something someone left you".to_string();
+    let body = format!(
+        "Hello {heir_name},\n\n\
+         Someone you knew set up a Bitcoin inheritance with GhostKey, and \
+         asked us to reach out to you if they ever stopped checking in. \
+         That has happened.\n\n\
+         Open this link on any phone or computer to see what they left you \
+         and the next steps:\n\n\
+         {claim_url}\n\n\
+         The link works once. You don't need an account.\n\n\
+         What's being passed on: {display_label}.\n\n\
+         If this message reached you by mistake, you can ignore it -- \
+         nothing happens until you open the link.\n\n\
+         — GhostKey\n"
+    );
+
+    notifier::enqueue(
+        &state.db,
+        vault_id,
+        NotificationKind::ClaimLink,
+        channel,
+        &recipient,
+        &subject,
+        &body,
+    )
+    .await?;
+    tracing::info!(vault_id = %vault_id, "claim-link notification enqueued");
+    Ok(())
+}
+
+/// The public base URL the heir's claim link should point at. We
+/// keep this configurable so a deployment serving the dashboard at
+/// e.g. `ghostkeyapp.vercel.app` can produce links that go there
+/// rather than to the API host.
+fn public_base_url() -> String {
+    std::env::var("GHOSTKEY_PUBLIC_BASE_URL")
+        .unwrap_or_else(|_| "https://ghostkeyapp.vercel.app".to_string())
 }
 
 /* -------------------------------------------------------------------------- *

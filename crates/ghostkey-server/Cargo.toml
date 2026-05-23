@@ -39,6 +39,7 @@ base64 = { workspace = true }
 subtle = { workspace = true }
 rand   = { workspace = true }
 hex    = { workspace = true }
+lettre = { workspace = true }
 
 [dev-dependencies]
 # tower::ServiceExt::oneshot is the idiomatic way to drive an Axum

@@ -49,6 +49,16 @@ sha2  = "0.10"
 base64 = "0.22"
 subtle = "2"
 
+# SMTP for the notification fan-out. rustls + tokio so we don't pull
+# in OpenSSL, and the "builder" feature gives the `Message::builder()`
+# helpers used in `crate::notifier`. async-std support is off.
+lettre = { version = "0.11", default-features = false, features = [
+    "smtp-transport",
+    "tokio1-rustls-tls",
+    "builder",
+    "hostname",
+] }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
