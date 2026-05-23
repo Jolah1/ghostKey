@@ -1,139 +1,141 @@
 # GhostKey
 
-> The inheritance layer for Bitcoin.
+> A dead-man switch for self-custodied Bitcoin.
 
-When you die, your Bitcoin disappears. Not because it's gone — because nobody knows where the keys are, or nobody can use them without you.
+GhostKey is an open-source tool that helps people who hold their own Bitcoin pass it on to a chosen heir if they ever stop checking in. You keep your keys. We watch your address and run the clock.
 
-GhostKey fixes this. You link your Bitcoin address. You name an heir. Once a month you tap to say you're still here. If you ever stop, your heir gets a notification and can claim everything — automatically, without asking anyone's permission. No lawyer. No exchange. No middleman.
+The mechanism is one Taproot output with two spend paths. The owner can spend at any time. The heir can spend only after a chosen number of blocks have passed without a check-in. Even if GhostKey shut down, the on-chain script still works — anyone holding the pre-built transaction can broadcast it once the timelock expires.
 
-The rules are written into Bitcoin itself. Even if GhostKey shut down tomorrow, your heir could still claim.
+**Status: alpha, testnet only.** Code is open. Cryptography is tested end-to-end. Operational pieces (notification delivery, mainnet review, backups) are still being built. Don't use this with mainnet funds yet.
 
 ---
 
-## How it works
+## How it works for the owner
 
-**You set it up once.** Link your Bitcoin wallet by pasting its public key (an "xpub" — most wallets can export one in a few taps, and we'll show you where to find it). Name who inherits. Choose how long to wait before they can claim.
+1. Paste your wallet's extended public key (xpub) into the wizard at [ghostkeyapp.vercel.app](https://ghostkeyapp.vercel.app).
+2. Add the heir's email and a friendly name.
+3. Pick how many months to wait before the heir can claim.
+4. Open the site once a month and tap "I'm still here". That's the whole job.
 
-**You tap once a month.** That's the whole job. One tap from the website resets the clock. Email-link and Lightning check-ins are on the roadmap; today the website tap is the only path.
-
-**If you stop tapping,** the countdown begins. When it ends, your heir is sent a one-time link. They open it, follow the steps, and the Bitcoin is theirs — sent directly on Bitcoin, not by us. (Today an operator delivers the link manually; automatic SMS / email / WhatsApp delivery is the next thing being built.)
-
-**You stay in control** for as long as you're tapping. Change your heir, change the timelock, change your mind — it's your Bitcoin.
+If you ever stop, a countdown starts. When it ends, the heir gets one email containing a one-time link. They open it in any browser, paste their own Bitcoin address, and the server hands them a pre-built transaction to sign with their own wallet. No account, no app, no GhostKey custody at any point.
 
 ---
 
 ## What GhostKey is not
 
-- Not a savings account. Link Bitcoin you already own; we don't hold it or earn yield on it.
-- Not a legal will. Use it alongside a regular will for other assets.
-- Not a custodian. We never touch your keys. We watch your address and track your check-ins.
+- **Not a wallet.** You bring your own — Sparrow, BlueWallet, Cake, Coldcard, anything that can export an xpub.
+- **Not a custodian.** The server never holds keys and never holds the heir's signed transaction. It holds a watch-only descriptor and a record of your check-ins.
+- **Not a savings product.** Don't move sats here looking for yield. We don't have any. Bring sats you already own and want to pass on.
+- **Not a will.** GhostKey covers one thing: on-chain Bitcoin. Everything else — fiat, property, custody of children, debts — needs a regular will written by a regular lawyer.
+- **Not useful for sats held on Blink, Yellow Card, Binance, or any exchange.** Those balances belong to the exchange, not to you. GhostKey cannot reach them. If you want those sats to be inheritable, you have to move them to a Bitcoin address you control first.
 
 ---
 
-## For Nigerian users
+## Why this exists
 
-Most sats in Nigeria are on Blink, Yellow Card, or an exchange. Those sats are **not inheritable** — the exchange controls them, not you. If you die, that account may be locked forever.
+Most Bitcoin inheritance tooling assumes you can run a full node and read a Miniscript policy. Most users can't, and shouldn't have to. GhostKey is an attempt to package one specific inheritance pattern — owner-or-(heir+timelock) — as something an ordinary person can set up in five minutes from a phone, with no custodial trust required.
 
-To protect your sats with GhostKey:
-1. Move them to a Bitcoin address you control (we'll show you how — takes 5 minutes).
-2. Link that address here.
-3. Name your heir.
-
-After that, one tap a month is all it takes.
+It is not the only way to solve this. Multisig with a lawyer holding a key works too, when the lawyer is reachable and trustworthy. A Casa or Unchained vault works too, at their price point. GhostKey is for the case where you want a simple, free, self-custodial fallback that doesn't depend on any specific company existing in 20 years.
 
 ---
 
-## I want to use GhostKey
+## How the on-chain script works
 
-Go to **[ghostkeyapp.vercel.app](https://ghostkeyapp.vercel.app)** and follow the wizard.
-
-You need: your wallet's extended public key ("xpub"). Most wallets can export one — the wizard tells you exactly where to find it in Sparrow, BlueWallet, Specter, and others. No Bitcoin Core. No command line. No technical setup.
-
----
-
-## I want to run GhostKey myself or contribute
-
-### Prerequisites
-
-- Rust 1.85+
-- Node 20+ (for the web dashboard only)
-- No Bitcoin Core required — GhostKey uses Esplora by default
-
-### Build
-
-```bash
-cargo build --workspace
-cd ghostkey-web && npm install && npm run build && cd ..
-```
-
-### Run locally
-
-```bash
-# Server (watches vaults, handles check-ins)
-cargo run -p ghostkey-server
-# → http://127.0.0.1:8787
-
-# Web dashboard (development)
-cd ghostkey-web && npm run dev
-# → http://127.0.0.1:5173
-```
-
-### Test
-
-```bash
-# Unit tests
-cargo test --workspace
-
-# End-to-end (spawns a real regtest bitcoind, ~5s)
-cargo test -p ghostkey-core --test regtest_e2e -- --ignored
-
-# Web type-check + build
-cd ghostkey-web && npm run typecheck && npm run build
-```
-
-### Repo layout
-
-```
-crates/
-  ghostkey-core/     Bitcoin logic. I/O-free. Descriptors, PSBTs, CSV timelocks.
-  ghostkey-cli/      Owner and heir CLI. Talks to Esplora or bitcoind RPC.
-  ghostkey-server/   Axum server. Tracks vaults, check-in deadlines, alarm events.
-ghostkey-web/        React dashboard. Vite + TypeScript + Tailwind.
-```
-
-### How the on-chain mechanism works
-
-A single Taproot output with two spend paths:
+A single Taproot output with two leaves:
 
 ```
 or_d( pk(OWNER), and_v( v:pk(HEIR), older(N) ) )
 ```
 
-- Owner can spend at any time. An on-chain check-in (via the CLI) moves the UTXO to a freshly derived vault address, which resets N. The website's "I'm still here" button is a *server-side* check-in: it only tells our notifier the owner is alive, and does not touch the chain. For real-money mainnet use, the two are combined: light website check-ins most weeks, occasional on-chain re-vaulting to reset the BIP68 timer.
-- Heir can spend only after N blocks have elapsed since the UTXO was confirmed (BIP68 / OP_CSV).
-- The keypath uses an unspendable NUMS point — both spend paths are explicit scripts.
+- Owner path: spendable at any time with the owner key.
+- Heir path: spendable only after `N` blocks have passed since the UTXO was confirmed (BIP68 / OP_CSV).
+- The Taproot internal key is an unspendable NUMS point; there is no hidden keypath spend.
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full threat model and design rationale.
+Checking in moves the UTXO to a fresh vault address, which resets the BIP68 timer. The web "I'm still here" tap is a server-side check-in that does *not* touch the chain — it only resets the alarm clock. For real on-chain inheritance you need to occasionally re-vault on-chain too; the CLI does this.
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the threat model.
 
 ---
 
-## What's not built yet
+## Running it locally
 
-- **Notification fan-out.** The server records alarm events and generates a one-time claim link, but doesn't yet deliver that link automatically (SMS, email, WhatsApp). Today an operator pulls the link from the events log and forwards it. Automatic delivery is the top priority.
-- **Address-only setup.** The wizard requires an xpub today. A bare-address mode (for users who can't easily export an xpub) is planned.
-- **Lightning check-in.** Paying 1 sat to a per-vault Lightning address as proof of life. Planned, not yet built.
-- **Cold signing.** CLI signs in-process today. PSBT export for hardware wallets is planned.
-- **Multiple heirs.** The descriptor builder currently supports one heir.
-- **Mainnet checklist.** The cryptography is sound and tested. The operational infrastructure (auth, notifications, key ceremony) is not yet production-ready. Treat this as alpha.
+### Prerequisites
+
+- Rust 1.85 or newer
+- Node 20 or newer (for the web app)
+- For mainnet: an Esplora indexer you control (the server refuses to default to a public host for mainnet, since that would leak every vault's descriptors to a third party)
+
+### Build and run
+
+```bash
+cargo build --workspace
+cd ghostkey-web && npm install && npm run build && cd ..
+
+# In one terminal: the server
+GHOSTKEY_MASTER_KEY=$(openssl rand -base64 32) cargo run -p ghostkey-server
+
+# In another: the web app
+cd ghostkey-web && npm run dev
+```
+
+The server listens on `127.0.0.1:8787`, the web app on `127.0.0.1:5173`.
+
+### Tests
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings -A clippy::type_complexity
+cargo test --workspace --locked
+
+# Regtest end-to-end (spawns a real bitcoind, ~5s). Not in CI.
+cargo test -p ghostkey-core --test regtest_e2e -- --ignored
+
+# Frontend
+cd ghostkey-web && npm run typecheck && npm run build
+```
+
+### Repository layout
+
+```
+crates/
+  ghostkey-core/     Bitcoin logic. I/O-free. Descriptors, PSBTs, BIP68 timelocks.
+  ghostkey-cli/      Owner and heir CLI. Talks to Esplora or a local bitcoind.
+  ghostkey-server/   Axum server. Vault registry, scheduler, notifier, claim PSBT broker.
+ghostkey-web/        React + Vite dashboard.
+```
+
+---
+
+## What works today
+
+- Taproot vault descriptor build with owner/heir xpubs and a chosen timelock.
+- Owner check-in (server-side proof of life).
+- Scheduler that transitions vaults through `ok → alarmed → timelock_started` as deadlines pass.
+- One-time claim tokens, SHA-256-hashed at rest, single-use.
+- Per-vault owner-token bearer auth on mutation endpoints.
+- Encrypted-at-rest heir contact info (ChaCha20-Poly1305 + per-vault HKDF).
+- Heir claim flow end-to-end on testnet: open the link, paste destination address, sign the PSBT in your own wallet, broadcast via the server.
+- Email notification delivery when the alarm fires (lettre + STARTTLS). Disabled-soft if SMTP is unset.
+
+## What does not work yet
+
+- SMS and WhatsApp delivery channels.
+- Owner check-in reminders.
+- Multiple heirs (k-of-n).
+- Setup from a bare address instead of an xpub.
+- Lightning check-ins.
+- Hardware-wallet PSBT export from the CLI.
+- Mainnet security review.
+- Translations.
 
 ---
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md). All contributions welcome — Rust, TypeScript, documentation, translations (Yoruba, Igbo, Hausa especially needed).
+This is a one-person project. PRs welcome on anything in the "does not work yet" list above, plus bug fixes, accessibility improvements, and translations. See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
-Report security issues privately: see [SECURITY.md](./SECURITY.md).
+Security issues: see [SECURITY.md](./SECURITY.md). Please report privately first.
 
 ## License
 
-Dual-licensed MIT or Apache-2.0 at your option.
+Dual-licensed under [MIT](./LICENSE-MIT) or [Apache-2.0](./LICENSE-APACHE) at your option.

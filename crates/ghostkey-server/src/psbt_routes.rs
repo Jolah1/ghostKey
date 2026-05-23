@@ -54,21 +54,48 @@ use crate::crypto::hash_claim_token;
 use crate::routes::{record_event, ApiError};
 use crate::AppState;
 
-/// Public Blockstream Esplora endpoints, used when `GHOSTKEY_ESPLORA_URL`
-/// is unset. These are fine for testing; production should override.
-fn default_esplora_url(network: Network) -> &'static str {
+/// Default Esplora endpoints for use when `GHOSTKEY_ESPLORA_URL` is
+/// unset. These public hosts are convenient for testing but they see
+/// every script pubkey we ask about — fine for testnet, signet, and
+/// regtest, never appropriate for mainnet.
+fn default_esplora_url(network: Network) -> Option<&'static str> {
     match network {
-        Network::Bitcoin => "https://blockstream.info/api",
-        Network::Testnet => "https://blockstream.info/testnet/api",
-        Network::Signet => "https://mempool.space/signet/api",
+        // No default for mainnet: we refuse to leak real vault
+        // descriptors to a public indexer. Operators must point
+        // `GHOSTKEY_ESPLORA_URL` at an Esplora they control.
+        Network::Bitcoin => None,
+        Network::Testnet => Some("https://blockstream.info/testnet/api"),
+        Network::Signet => Some("https://mempool.space/signet/api"),
         // No public regtest indexer; the operator must set the env var.
-        _ => "http://127.0.0.1:3002",
+        _ => Some("http://127.0.0.1:3002"),
     }
 }
 
-fn esplora_url(network: Network) -> String {
-    std::env::var("GHOSTKEY_ESPLORA_URL")
-        .unwrap_or_else(|_| default_esplora_url(network).to_string())
+/// Resolve the Esplora URL for a network, refusing to start a request
+/// we can't service. Mainnet requires `GHOSTKEY_ESPLORA_URL` to be set
+/// and to be HTTPS — anything else would leak descriptors or expose
+/// requests to a passive attacker.
+fn esplora_url(network: Network) -> Result<String, ApiError> {
+    if let Ok(url) = std::env::var("GHOSTKEY_ESPLORA_URL") {
+        let trimmed = url.trim().to_string();
+        if trimmed.is_empty() {
+            return Err(ApiError::Validation(
+                "GHOSTKEY_ESPLORA_URL is set but empty".into(),
+            ));
+        }
+        if network == Network::Bitcoin && !trimmed.starts_with("https://") {
+            return Err(ApiError::Validation(
+                "GHOSTKEY_ESPLORA_URL must be HTTPS for mainnet".into(),
+            ));
+        }
+        return Ok(trimmed);
+    }
+    match default_esplora_url(network) {
+        Some(url) => Ok(url.to_string()),
+        None => Err(ApiError::Validation(
+            "mainnet requires GHOSTKEY_ESPLORA_URL to be set explicitly".into(),
+        )),
+    }
 }
 
 /// `mempool.space` explorer URL for a given txid + network.
@@ -160,7 +187,7 @@ pub async fn build_claim_psbt(
     // `esplora_client` blocking API performs synchronous HTTP. We move
     // it (plus the BDK wallet ops) onto a blocking thread so the axum
     // executor isn't held up.
-    let url = esplora_url(row.network);
+    let url = esplora_url(row.network)?;
     let network = row.network;
     let total_input_sats;
     let fee_sats;
@@ -271,6 +298,35 @@ pub async fn broadcast_claim(
     let mut psbt = Psbt::deserialize(&psbt_bytes)
         .map_err(|e| ApiError::Validation(format!("psbt parse: {e}")))?;
 
+    // Claim the token atomically BEFORE we touch the network. Two
+    // parallel broadcast requests against the same token used to be
+    // able to both pass the `used_at IS NULL` check in
+    // `load_vault_for_claim_token` and race their way to the Esplora
+    // submit. We close that window here: only one UPDATE can find
+    // `claim_token_used_at IS NULL` and set it; the loser sees zero
+    // rows affected and gets a Conflict before any broadcast happens.
+    //
+    // If the broadcast itself fails after we've claimed the token, we
+    // roll the column back to NULL so the heir (or an operator) can
+    // retry. A crash between claim and rollback leaves the vault in
+    // 'claiming' status — operators can re-enable the token via a
+    // manual UPDATE; the on-chain inheritance is unaffected.
+    let now_s = Utc::now().to_rfc3339();
+    let claimed = sqlx::query(
+        r#"UPDATE vaults
+              SET status              = 'claiming',
+                  claim_token_used_at = ?
+            WHERE id = ?
+              AND claim_token_used_at IS NULL"#,
+    )
+    .bind(&now_s)
+    .bind(&row.id)
+    .execute(&state.db)
+    .await?;
+    if claimed.rows_affected() != 1 {
+        return Err(ApiError::Conflict("claim token already used".into()));
+    }
+
     // Reconstruct a watch-only wallet so BDK can call `finalize` on the
     // PSBT — finalisation walks the descriptor policy to assemble the
     // tapscript witness from the signatures the heir provided.
@@ -282,12 +338,23 @@ pub async fn broadcast_claim(
         role: VaultRole::Watchonly,
         label: row.label.clone(),
     };
-    let vault = Vault::from_config(vault_config)
-        .map_err(|e| ApiError::Validation(format!("stored vault: {e}")))?;
+    let vault = match Vault::from_config(vault_config) {
+        Ok(v) => v,
+        Err(e) => {
+            release_claim_token(&state, &row.id).await;
+            return Err(ApiError::Validation(format!("stored vault: {e}")));
+        }
+    };
 
-    let url = esplora_url(row.network);
+    let url = match esplora_url(row.network) {
+        Ok(u) => u,
+        Err(e) => {
+            release_claim_token(&state, &row.id).await;
+            return Err(e);
+        }
+    };
     let network = row.network;
-    let txid = tokio::task::spawn_blocking(move || -> Result<bitcoin::Txid, BlockingErr> {
+    let txid_result = tokio::task::spawn_blocking(move || -> Result<bitcoin::Txid, BlockingErr> {
         let wallet = ghostkey_core::wallet::build_watch_only(&vault)
             .map_err(|e| BlockingErr::Vault(e.to_string()))?;
 
@@ -312,23 +379,27 @@ pub async fn broadcast_claim(
             .map_err(|e| BlockingErr::Esplora(format!("broadcast: {e}")))?;
         Ok(tx.compute_txid())
     })
-    .await
-    .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
+    .await;
 
-    // Mark token consumed + vault claimed in one transaction.
-    let now_s = Utc::now().to_rfc3339();
-    let mut tx = state.db.begin().await?;
-    sqlx::query(
-        r#"UPDATE vaults
-              SET status              = 'claimed',
-                  claim_token_used_at = COALESCE(claim_token_used_at, ?)
-            WHERE id = ?"#,
-    )
-    .bind(&now_s)
-    .bind(&row.id)
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
+    let txid = match txid_result {
+        Ok(Ok(txid)) => txid,
+        Ok(Err(e)) => {
+            release_claim_token(&state, &row.id).await;
+            return Err(ApiError::from(e));
+        }
+        Err(e) => {
+            release_claim_token(&state, &row.id).await;
+            return Err(ApiError::Validation(format!("worker panic: {e}")));
+        }
+    };
+
+    // Broadcast succeeded — promote 'claiming' to 'claimed'. The
+    // `claim_token_used_at` column already records the consumption
+    // timestamp from the atomic gate above.
+    sqlx::query("UPDATE vaults SET status = 'claimed' WHERE id = ?")
+        .bind(&row.id)
+        .execute(&state.db)
+        .await?;
 
     record_event(
         &state.db,
@@ -347,6 +418,33 @@ pub async fn broadcast_claim(
             explorer_url: explorer_url(network, &txid),
         }),
     ))
+}
+
+/// Undo an atomic claim-token consumption when the broadcast that
+/// followed it failed. Best-effort: a DB error here is logged but not
+/// propagated, because the caller is already returning an error to the
+/// client and we don't want to mask the original cause. If this fails
+/// the vault is left in 'claiming' status with `claim_token_used_at`
+/// set — an operator can recover via:
+///     UPDATE vaults SET status='alarmed', claim_token_used_at=NULL WHERE id=...;
+async fn release_claim_token(state: &AppState, vault_id: &str) {
+    let res = sqlx::query(
+        r#"UPDATE vaults
+              SET status              = 'alarmed',
+                  claim_token_used_at = NULL
+            WHERE id = ?
+              AND status = 'claiming'"#,
+    )
+    .bind(vault_id)
+    .execute(&state.db)
+    .await;
+    if let Err(e) = res {
+        tracing::error!(
+            vault_id = %vault_id,
+            error = ?e,
+            "could not release claim token after failed broadcast; manual recovery required"
+        );
+    }
 }
 
 /* -------------------------------------------------------------------------- *
@@ -485,9 +583,15 @@ mod tests {
 
     #[test]
     fn default_esplora_urls_per_network() {
-        assert!(default_esplora_url(Network::Bitcoin).contains("blockstream.info/api"));
-        assert!(default_esplora_url(Network::Testnet).contains("testnet"));
-        assert!(default_esplora_url(Network::Signet).contains("signet"));
+        // Mainnet deliberately has no default: we refuse to leak the
+        // descriptor graph to a third-party indexer.
+        assert!(default_esplora_url(Network::Bitcoin).is_none());
+        assert!(default_esplora_url(Network::Testnet)
+            .unwrap()
+            .contains("testnet"));
+        assert!(default_esplora_url(Network::Signet)
+            .unwrap()
+            .contains("signet"));
     }
 
     #[test]
@@ -508,15 +612,31 @@ mod tests {
         // both keys are independent — the worst case is an interleave
         // that reads our value briefly, which is harmless.
         unsafe {
-            std::env::set_var("GHOSTKEY_ESPLORA_URL", "http://my.indexer/api");
+            std::env::set_var("GHOSTKEY_ESPLORA_URL", "https://my.indexer/api");
         }
-        assert_eq!(esplora_url(Network::Bitcoin), "http://my.indexer/api");
+        assert_eq!(
+            esplora_url(Network::Bitcoin).unwrap(),
+            "https://my.indexer/api"
+        );
         unsafe {
             std::env::remove_var("GHOSTKEY_ESPLORA_URL");
         }
-        assert_eq!(
-            esplora_url(Network::Bitcoin),
-            "https://blockstream.info/api"
-        );
+        // With the env var cleared, mainnet must refuse rather than
+        // fall back to a public indexer.
+        assert!(esplora_url(Network::Bitcoin).is_err());
+        // Testnet still gets a working default.
+        assert!(esplora_url(Network::Testnet).is_ok());
+    }
+
+    #[test]
+    fn esplora_url_rejects_plain_http_for_mainnet() {
+        unsafe {
+            std::env::set_var("GHOSTKEY_ESPLORA_URL", "http://my.indexer/api");
+        }
+        let result = esplora_url(Network::Bitcoin);
+        unsafe {
+            std::env::remove_var("GHOSTKEY_ESPLORA_URL");
+        }
+        assert!(result.is_err(), "plain http must be refused for mainnet");
     }
 }

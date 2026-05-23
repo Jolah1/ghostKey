@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
+use tracing::Span;
 use uuid::Uuid;
 
 use crate::auth::{cors_allowed_origins, AdminAuth, OwnerAuth};
@@ -55,9 +56,27 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/claim/:token/broadcast",
             post(crate::psbt_routes::broadcast_claim),
         )
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(make_request_span))
         .layer(cors)
         .with_state(state)
+}
+
+/// Build a tracing span for an incoming request with the URI redacted
+/// when it carries a bearer token in the path. A claim URL looks like
+/// `GET /claim/<token>`; without this layer the raw token would appear
+/// verbatim in every access log line, which defeats the point of only
+/// storing the SHA-256 hash server-side. The redaction is conservative:
+/// any path starting with `/claim/` is rewritten to `/claim/[REDACTED]`
+/// before the URI ever reaches the span.
+fn make_request_span(request: &axum::http::Request<axum::body::Body>) -> Span {
+    let method = request.method();
+    let raw_path = request.uri().path();
+    let safe_path: &str = if raw_path.starts_with("/claim/") {
+        "/claim/[REDACTED]"
+    } else {
+        raw_path
+    };
+    tracing::info_span!("http", method = %method, path = %safe_path)
 }
 
 #[derive(Debug, Serialize)]
@@ -304,6 +323,22 @@ async fn create_vault_from_xpub(
             "timelock_blocks {} out of range 1..=65535",
             req.timelock_blocks
         )));
+    }
+
+    // ---- Validate heir contact channel -------------------------------
+    // The channel string is echoed back to the heir at claim time and
+    // also winds up in tracing logs. We refuse anything that isn't one
+    // of the recognised channels so an attacker (creation is currently
+    // unauthenticated) can't stuff control characters into our logs.
+    if let Some(ref ch) = req.heir_contact_channel {
+        match ch.as_str() {
+            "email" | "sms" | "whatsapp" => {}
+            _ => {
+                return Err(ApiError::Validation(format!(
+                    "unknown heir_contact_channel {ch:?}; expected email, sms, or whatsapp"
+                )));
+            }
+        }
     }
 
     // ---- Resolve network ---------------------------------------------

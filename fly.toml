@@ -33,12 +33,19 @@ primary_region = "ams"
 
 # HTTP listener. Fly auto-issues a TLS certificate for *.fly.dev and
 # any custom domain you add later via `fly certs add <domain>`.
+#
+# IMPORTANT: do NOT enable auto_stop_machines for ghostkey-server.
+# The scheduler that fires alarms and enqueues heir notifications
+# runs in-process. If the machine sleeps because no HTTP traffic is
+# arriving, the scheduler stops ticking, the alarm never fires, and
+# the heir is never told the owner stopped checking in. The product
+# promise breaks silently. Keep at least one machine running.
 [http_service]
   internal_port      = 8080
   force_https        = true
-  auto_stop_machines = "stop"      # spin down when idle
-  auto_start_machines = true       # spin back up on the first request
-  min_machines_running = 0
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
 
   # Health probe; ghostkey-server exposes GET /health that returns
   # {"ok":true,"version":"..."}.

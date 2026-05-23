@@ -130,17 +130,17 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
         .await?;
         tx.commit().await?;
 
-        // The raw token is still included in the event detail as a
-        // belt-and-braces fallback: if the notifier is broken or
-        // SMTP is down, an operator can still pull the link from
-        // the events log. Once the notifier is reliable we'll
-        // reconsider keeping the raw token here.
+        // Only the SHA-256 hash of the token is recorded here. The
+        // raw token is a bearer credential and must never sit in
+        // event logs (anyone with read access to the events table or
+        // a SQLite backup could claim the inheritance). If the
+        // notifier is down and an operator needs to re-deliver, they
+        // can mint a fresh token via `POST /vaults/:id/issue-claim`.
         record_event(
             &state.db,
             &id,
             "claim_issued",
             Some(serde_json::json!({
-                "token": token.token,
                 "token_hash": token.hash_hex,
                 "reason": "scheduler:eligibility_reached",
             })),
@@ -404,5 +404,45 @@ mod tests {
             "status untouched when token already issued"
         );
         assert_eq!(hash.as_deref(), Some("preexisting-hash"));
+    }
+
+    /// The raw claim token is a bearer credential and must never end
+    /// up in `events.detail`. Earlier versions of the scheduler stored
+    /// it there as a fallback for operators; this test pins the fix.
+    #[tokio::test]
+    async fn claim_issued_event_does_not_contain_raw_token() {
+        let pool = fresh_db().await;
+        let state = AppState { db: pool.clone() };
+        insert_vault(
+            &pool,
+            "vault-e",
+            "alarmed",
+            "2026-04-01T00:00:00Z",
+            Some("2026-04-08T00:00:00Z"),
+        )
+        .await;
+        tick_once(&state).await.expect("tick");
+
+        let (_, hash) = read_status_and_token_hash(&pool, "vault-e").await;
+        let hash = hash.expect("scheduler should have minted a token hash");
+
+        let detail: Option<String> = sqlx::query_scalar(
+            "SELECT detail FROM events WHERE vault_id = ? AND kind = 'claim_issued'",
+        )
+        .bind("vault-e")
+        .fetch_optional(&pool)
+        .await
+        .expect("query")
+        .flatten();
+        let detail = detail.expect("claim_issued event must exist");
+
+        assert!(
+            detail.contains(&hash),
+            "event detail should record the token hash for operator triage"
+        );
+        assert!(
+            !detail.contains("\"token\""),
+            "event detail must not contain a raw 'token' field; found: {detail}"
+        );
     }
 }

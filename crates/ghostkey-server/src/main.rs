@@ -77,7 +77,23 @@ async fn main() -> Result<()> {
     // impossible to miss in the logs. The function itself logs a
     // warning; calling it here pins the OnceLock before any request
     // can race on it.
-    let _ = auth::auth_disabled();
+    //
+    // Belt and braces: forbid the combination of auth-disabled AND a
+    // production deploy. We treat any deploy where the operator has
+    // not explicitly waved the safety check (`GHOSTKEY_ALLOW_INSECURE=1`)
+    // as production. The escape hatch is intended for local tests on
+    // a developer's laptop and CI integration runs.
+    if auth::auth_disabled()
+        && std::env::var("GHOSTKEY_ALLOW_INSECURE").ok().as_deref() != Some("1")
+    {
+        anyhow::bail!(
+            "GHOSTKEY_AUTH_DISABLED is set but GHOSTKEY_ALLOW_INSECURE is not. \
+             Refusing to start: this combination disables owner authentication on \
+             every vault. Unset GHOSTKEY_AUTH_DISABLED for production, or set \
+             GHOSTKEY_ALLOW_INSECURE=1 if you really know what you are doing on a \
+             test machine."
+        );
+    }
 
     let pool = db::connect(&args.database_url).await?;
     let state = Arc::new(AppState { db: pool.clone() });
