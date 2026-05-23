@@ -216,7 +216,12 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
       const resp = useAdvanced
         ? await api.createVault({
             label,
-            network: "bitcoin",
+            // Alpha: testnet only. The cryptography is correct on mainnet
+            // too, but the operational story (mainnet Esplora indexer
+            // owned by us, backups, security review) is not finished.
+            // Vaults created here are watch-only testnet outputs and do
+            // not move real money.
+            network: "testnet",
             descriptor_external: advExt,
             descriptor_internal: advInt,
             timelock_blocks: timelockBlocks,
@@ -227,7 +232,7 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
           })
         : await api.createVaultFromXpub({
             label,
-            network: "bitcoin",
+            network: "testnet",
             owner: partyFromDraft(draft.ownerXpub, draft.ownerFingerprint),
             heir: partyFromDraft(draft.heirXpub, draft.heirFingerprint),
             timelock_blocks: timelockBlocks,

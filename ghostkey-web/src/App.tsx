@@ -117,6 +117,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-app">
+      <AlphaBanner />
       {health === "offline" && <ServerOfflineBanner />}
       {/*
         The heir claim page renders without the standard nav. The heir
@@ -144,6 +145,38 @@ export default function App() {
       )}
       {location.kind === "route" && location.route === "inherit"   && <InheritPortal />}
       {location.kind === "claim" && <ClaimPage token={location.token} />}
+    </div>
+  );
+}
+
+/* ------------------------------- AlphaBanner ------------------------------ */
+
+/**
+ * Top-of-page reminder that this is alpha software running against
+ * Bitcoin testnet, not mainnet. Vaults created here use testnet keys
+ * and testnet UTXOs; nothing here moves real money. The banner is
+ * deliberately small but persistent — losing it on scroll would
+ * encourage someone to forget what network they're on and paste a
+ * mainnet xpub by accident.
+ */
+function AlphaBanner() {
+  return (
+    <div
+      role="status"
+      className="border-b border-app bg-surface-2"
+      style={{ fontSize: 12 }}
+    >
+      <div className="mx-auto flex max-w-6xl items-center gap-3 px-5 py-1.5 md:px-8">
+        <span
+          aria-hidden="true"
+          className="inline-block h-1.5 w-1.5 rounded-full bg-warning"
+        />
+        <p className="leading-tight text-muted">
+          <span className="font-medium text-[var(--text)]">Alpha:</span>{" "}
+          GhostKey is running on Bitcoin <span className="font-mono">testnet</span>.
+          Don&apos;t use real-money keys yet.
+        </p>
+      </div>
     </div>
   );
 }

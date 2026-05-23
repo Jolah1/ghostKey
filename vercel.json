@@ -5,6 +5,7 @@
   "framework": null,
   "trailingSlash": false,
   "rewrites": [
+    { "source": "/api/:path*", "destination": "https://ghostkey.fly.dev/:path*" },
     { "source": "/(.*)", "destination": "/index.html" }
   ],
   "headers": [
