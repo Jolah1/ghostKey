@@ -1,6 +1,6 @@
 # GhostKey
 
-**Your Bitcoin should outlive you.**
+**Your Bitcoin shouldn’t die with you.**
 
 Most people with Bitcoin have no plan for what happens when they die. Not because they don't care — because the tools are too complicated, too expensive, or require trusting a company that might not exist in 20 years.
 

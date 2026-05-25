@@ -1,35 +1,16 @@
 # GhostKey — Architecture
 
-This document explains *why* GhostKey is shaped the way it is. The
-[`README`](./README.md) covers *how* to use it.
+How the Bitcoin script works, why it's shaped this way, what each layer owns, and where the security boundaries are.
 
-## Goals
-
-1. **Inheritance without custody.** The heir must be able to claim the
-   funds without ever having held them, and without trusting any party
-   (us, the notifier server, an oracle, a court).
-2. **Owner can change their mind.** Up until the timelock expires the
-   owner has unconditional spending power.
-3. **No new trust assumptions on top of Bitcoin.** All recovery
-   guarantees come from script + BIP68. The off-chain pieces are
-   "operational comfort": reminders, dashboards, status pages. They can
-   fail or disappear without endangering anyone's coins.
-
-## Non-goals
-
-- Multi-sig coordination of *active* spends (use [BDK Wallet] or
-  [Specter] for that).
-- A custodial product. We don't hold keys.
-- Lightning, sidechains, federations. Mainnet base layer only.
-
-[BDK Wallet]: https://bitcoindevkit.org/
-[Specter]: https://specter.solutions/
+For the product story and setup instructions: [README](./README.md)  
+For how decisions were made over time: [JOURNAL](./JOURNAL.md)  
+For what's planned next: [DESIGN](./DESIGN.md)
 
 ---
 
-## The script
+## The on-chain script
 
-Every GhostKey vault is a Taproot output with one tapleaf:
+Every GhostKey vault is a single Taproot address with two spend paths:
 
 ```
 or_d(
@@ -41,207 +22,147 @@ or_d(
 )
 ```
 
-In miniscript spelling. Compiled, this becomes:
+| Path | Requirements | When valid |
+|---|---|---|
+| Owner | Schnorr signature from owner's key | Any time |
+| Heir | Schnorr signature from heir's key + N blocks elapsed since last confirmation | After timelock |
 
-- a NUMS-keypath internal key (unspendable by construction);
-- a single tapleaf with the two branches above.
+`N` is set at vault creation (1–65535 blocks, roughly 1 week to 15 months).
 
-Spending paths:
+### Why `or_d` and not the alternatives
 
-| Path  | Witnesses needed                             | When valid |
-| ----- | -------------------------------------------- | ---------- |
-| Owner | One Schnorr sig from owner's xpub            | Always     |
-| Heir  | One Schnorr sig from heir's xpub *AND* the UTXO has accumulated `N` confirmations | After timelock |
+`or_d` (dissatisfiable OR) lets the owner spend without revealing anything about the heir's branch. The heir's key and timelock only appear in the transaction witness when the heir actually claims. It's the cheapest combinator with that privacy property.
 
-`N` is chosen at vault construction (1..=65535 blocks).
+### Why a relative timelock, not an absolute one
 
-### Why a NUMS keypath?
+Absolute timelocks (`after(H)`) expire at a fixed block height — the owner has to create a new vault before that date, forever. Relative timelocks (`older(N)`, BIP68) measure from when the UTXO was last confirmed. Checking in — moving the funds to a fresh vault address — automatically resets the countdown. No calendar to race against, no vault expiry.
 
-Spending via the keypath would let either party — or anyone who guesses
-the discrete log — bypass the script. By committing to a verifiably
-unspendable point we force every spend through the explicit script
-path, which is what the protocol's safety argument relies on.
+### Why the internal key is unspendable
 
-### Why `or_d`, not `or_i` or `andor`?
+Every Taproot address has a keypath that bypasses all scripts — just one key signature, no conditions. We don't want that shortcut to exist. The internal key is set to a NUMS point (Nothing Up My Sleeve — a value with no known discrete log), which is verifiably unspendable. Every spend goes through the explicit script; there are no exceptions.
 
-`or_d` (dissatisfiable OR) is the cheapest combinator that lets the
-owner sign without revealing the heir's branch. The heir branch is
-revealed (in the witness) only when the heir actually claims.
+### What checking in actually does on-chain
 
-### Why a *relative* timelock, not absolute?
-
-Absolute timelocks (`after(H)`) force the owner to renew before some
-calendar height, with no way to extend without minting a new vault.
-Relative timelocks (`older(N)`) restart per-UTXO on every confirmation
-— which means a check-in is **just a normal Bitcoin transaction** that
-spends the vault back to itself. No special on-chain message, no
-contract upgrade, no commitment update. The heir's countdown
-automatically resets.
+The server-side heartbeat button records a deadline reset for reminder purposes. The real on-chain check-in is a Bitcoin transaction (built by the CLI's `check-in` command) that spends the vault UTXO back into a fresh vault address with the same script. That fresh UTXO has a new confirmation count — so the heir's countdown restarts from zero.
 
 ---
 
-## Layers
+## Layer boundaries
 
-The codebase is intentionally split so that each layer has the
-narrowest possible blast radius.
+Each layer has the narrowest possible responsibility. If something goes wrong, the blast radius is contained.
 
 ```
-+---------------------+   no I/O. pure: descriptors, PSBTs, BDK wallet construction.
-| ghostkey-core       |   Used by every other binary in the workspace.
-+---------------------+
-          ^
-          |
-+---------------------+   owner/heir CLI. Holds keys.
-| ghostkey-cli        |   Talks to bitcoind RPC. Reads/writes ./.ghostkey/<profile>.
-+---------------------+
-          ^
-          |
-+---------------------+   watch-only. Holds NO keys. Persists to SQLite.
-| ghostkey-server     |   Tracks check-in deadlines, raises alarms, exposes REST.
-+---------------------+
-          ^
-          |
-+---------------------+   React dashboard. Owner heartbeats. Heir status.
-| ghostkey-web        |   Talks to the server's REST only.
-+---------------------+
+ghostkey-core    Pure Bitcoin logic. No I/O of any kind.
+      ↑
+ghostkey-cli     Holds keys. Signs transactions. Talks to Bitcoin nodes.
+      ↑
+ghostkey-server  Holds no keys. Watches addresses. Tracks deadlines.
+      ↑
+ghostkey-web     Browser only. Talks to the server. Cannot touch keys.
 ```
 
-### `ghostkey-core`
+### ghostkey-core
 
-I/O-free. The library compiles a [`Vault`] from owner+heir descriptor
-fragments plus a timelock, exposes the descriptor pair (external +
-internal chains), and builds PSBTs:
+No network calls, no disk reads, no database. Pure functions in, pure Bitcoin data out.
 
-- [`build_check_in`] — owner drains the vault to a freshly revealed
-  vault address. Uses an explicit `policy_path` that picks the
-  owner-signature branch (otherwise BDK refuses to disambiguate the
-  `or_d`).
-- [`build_heir_claim`] — heir drains the vault to an address they
-  control, using the timelock branch. Sets `nSequence = N` on every
-  input so mempool's BIP68 check matches the script's `older(N)`.
+- Builds vault descriptors from owner xpub + heir xpub + timelock
+- Constructs owner check-in PSBTs (owner spend path, no timelock branch revealed)
+- Constructs heir claim PSBTs (heir spend path + `nSequence = N` for BIP68)
 
-The PSBT builders use BDK's policy tree to resolve the right
-`policy_path`. The heir walker handles threshold-2 Thresh nodes (the
-`and_v(v:pk(HEIR), older(N))`) by selecting **both** children — picking
-only the timelock child is what BDK reports as "Not enough items
-selected." The owner walker uses BDK's per-node `contribution`
-annotation and prefers the child whose contribution is
-`Complete { csv: None }`, which correctly distinguishes the spendable
-tapleaf path from the NUMS keypath.
+**The BDK policy path gotcha.** When building a transaction, BDK needs to know which spend path to use. For check-ins: select the owner path, explicitly mark the timelock child as not needed. For claims: select *both* the heir's key child and the timelock child — selecting only the timelock causes BDK's "Not enough items selected" error. This logic is in `ghostkey-core/src/psbt.rs` and should not be changed without running the regtest end-to-end test.
 
-[`Vault`]: ./crates/ghostkey-core/src/vault.rs
-[`build_check_in`]: ./crates/ghostkey-core/src/psbt.rs
-[`build_heir_claim`]: ./crates/ghostkey-core/src/psbt.rs
+### ghostkey-cli
 
-### `ghostkey-cli`
+Holds key material. Owned by whoever runs it — owner or heir.
 
-CLI for the parties that *do* hold keys. State lives under
-`./.ghostkey/<profile>/`:
+State lives under `.ghostkey/<profile>/`:
+- `mnemonic` — BIP39 seed phrase (`chmod 600`)
+- `vault.json` — descriptor pair, network, timelock
+- `wallet_state.json` — last synced block height (no file locking yet — see JOURNAL entry 1)
 
-- `mnemonic` — BIP39 phrase, `chmod 600`.
-- `vault.json` — serialized `VaultConfig` (descriptors, network,
-  timelock, role label).
-- `wallet_state.json` — last synced block height.
+Chain data via `bdk_bitcoind_rpc::Emitter`.
 
-Commands:
+| Command | Who | What |
+|---|---|---|
+| `init-keys` | Owner / heir | Generate wallet |
+| `show-xpub` | Owner / heir | Print xpub to share |
+| `make-vault` | Owner / heir | Combine xpubs into vault |
+| `address` | Any | Next deposit address |
+| `sync` | Any | Pull blocks from node |
+| `balance` | Any | UTXO set + sync height |
+| `check-in` | Owner | Build, sign, broadcast heartbeat tx |
+| `claim` | Heir | Build, sign, broadcast claim tx |
 
-| Command       | Role        | What it does |
-| ------------- | ----------- | ------------ |
-| `init-keys`   | owner, heir | Generate a fresh mnemonic. |
-| `show-xpub`   | owner, heir | Print BIP86 account xpub fragments to share. |
-| `make-vault`  | owner, heir | Combine local + counterparty fragments into a vault. |
-| `address`     | any         | Reveal the next vault deposit address. |
-| `sync`        | any         | Walk bitcoind blocks into the watch wallet. |
-| `balance`     | any         | UTXO set + last sync height. |
-| `check-in`    | owner       | Build, sign, broadcast a heartbeat tx. |
-| `claim`       | heir        | Build, sign, broadcast the timelocked sweep. |
+### ghostkey-server
 
-Chain access is via `bitcoind`'s JSON-RPC through
-[`bdk_bitcoind_rpc::Emitter`].
+Watch-only. No key material. No signing. The worst it can do is miss an alarm or record a spurious heartbeat — it cannot move funds.
 
-[`bdk_bitcoind_rpc::Emitter`]: https://docs.rs/bdk_bitcoind_rpc/
+SQLite tables:
+- `vaults` — descriptor pair, network, timelock, cadence, deadline, status
+- `events` — append-only: `registered` / `checkin` / `warning` / `alarmed` / `timelock_started` / `claimed`
 
-### `ghostkey-server`
+Background scheduler (30s tick) advances vault state as deadlines pass. Vault registration is rejected if the descriptor doesn't parse as a valid inheritance policy.
 
-A small Axum service that records vault registrations (descriptors
-only — **never keys**) and tracks proof-of-life deadlines. SQLite via
-`sqlx`. Two tables:
+Auth: each vault has a random 32-byte `owner_token` issued at creation. SHA-256 hash stored; raw value returned once. Required as a Bearer token on all mutation endpoints.
 
-- `vaults` — descriptor pair, network, timelock, cadence (check-in
-  period + grace), last check-in timestamp, next deadline, status.
-- `events` — append-only log of `registered` / `checkin` / `warning` /
-  `alarm` transitions.
+Heir contact (name, email/phone) is encrypted at rest with XChaCha20-Poly1305. Per-vault key derived via HKDF-SHA256 from a server master key loaded at startup. Server refuses to boot without `GHOSTKEY_MASTER_KEY`.
 
-A background tick (default every 30 s) bumps any vault past its
-deadline to `alarmed` and records an event.
+| Route | Method | Purpose |
+|---|---|---|
+| `/health` | GET | Liveness |
+| `/vaults` | POST | Register vault |
+| `/vaults` | GET | List vaults |
+| `/vaults/:id` | GET | Vault detail |
+| `/vaults/:id/checkin` | POST | Record heartbeat |
+| `/vaults/:id/events` | GET | Event log |
+| `/vaults/from-xpub` | POST | Build descriptor from xpubs server-side |
+| `/claim/:token` | GET | Resolve claim token → ClaimView |
+| `/claim/:token/build-psbt` | POST | Scan chain, build unsigned claim PSBT |
+| `/claim/:token/broadcast` | POST | Finalise, broadcast, mark claimed |
 
-| Route                       | Verb | Purpose |
-| --------------------------- | ---- | ------- |
-| `/health`                   | GET  | Liveness. |
-| `/vaults`                   | POST | Register a vault. |
-| `/vaults`                   | GET  | List vaults (summary view). |
-| `/vaults/:id`               | GET  | Detail view. |
-| `/vaults/:id/checkin`       | POST | Record a successful heartbeat. |
-| `/vaults/:id/events`        | GET  | Append-only event log. |
+Claim tokens: 32 random bytes, base64 for transport, SHA-256 hash in DB, consumed on successful broadcast (not on first view).
 
-The server refuses to accept anything that isn't a parseable
-inheritance descriptor (the `parse_descriptor` call in
-`ghostkey-core::descriptor` runs on every registration).
+Blocking Esplora calls (`full_scan`, `broadcast`) run in `tokio::task::spawn_blocking` to avoid blocking the async runtime.
 
-### `ghostkey-web`
+### ghostkey-web
 
-Vite + React + TypeScript + Tailwind. The dashboard polls
-`/api/vaults` every 5 s and renders one card per vault:
+React + Vite + TypeScript + Tailwind. Read/write only against the server REST API. No key access.
 
-- a live countdown to `next_deadline_at`,
-- a status pill (`ok` / `warning` / `alarmed` / `timelock_started` /
-  `claimed`),
-- a "Check in" button that `POST`s `/api/vaults/:id/checkin`,
-- a slide-in detail drawer with the full vault view + event log.
+Owner dashboard: vault cards with live countdown, status pill, check-in button, event log drawer. Polls `/api/vaults` every 5 seconds.
 
-`/api` is proxied to `127.0.0.1:8787` in dev. In production the
-dashboard expects to be reverse-proxied alongside the server at the
-same origin.
+Heir claim page (`/claim/:token`): five states — loading, not found, already used, not ready, claimable. Claimable state drives the full PSBT round trip: address input → unsigned PSBT + fee summary → paste signed PSBT → broadcast → txid + explorer link.
 
-The web layer is intentionally **read/write only against the server**.
-It has no access to keys; the worst-case impact of a compromised
-dashboard is spurious heartbeats. Funds remain safe.
+`/api` proxied to `127.0.0.1:8787` in dev. Same-origin in production via reverse proxy.
 
 ---
 
 ## Threat model
 
-| Actor                                  | Capability                                                                                               | What protects the owner | What protects the heir |
-| -------------------------------------- | -------------------------------------------------------------------------------------------------------- | ----------------------- | ---------------------- |
-| Network observer                       | Reads all chain data                                                                                     | Taproot keypath hides script structure until first spend; descriptor never shipped to chain | Same |
-| Compromised heir                       | Has heir mnemonic                                                                                        | Can't spend until timelock elapses; owner can move funds at any time before then | n/a |
-| Compromised owner                      | Has owner mnemonic                                                                                       | n/a                     | Heir loses the inheritance, but never the principal — owner could have spent anyway |
-| Compromised notifier server            | Can mark deadlines as missed/met, drop notifications                                                     | No effect on owner's funds: server holds no keys | Worst case: heir misses the alarm and is late to claim. The on-chain timelock still gates them. |
-| Compromised dashboard / hostile JS     | Can call `/api/...` as the visitor                                                                       | At worst calls `/checkin` spuriously (which is desirable behavior); cannot spend | Same |
-| Stolen heir mnemonic + missing owner   | Heir attempts early claim                                                                                | n/a                     | Mempool returns `non-BIP68-final` until timelock elapses; heir simply has to wait |
+| Compromised | Can do | Cannot do |
+|---|---|---|
+| GhostKey server | Record false check-ins, suppress alarms | Spend funds — no keys here |
+| Web dashboard | Send heartbeat requests | Sign transactions, access keys |
+| Heir's key (timelock active) | Nothing useful | Spend — mempool rejects as non-BIP68-final |
+| Heir's key (timelock expired, owner gone) | Claim — as intended | — |
+| Owner's key | Spend or move funds — as the owner always could | — |
+| Network observer | See broadcasts after they're public | See script structure before first spend (Taproot hides it) |
 
-The protocol's recovery guarantees collapse to a single invariant:
+The guarantee everything else rests on:
 
-> The heir cannot move the UTXO sooner than `N` blocks after its last
-> confirmation, and the owner can move it at any time.
-
-Every layer above the chain is a comfort feature.
+> The heir cannot move the UTXO sooner than N blocks after its last confirmation. The owner can move it any time.
 
 ---
 
-## What's deliberately *not* here yet
+## What isn't built yet
 
-- **PSBT export / cold signing.** Right now `check-in` and `claim`
-  expect the key material to live in the same process. A future change
-  should let owner/heir sign with an offline device by exporting a
-  watch-only PSBT and re-importing the signed one.
-- **Server-driven notification fan-out.** The server records `alarm`
-  events but doesn't yet send email / push / webhook. Hook integration
-  is intentionally trivial: poll `/vaults/:id/events`.
-- **Multiple heirs / threshold heirs.** The current miniscript hard-codes
-  one heir. Extending to k-of-n is a one-line change to the descriptor
-  builder; the rest of the stack already works generically.
-- **Mainnet checklist.** The CLI and server have only been exercised on
-  regtest end-to-end. Before any non-trivial mainnet deployment we want
-  a signet integration test with delayed `bitcoind` RPC and a fuzz pass
-  on the policy-path resolvers.
+**Notification delivery.** The server records `alarmed` events but sends nothing. Email is in progress (`lettre` + STARTTLS). SMS and WhatsApp are next. Until delivery is live, someone needs to watch the events table or poll `/vaults/:id/events`.
+
+**PSBT export for hardware wallets.** The CLI signs in-process. Adding `--export-psbt` (write unsigned PSBT to disk) and `--sign-psbt` (import signed PSBT, broadcast) would support air-gapped and hardware signers. The PSBTs are already standard — it's a CLI workflow change, not a cryptography change.
+
+**Multiple heirs.** One-line change to the descriptor builder (`thresh(k, pk(HEIR1), pk(HEIR2), ...)` instead of `and_v`). The rest of the stack handles it already. Good first contribution.
+
+**Setup from a plain address.** The wizard requires an xpub. Supporting a single receive address (watches one address, not the full wallet) would remove a barrier for beginners.
+
+**Signet end-to-end test.** The full claim flow is verified on regtest. It has not been smoke-tested on signet with real wallet software signing the heir PSBT. This must happen before any mainnet use. It is the single highest-priority remaining task.
+
+**Key rotation.** No path exists yet to rotate `GHOSTKEY_MASTER_KEY` without decrypting and re-encrypting every vault's contact ciphertext.
