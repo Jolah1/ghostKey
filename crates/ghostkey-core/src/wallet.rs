@@ -9,6 +9,7 @@
 use bdk_wallet::{KeychainKind, Wallet};
 use bitcoin::bip32::Xpriv;
 use bitcoin::secp256k1::Secp256k1;
+use std::str::FromStr;
 
 use crate::error::{Error, Result};
 use crate::keys::{vault_account_path, Chain};
@@ -88,6 +89,67 @@ fn splice_xpriv(
 /// Convenience: reveal the next receive address for a vault wallet.
 pub fn next_receive_address(w: &mut Wallet) -> bitcoin::Address {
     w.reveal_next_address(KeychainKind::External).address
+}
+
+/// Same as [`build_signing`] but takes an already-derived BIP86
+/// account xprv (the key at `m/86'/coin'/0'`) instead of a master
+/// xprv. Used by the browser-side password-vault flow where the
+/// browser has the account xprv but never has the master.
+///
+/// We splice the account xprv into the descriptor in place of the
+/// matching xpub. BDK accepts a tprv/xprv at the same origin as the
+/// xpub it replaces, and produces identical pubkeys.
+pub fn build_signing_from_account(vault: &Vault, account_xpriv: &Xpriv) -> Result<Wallet> {
+    let path = vault_account_path(vault.network());
+    // The account xprv carries no parent fingerprint of its own (it's
+    // the root of its own subtree from BDK's perspective). We need
+    // the *original* fingerprint that was baked into the descriptor
+    // origin tag at vault creation. We recover it by parsing the
+    // descriptor and locating the bracketed origin whose xpub matches
+    // the one this xprv neuters into.
+    let neutered = account_xpriv.to_priv().public_key(&Secp256k1::new());
+    // The xpub embedded in the descriptor is the account xpub; we
+    // derive it locally so we can find it textually.
+    let account_xpub_str = bitcoin::bip32::Xpub::from_priv(&Secp256k1::new(), account_xpriv)
+        .to_string();
+    let _ = neutered; // silence unused warning; we kept it for documentation
+
+    let fp = find_origin_fingerprint_for_xpub(
+        vault.descriptor_for(Chain::External),
+        &account_xpub_str,
+    )?;
+
+    let xpriv_str = account_xpriv.to_string();
+    let ext = splice_xpriv(vault.descriptor_for(Chain::External), fp, &path, &xpriv_str)?;
+    let int_ = splice_xpriv(vault.descriptor_for(Chain::Internal), fp, &path, &xpriv_str)?;
+
+    Wallet::create(ext, int_)
+        .network(vault.network())
+        .create_wallet_no_persist()
+        .map_err(|e| Error::InvalidDescriptor(e.to_string()))
+}
+
+/// Find the origin fingerprint that precedes the given xpub in a
+/// descriptor string. Returns an error if the xpub doesn't appear,
+/// or if it appears without a bracketed origin tag (which would mean
+/// the descriptor was built outside the expected pipeline).
+fn find_origin_fingerprint_for_xpub(
+    descriptor: &str,
+    xpub_str: &str,
+) -> Result<bitcoin::bip32::Fingerprint> {
+    let xpub_idx = descriptor
+        .find(xpub_str)
+        .ok_or_else(|| Error::InvalidDescriptor("xpub not present in descriptor".into()))?;
+    // Walk backwards to the nearest '['; the FP is the 8 hex chars
+    // following the '['.
+    let prefix = &descriptor[..xpub_idx];
+    let bracket_open = prefix
+        .rfind('[')
+        .ok_or_else(|| Error::InvalidDescriptor("xpub has no origin tag in descriptor".into()))?;
+    let inside = &descriptor[bracket_open + 1..xpub_idx];
+    let fp_part = inside.split('/').next().unwrap_or(inside);
+    bitcoin::bip32::Fingerprint::from_str(fp_part)
+        .map_err(|e| Error::InvalidDescriptor(format!("bad fingerprint in origin: {e}")))
 }
 
 #[cfg(test)]

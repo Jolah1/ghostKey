@@ -43,11 +43,16 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/health", get(health))
         .route("/vaults", post(create_vault).get(list_vaults))
         .route("/vaults/from-xpub", post(create_vault_from_xpub))
+        .route("/vaults/find", post(find_vaults_by_email))
         .route("/vaults/:id", get(get_vault))
+        .route("/vaults/:id/address", get(get_vault_address))
+        .route("/vaults/:id/sealed-blobs", get(get_sealed_blobs))
         .route("/vaults/:id/checkin", post(checkin))
         .route("/vaults/:id/events", get(list_events))
         .route("/vaults/:id/issue-claim", post(issue_claim))
         .route("/claim/:token", get(resolve_claim))
+        .route("/claim/:token/sealed-heir", get(crate::psbt_routes::get_sealed_heir_xprv))
+        .route("/claim/:token/heir-claim", post(crate::psbt_routes::heir_claim))
         .route(
             "/claim/:token/build-psbt",
             post(crate::psbt_routes::build_claim_psbt),
@@ -308,6 +313,50 @@ pub struct CreateVaultFromXpubRequest {
     /// `whatsapp`). Stored as-is for the step-3 claim-link flow. Until
     /// then it has no behavioural effect.
     pub heir_contact_channel: Option<String>,
+
+    /// Sealed material from the in-browser keygen flow (optional).
+    /// When present, the server treats this as a "password vault":
+    /// the browser generated owner+heir xprvs, sealed them, and is
+    /// shipping the ciphertexts here. The server stores them verbatim
+    /// and never sees the plaintext xprvs during owner setup.
+    ///
+    /// All fields in `SealedSetup` are required together — partial
+    /// payloads are rejected as a validation error.
+    #[serde(default)]
+    pub sealed: Option<SealedSetup>,
+}
+
+/// Sealed material the browser ships during the password-vault flow.
+///
+/// See `migrations/20260525000002_password_vault.sql` for the threat
+/// model these blobs participate in. Briefly: the server cannot open
+/// any of these blobs during the owner's lifetime, but it does hold
+/// `claim_token_at_rest` once issued (so it can put the token in the
+/// heir's notification when the trigger fires).
+#[derive(Debug, Deserialize)]
+pub struct SealedSetup {
+    pub password_salt_b64: String,
+    pub password_kdf_mem_kib: i64,
+    pub password_kdf_iters: i64,
+
+    pub owner_xprv_ct_b64: String,
+    pub owner_xprv_nonce_b64: String,
+    pub owner_token_ct_b64: String,
+    pub owner_token_nonce_b64: String,
+
+    pub heir_xprv_ct_b64: String,
+    pub heir_xprv_nonce_b64: String,
+
+    /// SHA-256 hex of the lower-cased, NFKC-normalised owner email.
+    /// Used by `/vaults/find` for cross-device password recovery.
+    pub owner_email_hash: String,
+
+    /// Claim token used by the browser to derive the heir-xprv wrapping
+    /// key. The server stores this verbatim so that when the trigger
+    /// fires it can construct the heir's URL fragment. SHA-256 hash is
+    /// also computed and stored as `claim_token_hash` for the
+    /// `/claim/:token` resolver.
+    pub claim_token_b64: String,
 }
 
 async fn create_vault_from_xpub(
@@ -418,6 +467,66 @@ async fn create_vault_from_xpub(
     // in the response; only the hash hits the database.
     let issued_owner = issue_owner_token();
 
+    // ---- Sealed-vault material (password flow only) ------------------
+    //
+    // When `req.sealed` is present the browser has already done all the
+    // sensitive work: it generated owner+heir xprvs, sealed them with
+    // the password (owner side) and with a fresh claim token (heir
+    // side), and posted us only the ciphertexts. We store everything
+    // verbatim and also derive `claim_token_hash` so the resolver path
+    // already used by the heir UI continues to work unchanged.
+    let (
+        sealed_password_salt,
+        sealed_password_mem,
+        sealed_password_iters,
+        sealed_owner_xprv_ct,
+        sealed_owner_xprv_nonce,
+        sealed_owner_token_ct,
+        sealed_owner_token_nonce,
+        sealed_heir_xprv_ct,
+        sealed_heir_xprv_nonce,
+        sealed_owner_email_hash,
+        sealed_claim_token_at_rest,
+        sealed_claim_token_hash,
+        sealed_claim_token_issued_at,
+    ) = if let Some(s) = req.sealed.as_ref() {
+        // Light shape validation. We don't open the blobs (that needs
+        // the password / claim token) but we do reject obviously bogus
+        // sizes so a typo client doesn't poison the DB.
+        if s.password_kdf_mem_kib < 1024 || s.password_kdf_iters < 1 {
+            return Err(ApiError::Validation(
+                "password KDF parameters out of range".into(),
+            ));
+        }
+        if s.owner_email_hash.len() != 64
+            || !s.owner_email_hash.chars().all(|c| c.is_ascii_hexdigit())
+        {
+            return Err(ApiError::Validation(
+                "owner_email_hash must be 64 hex characters".into(),
+            ));
+        }
+        let token_hash = crypto::hash_claim_token(&s.claim_token_b64);
+        (
+            Some(s.password_salt_b64.clone()),
+            Some(s.password_kdf_mem_kib),
+            Some(s.password_kdf_iters),
+            Some(s.owner_xprv_ct_b64.clone()),
+            Some(s.owner_xprv_nonce_b64.clone()),
+            Some(s.owner_token_ct_b64.clone()),
+            Some(s.owner_token_nonce_b64.clone()),
+            Some(s.heir_xprv_ct_b64.clone()),
+            Some(s.heir_xprv_nonce_b64.clone()),
+            Some(s.owner_email_hash.clone()),
+            Some(s.claim_token_b64.clone()),
+            Some(token_hash),
+            Some(now_s.clone()),
+        )
+    } else {
+        (
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
+        )
+    };
+
     sqlx::query(
         r#"INSERT INTO vaults (
             id, label, network,
@@ -431,12 +540,24 @@ async fn create_vault_from_xpub(
             heir_contact_channel,
             heir_contact_ciphertext, heir_contact_nonce,
             claim_eligible_at,
-            owner_token_hash
+            owner_token_hash,
+            password_salt_b64, password_kdf_mem_kib, password_kdf_iters,
+            owner_xprv_sealed_ct_b64, owner_xprv_sealed_nonce,
+            owner_token_sealed_ct_b64, owner_token_sealed_nonce,
+            heir_xprv_sealed_ct_b64, heir_xprv_sealed_nonce,
+            owner_email_hash,
+            claim_token_at_rest_b64, claim_token_hash, claim_token_issued_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'ok',
                   ?, ?, ?, ?, ?,
                   ?, ?,
                   ?,
-                  ?)"#,
+                  ?,
+                  ?, ?, ?,
+                  ?, ?,
+                  ?, ?,
+                  ?, ?,
+                  ?,
+                  ?, ?, ?)"#,
     )
     .bind(&id)
     .bind(&req.label)
@@ -458,6 +579,19 @@ async fn create_vault_from_xpub(
     .bind(&nonce_b64)
     .bind(&claim_eligible_s)
     .bind(&issued_owner.hash_hex)
+    .bind(&sealed_password_salt)
+    .bind(sealed_password_mem)
+    .bind(sealed_password_iters)
+    .bind(&sealed_owner_xprv_ct)
+    .bind(&sealed_owner_xprv_nonce)
+    .bind(&sealed_owner_token_ct)
+    .bind(&sealed_owner_token_nonce)
+    .bind(&sealed_heir_xprv_ct)
+    .bind(&sealed_heir_xprv_nonce)
+    .bind(&sealed_owner_email_hash)
+    .bind(&sealed_claim_token_at_rest)
+    .bind(&sealed_claim_token_hash)
+    .bind(&sealed_claim_token_issued_at)
     .execute(&state.db)
     .await?;
 
@@ -469,6 +603,7 @@ async fn create_vault_from_xpub(
             "source": "from-xpub",
             "network": req.network,
             "encrypted_contact": ciphertext_b64.is_some(),
+            "password_vault": req.sealed.is_some(),
         })),
     )
     .await?;
@@ -937,6 +1072,205 @@ fn parse_rfc(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s)
         .map(|d| d.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now())
+}
+
+/* -------------------------------------------------------------------------- *
+ *  Cross-device owner recovery + funding address.                            *
+ *                                                                            *
+ *  These three endpoints together let an owner walk up to any browser,       *
+ *  enter their email and password, and recover full control of their         *
+ *  vault — including the bearer credential that authorises check-ins.        *
+ *                                                                            *
+ *    POST /vaults/find                                                       *
+ *        Body: { owner_email_hash }                                          *
+ *        Returns: [{ id, label, created_at, status }, …]                     *
+ *                                                                            *
+ *    GET /vaults/:id/sealed-blobs                                            *
+ *        Returns the password-wrapped ciphertexts so the browser can         *
+ *        unwrap them locally with the user's password. No auth — the         *
+ *        blobs are useless without the password.                             *
+ *                                                                            *
+ *    GET /vaults/:id/address                                                 *
+ *        Returns the next external vault address so the owner can fund       *
+ *        the vault. Public information (the descriptor is server-side        *
+ *        anyway); no auth.                                                   *
+ * -------------------------------------------------------------------------- */
+
+#[derive(Debug, Deserialize)]
+pub struct FindVaultsRequest {
+    pub owner_email_hash: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FoundVault {
+    pub id: String,
+    pub label: Option<String>,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub next_deadline_at: DateTime<Utc>,
+}
+
+async fn find_vaults_by_email(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<FindVaultsRequest>,
+) -> Result<Json<Vec<FoundVault>>, ApiError> {
+    let hash = req.owner_email_hash.trim().to_lowercase();
+    if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ApiError::Validation(
+            "owner_email_hash must be 64 hex characters".into(),
+        ));
+    }
+    let rows = sqlx::query_as::<_, (String, Option<String>, String, String, String)>(
+        r#"SELECT id, label, status, created_at, next_deadline_at
+             FROM vaults
+            WHERE owner_email_hash = ?
+            ORDER BY created_at DESC"#,
+    )
+    .bind(&hash)
+    .fetch_all(&state.db)
+    .await?;
+
+    let out = rows
+        .into_iter()
+        .map(|(id, label, status, created, next)| FoundVault {
+            id,
+            label,
+            status,
+            created_at: parse_rfc(&created),
+            next_deadline_at: parse_rfc(&next),
+        })
+        .collect();
+    Ok(Json(out))
+}
+
+/// Sealed material returned to the owner's browser during cross-device
+/// recovery. The browser unwraps everything locally with the user's
+/// password; the server cannot.
+#[derive(Debug, Serialize)]
+pub struct SealedBlobsView {
+    pub vault_id: String,
+    pub password_salt_b64: String,
+    pub password_kdf_mem_kib: i64,
+    pub password_kdf_iters: i64,
+    pub owner_xprv_ct_b64: String,
+    pub owner_xprv_nonce_b64: String,
+    pub owner_token_ct_b64: String,
+    pub owner_token_nonce_b64: String,
+    pub network: String,
+    pub timelock_blocks: i64,
+}
+
+async fn get_sealed_blobs(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<SealedBlobsView>, ApiError> {
+    type Row = (
+        String,         // id
+        Option<String>, // password_salt
+        Option<i64>,    // mem
+        Option<i64>,    // iters
+        Option<String>, // owner_xprv_ct
+        Option<String>, // owner_xprv_nonce
+        Option<String>, // owner_token_ct
+        Option<String>, // owner_token_nonce
+        String,         // network
+        i64,            // timelock
+    );
+    let row: Option<Row> = sqlx::query_as(
+        r#"SELECT id, password_salt_b64, password_kdf_mem_kib, password_kdf_iters,
+                  owner_xprv_sealed_ct_b64, owner_xprv_sealed_nonce,
+                  owner_token_sealed_ct_b64, owner_token_sealed_nonce,
+                  network, timelock_blocks
+             FROM vaults WHERE id = ?"#,
+    )
+    .bind(&id)
+    .fetch_optional(&state.db)
+    .await?;
+    let row = row.ok_or(ApiError::NotFound)?;
+
+    let (salt, mem, iters, ox_ct, ox_n, ot_ct, ot_n) =
+        match (row.1, row.2, row.3, row.4, row.5, row.6, row.7) {
+            (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f), Some(g)) => (a, b, c, d, e, f, g),
+            _ => {
+                return Err(ApiError::Validation(
+                    "this vault was not created with a password; cross-device recovery unavailable"
+                        .into(),
+                ));
+            }
+        };
+
+    Ok(Json(SealedBlobsView {
+        vault_id: row.0,
+        password_salt_b64: salt,
+        password_kdf_mem_kib: mem,
+        password_kdf_iters: iters,
+        owner_xprv_ct_b64: ox_ct,
+        owner_xprv_nonce_b64: ox_n,
+        owner_token_ct_b64: ot_ct,
+        owner_token_nonce_b64: ot_n,
+        network: row.8,
+        timelock_blocks: row.9,
+    }))
+}
+
+#[derive(Debug, Serialize)]
+pub struct VaultAddressView {
+    pub vault_id: String,
+    pub network: String,
+    /// The first external (receive) address derived from the vault
+    /// descriptor. The owner can fund the vault by sending Bitcoin
+    /// here from any wallet they have.
+    pub address: String,
+}
+
+async fn get_vault_address(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<VaultAddressView>, ApiError> {
+    type Row = (String, String, String, i64); // network, ext, int, timelock
+    let row: Option<Row> = sqlx::query_as(
+        r#"SELECT network, descriptor_external, descriptor_internal, timelock_blocks
+             FROM vaults WHERE id = ?"#,
+    )
+    .bind(&id)
+    .fetch_optional(&state.db)
+    .await?;
+    let (network_str, ext, int_, timelock) = row.ok_or(ApiError::NotFound)?;
+
+    let network = match network_str.as_str() {
+        "bitcoin" => Network::Bitcoin,
+        "testnet" => Network::Testnet,
+        "signet" => Network::Signet,
+        "regtest" => Network::Regtest,
+        other => {
+            return Err(ApiError::Validation(format!(
+                "stored vault has unknown network {other}"
+            )))
+        }
+    };
+
+    // Build a watch-only wallet from the stored descriptors and reveal
+    // address #0. Idempotent: the same vault always returns the same
+    // first address.
+    let vault_config = ghostkey_core::vault::VaultConfig {
+        descriptor_external: ext,
+        descriptor_internal: int_,
+        timelock_blocks: timelock as u32,
+        network,
+        role: ghostkey_core::vault::VaultRole::Watchonly,
+        label: None,
+    };
+    let vault = ghostkey_core::vault::Vault::from_config(vault_config)
+        .map_err(|e| ApiError::Validation(format!("stored descriptors invalid: {e}")))?;
+    let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
+        .map_err(|e| ApiError::Validation(format!("watch-only wallet build failed: {e}")))?;
+    let address = ghostkey_core::wallet::next_receive_address(&mut wallet).to_string();
+
+    Ok(Json(VaultAddressView {
+        vault_id: id,
+        network: network_str,
+        address,
+    }))
 }
 
 /* -------------------------------------------------------------------------- *

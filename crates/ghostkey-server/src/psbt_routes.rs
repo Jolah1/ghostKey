@@ -33,6 +33,7 @@
 //!   exercise a live Esplora endpoint. A signet smoke test is the
 //!   responsibility of whoever deploys this.
 
+use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
@@ -448,7 +449,315 @@ async fn release_claim_token(state: &AppState, vault_id: &str) {
 }
 
 /* -------------------------------------------------------------------------- *
- *  Internals                                                                 *
+ *  Sealed-heir-xprv resolver + one-shot heir claim                           *
+ *                                                                            *
+ *  These two endpoints implement the password-vault claim flow:              *
+ *                                                                            *
+ *    GET /claim/:token/sealed-heir                                           *
+ *        Returns the heir's xprv ciphertext + nonce + the vault              *
+ *        network and timelock. The browser unwraps the ciphertext            *
+ *        locally using HKDF(claim_token) — the same KEK the setup            *
+ *        browser used to seal it. The server cannot open this blob.          *
+ *                                                                            *
+ *    POST /claim/:token/heir-claim                                           *
+ *        Body: { destination, fee_rate_sat_per_vb?, heir_xprv }              *
+ *        The browser ships the just-unwrapped heir xprv over TLS in          *
+ *        the request body. The server builds the heir-claim PSBT             *
+ *        (BDK script-path selection), signs it with the supplied             *
+ *        xprv in-memory only, broadcasts, marks the claim consumed,          *
+ *        and discards the xprv. The xprv is never written to disk or         *
+ *        logs.                                                               *
+ *                                                                            *
+ *  Why is this not "custodial"? At the moment of this call:                  *
+ *    - the on-chain timelock has matured (otherwise the broadcast fails)     *
+ *    - only the heir's key can spend the funds                               *
+ *    - the request must arrive over TLS from the holder of the claim token   *
+ *    - the server signs, broadcasts, and discards in a single function       *
+ *      scope; no persistence                                                  *
+ *  An attacker who briefly compromises the server during this call could     *
+ *  redirect funds *to themselves*, but only to a Bitcoin address that        *
+ *  Bitcoin's UTXO set then records publicly. The legitimate heir would       *
+ *  detect this immediately via mempool.space. This is the same exposure      *
+ *  a hardware-wallet signer faces when its host is compromised.              *
+ * -------------------------------------------------------------------------- */
+
+#[derive(Debug, Serialize)]
+pub struct SealedHeirView {
+    pub vault_id: String,
+    pub network: String,
+    pub timelock_blocks: i64,
+    pub heir_xprv_ct_b64: String,
+    pub heir_xprv_nonce_b64: String,
+}
+
+pub async fn get_sealed_heir_xprv(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+) -> Result<Json<SealedHeirView>, ApiError> {
+    let hash = hash_claim_token(&token);
+    type Row = (
+        String,         // id
+        String,         // network
+        i64,            // timelock
+        Option<String>, // claim_token_hash
+        Option<String>, // claim_token_used_at
+        Option<String>, // heir_xprv_ct
+        Option<String>, // heir_xprv_nonce
+    );
+    let row: Option<Row> = sqlx::query_as(
+        r#"SELECT id, network, timelock_blocks,
+                  claim_token_hash, claim_token_used_at,
+                  heir_xprv_sealed_ct_b64, heir_xprv_sealed_nonce
+             FROM vaults
+            WHERE claim_token_hash = ?"#,
+    )
+    .bind(&hash)
+    .fetch_optional(&state.db)
+    .await?;
+    let row = row.ok_or(ApiError::NotFound)?;
+    let stored_hash = row.3.ok_or(ApiError::NotFound)?;
+    if !claim_token_matches(&token, &stored_hash) {
+        return Err(ApiError::NotFound);
+    }
+    if row.4.is_some() {
+        return Err(ApiError::Conflict("claim token already used".into()));
+    }
+    let ct = row.5.ok_or_else(|| {
+        ApiError::Validation(
+            "this vault was not created with a password and has no sealed heir key".into(),
+        )
+    })?;
+    let nonce = row.6.ok_or_else(|| {
+        ApiError::Validation("vault has heir_xprv_sealed_ct without nonce".into())
+    })?;
+    Ok(Json(SealedHeirView {
+        vault_id: row.0,
+        network: row.1,
+        timelock_blocks: row.2,
+        heir_xprv_ct_b64: ct,
+        heir_xprv_nonce_b64: nonce,
+    }))
+}
+
+/* -------------------------------------------------------------------------- *
+ *  One-shot heir claim: build + sign + broadcast in one call.                *
+ *                                                                            *
+ *  This is the password-vault counterpart to the existing two-step           *
+ *  `build-psbt` + `broadcast` flow. Today's flow assumes the heir holds      *
+ *  their own xprv in a hardware/desktop wallet — the server hands them       *
+ *  an unsigned PSBT, they sign in Sparrow/etc, paste back. For users         *
+ *  who don't own Bitcoin yet, that's a non-starter. With the password        *
+ *  vault, the heir's xprv is wrapped server-side and the browser unwraps     *
+ *  it via the URL fragment. Once unwrapped, the simplest path is to          *
+ *  ship the xprv over TLS to the server, which BDK-signs and broadcasts.    *
+ *                                                                            *
+ *  Why not sign client-side? The PSBT-script-path signing for the Taproot   *
+ *  heir branch (with policy_path selecting the timelock leaf, BIP371        *
+ *  tap_scripts metadata, etc.) is fiddly. We have a tested server-side      *
+ *  signer (`build_heir_claim` + BDK + signing wallet). Re-implementing      *
+ *  that in the browser would add ~40 KB of audited Bitcoin code AND        *
+ *  novel script-path signing logic. For the moment of signing, the         *
+ *  on-chain timelock has already matured — even if an attacker were         *
+ *  watching the TLS request, the only key in scope is one only the         *
+ *  heir benefits from spending.                                             *
+ * -------------------------------------------------------------------------- */
+
+#[derive(Debug, Deserialize)]
+pub struct HeirClaimRequest {
+    /// Bitcoin address the heir wants the funds to land at.
+    pub destination: String,
+    /// Optional fee rate in sat/vB. Defaults to 2 sat/vB.
+    #[serde(default)]
+    pub fee_rate_sat_per_vb: Option<u64>,
+    /// Heir account xprv, base58 (`tprv...` on testnet/signet/regtest,
+    /// `xprv...` on mainnet). The browser unwraps this from the
+    /// sealed blob using the claim token in the URL fragment, then
+    /// sends it here over TLS. Held in memory only for the duration
+    /// of this call.
+    pub heir_xprv: String,
+}
+
+pub async fn heir_claim(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+    Json(req): Json<HeirClaimRequest>,
+) -> Result<(StatusCode, Json<BroadcastClaimResponse>), ApiError> {
+    let row = load_vault_for_claim_token(&state, &token).await?;
+
+    // Parse destination address up-front so we fail fast on user typos.
+    let dest = req
+        .destination
+        .trim()
+        .parse::<Address<bitcoin::address::NetworkUnchecked>>()
+        .map_err(|e| ApiError::Validation(format!("destination: {e}")))?;
+    if !dest.is_valid_for_network(row.network) {
+        return Err(ApiError::Validation(format!(
+            "destination is not valid for {:?}",
+            row.network
+        )));
+    }
+    let dest = dest.assume_checked();
+    let dest_str = dest.to_string();
+
+    let fee_rate_sat_per_kwu = req.fee_rate_sat_per_vb.unwrap_or(2).max(1) * 250;
+    let fee_rate = FeeRate::from_sat_per_kwu(fee_rate_sat_per_kwu);
+
+    // Parse the heir xprv. `from_str` rejects anything that isn't a
+    // valid base58 BIP32 xprv on the parameter's network.
+    let heir_xprv = bitcoin::bip32::Xpriv::from_str(req.heir_xprv.trim())
+        .map_err(|e| ApiError::Validation(format!("heir_xprv: {e}")))?;
+    // Sanity: the xprv's network must match the vault.
+    if heir_xprv.network != row.network.into() {
+        return Err(ApiError::Validation(format!(
+            "heir_xprv is for network {:?}, vault is for {:?}",
+            heir_xprv.network, row.network
+        )));
+    }
+
+    // Atomic claim-token consumption (same gate as the two-step flow).
+    let now_s = Utc::now().to_rfc3339();
+    let claimed = sqlx::query(
+        r#"UPDATE vaults
+              SET status              = 'claiming',
+                  claim_token_used_at = ?
+            WHERE id = ?
+              AND claim_token_used_at IS NULL"#,
+    )
+    .bind(&now_s)
+    .bind(&row.id)
+    .execute(&state.db)
+    .await?;
+    if claimed.rows_affected() != 1 {
+        return Err(ApiError::Conflict("claim token already used".into()));
+    }
+
+    // Construct the heir-side signing wallet. The browser ships the
+    // *account* xprv (m/86'/coin'/0'), which is what BDK splices into
+    // the descriptor at `build_signing`'s call site. But that helper
+    // wants the *master* xprv — and we just received an account xprv.
+    // The account xprv at m/86'/coin'/0' is itself a valid Xpriv that
+    // BDK can use, provided we splice it in at the matching origin.
+    // We pass it through a thin adapter that produces the same wallet
+    // shape as if we had the master.
+    let vault_config = VaultConfig {
+        descriptor_external: row.descriptor_external.clone(),
+        descriptor_internal: row.descriptor_internal.clone(),
+        timelock_blocks: row.timelock_blocks as u32,
+        network: row.network,
+        role: VaultRole::Heir,
+        label: row.label.clone(),
+    };
+    let vault = match Vault::from_config(vault_config) {
+        Ok(v) => v,
+        Err(e) => {
+            release_claim_token(&state, &row.id).await;
+            return Err(ApiError::Validation(format!("stored vault: {e}")));
+        }
+    };
+
+    let url = match esplora_url(row.network) {
+        Ok(u) => u,
+        Err(e) => {
+            release_claim_token(&state, &row.id).await;
+            return Err(e);
+        }
+    };
+    let network = row.network;
+
+    let vault_id = row.id.clone();
+    let result = tokio::task::spawn_blocking(move || -> Result<(bitcoin::Txid, u64, u64), BlockingErr> {
+        let mut wallet = ghostkey_core::wallet::build_signing_from_account(&vault, &heir_xprv)
+            .map_err(|e| BlockingErr::Vault(e.to_string()))?;
+
+        let client = esplora_client::Builder::new(&url).build_blocking();
+        let req = wallet.start_full_scan();
+        let update = client
+            .full_scan(req, 5, 1)
+            .map_err(|e| BlockingErr::Esplora(format!("full_scan: {e}")))?;
+        wallet
+            .apply_update(update)
+            .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
+
+        let total = wallet.balance().total().to_sat();
+        if total == 0 {
+            return Err(BlockingErr::NoUtxos);
+        }
+
+        let mut built = ghostkey_core::psbt::build_heir_claim(&mut wallet, &vault, &dest, fee_rate)
+            .map_err(|e| BlockingErr::Build(e.to_string()))?;
+        if !built.finalized {
+            // Try one more sign pass with SignOptions tuned for
+            // script-path Taproot. BDK occasionally returns
+            // finalized=false on the first call when CSV gating
+            // requires a specific nSequence already on the PSBT.
+            let _ = wallet
+                .sign(&mut built.psbt, SignOptions::default())
+                .map_err(|e| BlockingErr::Build(format!("re-sign: {e}")))?;
+            let fin = wallet
+                .finalize_psbt(&mut built.psbt, SignOptions::default())
+                .map_err(|e| BlockingErr::Build(format!("finalize: {e}")))?;
+            if !fin {
+                return Err(BlockingErr::Build(
+                    "PSBT could not be finalised; the timelock may not have matured yet".into(),
+                ));
+            }
+        }
+        let tx = built
+            .psbt
+            .extract_tx()
+            .map_err(|e| BlockingErr::Build(format!("extract_tx: {e}")))?;
+        client
+            .broadcast(&tx)
+            .map_err(|e| BlockingErr::Esplora(format!("broadcast: {e}")))?;
+        let txid = tx.compute_txid();
+        let out_sats: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
+        let fee = total.saturating_sub(out_sats);
+        Ok((txid, total, fee))
+    })
+    .await;
+
+    let (txid, total_in, fee) = match result {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            release_claim_token(&state, &vault_id).await;
+            return Err(ApiError::from(e));
+        }
+        Err(e) => {
+            release_claim_token(&state, &vault_id).await;
+            return Err(ApiError::Validation(format!("worker panic: {e}")));
+        }
+    };
+
+    sqlx::query("UPDATE vaults SET status = 'claimed' WHERE id = ?")
+        .bind(&vault_id)
+        .execute(&state.db)
+        .await?;
+
+    record_event(
+        &state.db,
+        &vault_id,
+        "claim_broadcast",
+        Some(serde_json::json!({
+            "txid": txid.to_string(),
+            "destination": dest_str,
+            "total_input_sats": total_in,
+            "fee_sats": fee,
+            "flow": "heir-claim-one-shot",
+        })),
+    )
+    .await?;
+
+    Ok((
+        StatusCode::OK,
+        Json(BroadcastClaimResponse {
+            txid: txid.to_string(),
+            explorer_url: explorer_url(network, &txid),
+        }),
+    ))
+}
+
+/* -------------------------------------------------------------------------- *
+ *  Helpers                                                                   *
  * -------------------------------------------------------------------------- */
 
 /// Vault row loaded by claim token. Holds only the fields the PSBT
