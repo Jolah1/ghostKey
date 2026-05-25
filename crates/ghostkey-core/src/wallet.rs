@@ -110,14 +110,12 @@ pub fn build_signing_from_account(vault: &Vault, account_xpriv: &Xpriv) -> Resul
     let neutered = account_xpriv.to_priv().public_key(&Secp256k1::new());
     // The xpub embedded in the descriptor is the account xpub; we
     // derive it locally so we can find it textually.
-    let account_xpub_str = bitcoin::bip32::Xpub::from_priv(&Secp256k1::new(), account_xpriv)
-        .to_string();
+    let account_xpub_str =
+        bitcoin::bip32::Xpub::from_priv(&Secp256k1::new(), account_xpriv).to_string();
     let _ = neutered; // silence unused warning; we kept it for documentation
 
-    let fp = find_origin_fingerprint_for_xpub(
-        vault.descriptor_for(Chain::External),
-        &account_xpub_str,
-    )?;
+    let fp =
+        find_origin_fingerprint_for_xpub(vault.descriptor_for(Chain::External), &account_xpub_str)?;
 
     let xpriv_str = account_xpriv.to_string();
     let ext = splice_xpriv(vault.descriptor_for(Chain::External), fp, &path, &xpriv_str)?;

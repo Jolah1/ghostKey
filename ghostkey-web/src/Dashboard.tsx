@@ -77,7 +77,7 @@ export function Dashboard({ onNavigate }: Props) {
       if (e instanceof ApiError && e.status === 401) {
         setError(
           "This browser doesn't have the credentials for this vault. " +
-            "If you set it up on another device, sign in there or create a new vault.",
+            "Sign in with your email and password, or create a new vault.",
         );
         return;
       }
@@ -408,12 +408,13 @@ function EmptyState({ onNavigate }: { onNavigate: (r: Route) => void }) {
           No vault on this device yet
         </h1>
         <p className="mt-3 text-muted">
-          Set one up in a few minutes, or look up an existing one by its ID.
+          Set one up in a few minutes, or sign in with your email and password
+          if you already have one.
         </p>
         <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
           <Button onClick={() => onNavigate("setup")}>Set up a vault</Button>
           <Button variant="ghost" onClick={() => onNavigate("checkin")}>
-            Look up by ID
+            Sign in
           </Button>
         </div>
       </div>

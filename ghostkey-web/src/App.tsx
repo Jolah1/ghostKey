@@ -19,7 +19,9 @@ import { useEffect, useState } from "react";
 import { NavBar } from "./NavBar";
 import { Landing } from "./Landing";
 import { SetupPortal } from "./SetupPortal";
+import { PasswordSetupPortal } from "./PasswordSetupPortal";
 import { CheckinPortal } from "./CheckinPortal";
+import { SignInPortal } from "./SignInPortal";
 import { InheritPortal } from "./InheritPortal";
 import { Dashboard } from "./Dashboard";
 import { ClaimPage } from "./ClaimPage";
@@ -28,20 +30,40 @@ import { Button } from "./ui";
 import { api } from "./api";
 import { getActiveVaultId } from "./vaultStore";
 
+/**
+ * Route slugs the app understands. Two routes are "legacy" — they
+ * point at the pre-password-vault UI and are kept so users with
+ * vaults created before the redesign can still operate them:
+ *
+ *   - setup-legacy  → bring-your-own-xpub wizard (advanced / CLI)
+ *   - checkin-legacy → lookup-by-vault-id check-in
+ *
+ * The plain `setup` and `checkin` slugs now map to the password
+ * flow (in-browser keygen + email+password sign-in).
+ *
+ * `setup-password` is kept as an alias for `setup` so the preview
+ * URLs shared during Pass 3 don't 404 in tests/bookmarks.
+ */
 export type Route =
   | "landing"
   | "setup"
+  | "setup-legacy"
+  | "setup-password"
   | "success"
   | "dashboard"
   | "checkin"
+  | "checkin-legacy"
   | "inherit";
 
 const VALID: Route[] = [
   "landing",
   "setup",
+  "setup-legacy",
+  "setup-password",
   "success",
   "dashboard",
   "checkin",
+  "checkin-legacy",
   "inherit",
 ];
 
@@ -132,7 +154,18 @@ export default function App() {
       )}
 
       {location.kind === "route" && location.route === "landing"   && <Landing  onNavigate={setRoute} />}
-      {location.kind === "route" && location.route === "setup"     && (
+      {location.kind === "route" && (location.route === "setup" || location.route === "setup-password") && (
+        <PasswordSetupPortal
+          onCancel={() => setRoute("dashboard")}
+          onCreated={() => {
+            /* Stay on the funding screen — the user dismisses
+             * manually from inside the portal once they've copied
+             * the address. The onCancel above is what fires when
+             * they finally tap Done. */
+          }}
+        />
+      )}
+      {location.kind === "route" && location.route === "setup-legacy" && (
         <SetupPortal
           onCancel={() => setRoute("landing")}
           onCreated={() => setRoute("success")}
@@ -140,7 +173,8 @@ export default function App() {
       )}
       {location.kind === "route" && location.route === "success"   && <Success onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "dashboard" && <Dashboard onNavigate={setRoute} />}
-      {location.kind === "route" && location.route === "checkin"   && (
+      {location.kind === "route" && location.route === "checkin"   && <SignInPortal onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "checkin-legacy" && (
         <CheckinPortal initialId={getActiveVaultId() ?? undefined} />
       )}
       {location.kind === "route" && location.route === "inherit"   && <InheritPortal />}

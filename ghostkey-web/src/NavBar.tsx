@@ -17,7 +17,7 @@ interface NavItem {
 
 const ITEMS: NavItem[] = [
   { key: "setup",     label: "Set up" },
-  { key: "checkin",   label: "Check in" },
+  { key: "checkin",   label: "Sign in" },
   { key: "inherit",   label: "Inherit" },
   { key: "dashboard", label: "Dashboard" },
 ];

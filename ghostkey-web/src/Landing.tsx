@@ -602,7 +602,7 @@ const FOOTER_COLS: FooterCol[] = [
     title: "Use it",
     links: [
       { label: "Set up a vault", href: "#/setup" },
-      { label: "Check in",        href: "#/checkin" },
+      { label: "Sign in",         href: "#/checkin" },
       { label: "Inherit",         href: "#/inherit" },
       { label: "Dashboard",       href: "#/dashboard" },
     ],

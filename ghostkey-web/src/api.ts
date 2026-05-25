@@ -76,6 +76,68 @@ export interface CreateVaultFromXpubRequest {
   owner_contact?: string | null;
   heir_contact?: string | null;
   heir_contact_channel?: "sms" | "email" | "whatsapp" | null;
+  /**
+   * Optional sealed material from the in-browser password-vault flow.
+   * When present, the server stores the ciphertexts verbatim and the
+   * vault is openable on any device with email + password. When omitted,
+   * the legacy "bring-your-own-wallet" flow is used and the owner_token
+   * returned in the response is the only credential.
+   *
+   * Mirrors `crates/ghostkey-server/src/routes.rs::SealedSetup`.
+   */
+  sealed?: SealedSetup | null;
+}
+
+/** Snake-cased to match the Rust struct exactly; the server is the
+ *  source of truth for this shape. See sealing.ts for how each blob
+ *  is produced in the browser. */
+export interface SealedSetup {
+  password_salt_b64: string;
+  password_kdf_mem_kib: number;
+  password_kdf_iters: number;
+
+  owner_xprv_ct_b64: string;
+  owner_xprv_nonce_b64: string;
+  owner_token_ct_b64: string;
+  owner_token_nonce_b64: string;
+
+  heir_xprv_ct_b64: string;
+  heir_xprv_nonce_b64: string;
+
+  owner_email_hash: string;
+  claim_token_b64: string;
+}
+
+/** One vault entry returned by `POST /vaults/find`. */
+export interface FoundVault {
+  id: string;
+  label: string | null;
+  status: VaultStatus;
+  created_at: string;
+  next_deadline_at: string;
+}
+
+/** Sealed blobs the server hands the owner's browser during cross-device
+ *  recovery. The browser unwraps these locally with the password. */
+export interface SealedBlobsView {
+  vault_id: string;
+  password_salt_b64: string;
+  password_kdf_mem_kib: number;
+  password_kdf_iters: number;
+  owner_xprv_ct_b64: string;
+  owner_xprv_nonce_b64: string;
+  owner_token_ct_b64: string;
+  owner_token_nonce_b64: string;
+  network: string;
+  timelock_blocks: number;
+}
+
+/** First external (receive) address derived from the vault descriptor.
+ *  Public information; no auth required. */
+export interface VaultAddressView {
+  vault_id: string;
+  network: string;
+  address: string;
 }
 
 export interface CheckinResponse {
@@ -242,6 +304,40 @@ export const api = {
       method: "POST",
       body: JSON.stringify(req),
     }),
+  /** Cross-device recovery: list vaults whose owner email SHA-256
+   *  matches. The browser hashes the email locally first; we never
+   *  POST the plaintext. */
+  findVaultsByEmailHash: (owner_email_hash: string) =>
+    request<FoundVault[]>("/vaults/find", {
+      method: "POST",
+      body: JSON.stringify({ owner_email_hash }),
+    }),
+  /** Fetch the sealed-blobs view so the browser can unwrap locally
+   *  with the user's password. No auth — the blobs are useless
+   *  without the password. */
+  getSealedBlobs: (id: string) =>
+    request<SealedBlobsView>(`/vaults/${id}/sealed-blobs`),
+  /** Next external (receive) address from the vault descriptor.
+   *  Public; used to fund a freshly-created vault. */
+  getVaultAddress: (id: string) =>
+    request<VaultAddressView>(`/vaults/${id}/address`),
+
+  /** Re-seal the owner token after vault creation. Solves the
+   *  chicken-and-egg in the password-vault setup flow: the browser
+   *  needs the server-issued owner_token before it can seal it, but
+   *  vault creation is a single atomic call. We ship a placeholder
+   *  during create and call this immediately after with the real one.
+   *  Requires the freshly-issued owner_token as the Bearer credential. */
+  sealOwnerToken: (
+    id: string,
+    ownerToken: string,
+    body: { owner_token_ct_b64: string; owner_token_nonce_b64: string },
+  ) =>
+    request<null>(
+      `/vaults/${id}/seal-owner-token`,
+      { method: "POST", body: JSON.stringify(body) },
+      ownerToken,
+    ),
   checkin: (id: string, ownerToken: string | null) =>
     request<CheckinResponse>(
       `/vaults/${id}/checkin`,
