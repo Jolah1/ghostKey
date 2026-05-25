@@ -31,39 +31,6 @@ We'll acknowledge receipt within 72 hours. From there, expect:
 If you don't get a response within seven days, please follow up — the
 email may have been filtered.
 
-## What counts as a security issue
-
-Yes:
-
-- A way to drain coins from a vault without the owner's or heir's
-  signature.
-- A way to make the heir's claim fail when the timelock has elapsed
-  (i.e., the heir is locked out despite being entitled).
-- A way to spoof a check-in for someone else's vault.
-- A way to leak the server's master key, decrypt heir contacts at
-  rest, or recover claim tokens from stored hashes.
-- A way to bypass per-vault owner authentication (or admin auth on
-  `GET /vaults`).
-- A way to deny service such that legitimate alarms never fire.
-- A supply-chain compromise: a malicious dependency, a tampered
-  release artefact, a build-time injection.
-
-Maybe (please report anyway, we'll triage):
-
-- A way to mark someone else's check-in as missed when it wasn't.
-  (Worst case: their heir is delayed by one cycle. Still bad.)
-- A way to make the server log credentials it shouldn't be logging.
-- A way to enumerate vaults a caller shouldn't be able to see.
-
-Not really:
-
-- Outdated dependency warnings without a known exploit. Open a
-  normal PR for these.
-- "The CORS policy is too permissive." It's now an allowlist
-  (`GHOSTKEY_ALLOWED_ORIGINS`); if you find a way to bypass it, that
-  *is* a finding — please report.
-- "There's no rate limiting." Same — known gap, open an issue.
-
 ## Scope
 
 Security reports cover:
@@ -96,16 +63,7 @@ version:
 If your finding contradicts that summary — e.g., you've found a way
 to move coins by attacking the server — that's a top-priority issue.
 
-## Cryptographic baseline
 
-The server uses:
-- XChaCha20-Poly1305 for sealing heir contacts at rest.
-- HKDF-SHA256 with a per-vault salt for key derivation.
-- SHA-256 for claim-token hashes (with constant-time comparison).
-- A 32-byte master key loaded from `GHOSTKEY_MASTER_KEY` at startup.
-
-If any of those choices is wrong, or if our implementation deviates
-from the standard, please tell us.
 
 ## Known limitations (not vulnerabilities)
 

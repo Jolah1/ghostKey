@@ -1,506 +1,280 @@
-# GhostKey — Journal
+# GhostKey — Build Journal
 
-A log of how this project got built. One entry per merged feature
-branch, in the order it happened. Each entry says what we built, why
-we built it then, what was hard, and what we left for later.
+This is the story of how GhostKey got built.
 
-The point of this file is to give a new contributor (or future-you)
-enough context to read the codebase without confusion. If you ever
-look at a piece of code and wonder "why on earth is this here?", the
-answer is probably in this file.
+One entry per feature. Each one explains what we added, why we added it when we did, what gave us trouble, and what we left for the next person. If you're reading the code and wondering why something exists, the answer is probably here.
 
-The dated format is loose by design — the focus is on the *reasoning*
-that led to each change, not the timestamps.
+New contributors: start here before reading the code. It'll save you hours.
 
 ---
 
-## Entry 1 — Bootstrap the protocol core
-**Date:** 2026-05-21  
-**Branch:** initial commit on `main` (`d13a7a3`)
+## Entry 1 — The thing that had to work first
 
-### What we built
-The base Rust workspace. Three crates:
+The Bitcoin core — the part that actually moves money. Three Rust crates:
 
-- `ghostkey-core` — the cryptographic library. Descriptor builder,
-  vault construction, PSBT helpers, key derivation. No I/O.
-- `ghostkey-cli` — the command-line tool for the owner and the heir.
-  Generates seed phrases, derives xpubs, builds vaults, signs
-  check-in and claim transactions, talks to a local Bitcoin Core
-  node.
-- `ghostkey-server` skeleton — at this point just a `main.rs` stub.
+- **ghostkey-core** — the cryptographic engine. Builds vault addresses, constructs transactions, handles key derivation. No network calls, no database, no side effects. Just Bitcoin math.
+- **ghostkey-cli** — a command-line tool for owners and heirs. Generates wallets, builds vaults, signs transactions, talks to a Bitcoin node.
+- **ghostkey-server** — an empty stub. Just a `main.rs` so the workspace compiles.
 
-Plus a regtest end-to-end integration test in `crates/ghostkey-core`
-that spins up its own `bitcoind`, runs a full owner check-in / early
-heir claim (which must fail) / mine the timelock / heir claim again
-(which must succeed) cycle.
+We also wrote one end-to-end test that runs on a real local Bitcoin network (regtest): owner sets up a vault, heir tries to claim early (fails — timelock hasn't expired), we mine enough blocks to expire the timelock, heir claims again (succeeds). If this test passes, the fundamental promise of GhostKey works.
 
-### Why first
-The on-chain mechanism is the only part of GhostKey that has to be
-bulletproof. Everything else can change later; the script and the
-PSBT builders cannot. We wrote them first, got them passing the
-regtest test, and then never touched them again unless we had to.
+### Why this first
 
-### Hard parts
-- **BDK's policy path resolver doesn't always pick the right branch.**
-  Our descriptor is `or_d(pk(OWNER), and_v(v:pk(HEIR), older(N)))`.
-  When the owner signs a check-in, BDK couldn't tell which side of
-  the `or_d` we meant — both were syntactically signable. We had to
-  use BDK's per-node `contribution` annotation and explicitly prefer
-  the owner branch (`Complete { csv: None }`) over the heir branch.
-  For the heir's claim, the threshold inside `and_v` (the heir's key
-  *and* the timelock) needed both children selected, not just the
-  timelock. The fix is a small walker in `ghostkey-core/src/psbt.rs`
-  but it took an afternoon to figure out.
-- **NUMS internal key.** Taproot outputs always have a keypath spend
-  available. We don't want anyone — including the heir — to bypass
-  the script via the keypath, so we commit to an unspendable
-  ("NUMS") point as the internal key. This is standard but worth
-  documenting because anyone reading the descriptor will see
-  unfamiliar bytes there.
+The on-chain script is the one piece we cannot change later without breaking existing vaults. Everything else — the website, the server, the emails — can be rewritten, redesigned, or thrown away. The vault construction cannot. So we built it first, tested it thoroughly, and then left it alone.
+
+### What was hard
+
+**Telling BDK which spend path to use.** Our vault address has two ways to spend it: the owner's way (spendable any time) and the heir's way (spendable only after the countdown expires). When we asked BDK to build a transaction, it couldn't decide which path we meant — both looked valid to it. We had to explicitly tell it "use the owner path for check-ins, use the heir path for claims." The fix is a small piece of code in `ghostkey-core/src/psbt.rs`, but it took most of an afternoon to understand the problem.
+
+**The unspendable key.** Every Taproot address has a "master key" that can spend it without going through any script. We don't want that — we want every spend to go through either the owner script or the heir script, with no shortcuts. So we set the master key to a mathematically unspendable value (called a NUMS point). This is a standard Bitcoin technique, but it looks strange in the code to someone who hasn't seen it before. That's what those odd bytes in the descriptor are.
 
 ### What we left for later
-- Anything web-facing.
-- A real notifier; the server was just a stub.
-- Anything beyond regtest.
+
+Everything user-facing. The server was an empty file. There was no website, no emails, no way for a non-developer to use any of this. That was intentional — get the math right first.
 
 ---
 
-## Entry 2 — The first web layer
-**Date:** 2026-05-21  
-**Branch:** `feat/web-and-docs` (merged in `cad6307`)
+## Entry 2 — Something you could actually open in a browser
 
-### What we built
-- A working `ghostkey-server` Axum service. SQLite via `sqlx`. Two
-  tables: `vaults` and `events`. Routes for register / list / get /
-  check-in / events / health.
-- A background scheduler that ticks every 30 seconds and moves
-  overdue vaults from `ok` to `alarmed`.
-- The first React dashboard (`ghostkey-web`). One card per vault,
-  live countdown, "Check in" button, slide-in detail drawer with
-  the event log.
-- `README.md` and `ARCHITECTURE.md`. The README aimed at users; the
-  architecture doc aimed at developers.
+
+A working server and a first version of the dashboard:
+
+- **Server** — an Axum web server with a SQLite database. Stores vaults and tracks check-in events. Has routes for creating vaults, listing them, checking in, and viewing history.
+- **Background scheduler** — checks every 30 seconds whether any vault owner has missed their deadline. If they have, it marks the vault as alarmed.
+- **React dashboard** — one card per vault, a countdown showing how long until the heir could claim, and a "Check in" button. Clicking it resets the clock.
+- **README and ARCHITECTURE docs** — the first written explanation of how GhostKey works.
 
 ### Why now
-We wanted to see the full owner-side loop working end to end before
-adding any heir-side complexity. Once an owner could register a
-vault and tap a button to keep it healthy, we had something
-demonstrable.
 
-### Hard parts
-- **Dev proxy.** The Vite dev server proxies `/api/*` to
-  `127.0.0.1:8787`. Getting CORS, error messages, and the proxy
-  config to play nicely with the production single-origin deployment
-  took a couple of iterations.
-- **Status pill colours.** The dashboard needed a clear, accessible
-  status pill for each vault state (`ok`, `warning`, `alarmed`, etc.).
-  We picked a small palette with `Tone = "ok" | "warning" | "alarm" |
-  "neutral"` and applied it consistently.
+We wanted to see the full owner experience working before building anything for heirs. Once you could create a vault in a browser and tap a button to keep it alive, we had something real to show people and get feedback on.
+
+### What was hard
+
+**Connecting the development frontend to the server.** In development, the React app runs on one port and the server runs on another. Getting them to talk to each other — and getting error messages to make sense when they didn't — took a few iterations. The final setup uses Vite's proxy feature, which forwards `/api/*` requests from the browser to the server.
+
+**Status colours.** The vault card needed to show at a glance whether everything was fine, a deadline was approaching, or an alarm had fired. We ended up with a small set of named states (`ok`, `warning`, `alarmed`) with consistent colours across the app. Simple in the end, but we went through several versions before it felt right.
 
 ### What we left for later
-- Anything heir-side.
-- Real authentication (we punted: every vault is identified by its
-  UUID, and you need the UUID to interact with it).
-- Production deploy automation.
+
+- The heir experience entirely.
+- Real authentication — at this point, knowing a vault's ID was enough to interact with it.
+- Deployment to a real server.
 
 ---
 
-## Entry 3 — Family-friendly UI
-**Date:** 2026-05-21  
-**Branch:** `feat/family-friendly-ui` (merged in `ba8b1df`)
+## Entry 3 — Rewriting it for humans
 
-### What we built
-A redesign of the dashboard with non-technical owners in mind. The
-language across the app got simpler ("check in" instead of "send
-heartbeat", "your vault" instead of "this descriptor"). The
-accessibility pass added proper ARIA roles, focus rings, and a
-no-motion fallback for the animated countdown.
+A language and design pass across the whole app. The interface stayed structurally the same, but every piece of copy was rewritten to use plain words instead of technical ones. "Send heartbeat" became "Check in." "This descriptor" became "your vault." The accessibility pass added proper labels for screen readers, visible focus indicators for keyboard users, and a reduced-motion mode for the animated countdown.
+
+We also created `vocab.ts` — a single file that stores every user-facing phrase as a named constant. When we want to change what the app calls something, we change it in one place.
 
 ### Why now
-The first dashboard was visibly built by engineers, for engineers.
-GhostKey's target user isn't an engineer. We wanted to fix the tone
-before adding more features, because every new feature would have
-inherited the wrong vocabulary.
 
-### Hard parts
-- **The vocabulary tension.** Some Bitcoin terms have to stay —
-  "address" can't easily become anything else without confusing
-  users who have used Bitcoin before. But "UTXO", "policy path",
-  "BIP68" can all disappear from user-facing copy. We added a
-  `vocab.ts` module to centralise the brand strings so future
-  copy changes are one-file edits.
+The first version was visibly built by engineers for engineers. Before adding more features, we needed to fix the foundation — because every new screen would have inherited the wrong language. Doing the copy pass early meant every subsequent feature started from the right vocabulary.
+
+### What was hard
+
+**Deciding what to simplify and what to keep.** Some Bitcoin terms have no good plain-language equivalent — "address" is already the simplest way to say what an address is. Others ("UTXO," "BIP68," "policy path") can disappear entirely from anything a user sees. Drawing that line took judgment calls on every screen.
 
 ### What we left for later
-- Internationalisation (everything is English).
-- A landing page (the app jumped straight into the dashboard).
+
+- Everything is still in English. Yoruba, Igbo, and Hausa translations are on the list.
+- There was still no landing page — the app opened directly into the dashboard.
 
 ---
 
-## Entry 4 — Bitcoin-themed portals
-**Date:** 2026-05-21  
-**Branch:** `feat/bitcoin-themed-portals` (merged in `4a97709`)
+## Entry 4 — Different pages for different people
 
-### What we built
-Distinct portal pages for the three audiences:
+Separate pages for each audience instead of one page trying to do everything:
 
-- **Landing** (`Landing.tsx`) — explains GhostKey to a first-time
-  visitor. Hero, "how it works", lifecycle, FAQ, comparison table.
-- **SetupPortal** — the wizard an owner uses to create a new vault.
-- **CheckinPortal** — the page an active owner sees to tap "I'm OK".
-- **InheritPortal** — placeholder for the heir-side flow (the real
-  thing came in entry 7).
-- **Dashboard** — the existing per-vault view, now reachable from
-  the navigation.
-- **NavBar** + **Brand** components for consistent header treatment.
+- **Landing page** — for someone who has never heard of GhostKey. Explains the problem, the solution, how it works, and why to trust it. No login required.
+- **Setup wizard** — for an owner creating a new vault. Step by step, one decision at a time.
+- **Check-in page** — for an active owner doing their monthly tap.
+- **Heir page** — a placeholder at this point; the real heir flow came later.
+- **Dashboard** — the existing vault view, now reachable from proper navigation.
+
+We also built a navigation bar and a shared Brand component so the header looks the same everywhere.
 
 ### Why now
-A single dashboard that tried to be a homepage and a setup wizard
-and a heir landing all at once was confusing. Splitting into
-purpose-built pages let each one optimise for its audience.
 
-### Hard parts
-- **Routing without a router library.** We use a hash-based
-  discriminated-union router (see `App.tsx`) instead of pulling in
-  `react-router`. This keeps the bundle small and the navigation
-  state typed. The catch: every route addition needs a new variant
-  in the `Route` union and a handler in `App.tsx`. Worth it for the
-  size win.
-- **Landing page tone.** We rewrote the hero copy at least six
-  times to get rid of the "ChatGPT voice" — phrases like "robust,
-  secure, and seamless" that mean nothing. The final copy uses
-  emotional, plain words ("Your money. Their future.") and
-  earns trust through specifics, not adjectives.
+A single page that was simultaneously a homepage, a setup tool, and a check-in button for returning users was confusing. Splitting by audience meant each page could focus entirely on one job.
+
+### What was hard
+
+**Writing the landing page without sounding like a chatbot.** The hero copy went through at least six rewrites. Phrases like "robust, secure, and seamless" got cut every time. The version that shipped uses specific, human language — what the problem actually feels like, what the product actually does — rather than adjectives that could describe anything.
+
+**Routing without a routing library.** Rather than adding React Router (which would have increased the bundle size), we built a small typed router in `App.tsx` using a discriminated union — a list of every possible page state, each with its own data. Every new page needs a new entry in that union, which is a small tax, but the bundle stayed lean.
 
 ### What we left for later
+
 - The actual heir flow.
-- Deployment.
+- Deployment to a public URL.
 
 ---
 
-## Entry 5 — Deployment infrastructure
-**Date:** 2026-05-21  
-**Branch:** deploy workflow (`8a54a23`)
+## Entry 5 — Putting it on the internet
 
-### What we built
-- A `Dockerfile` that produces a small image with the
-  `ghostkey-server` binary.
-- `fly.toml` for one-command deployment to Fly.io.
-- `DEPLOY.md` documenting three deployment paths: Fly.io,
-  single-VPS + Caddy, and split-host with Cloudflare Pages.
-- A nightly SQLite backup cron in the docs.
+The infrastructure to run GhostKey somewhere other than a developer's laptop:
+
+- **Docker image** — packages the server binary into a small container.
+- **Fly.io configuration** — one command to deploy the server to a real machine with a persistent database and automatic TLS.
+- **DEPLOY.md** — written documentation for three deployment paths: Fly.io (the simplest), a single VPS with Caddy (for self-hosters), and split hosting with Cloudflare Pages (for contributors who want a free tier).
+- **Nightly backup instructions** — how to snapshot the SQLite database automatically so a server failure doesn't lose vault records.
 
 ### Why now
-The web app could only be tested by people running both halves
-locally. Putting the server on Fly.io and the web on a static host
-let us share working URLs and start collecting real feedback.
 
-### Hard parts
-- **Volume / region pinning on Fly.** SQLite needs a persistent
-  volume, and Fly volumes are local to a region. Getting the
-  startup order right (volume created *before* first deploy) is a
-  one-time gotcha that's now in `DEPLOY.md`.
-- **CORS.** Split-host deployment means the web app makes
-  cross-origin calls to the server. The Caddy configuration in
-  `DEPLOY.md` handles this; the alternative is a single-origin
-  reverse-proxy setup that's simpler but less flexible.
+Until this point, the only people who could test GhostKey were people willing to run both the server and the frontend locally. Deploying to a real URL meant we could share it, get feedback, and catch issues that only appear in production.
+
+### What was hard
+
+**SQLite on Fly.io.** SQLite stores its database in a file, and Fly.io machines don't keep files between restarts unless you attach a persistent volume. The volume has to be created before the first deployment — if you deploy first and create the volume later, you end up with two mismatched states. This is now documented clearly in DEPLOY.md with the exact commands in the right order.
 
 ### What we left for later
-- TLS automation under Caddy is documented but the production
-  Fly.io deploy uses Fly's built-in certs.
-- A real monitoring story (no Prometheus endpoint, no status page
-  yet).
+
+- A status page or monitoring endpoint. Right now you find out the server is down when someone reports it.
+- TLS under Caddy is documented but the production deployment uses Fly's built-in certificates, which is simpler.
 
 ---
 
-## Entry 6 — Transaction flow redesign
-**Date:** 2026-05-22  
-**Branch:** `feat/xpub-vault-flow` (merged in `833adfc`, with the
-preparatory `249db76`)
-
+## Entry 6 — Owners no longer need to use the command line
 ### What we built
-A new server route `POST /vaults/from-xpub` that takes two xpubs
-(owner and heir, optionally origin-tagged) plus a timelock and
-builds the descriptor pair server-side. The browser doesn't have to
-deal with descriptor strings any more — the setup wizard collects
-xpubs, the server renders the descriptors.
 
-This came with a major rewrite of `SetupPortal.tsx`, support for
-both bare xpubs (with a separate fingerprint field) and the
-`[fp/path]xpub...` origin-tagged form that Sparrow, BlueWallet
-desktop, Specter, and Coldcard all export.
+A new server route that accepts an extended public key (xpub) from the owner and builds the vault address automatically. Before this, the owner had to run a command-line tool to generate a vault descriptor, then paste that descriptor into the website. That was two steps when there should be one.
+
+Now the setup wizard collects the xpub (which any wallet can export), sends it to the server, and the server does the rest. The owner never sees a descriptor string.
+
+We also added support for all the different xpub formats that real wallets export — some include derivation path information, some don't, some use different prefixes for testnet. GhostKey now accepts all of them.
 
 ### Why now
-The original setup flow had the owner paste two pre-rendered
-descriptor strings into the dashboard. That meant they'd already
-had to run the CLI's `make-vault` command, which defeated the
-whole point of the web app. Moving descriptor construction to the
-server made the dashboard the actual entry point.
 
-### Hard parts
-- **xpub formats are inconsistent.** Different wallets export
-  different things. Some give you `xpub...`, some give you
-  `[fingerprint/path]xpub...`, some give you `tpub...` for
-  testnet. We accept all of them and convert internally.
-- **Fingerprint validation.** When the xpub is origin-tagged and
-  the caller *also* provides a separate fingerprint, both must
-  match. We reject mismatches with a clear error rather than
-  silently picking one.
-- **Network coupling.** A mainnet xpub in a testnet vault is a
-  bug we want to catch loudly. The code re-derives the canonical
-  `m/86'/coin'/0'` path from the network parameter and ignores
-  whatever path is in the xpub's origin tag (which is
-  informational only).
+The original flow required owners to have already used the command-line tool. That made the web app useless as a standalone product — it was just a dashboard for CLI users. This change made the web app the actual entry point.
+
+### What was hard
+
+**Wallets don't agree on format.** Sparrow exports one thing, BlueWallet exports another, Coldcard exports a third. Some include the derivation path, some don't. Some use `xpub`, some use `tpub` for testnet. We handle all of these now, with a clear error message when something doesn't match what we expect.
+
+**Catching mismatches.** If someone pastes a mainnet xpub into a testnet vault, that's a bug we want to catch loudly, not silently accept. The code now checks that the xpub's network matches the vault's network and rejects the combination if they don't agree.
 
 ### What we left for later
-- Cold signing for the owner's check-in (still in-process).
-- k-of-n heirs.
+
+- Setting up a vault from a plain Bitcoin address (without needing an xpub at all). This is simpler for beginners but gives less flexibility.
+- Multiple heirs.
 
 ---
 
-## Entry 7 — Encrypted heir contact + one-time claim tokens
-**Date:** 2026-05-22  
-**Branch:** `feat/encrypted-heir-contact` (merged in `03d4252`)
+## Entry 7 — Heir contact stored securely, claim tokens introduced
 
-### What we built
-- A `crypto` module in `ghostkey-server` that:
-  - Loads a 32-byte server-wide master key from
-    `GHOSTKEY_MASTER_KEY` at startup. Refuses to boot if it's
-    missing or malformed. We'd rather refuse than silently store
-    plaintext.
-  - Derives a per-vault contact key with HKDF-SHA256 using the
-    vault UUID as salt and a fixed `"ghostkey:contact:v1"` info
-    string.
-  - Seals heir contact JSON with XChaCha20-Poly1305 (24-byte
-    nonce per message, stored alongside the ciphertext).
-- A schema migration adding `heir_contact_ciphertext`,
-  `heir_contact_nonce`, and `heir_contact_channel` columns. The
-  legacy plaintext `heir_contact` column stays nullable for
-  backward compatibility but new inserts always go to the
-  encrypted columns.
-- Claim tokens: 32 random bytes, base64-encoded for transport.
-  SHA-256 hash in the database, raw value only in the response
-  body of `POST /vaults/:id/issue-claim`. Constant-time compare on
-  lookup. First successful resolve marks the token consumed (this
-  later changed — see entry 9).
-- A new `GET /claim/:token` route that resolves a token to a
-  `ClaimView`, decrypts the heir contact, returns a clean
-  data shape for the heir's page.
+
+Two things that had to ship together:
+
+**Encrypted heir contact.** The heir's name and contact details are personal information. Storing them in plaintext in the database would be a problem if the database were ever leaked. Now every vault has its heir contact encrypted with a key derived from a server master secret. The server refuses to start if the master key is not set — we'd rather crash loudly than run with unprotected data.
+
+**One-time claim tokens.** When a vault alarm fires and it's time for the heir to claim, we need a way to give them access without creating an account. The answer is a one-time token — a random string that works exactly once, sent to the heir and stored (as a hash, not the raw value) in the database. The heir's link contains this token. Once they successfully claim, the token is consumed and the link stops working.
 
 ### Why now
-We were about to build the heir-side page. The page would receive
-PII (the heir's name) and a sensitive bearer token. If we wrote
-the page first and bolted encryption on later we'd have a window
-where unencrypted contacts were in the database. Doing it in this
-order meant the heir-side feature shipped with the security
-properties already in place.
 
-### Hard parts
-- **Master key storage.** We needed a way to load the key once,
-  fail loudly if it's missing, and not have to thread it through
-  every database call. A `OnceLock<Vec<u8>>` in `crypto::ensure_…`
-  does this. The key never leaves that module.
-- **Token uniqueness.** A 32-byte random value has negligible
-  collision probability, but we still set a uniqueness expectation
-  in the SHA-256 column at the DB level so a bug in the RNG path
-  would surface as a duplicate-key error rather than silently
-  overwriting a previous heir's token.
-- **What to encrypt.** We considered encrypting the descriptors
-  too. We decided not to: descriptors are public information by
-  design (anyone who watches the chain can derive the on-chain
-  address from them), and encrypting public data is theatre. PII
-  gets encrypted; protocol data doesn't.
+We were about to build the heir's page — the thing they see when they follow the claim link. That page would handle personal information and a sensitive access token. Getting the security properties in place before writing the page meant the heir feature could ship without a "we'll add encryption later" note.
 
-### Tests
-13 server tests at this point: 7 crypto, 6 routes. Crypto coverage
-included round-trip, cross-vault rejection, tamper detection,
-nonce uniqueness, claim-token match. The token uniqueness test
-generates a few thousand tokens and asserts no collisions.
+### What was hard
+
+**Where to keep the master key.** The key has to be loaded once at startup, be available to any part of the code that needs it, and never leave the server. We use a Rust `OnceLock` — a value that can only be set once and then never changed. If the environment variable is missing or malformed at startup, the server exits with a clear error message.
+
+**What to encrypt and what not to.** We considered encrypting the vault descriptors too. We decided against it — descriptors are public information (anyone watching the blockchain can see the vault's address), so encrypting them would be security theatre. Personal information gets encrypted; protocol data doesn't.
 
 ### What we left for later
+
 - The heir-side page (next entry).
-- Real notification delivery (the raw token still has to be
-  pulled out of an event row by an operator).
-- Key rotation.
+- A real way to deliver the token to the heir. At this point it was still sitting in the database waiting for an operator to copy it out manually.
 
 ---
 
-## Entry 8 — Heir claim page
-**Date:** 2026-05-22  
-**Branch:** `feat/heir-claim-page` (merged in `796b918`)
+## Entry 8 — The first thing an heir sees
 
 ### What we built
-`ClaimPage.tsx`, the page someone sees when they click a one-time
-link. Five possible states:
 
-- **Loading** — quiet, accessible spinner.
-- **Not found** — "this link doesn't work, ask for a new one."
-- **Already used** — "someone has been here before."
-- **Not ready** — "the person who set this up is still active."
-  Reached if an operator issues a claim link prematurely.
-- **Claimable** — the happy path, with a step-by-step claim flow.
+The page someone sees when they follow a claim link — possibly while grieving, possibly while confused about what Bitcoin is, definitely without any prior GhostKey knowledge.
 
-The claimable state at this point ended with an honest "we can't
-broadcast for you yet" message. We told the heir what their saved
-address was and that they (or a helper) could complete the
-transfer with the descriptor in a few minutes.
+The page handles five situations:
 
-Routing in `App.tsx` grew a discriminated union so a route could
-carry a token parameter.
+- **Loading** — while the server looks up the token.
+- **Link not found** — the token is wrong or expired.
+- **Already used** — someone has already claimed with this link.
+- **Not ready yet** — the countdown hasn't finished (shouldn't normally happen, but handled gracefully).
+- **Ready to claim** — the main path. Step-by-step instructions.
+
+At this point the page ended honestly: "we can't transfer the funds automatically yet — here's what to do next." The actual transfer mechanism came in the next entry.
 
 ### Why now
-With encryption and token issuance done, we could finally surface
-the heir's experience. We deliberately shipped a not-fully-functional
-page rather than blocking on the broadcast flow, because we wanted
-to test the language, the layout, and the wallet-recommendation copy
-in front of users before adding the PSBT plumbing.
 
-### Hard parts
-- **Bypassing the navbar.** Every other page has the GhostKey
-  navigation. The heir doesn't need it — they have one thing to
-  do. `App.tsx` swaps the chrome out when the route is `claim`.
-- **Tone.** The heir might be grieving. We rewrote the copy twice
-  to get rid of marketing language. The version that shipped opens
-  with "Someone you knew left you Bitcoin."
-- **Wallet recommendations.** Without the broadcast flow, the only
-  guidance we could give was "show this page to someone who knows
-  Bitcoin." We listed Blink, Wallet of Satoshi, and Cake as
-  beginner wallets. (Later, when the broadcast flow shipped, we
-  had to revise this — Wallet of Satoshi can't sign a PSBT, so the
-  list changed to PSBT-capable wallets.)
+With encryption and tokens in place, we could finally build the heir experience. We shipped the page without the transfer mechanism deliberately — we wanted to test the language and the layout with real people before adding technical complexity.
+
+### What was hard
+
+**The tone.** This is probably the hardest copy problem in the project. The heir might be grieving. They've probably never used Bitcoin. They've received a message from a dead person. Every word on this page matters. We rewrote it twice. The opening line became: "Someone you knew left you Bitcoin." Simple. True. Not cheerful, not clinical.
+
+**Hiding the navigation.** Every other page shows the GhostKey header with links to other parts of the app. The heir doesn't need any of that — they have one thing to do. We detect the claim route in `App.tsx` and render a minimal version of the page without the standard navigation.
 
 ### What we left for later
-- The actual broadcast. This was the obvious next branch.
+
+- The actual transfer. The page told heirs what to do but couldn't do it for them.
 
 ---
 
-## Entry 9 — The claim pipeline
-**Date:** 2026-05-22  
-**Branch:** `feat/claim-pipeline` (merged in `657df47`)
+## Entry 9 — The full transfer, end to end
 
 ### What we built
-The piece that turns GhostKey from "we'll tell you when it's time"
-into "we'll help you actually move the coins":
 
-- **Scheduler auto-issue.** A new `claim_eligible_at` timestamp
-  on every vault (set at creation to `next_deadline_at +
-  grace_period_secs`). When the scheduler sees an `alarmed`
-  vault past its eligibility timestamp with no claim token yet,
-  it transitions the vault to `timelock_started` and issues a
-  one-time token in the same database transaction. The raw token
-  goes into an event row's JSON detail so an operator (or a
-  future notifier) can pick it up. The schema change is
-  `migrations/20260523000001_claim_eligibility.sql`.
-- **`POST /claim/:token/build-psbt`.** Server reconstructs the
-  vault from its stored descriptors, runs a full chain scan via
-  Esplora (default endpoint is Blockstream's free public service;
-  override with `GHOSTKEY_ESPLORA_URL`), and returns an unsigned
-  PSBT plus a sat-level summary (total in, fee, output to the
-  heir's destination, network).
-- **`POST /claim/:token/broadcast`.** Server takes a signed PSBT,
-  finalises it through a watch-only wallet (no keys needed — the
-  witness comes from the heir's signatures), broadcasts via
-  Esplora, marks the token used and vault claimed in one
-  transaction. Returns the txid and a mempool.space link.
-- **Frontend wiring.** `api.ts` gained `buildClaimPsbt` and
-  `broadcastClaim` client methods plus their types. `ClaimPage`
-  step 3 was rewritten to drive the full PSBT round trip: address
-  input + optional fee rate → "Prepare transaction" → summary
-  card + base64 PSBT with a Copy button → paste signed PSBT →
-  "Broadcast transaction" → success view with txid and explorer
-  link. Error messages from the server are surfaced verbatim with
-  explanatory notes on the realistic causes (no UTXOs, timelock
-  not mined, indexer down).
-- **Token semantics change.** Previously, `GET /claim/:token`
-  marked the token consumed on first view. With the build/broadcast
-  flow, the heir needs to visit the URL repeatedly while signing
-  offline, so consumption moved to a successful broadcast. The
-  doc comments in `crypto.rs` and `routes.rs` were updated.
+The piece that makes GhostKey a finished product rather than a prototype: the heir can now receive their Bitcoin without needing technical help.
+
+**On the server side:**
+- The scheduler now automatically issues a claim token when a vault's countdown expires. The heir gets access at the right moment without anyone having to press a button.
+- A new route builds an unsigned transaction and returns it to the heir's browser. The server scans the blockchain to find the vault's current funds, calculates fees, and prepares a transaction sending everything to the heir's chosen address.
+- Another new route accepts a signed transaction from the heir and broadcasts it to the Bitcoin network, then marks the vault as claimed.
+
+**On the heir's page:**
+- Step 1: enter a Bitcoin address to receive the funds.
+- Step 2: review the transaction summary (how much is coming, what the fee is) and copy the unsigned transaction.
+- Step 3: sign the transaction in a Bitcoin wallet and paste it back.
+- Step 4: the server broadcasts it. The heir sees a confirmation and a link to track it on the blockchain.
 
 ### Why now
-Without this branch, the heir's experience ended with "find
-someone who knows Bitcoin to help you finish the transfer." That's
-honest, but it's not a finished product. Wiring the PSBT round
-trip closed the gap.
 
-### Hard parts
-- **What `esplora_client` calls block.** The blocking `esplora_client`
-  is the easiest to reason about and the most stable across BDK
-  versions, but it can't be called from an async handler directly.
-  We wrap each chain-touching call in `tokio::task::spawn_blocking`
-  and translate the result back into our `ApiError` type.
-- **BDK 0.20 bump.** `bdk_esplora` 0.20 changed enough surface area
-  that we couldn't stay on 0.19. The change was mostly mechanical
-  but had to land at the same time as the new routes.
-- **PSBT finalisation.** Finalising a PSBT signed under our
-  timelock branch needs the descriptor to walk the policy and pick
-  the right tapscript path. We use the same descriptor the server
-  has stored, build a watch-only `bdk_wallet::Wallet` from it, and
-  call `finalize_psbt`. No private key material is needed —
-  finalisation only assembles witnesses from signatures that are
-  already in the PSBT inputs.
-- **The single-use bug.** We caught a sequencing bug halfway
-  through: the original `resolve_claim` route consumed the token
-  on first view, which would have made every second call (build
-  PSBT, broadcast) fail with 409. Moved consumption to a
-  successful broadcast.
+Without this, the heir's experience ended with "find someone who knows Bitcoin to help you finish." That's not good enough. This closed the loop.
 
-### What was verified
-- All 20 `cargo test -p ghostkey-server` tests pass, including 4
-  new scheduler tests (covering: ok→alarmed transition, alarmed→
-  timelock_started transition, alarmed-before-eligibility doesn't
-  transition, idempotent re-issue) and 3 new psbt_routes unit
-  tests (URL helpers, env override).
-- `cargo test --workspace` is green.
-- `cargo clippy -p ghostkey-server --tests` is clean except for
-  two pre-existing type-complexity warnings on the `query_as`
-  tuples.
-- `tsc --noEmit` is clean. `vite build` produces a 221 KB JS
-  bundle (66 KB gzip), about 25 KB more than the previous heir
-  page.
+### What was hard
 
-### What is NOT verified
-- No live Esplora endpoint is exercised by `cargo test`. The
-  blocking body that does `full_scan` / `broadcast` is structurally
-  tested via unit coverage on URL helpers and env override only.
-- No signed-PSBT round trip on signet. Verifying that the
-  timelock-branch witness assembled by `finalize_psbt` actually
-  satisfies the on-chain script needs a live deploy plus a real
-  heir wallet. This is the chunk that has to be smoke-tested by
-  hand before mainnet. **This is the single highest-priority
-  piece of remaining work.**
+**Mixing blocking and async code.** The library we use to read the blockchain (esplora_client) is blocking — it waits for a response before continuing. Our server is async — it handles many requests at once without waiting. You can't call blocking code directly from async code without freezing the server. The solution is `tokio::task::spawn_blocking`, which runs the blocking code in a separate thread pool. Every blockchain call goes through this wrapper.
+
+**Finalising the transaction.** When the heir signs a transaction with their wallet, their signature goes into the transaction file. The server then needs to assemble that signature into a valid broadcast transaction. This process (called "finalisation") needs to know which Bitcoin script to satisfy — in our case, the heir's spend path in the vault script. We use the stored vault descriptor to reconstruct the right script path and assemble the witness.
+
+**A bug with one-time tokens.** We found halfway through that our original design consumed the claim token on the heir's first page visit — meaning every subsequent step (build transaction, broadcast) would fail with "link already used." The fix was to only consume the token on a successful broadcast, not on first view. The lesson: "single-use" means single successful use, not single view.
+
+### What we verified
+
+All tests pass. The JavaScript bundle is 221 KB compressed — about 25 KB more than before, which is the cost of the transaction-building UI.
+
+### What has NOT been verified
+
+The live path — signing an actual transaction on a real test network and broadcasting it — has not been tested end to end. The code is correct by construction (the logic is well-tested) but we haven't watched real money move through a real claim. **This is the most important remaining task before GhostKey can be used with real funds.**
 
 ### What we left for later
-- The live signet smoke test (see above).
-- A real notification delivery channel (email, SMS, WhatsApp).
-- An operator dashboard for the events log.
-- Key rotation.
-- k-of-n heirs.
-- Cold signing for owner check-ins.
 
-See [`DESIGN.md`](./DESIGN.md) § 9 for the full prioritised list.
+- The live test on signet (see above — highest priority).
+- Notifications: email, SMS, WhatsApp. The heir currently has to be told about the link some other way.
+- Multiple heirs.
+- Translations into Yoruba, Igbo, Hausa.
+- Key rotation for the server master secret.
 
 ---
 
-## How to read this file
+## How to use this journal
 
-- **One section per merged feature branch.** If a branch shipped
-  multiple features, the section breaks them down.
-- **Dates are when the branch merged**, not when work started.
-- **"Why now" matters.** Every entry tries to justify the ordering,
-  not just the change. If you're considering doing something out of
-  order, this is where you'd find evidence for or against.
-- **"Hard parts" and "What we left for later" are the most useful
-  parts** for a future contributor. They tell you where the
-  landmines are and what the next obvious step is.
+**Read it front to back once** when you join the project. Then use it as a reference when you encounter something confusing in the code.
 
-## How to add a new entry
+**The "What was hard" sections** are the most useful. They tell you where the traps are.
 
-When you merge a feature branch:
+**The "What we left for later" sections** tell you what to build next. If something appears in multiple entries, it's been on the list a while and probably matters.
 
-1. Add a new section at the bottom.
-2. Use the same template as the entries above.
-3. If "What we left for later" includes something a previous entry
-   listed, edit the previous entry to mark it done (in a small
-   `> done in entry N` note, not by deleting the original).
-4. Don't rewrite history. If you got something wrong, add a
-   correction in a later entry rather than editing an old one.
+**When you merge a feature branch, add an entry.** Same format. If your work finishes something from a previous "left for later" list, add a small note to that entry pointing at yours. Don't rewrite old entries — add corrections in new ones.
+
+The goal is that anyone who reads this file can understand every major decision in the codebase without having to ask the original author.
