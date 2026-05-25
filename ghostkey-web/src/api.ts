@@ -213,6 +213,52 @@ export interface BroadcastClaimResponse {
   explorer_url: string;
 }
 
+/**
+ * Returned by `GET /claim/:token/sealed-heir` for password-vault
+ * claims. The browser unwraps `heir_xprv_ct_b64` locally using a KEK
+ * derived from the raw claim token (HKDF-SHA256, same path the setup
+ * browser used to seal it). The server cannot open this blob — only
+ * the holder of the claim token can.
+ *
+ * Backed by
+ * `crates/ghostkey-server/src/psbt_routes.rs::SealedHeirView`.
+ */
+export interface SealedHeirView {
+  vault_id: string;
+  network: string;
+  timelock_blocks: number;
+  heir_xprv_ct_b64: string;
+  heir_xprv_nonce_b64: string;
+}
+
+/**
+ * One-shot heir claim: the browser ships the just-unwrapped heir
+ * account xprv over TLS along with the destination address. The
+ * server builds, signs, and broadcasts in a single function scope;
+ * the xprv is held in memory only, never written to disk or logs.
+ *
+ * Why ship the xprv at all? At the moment of this call the on-chain
+ * timelock has matured and the only key in scope is the heir's. An
+ * attacker who briefly compromises the server could only redirect
+ * funds to a Bitcoin address Bitcoin's UTXO set then records
+ * publicly — the same threat surface a hardware wallet signer has
+ * when its host machine is compromised. We accept that exposure in
+ * exchange for not shipping a Taproot script-path PSBT signer to the
+ * browser.
+ *
+ * Backed by
+ * `crates/ghostkey-server/src/psbt_routes.rs::HeirClaimRequest`.
+ */
+export interface HeirClaimRequest {
+  destination: string;
+  fee_rate_sat_per_vb?: number | null;
+  /** Heir account xprv at `m/86'/coin'/0'`, base58 (`tprv...` /
+   *  `xprv...`). The browser unwraps this from the sealed blob via
+   *  the URL-fragment claim token; the server uses it once and
+   *  discards. */
+  heir_xprv: string;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -356,6 +402,20 @@ export const api = {
   broadcastClaim: (token: string, req: BroadcastClaimRequest) =>
     request<BroadcastClaimResponse>(
       `/claim/${encodeURIComponent(token)}/broadcast`,
+      { method: "POST", body: JSON.stringify(req) },
+    ),
+  /** Password-vault flow: fetch the sealed heir xprv blob so the
+   *  browser can unwrap it locally. Returns 404 for unknown tokens,
+   *  409 if the token's already been used, 422 if this vault was
+   *  not created with a password (legacy vault). */
+  getSealedHeirXprv: (token: string) =>
+    request<SealedHeirView>(`/claim/${encodeURIComponent(token)}/sealed-heir`),
+  /** Password-vault flow: one-shot build + sign + broadcast. The
+   *  server uses the supplied heir_xprv in memory only and discards
+   *  it after the response is sent. */
+  heirClaim: (token: string, req: HeirClaimRequest) =>
+    request<BroadcastClaimResponse>(
+      `/claim/${encodeURIComponent(token)}/heir-claim`,
       { method: "POST", body: JSON.stringify(req) },
     ),
 };

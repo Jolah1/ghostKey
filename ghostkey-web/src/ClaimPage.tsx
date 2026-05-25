@@ -49,8 +49,10 @@ import {
   type BroadcastClaimResponse,
   type BuildClaimPsbtResponse,
   type ClaimView,
+  type SealedHeirView,
 } from "./api";
 import { countdown, parseRfc } from "./time";
+import { b64decode, unsealHeirXprv } from "./crypto/sealing";
 
 type State =
   | { kind: "loading" }
@@ -257,8 +259,350 @@ function AlreadyClaimedState({ view }: { view: ClaimView }) {
 /* ----------------------------- Claimable ---------------------------------- */
 
 /**
- * The happy path. The heir has the link, the timer has run, the funds
- * can be moved. We walk them through:
+ * Two distinct claim flows live behind this entry point:
+ *
+ *   1. Password-vault flow (the default for vaults set up after the
+ *      crypto redesign): the heir's xprv is sealed server-side under
+ *      HKDF(claim_token). The browser reads the token from the URL
+ *      fragment, fetches the sealed blob via /claim/:token/sealed-heir,
+ *      unwraps locally, and POSTs to /claim/:token/heir-claim, which
+ *      builds + signs + broadcasts in one shot. No wallet install
+ *      required on the heir's side.
+ *
+ *   2. Legacy PSBT-handoff flow (for vaults created before the
+ *      redesign): the server cannot produce a sealed-heir view (the
+ *      column is NULL), so /sealed-heir returns 422 and we fall back
+ *      to the original "ask the server for an unsigned PSBT, paste
+ *      it into Sparrow, paste the signed PSBT back" path. The heir
+ *      needs a real Bitcoin wallet for this.
+ *
+ * Detection is a single GET. We surface a small spinner during the
+ * probe and pick the sub-flow once we know.
+ */
+function ClaimableState({
+  view,
+  token,
+}: {
+  view: ClaimView;
+  token: string;
+}) {
+  const [flow, setFlow] = useState<
+    | { kind: "probing" }
+    | { kind: "password-vault"; sealed: SealedHeirView }
+    | { kind: "manual-psbt" }
+    | { kind: "probe-error"; message: string }
+  >({ kind: "probing" });
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const sealed = await api.getSealedHeirXprv(token);
+        if (!cancelled) setFlow({ kind: "password-vault", sealed });
+      } catch (e) {
+        if (cancelled) return;
+        if (e instanceof ApiError) {
+          // 422 = no sealed blob on this row = legacy vault. The
+          // legacy two-step flow still works for it.
+          if (e.status === 422) {
+            setFlow({ kind: "manual-psbt" });
+            return;
+          }
+          // 404 / 409 should already have been handled by the outer
+          // Resolved switch, but just in case we slip through, bubble.
+          setFlow({ kind: "probe-error", message: e.message });
+          return;
+        }
+        setFlow({
+          kind: "probe-error",
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  if (flow.kind === "probing") {
+    return <LoadingState />;
+  }
+  if (flow.kind === "probe-error") {
+    return (
+      <section>
+        <Eyebrow>Hold on</Eyebrow>
+        <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
+          We hit a snag opening your link
+        </h1>
+        <p className="mt-3 text-muted">
+          Try again in a moment. If this keeps happening, contact the person
+          who set this up.
+        </p>
+        <p className="mt-1 font-mono text-xs text-dim">{flow.message}</p>
+      </section>
+    );
+  }
+  if (flow.kind === "password-vault") {
+    return <PasswordVaultClaim view={view} token={token} sealed={flow.sealed} />;
+  }
+  return <ManualPsbtClaim view={view} token={token} />;
+}
+
+/* ------------------ Password-vault claim (one-shot) ------------------------ */
+
+/**
+ * The happy path for vaults set up via the password-vault flow.
+ *
+ * Flow:
+ *   1. Heir picks (or grabs) a Bitcoin address where the funds should
+ *      land. Any wallet that can receive will do — no PSBT signing,
+ *      no advanced features. Wallet of Satoshi works fine here, where
+ *      it could not in the legacy path.
+ *   2. On submit, we:
+ *        a. b64decode(token) -> 32 raw token bytes
+ *        b. unsealHeirXprv(rawBytes, sealedBlob) -> heir account xprv
+ *           (pure local; KEK derived from HKDF-SHA256 of the token)
+ *        c. POST /claim/:token/heir-claim with { destination, heir_xprv }
+ *           — the server builds, signs, broadcasts; the xprv is held
+ *           in memory only for that single call.
+ *        d. Wipe our local copy of the unwrapped xprv, regardless of
+ *           outcome.
+ *
+ * What if step (c) fails? The atomic claim-token consumption on the
+ * server is rolled back on broadcast failure (release_claim_token),
+ * so the heir can retry. We surface the server's error verbatim
+ * because the realistic causes (no UTXOs, timelock not yet matured,
+ * Esplora down) all need a Bitcoin-literate person to read.
+ */
+function PasswordVaultClaim({
+  view,
+  token,
+  sealed,
+}: {
+  view: ClaimView;
+  token: string;
+  sealed: SealedHeirView;
+}) {
+  const [hasWallet, setHasWallet] = useState<boolean | null>(null);
+  const [address, setAddress] = useState("");
+  const [feeRate, setFeeRate] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState<BroadcastClaimResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const heir = view.heir_display_name?.trim() || "you";
+  const validAddr = looksLikeBitcoinAddress(address);
+  const feeRateNum = parseFeeRate(feeRate);
+  const feeRateValid = feeRate.trim() === "" || feeRateNum !== null;
+
+  const onSubmit = useCallback(async () => {
+    if (!validAddr || !feeRateValid) return;
+    setSubmitting(true);
+    setError(null);
+
+    // Holds the unwrapped xprv only for the duration of this call.
+    // JS strings can't be securely wiped (V8 may have copied), but we
+    // still null the reference to encourage GC. The xprv leaves this
+    // scope only as part of the POST body, which fetch() owns and
+    // garbage-collects on its own schedule.
+    let heirXprv: string | null = null;
+    try {
+      const rawToken = b64decode(token);
+      heirXprv = unsealHeirXprv(rawToken, {
+        v: 1,
+        ct: sealed.heir_xprv_ct_b64,
+        nonce: sealed.heir_xprv_nonce_b64,
+      });
+      const resp = await api.heirClaim(token, {
+        destination: address.trim(),
+        fee_rate_sat_per_vb: feeRateNum,
+        heir_xprv: heirXprv,
+      });
+      setResult(resp);
+    } catch (e) {
+      // unsealHeirXprv throws on a Poly1305 tag mismatch — that
+      // would mean the URL fragment doesn't decode to the right
+      // 32 bytes (corrupted link).
+      const msg =
+        e instanceof ApiError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : String(e);
+      const isAuthTagFail = /poly1305|tag|invalid|decryp/i.test(msg);
+      setError(
+        isAuthTagFail
+          ? "Your link is incomplete or has been altered. Ask the sender to re-share it."
+          : msg,
+      );
+    } finally {
+      heirXprv = null;
+      setSubmitting(false);
+    }
+  }, [address, feeRateNum, feeRateValid, sealed, token, validAddr]);
+
+  if (result) {
+    return (
+      <section>
+        <p className="eyebrow">Someone left you something</p>
+        <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-5xl">
+          Hello {heir}.
+        </h1>
+        <BroadcastSuccess result={result} />
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <p className="eyebrow">Someone left you something</p>
+      <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-5xl">
+        Hello {heir}.
+      </h1>
+      <p className="mt-4 text-base text-body md:text-lg">
+        Someone you knew left you Bitcoin. They set up GhostKey so that if they
+        ever stopped checking in, the link would reach you. That's what
+        happened. This page is for you.
+      </p>
+
+      <div className="mt-8 card-flat p-5">
+        <p className="text-[11px] uppercase tracking-wider text-dim">
+          What's being passed on
+        </p>
+        <p className="mt-2 font-display text-xl font-bold tracking-tight">
+          {view.label || "A Bitcoin inheritance"}
+        </p>
+        <p className="mt-1 text-xs text-muted">
+          On the {sealed.network === "bitcoin" ? "Bitcoin network" : `${sealed.network} network`}.
+        </p>
+      </div>
+
+      <div className="mt-10">
+        <p className="text-[11px] uppercase tracking-wider text-dim">Step 1</p>
+        <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
+          Do you have a Bitcoin wallet?
+        </h2>
+        <p className="mt-2 text-sm text-soft">
+          A Bitcoin wallet is an app where you can receive Bitcoin. You only
+          need one that can <em>receive</em> — you don't need anything fancy.
+          Wallet of Satoshi, Blink, Cake Wallet all work.
+        </p>
+
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <Tile
+            selected={hasWallet === true}
+            onClick={() => setHasWallet(true)}
+            title="Yes, I do"
+            sub="Skip to step 2"
+          />
+          <Tile
+            selected={hasWallet === false}
+            onClick={() => setHasWallet(false)}
+            title="No, not yet"
+            sub="We'll point you somewhere"
+          />
+        </div>
+
+        {hasWallet === false && <WalletGuide />}
+      </div>
+
+      {hasWallet !== null && (
+        <div className="mt-10">
+          <p className="text-[11px] uppercase tracking-wider text-dim">Step 2</p>
+          <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
+            Where should the Bitcoin go?
+          </h2>
+          <p className="mt-2 text-sm text-soft">
+            Open your wallet. Tap <strong>Receive</strong>. Copy the long
+            address that starts with <code className="font-mono">bc1</code>,{" "}
+            <code className="font-mono">tb1</code>, or{" "}
+            <code className="font-mono">3</code>. Paste it below.
+          </p>
+
+          <div className="mt-4">
+            <Field
+              label="Your Bitcoin address"
+              hint={
+                address && !validAddr
+                  ? "That doesn't look like a Bitcoin address. Check the start."
+                  : undefined
+              }
+            >
+              <textarea
+                rows={3}
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+                placeholder="bc1q..."
+                spellCheck={false}
+                autoComplete="off"
+                className="textarea"
+                disabled={submitting}
+              />
+            </Field>
+          </div>
+
+          <div className="mt-4">
+            <Field
+              label="Fee rate in sat/vB (optional)"
+              hint={
+                feeRate.trim() && !feeRateValid
+                  ? "Enter a whole number between 1 and 1000, or leave blank."
+                  : "Leave blank to use 2 sat/vB. Raise it if you need the transaction to confirm faster."
+              }
+            >
+              <input
+                type="text"
+                inputMode="numeric"
+                value={feeRate}
+                onChange={(e) => setFeeRate(e.target.value)}
+                placeholder="2"
+                className="input"
+                disabled={submitting}
+              />
+            </Field>
+          </div>
+
+          <div className="mt-4">
+            <Button
+              onClick={() => void onSubmit()}
+              disabled={!validAddr || !feeRateValid || submitting}
+              size="lg"
+            >
+              {submitting ? "Sending Bitcoin…" : "Send the Bitcoin"}
+            </Button>
+          </div>
+
+          <p className="mt-3 text-xs text-muted">
+            We'll prepare and broadcast the transaction for you. You don't
+            need to sign anything in another app.
+          </p>
+
+          {error && (
+            <div className="mt-4">
+              <InlineAlert tone="alarm">
+                We couldn't complete the transfer. The server said:{" "}
+                <span className="font-mono text-xs">{error}</span>
+                <br />
+                <span className="text-xs text-muted">
+                  Common causes: the timelock hasn't been mined yet, no funds
+                  are visible at the vault addresses, or the chain indexer is
+                  unreachable. Your link is still valid — try again in a few
+                  minutes.
+                </span>
+              </InlineAlert>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/* ------------------ Manual PSBT-handoff flow (legacy) --------------------- */
+
+/**
+ * The original heir-claim path. The heir has the link, the timer has
+ * run, the funds can be moved. We walk them through:
  *
  *   1. Make sure they have a Bitcoin wallet.
  *   2. Capture the address they want the funds to land at.
@@ -274,7 +618,7 @@ function AlreadyClaimedState({ view }: { view: ClaimView }) {
  * "esplora: connection refused") all need a Bitcoin-literate human to
  * interpret. Sugaring those is misleading.
  */
-function ClaimableState({
+function ManualPsbtClaim({
   view,
   token,
 }: {
