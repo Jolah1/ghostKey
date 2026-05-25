@@ -79,9 +79,20 @@ async fn transition_ok_to_alarmed(state: &AppState, now_iso: &str) -> anyhow::Re
 /// hash for some reason won't cause a token reset; the operator can
 /// explicitly call POST /vaults/:id/issue-claim to force re-issue.
 async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> anyhow::Result<()> {
-    // We pull the heir contact fields (encrypted) and label in the
-    // same query so we can enqueue a notification without a second
-    // round-trip per row.
+    // Two distinct "due" populations on every tick:
+    //
+    //   - Legacy vaults: no claim_token_hash, no claim_token_at_rest_b64.
+    //     Mint a fresh token, store its hash, deliver the raw value.
+    //
+    //   - Password vaults: hash + raw token were both written at
+    //     creation time (see CreateVaultFromXpubRequest.sealed). The
+    //     heir's xprv ciphertext is bound to that *specific* token via
+    //     HKDF, so re-issuing would invalidate the seal. We must reuse
+    //     the at-rest value as-is.
+    //
+    // We pull both sets in one query and branch per row. The heir
+    // contact (encrypted) and label come along so we can enqueue
+    // notifications without a second round trip.
     let due = sqlx::query_as::<
         _,
         (
@@ -89,45 +100,84 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
             Option<String>, // label
             Option<String>, // heir_contact_ciphertext
             Option<String>, // heir_contact_nonce
+            Option<String>, // claim_token_at_rest_b64 (password vaults only)
+            Option<String>, // claim_token_hash (already set on password vaults)
         ),
     >(
         r#"SELECT id, label,
-                  heir_contact_ciphertext, heir_contact_nonce
+                  heir_contact_ciphertext, heir_contact_nonce,
+                  claim_token_at_rest_b64, claim_token_hash
              FROM vaults
             WHERE status = 'alarmed'
-              AND claim_token_hash IS NULL
               AND claim_eligible_at IS NOT NULL
-              AND claim_eligible_at <= ?"#,
+              AND claim_eligible_at <= ?
+              AND (
+                    -- Legacy: no token has been issued yet.
+                    claim_token_hash IS NULL
+                    OR
+                    -- Password vault: token was minted at creation,
+                    -- but the status hasn't yet been advanced.
+                    claim_token_at_rest_b64 IS NOT NULL
+                  )"#,
     )
     .bind(now_iso)
     .fetch_all(&state.db)
     .await?;
 
-    for (id, label, ct, nn) in due {
-        let token = issue_claim_token();
+    for (id, label, ct, nn, at_rest, existing_hash) in due {
+        // Decide whether this is a password vault or a legacy row.
+        // For password vaults, reuse the existing token; for legacy,
+        // mint a fresh one.
+        let (raw_token, token_hash, reused) =
+            if let (Some(raw), Some(hash)) = (at_rest.as_ref(), existing_hash.as_ref()) {
+                (raw.clone(), hash.clone(), true)
+            } else {
+                let t = issue_claim_token();
+                (t.token, t.hash_hex, false)
+            };
+
         tracing::warn!(
             vault_id = %id,
-            "alarmed past eligibility; transitioning to timelock_started + issuing claim token"
+            reused_token = reused,
+            "alarmed past eligibility; transitioning to timelock_started"
         );
 
-        // Wrap the two writes in a transaction so an observer never
-        // sees a vault in `timelock_started` without a stored hash.
+        // Wrap the status update in a transaction. For legacy rows we
+        // also bind the freshly-minted hash; for password vaults the
+        // hash is already on disk and we only advance the status +
+        // issued_at timestamp. An observer must never see a row in
+        // `timelock_started` without a matching `claim_token_hash`.
         let mut tx = state.db.begin().await?;
-        sqlx::query(
-            r#"UPDATE vaults
-                  SET status                = 'timelock_started',
-                      claim_token_hash      = ?,
-                      claim_token_issued_at = ?,
-                      claim_token_used_at   = NULL
-                WHERE id = ?
-                  AND status = 'alarmed'
-                  AND claim_token_hash IS NULL"#,
-        )
-        .bind(&token.hash_hex)
-        .bind(now_iso)
-        .bind(&id)
-        .execute(&mut *tx)
-        .await?;
+        if reused {
+            sqlx::query(
+                r#"UPDATE vaults
+                      SET status                = 'timelock_started',
+                          claim_token_issued_at = ?,
+                          claim_token_used_at   = NULL
+                    WHERE id = ?
+                      AND status = 'alarmed'"#,
+            )
+            .bind(now_iso)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+        } else {
+            sqlx::query(
+                r#"UPDATE vaults
+                      SET status                = 'timelock_started',
+                          claim_token_hash      = ?,
+                          claim_token_issued_at = ?,
+                          claim_token_used_at   = NULL
+                    WHERE id = ?
+                      AND status = 'alarmed'
+                      AND claim_token_hash IS NULL"#,
+            )
+            .bind(&token_hash)
+            .bind(now_iso)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+        }
         tx.commit().await?;
 
         // Only the SHA-256 hash of the token is recorded here. The
@@ -141,8 +191,12 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
             &id,
             "claim_issued",
             Some(serde_json::json!({
-                "token_hash": token.hash_hex,
-                "reason": "scheduler:eligibility_reached",
+                "token_hash": token_hash,
+                "reason": if reused {
+                    "scheduler:eligibility_reached:reused_password_vault_token"
+                } else {
+                    "scheduler:eligibility_reached"
+                },
             })),
         )
         .await?;
@@ -159,7 +213,7 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
             label.as_deref(),
             ct.as_deref(),
             nn.as_deref(),
-            &token.token,
+            &raw_token,
         )
         .await
         {
@@ -443,6 +497,71 @@ mod tests {
         assert!(
             !detail.contains("\"token\""),
             "event detail must not contain a raw 'token' field; found: {detail}"
+        );
+    }
+
+    /// Password vaults pre-seed `claim_token_hash` AND `claim_token_at_rest_b64`
+    /// at creation time, because the heir's xprv ciphertext is sealed
+    /// under a KEK derived from that exact token (HKDF-SHA256). When
+    /// the scheduler fires, it must reuse the stored token rather than
+    /// re-minting — otherwise the heir's URL fragment would no longer
+    /// unwrap the sealed blob.
+    #[tokio::test]
+    async fn password_vault_reuses_at_rest_token_on_trigger() {
+        let pool = fresh_db().await;
+        let state = AppState { db: pool.clone() };
+        insert_vault(
+            &pool,
+            "vault-pw",
+            "alarmed",
+            "2026-04-01T00:00:00Z",
+            Some("2026-04-08T00:00:00Z"),
+        )
+        .await;
+        // Simulate the create-time write: both hash + raw token on disk.
+        let stored_hash = "deadbeef".repeat(8); // 64 hex chars
+        let stored_raw = "raw-token-shipped-by-browser-at-setup";
+        sqlx::query(
+            r#"UPDATE vaults
+                  SET claim_token_hash       = ?,
+                      claim_token_at_rest_b64 = ?
+                WHERE id = ?"#,
+        )
+        .bind(&stored_hash)
+        .bind(stored_raw)
+        .bind("vault-pw")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        tick_once(&state).await.expect("tick");
+
+        let (status, hash) = read_status_and_token_hash(&pool, "vault-pw").await;
+        assert_eq!(
+            status, "timelock_started",
+            "password vaults must advance to timelock_started"
+        );
+        assert_eq!(
+            hash.as_deref(),
+            Some(stored_hash.as_str()),
+            "claim_token_hash must NOT be overwritten for password vaults"
+        );
+
+        // The reused reason should appear in the event detail so
+        // operators can distinguish password-vault triggers from
+        // legacy ones.
+        let detail: Option<String> = sqlx::query_scalar(
+            "SELECT detail FROM events WHERE vault_id = ? AND kind = 'claim_issued'",
+        )
+        .bind("vault-pw")
+        .fetch_optional(&pool)
+        .await
+        .expect("query")
+        .flatten();
+        let detail = detail.expect("claim_issued event must exist");
+        assert!(
+            detail.contains("reused_password_vault_token"),
+            "event detail should record the reused-token reason; got: {detail}"
         );
     }
 }
