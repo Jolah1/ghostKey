@@ -111,7 +111,13 @@ export function b64decode(s: string): Uint8Array {
 
 /* ---------------------- core seal/open ----------------------------- */
 
-function sealWithKey(key: Uint8Array, plaintext: Uint8Array): SealedBlob {
+/**
+ * Seal arbitrary bytes under a 32-byte key, returning the standard
+ * `SealedBlob` wire format. Exported so callers (e.g. the setup portal)
+ * can keep a KEK in memory across multiple seals without having to
+ * re-derive it.
+ */
+export function sealWithKey(key: Uint8Array, plaintext: Uint8Array): SealedBlob {
   if (key.length !== KEK_LEN) {
     throw new Error(`KEK must be ${KEK_LEN} bytes, got ${key.length}`);
   }
@@ -202,9 +208,23 @@ export interface SealAllInput {
   ownerToken: string;
   claimTokenRaw: Uint8Array;
   onProgress?: (pct: number) => void;
+  /**
+   * When true, the returned object carries `_owner_kek` — a 32-byte
+   * scratch copy of the password-derived KEK. Callers that need to
+   * seal more data with the same key (e.g. re-sealing the real
+   * owner_token after vault creation) should pass `true` and then
+   * `wipe()` the field as soon as they're done with it.
+   *
+   * Default false. The internal KEK is wiped before return when this
+   * is false so an accidental retention of the result object cannot
+   * leak the key.
+   */
+  keepOwnerKek?: boolean;
 }
 
-export async function sealVaultSecrets(input: SealAllInput): Promise<SealedVaultSecrets> {
+export async function sealVaultSecrets(
+  input: SealAllInput,
+): Promise<SealedVaultSecrets & { _owner_kek?: Uint8Array }> {
   const enc = new TextEncoder();
   const salt = randomBytes(16);
   const kek = await deriveOwnerKek(input.password, salt, {
@@ -216,11 +236,10 @@ export async function sealVaultSecrets(input: SealAllInput): Promise<SealedVault
   const owner_token = sealWithKey(kek, enc.encode(input.ownerToken));
   const heir_xprv = sealWithKey(claimKek, enc.encode(input.heirXprv));
 
-  // Wipe the KEKs as soon as we're done with them. Best-effort.
-  kek.fill(0);
+  // Always wipe the claim KEK — caller never needs it again.
   claimKek.fill(0);
 
-  return {
+  const out: SealedVaultSecrets & { _owner_kek?: Uint8Array } = {
     password_salt: b64encode(salt),
     password_kdf_mem_kib: ARGON_MEM_KIB,
     password_kdf_iters: ARGON_ITERS,
@@ -228,6 +247,16 @@ export async function sealVaultSecrets(input: SealAllInput): Promise<SealedVault
     owner_token,
     heir_xprv,
   };
+
+  if (input.keepOwnerKek) {
+    // Hand the caller a fresh copy so they own the buffer and can
+    // wipe it on their schedule.
+    out._owner_kek = new Uint8Array(kek);
+  }
+  // Wipe our copy unconditionally.
+  kek.fill(0);
+
+  return out;
 }
 
 export interface UnsealOwnerInput {

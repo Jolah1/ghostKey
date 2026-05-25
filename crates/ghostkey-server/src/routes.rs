@@ -47,12 +47,19 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/vaults/:id", get(get_vault))
         .route("/vaults/:id/address", get(get_vault_address))
         .route("/vaults/:id/sealed-blobs", get(get_sealed_blobs))
+        .route("/vaults/:id/seal-owner-token", post(seal_owner_token))
         .route("/vaults/:id/checkin", post(checkin))
         .route("/vaults/:id/events", get(list_events))
         .route("/vaults/:id/issue-claim", post(issue_claim))
         .route("/claim/:token", get(resolve_claim))
-        .route("/claim/:token/sealed-heir", get(crate::psbt_routes::get_sealed_heir_xprv))
-        .route("/claim/:token/heir-claim", post(crate::psbt_routes::heir_claim))
+        .route(
+            "/claim/:token/sealed-heir",
+            get(crate::psbt_routes::get_sealed_heir_xprv),
+        )
+        .route(
+            "/claim/:token/heir-claim",
+            post(crate::psbt_routes::heir_claim),
+        )
         .route(
             "/claim/:token/build-psbt",
             post(crate::psbt_routes::build_claim_psbt),
@@ -1190,7 +1197,9 @@ async fn get_sealed_blobs(
 
     let (salt, mem, iters, ox_ct, ox_n, ot_ct, ot_n) =
         match (row.1, row.2, row.3, row.4, row.5, row.6, row.7) {
-            (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f), Some(g)) => (a, b, c, d, e, f, g),
+            (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f), Some(g)) => {
+                (a, b, c, d, e, f, g)
+            }
             _ => {
                 return Err(ApiError::Validation(
                     "this vault was not created with a password; cross-device recovery unavailable"
@@ -1211,6 +1220,88 @@ async fn get_sealed_blobs(
         network: row.8,
         timelock_blocks: row.9,
     }))
+}
+
+/* -------------------------------------------------------------------------- *
+ *  Re-seal the owner token.                                                  *
+ *                                                                            *
+ *  The password-vault setup flow has a chicken-and-egg: the browser wants    *
+ *  to ship a sealed owner_token to the server *during* vault creation, but   *
+ *  the server only mints the real owner_token in its create response. The    *
+ *  browser solves this by shipping a placeholder ciphertext during creation  *
+ *  and immediately calling this endpoint with the *real* owner-token         *
+ *  ciphertext once it has it.                                                *
+ *                                                                            *
+ *  Authentication is the freshly-issued owner_token itself (Bearer). That    *
+ *  proves the caller is the same browser that just received the token —     *
+ *  no other party can ever overwrite the sealed value.                       *
+ *                                                                            *
+ *  Idempotent in spirit: callers can re-seal at any point in the vault's     *
+ *  life (e.g. to rotate KDF params). We do not version the field; later     *
+ *  writes simply replace.                                                    *
+ * -------------------------------------------------------------------------- */
+
+#[derive(Debug, Deserialize)]
+pub struct SealOwnerTokenRequest {
+    pub owner_token_ct_b64: String,
+    pub owner_token_nonce_b64: String,
+}
+
+async fn seal_owner_token(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SealOwnerTokenRequest>,
+) -> Result<StatusCode, ApiError> {
+    // Light shape validation. We won't open the blob (that needs the
+    // password the server doesn't have), but we do reject obviously
+    // bogus payloads so a typo client doesn't poison the column.
+    if req.owner_token_ct_b64.is_empty() || req.owner_token_nonce_b64.is_empty() {
+        return Err(ApiError::Validation(
+            "owner_token_ct_b64 and owner_token_nonce_b64 must be non-empty".into(),
+        ));
+    }
+    // 24-byte XChaCha20-Poly1305 nonce, base64-encoded = 32 chars.
+    if req.owner_token_nonce_b64.len() != 32 {
+        return Err(ApiError::Validation(
+            "owner_token_nonce_b64 must be 32 base64 chars (24 raw bytes)".into(),
+        ));
+    }
+
+    // Only allow re-sealing on vaults that were created with the
+    // password flow. Legacy vaults have all sealed_* columns NULL and
+    // accepting a write here would leave the row in a half-sealed
+    // state.
+    let exists: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT password_salt_b64 FROM vaults WHERE id = ?")
+            .bind(&auth.vault_id)
+            .fetch_optional(&state.db)
+            .await?;
+    match exists {
+        Some((Some(_),)) => {}
+        Some((None,)) => {
+            return Err(ApiError::Validation(
+                "this vault was not created with a password; cannot seal owner_token".into(),
+            ));
+        }
+        None => return Err(ApiError::NotFound),
+    }
+
+    sqlx::query(
+        r#"UPDATE vaults
+              SET owner_token_sealed_ct_b64 = ?,
+                  owner_token_sealed_nonce  = ?
+            WHERE id = ?"#,
+    )
+    .bind(&req.owner_token_ct_b64)
+    .bind(&req.owner_token_nonce_b64)
+    .bind(&auth.vault_id)
+    .execute(&state.db)
+    .await?;
+
+    // No event recorded — re-sealing is a routine, expected step in
+    // the setup flow and we don't want to pollute the timeline.
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, Serialize)]

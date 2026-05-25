@@ -665,56 +665,58 @@ pub async fn heir_claim(
     let network = row.network;
 
     let vault_id = row.id.clone();
-    let result = tokio::task::spawn_blocking(move || -> Result<(bitcoin::Txid, u64, u64), BlockingErr> {
-        let mut wallet = ghostkey_core::wallet::build_signing_from_account(&vault, &heir_xprv)
-            .map_err(|e| BlockingErr::Vault(e.to_string()))?;
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<(bitcoin::Txid, u64, u64), BlockingErr> {
+            let mut wallet = ghostkey_core::wallet::build_signing_from_account(&vault, &heir_xprv)
+                .map_err(|e| BlockingErr::Vault(e.to_string()))?;
 
-        let client = esplora_client::Builder::new(&url).build_blocking();
-        let req = wallet.start_full_scan();
-        let update = client
-            .full_scan(req, 5, 1)
-            .map_err(|e| BlockingErr::Esplora(format!("full_scan: {e}")))?;
-        wallet
-            .apply_update(update)
-            .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
+            let client = esplora_client::Builder::new(&url).build_blocking();
+            let req = wallet.start_full_scan();
+            let update = client
+                .full_scan(req, 5, 1)
+                .map_err(|e| BlockingErr::Esplora(format!("full_scan: {e}")))?;
+            wallet
+                .apply_update(update)
+                .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
 
-        let total = wallet.balance().total().to_sat();
-        if total == 0 {
-            return Err(BlockingErr::NoUtxos);
-        }
-
-        let mut built = ghostkey_core::psbt::build_heir_claim(&mut wallet, &vault, &dest, fee_rate)
-            .map_err(|e| BlockingErr::Build(e.to_string()))?;
-        if !built.finalized {
-            // Try one more sign pass with SignOptions tuned for
-            // script-path Taproot. BDK occasionally returns
-            // finalized=false on the first call when CSV gating
-            // requires a specific nSequence already on the PSBT.
-            let _ = wallet
-                .sign(&mut built.psbt, SignOptions::default())
-                .map_err(|e| BlockingErr::Build(format!("re-sign: {e}")))?;
-            let fin = wallet
-                .finalize_psbt(&mut built.psbt, SignOptions::default())
-                .map_err(|e| BlockingErr::Build(format!("finalize: {e}")))?;
-            if !fin {
-                return Err(BlockingErr::Build(
-                    "PSBT could not be finalised; the timelock may not have matured yet".into(),
-                ));
+            let total = wallet.balance().total().to_sat();
+            if total == 0 {
+                return Err(BlockingErr::NoUtxos);
             }
-        }
-        let tx = built
-            .psbt
-            .extract_tx()
-            .map_err(|e| BlockingErr::Build(format!("extract_tx: {e}")))?;
-        client
-            .broadcast(&tx)
-            .map_err(|e| BlockingErr::Esplora(format!("broadcast: {e}")))?;
-        let txid = tx.compute_txid();
-        let out_sats: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
-        let fee = total.saturating_sub(out_sats);
-        Ok((txid, total, fee))
-    })
-    .await;
+
+            let mut built =
+                ghostkey_core::psbt::build_heir_claim(&mut wallet, &vault, &dest, fee_rate)
+                    .map_err(|e| BlockingErr::Build(e.to_string()))?;
+            if !built.finalized {
+                // Try one more sign pass with SignOptions tuned for
+                // script-path Taproot. BDK occasionally returns
+                // finalized=false on the first call when CSV gating
+                // requires a specific nSequence already on the PSBT.
+                let _ = wallet
+                    .sign(&mut built.psbt, SignOptions::default())
+                    .map_err(|e| BlockingErr::Build(format!("re-sign: {e}")))?;
+                let fin = wallet
+                    .finalize_psbt(&mut built.psbt, SignOptions::default())
+                    .map_err(|e| BlockingErr::Build(format!("finalize: {e}")))?;
+                if !fin {
+                    return Err(BlockingErr::Build(
+                        "PSBT could not be finalised; the timelock may not have matured yet".into(),
+                    ));
+                }
+            }
+            let tx = built
+                .psbt
+                .extract_tx()
+                .map_err(|e| BlockingErr::Build(format!("extract_tx: {e}")))?;
+            client
+                .broadcast(&tx)
+                .map_err(|e| BlockingErr::Esplora(format!("broadcast: {e}")))?;
+            let txid = tx.compute_txid();
+            let out_sats: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
+            let fee = total.saturating_sub(out_sats);
+            Ok((txid, total, fee))
+        })
+        .await;
 
     let (txid, total_in, fee) = match result {
         Ok(Ok(v)) => v,
