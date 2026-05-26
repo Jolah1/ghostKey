@@ -75,27 +75,23 @@ jobs:
   audit:
     name: cargo audit
     runs-on: ubuntu-latest
-    # The audit job uses rustsec/audit-check, which posts findings as a
-    # GitHub Check annotation on the PR / commit. We need `checks: write`
-    # so it can attach those annotations; `contents: read` is the bare
-    # minimum to clone the repo.
     permissions:
       contents: read
-      checks: write
-    # `continue-on-error: true` keeps the audit job from blocking a PR
-    # merge on a finding we haven't yet decided how to handle. The job
-    # still surfaces a red X on the commit so it can't be missed; it
-    # just doesn't gate the merge button. Tighten to `false` once the
-    # audit findings have stabilised in our ignore list.
+    # Findings shouldn't block PRs while the ignore list is calibrating;
+    # the job still surfaces a red X on the commit. Tighten to `false`
+    # once we're confident the ignore list is stable.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      # The action's `ignore` input is a comma-separated string. We DON'T
-      # rely on .cargo/audit.toml here because this specific GitHub
-      # Action doesn't read it — only the local `cargo audit` CLI does.
-      # The two ignore lists are intentionally kept in sync; see
-      # SECURITY.md for the per-advisory reasoning.
-      - uses: rustsec/audit-check@v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          ignore: "RUSTSEC-2023-0071,RUSTSEC-2026-0098,RUSTSEC-2026-0099,RUSTSEC-2026-0104,RUSTSEC-2025-0134"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # We run the upstream `cargo-audit` CLI directly rather than a
+      # third-party GitHub Action wrapper. Two wins:
+      #   (a) It reads .cargo/audit.toml, so the ignore list lives in
+      #       exactly one place (the toml file) instead of being
+      #       duplicated in YAML.
+      #   (b) No dependency on the rustsec/audit-check action being
+      #       downloadable from GitHub's CDN. We hit
+      #       `An action could not be found at the URI ...` once already.
+      - run: cargo install --locked cargo-audit
+      - run: cargo audit

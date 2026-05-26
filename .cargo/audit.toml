@@ -6,12 +6,9 @@
 # future maintainer can revisit the decision when upstream catches up.
 #
 # Scope:
-#   This file is read by the local `cargo audit` CLI. The CI workflow
-#   uses `rustsec/audit-check@v2.0.0`, which does NOT read this file —
-#   it takes a comma-separated `ignore:` input on the action instead.
-#   The two ignore lists are kept in sync by hand; when adding or
-#   removing an advisory here, also update
-#   `.github/workflows/rust.yml::jobs.audit.steps[1].with.ignore`.
+#   This file is read by `cargo audit` (both locally and in CI). The CI
+#   workflow installs `cargo-audit` and invokes the same CLI we use
+#   locally, so adding an `id` here is the single source of truth.
 
 [advisories]
 ignore = [
