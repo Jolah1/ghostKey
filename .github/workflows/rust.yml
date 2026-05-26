@@ -83,15 +83,24 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      # We run the upstream `cargo-audit` CLI directly rather than a
-      # third-party GitHub Action wrapper. Two wins:
-      #   (a) It reads .cargo/audit.toml, so the ignore list lives in
-      #       exactly one place (the toml file) instead of being
-      #       duplicated in YAML.
-      #   (b) No dependency on the rustsec/audit-check action being
-      #       downloadable from GitHub's CDN. We hit
-      #       `An action could not be found at the URI ...` once already.
-      - run: cargo install --locked cargo-audit
+      # We deliberately do NOT use dtolnay/rust-toolchain here, even
+      # though the build/test/clippy/fmt jobs do. Two reasons:
+      #   (a) The GitHub-hosted ubuntu-latest runner ships with a recent
+      #       stable Rust + cargo pre-installed, which is plenty for
+      #       running cargo-audit (audit doesn't compile our crates).
+      #   (b) `dtolnay/rust-toolchain` pulls from codeload.github.com,
+      #       which has had multiple outages serving its tarball during
+      #       the past 48 hours. The audit job is the easiest one to
+      #       harden against that infrastructure, so it stays online
+      #       even when the rest of the workflow can't bootstrap.
+      #
+      # We cache ~/.cargo/bin so the cargo-audit install is a no-op on
+      # warm runs. actions/cache is first-party and uses GitHub's
+      # internal cache service (not codeload), so it doesn't share the
+      # same failure mode.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-bin-${{ runner.os }}
+      - run: which cargo-audit || cargo install --locked cargo-audit
       - run: cargo audit
