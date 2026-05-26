@@ -44,9 +44,9 @@ lettre = { workspace = true }
 
 # NOTE on Lightning support:
 #
-# The Breez SDK Liquid crate (breez-sdk-liquid) is the intended
-# backend for the LightningProvider trait in src/lightning.rs. We do
-# NOT add it as a dependency here, even optionally, because:
+# The Breez SDK Liquid crate (breez-sdk-liquid) is the production
+# backend for the LightningProvider trait in src/lightning.rs. It is
+# NOT a direct dependency of this crate, because:
 #
 #   * It is only distributed via git (not crates.io).
 #   * It pins reqwest =0.12.18 exactly, which conflicts with the
@@ -56,13 +56,15 @@ lettre = { workspace = true }
 #     workspace would balloon the build matrix and tie our CI to
 #     Breez's release cadence.
 #
-# The plan to actually wire Breez is to add a sibling crate
-# (`crates/ghostkey-lightning-breez`) that depends on breez-sdk-liquid
-# *and* implements the LightningProvider trait defined in this crate.
-# The server would discover that provider via a small dynamic shim
-# (env-var-gated `extern fn`-style boundary, or a separate process
-# behind a Unix socket). Until that crate exists the LightningProvider
-# is the NoopProvider and the /lightning-checkin routes return 503.
+# Instead, Breez lives in the sibling crate `crates/ghostkey-lightning-breez`
+# (excluded from the root workspace; see ../../Cargo.toml). That crate
+# builds a small HTTP sidecar binary. This server talks to the sidecar
+# over localhost via `HttpProvider` (src/lightning.rs); the wire
+# protocol is the small JSON surface documented in the sidecar's
+# README.md. Selection is env-driven: set GHOSTKEY_LN_BREEZ_URL and
+# GHOSTKEY_LN_BREEZ_SHARED_SECRET to enable, leave them unset to fall
+# back to NoopProvider (in which case `/lightning-checkin/*` returns
+# 503 and the web UI hides the button).
 #
 # See DESIGN.md "Lightning check-ins" for the full rationale.
 

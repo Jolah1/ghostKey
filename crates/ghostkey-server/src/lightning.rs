@@ -26,12 +26,14 @@
 //! implementations:
 //!
 //!   * [`NoopProvider`] — always returns "lightning disabled". Used
-//!     when the server is built without the `lightning` cargo feature,
-//!     or when the operator hasn't configured Breez credentials.
+//!     when the operator hasn't configured the Breez sidecar.
 //!
-//!   * `BreezLiquidProvider` — wraps `breez-sdk-liquid`. Behind the
-//!     `lightning` feature flag because the SDK isn't on crates.io
-//!     and pulls in a large Liquid/Boltz/LSP dependency graph.
+//!   * [`HttpProvider`] — talks over localhost HTTP to the
+//!     `ghostkey-lightning-breez` sidecar binary (a separate crate,
+//!     excluded from the root workspace; see its README for the
+//!     rationale on why Breez SDK Liquid can't live in-process).
+//!     Selected automatically when `GHOSTKEY_LN_BREEZ_URL` and
+//!     `GHOSTKEY_LN_BREEZ_SHARED_SECRET` are both set.
 //!
 //! ## Why pull-poll instead of webhooks
 //!
@@ -140,25 +142,58 @@ impl LightningProvider for NoopProvider {
     }
 }
 
-/// Convenience helper used at startup. Today this always returns
-/// [`NoopProvider`]; the Breez SDK Liquid backend lives in a planned
-/// sibling crate (see Cargo.toml for the rationale on why it isn't
-/// pulled in here directly). When that crate exists, this function
-/// will read env vars (`BREEZ_API_KEY`, `BREEZ_MNEMONIC`,
-/// `BREEZ_NETWORK`, `BREEZ_WORKING_DIR`) and dispatch to the right
-/// backend.
+/// Convenience helper used at startup.
+///
+/// Selection rules (first matching rule wins):
+///
+///   1. If `GHOSTKEY_LN_BREEZ_URL` AND `GHOSTKEY_LN_BREEZ_SHARED_SECRET`
+///      are both set in the environment, build an [`HttpProvider`]
+///      pointed at the running sidecar. This is the real production
+///      path — the sidecar lives in `crates/ghostkey-lightning-breez`
+///      and wraps the Breez SDK Liquid.
+///
+///   2. If the legacy `BREEZ_API_KEY` / `BREEZ_MNEMONIC` env vars are
+///      set but the sidecar URL is not, warn loudly: the operator
+///      likely forgot to start the sidecar or to point us at it. Fall
+///      back to [`NoopProvider`].
+///
+///   3. Otherwise return [`NoopProvider`] silently.
 ///
 /// Never panics. Always returns *some* provider so handlers can call
 /// `is_enabled()` rather than juggling an `Option`.
 pub async fn build_provider() -> Arc<dyn LightningProvider> {
-    if std::env::var("BREEZ_API_KEY").is_ok() && std::env::var("BREEZ_MNEMONIC").is_ok() {
-        tracing::warn!(
-            "BREEZ_API_KEY/MNEMONIC present but the Breez SDK Liquid backend is not \
-             compiled in. Lightning check-ins remain disabled. See \
-             crates/ghostkey-server/Cargo.toml for the integration plan."
-        );
+    let url = std::env::var("GHOSTKEY_LN_BREEZ_URL").ok();
+    let secret = std::env::var("GHOSTKEY_LN_BREEZ_SHARED_SECRET").ok();
+
+    match (url, secret) {
+        (Some(url), Some(secret)) if !url.is_empty() && !secret.is_empty() => {
+            tracing::info!(url = %url, "lightning: using HTTP sidecar provider");
+            match HttpProvider::new(url, secret) {
+                Ok(p) => Arc::new(p),
+                Err(e) => {
+                    tracing::error!(
+                        error = ?e,
+                        "lightning: failed to build HTTP sidecar client; falling back to NoopProvider"
+                    );
+                    Arc::new(NoopProvider)
+                }
+            }
+        }
+        _ => {
+            if std::env::var("BREEZ_API_KEY").is_ok()
+                || std::env::var("BREEZ_MNEMONIC").is_ok()
+            {
+                tracing::warn!(
+                    "BREEZ_API_KEY/MNEMONIC present but GHOSTKEY_LN_BREEZ_URL / \
+                     GHOSTKEY_LN_BREEZ_SHARED_SECRET are not set. The Breez SDK \
+                     lives in the ghostkey-lightning-breez sidecar binary; start \
+                     it and point us at it via those two env vars. Lightning \
+                     check-ins remain disabled."
+                );
+            }
+            Arc::new(NoopProvider)
+        }
     }
-    Arc::new(NoopProvider)
 }
 
 /// Default amount for a "I'm alive" Lightning check-in. One sat is
@@ -454,40 +489,224 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
 }
 
 /* -------------------------------------------------------------------------- *
- *  Breez SDK Liquid backend                                                  *
+ *  HTTP sidecar backend                                                      *
  *                                                                            *
- *  Lives in a sibling crate (planned: `crates/ghostkey-lightning-breez`).    *
- *  See Cargo.toml for the long-form rationale on why the SDK isn't a         *
- *  direct workspace dependency. Briefly: it pins reqwest =0.12.18 exactly,   *
- *  ships only via git, and forks ~6 transitive dependencies that would       *
- *  poison the rest of the workspace.                                         *
+ *  Talks to the `ghostkey-lightning-breez` sidecar binary over plain HTTP    *
+ *  on localhost. The sidecar wraps Breez SDK Liquid; see                     *
+ *  `crates/ghostkey-lightning-breez/README.md` for the rationale on why      *
+ *  it lives out-of-process (breez-sdk-liquid pins reqwest =0.12.18, ships    *
+ *  only via git, and forks several transitive dependencies — keeping it in  *
+ *  a separate process keeps the main workspace clean and lets contributors   *
+ *  build GhostKey without a Breez API key).                                  *
  *                                                                            *
- *  The integration shape, when the sibling crate exists, is:                 *
+ *  Wire format mirrored from `crates/ghostkey-lightning-breez/src/main.rs`: *
  *                                                                            *
- *      use breez_sdk_liquid::sdk::LiquidSdk;                                 *
- *      use breez_sdk_liquid::model::{                                        *
- *          ConnectRequest, LiquidNetwork, PaymentMethod,                     *
- *          PrepareReceiveRequest, ReceivePaymentRequest                      *
- *      };                                                                    *
+ *      GET  /v1/health             → { ok, ready, version }                  *
+ *      POST /v1/invoice            → { bolt11, payment_hash, amount_sat,     *
+ *                                       expires_at }                          *
+ *      GET  /v1/status/:hash       → { status, paid_at? }                    *
  *                                                                            *
- *      // 1. config = LiquidSdk::default_config(network, Some(api_key))      *
- *      // 2. sdk     = LiquidSdk::connect(ConnectRequest{ mnemonic, config }) *
- *      // 3. on create_invoice():                                            *
- *      //      prep = sdk.prepare_receive_payment(PrepareReceiveRequest {    *
- *      //                payment_method: PaymentMethod::Lightning,           *
- *      //                amount: Some(ReceiveAmount::Bitcoin{ payer_amount   *
- *      //                  _sat })})                                         *
- *      //      resp = sdk.receive_payment(ReceivePaymentRequest {            *
- *      //                prepare_response: prep,                             *
- *      //                description: Some(desc), ... })                     *
- *      //      → resp.destination is the BOLT11 invoice                      *
- *      //      → parse_invoice(&bolt11) gives payment_hash + expiry          *
- *      // 4. on invoice_status(): list_payments + filter by payment_hash     *
- *                                                                            *
- *  The sibling crate provides a function returning                          *
- *  `Arc<dyn LightningProvider>` which `build_provider()` above can pick      *
- *  up when the relevant env vars are set.                                    *
+ *  Auth: `Authorization: Bearer <shared_secret>` on every call except       *
+ *  health. Mismatch surfaces as `LightningError::Provider("unauthorized")`. *
  * -------------------------------------------------------------------------- */
+
+/// Lightning provider that delegates to the out-of-process
+/// `ghostkey-lightning-breez` sidecar over HTTP.
+pub struct HttpProvider {
+    /// Base URL without trailing slash, e.g. `http://127.0.0.1:8788`.
+    base_url: String,
+    shared_secret: String,
+    client: reqwest::Client,
+}
+
+impl HttpProvider {
+    /// Construct a new client. The `base_url` is normalised (trailing
+    /// `/` stripped) so callers don't have to care which form they
+    /// passed. Returns `Err` only if reqwest itself refuses to build
+    /// a client — which in practice means the host's rustls / TLS
+    /// config is broken; in that case the operator has bigger problems.
+    pub fn new(base_url: String, shared_secret: String) -> anyhow::Result<Self> {
+        let base_url = base_url.trim_end_matches('/').to_string();
+        let client = reqwest::Client::builder()
+            // Keep request timeout short: the sidecar lives on
+            // localhost and a slow path almost always means the
+            // SDK is wedged. Better to surface a 502 and let the
+            // poller retry than to block the request task for 30s.
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?;
+        Ok(Self {
+            base_url,
+            shared_secret,
+            client,
+        })
+    }
+
+    /// Hit `/v1/health` and return whether the sidecar reports
+    /// `ready: true`. Used by `is_enabled()` — except `is_enabled()`
+    /// is synchronous and called on every route, so we cannot block
+    /// on a network call there. Instead `is_enabled()` returns true
+    /// unconditionally once an `HttpProvider` is constructed, and the
+    /// HTTP routes will surface the sidecar's NOT-READY response as
+    /// a regular Provider error. This matches the semantics callers
+    /// expect: "the operator wired up Lightning, so the UI may show
+    /// the button; payment-flow failures still bubble up to the user."
+    ///
+    /// Kept on the impl as a documented building block for an ops
+    /// debug endpoint (and to make the wire surface obvious to
+    /// readers of this file); not on the trait because the trait
+    /// stays minimal.
+    #[allow(dead_code)]
+    async fn health(&self) -> Result<bool, LightningError> {
+        let url = format!("{}/v1/health", self.base_url);
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| LightningError::Provider(format!("health: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(LightningError::Provider(format!(
+                "health returned HTTP {}",
+                resp.status()
+            )));
+        }
+        #[derive(Deserialize)]
+        struct H {
+            ready: bool,
+        }
+        let body: H = resp
+            .json()
+            .await
+            .map_err(|e| LightningError::Provider(format!("health decode: {e}")))?;
+        Ok(body.ready)
+    }
+}
+
+#[derive(Serialize)]
+struct WireInvoiceRequest<'a> {
+    amount_sat: u64,
+    description: &'a str,
+}
+
+#[derive(Deserialize)]
+struct WireInvoiceResponse {
+    bolt11: String,
+    payment_hash: String,
+    amount_sat: u64,
+    expires_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+struct WireStatusResponse {
+    status: String,
+    #[allow(dead_code)]
+    paid_at: Option<DateTime<Utc>>,
+}
+
+#[async_trait]
+impl LightningProvider for HttpProvider {
+    fn is_enabled(&self) -> bool {
+        // See the note on `health()` above. Construction implies the
+        // operator opted in; we report enabled and let per-call errors
+        // surface real provider trouble.
+        true
+    }
+
+    async fn create_invoice(
+        &self,
+        amount_sat: u64,
+        description: &str,
+    ) -> Result<CreatedInvoice, LightningError> {
+        if amount_sat == 0 {
+            return Err(LightningError::InvalidAmount(
+                "amount_sat must be > 0".into(),
+            ));
+        }
+
+        let url = format!("{}/v1/invoice", self.base_url);
+        let body = WireInvoiceRequest {
+            amount_sat,
+            description,
+        };
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.shared_secret)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| LightningError::Provider(format!("invoice send: {e}")))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            // Best-effort error body; the sidecar always returns
+            // `{ "error": "..." }` on failure.
+            let msg = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<no body>".into());
+            return Err(LightningError::Provider(format!(
+                "invoice returned HTTP {status}: {msg}"
+            )));
+        }
+
+        let body: WireInvoiceResponse = resp
+            .json()
+            .await
+            .map_err(|e| LightningError::Provider(format!("invoice decode: {e}")))?;
+
+        Ok(CreatedInvoice {
+            bolt11: body.bolt11,
+            payment_hash: body.payment_hash,
+            amount_sat: body.amount_sat,
+            expires_at: body.expires_at,
+        })
+    }
+
+    async fn invoice_status(&self, payment_hash: &str) -> Result<InvoiceStatus, LightningError> {
+        if payment_hash.len() != 64 || !payment_hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(LightningError::Provider(format!(
+                "invalid payment_hash {payment_hash:?} (expected 64 hex chars)"
+            )));
+        }
+
+        let url = format!("{}/v1/status/{payment_hash}", self.base_url);
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.shared_secret)
+            .send()
+            .await
+            .map_err(|e| LightningError::Provider(format!("status send: {e}")))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let msg = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<no body>".into());
+            return Err(LightningError::Provider(format!(
+                "status returned HTTP {status}: {msg}"
+            )));
+        }
+
+        let body: WireStatusResponse = resp
+            .json()
+            .await
+            .map_err(|e| LightningError::Provider(format!("status decode: {e}")))?;
+
+        // The sidecar speaks the trio { pending | paid | failed }.
+        // It never returns `expired` directly — the GhostKey server's
+        // own poller demotes pending invoices past their expires_at,
+        // so we map any unrecognised value to a defensive Failed().
+        Ok(match body.status.as_str() {
+            "pending" => InvoiceStatus::Pending,
+            "paid" => InvoiceStatus::Paid,
+            "failed" => InvoiceStatus::Failed("sidecar reported failed".into()),
+            other => InvoiceStatus::Failed(format!("unknown status {other:?}")),
+        })
+    }
+}
 
 /* -------------------------------------------------------------------------- *
  *  Tests                                                                     *
@@ -640,5 +859,251 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(n, 1, "exactly one checkin event per paid invoice");
+    }
+
+    /* ---------------------------------------------------------------- *
+     *  HttpProvider tests                                              *
+     *                                                                  *
+     *  These spin up a tiny in-process axum server that mimics the     *
+     *  sidecar's wire format and point the real HttpProvider at it.   *
+     *  Using a real socket (rather than tower::ServiceExt::oneshot)    *
+     *  is intentional: reqwest's connection handling, JSON decoding,  *
+     *  and bearer auth header construction are exactly what we want   *
+     *  to exercise. The cost — one ephemeral TCP port per test — is    *
+     *  negligible on any developer machine or CI runner.              *
+     * ---------------------------------------------------------------- */
+
+    use axum::extract::Path as AxPath;
+    use axum::http::StatusCode;
+    use axum::routing::{get, post};
+    use axum::Json;
+    use axum::Router;
+    use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc as StdArc;
+
+    /// Sidecar shape we mimic. Counters let the test assert how many
+    /// times each route fired so we catch silent retries or missing
+    /// auth headers.
+    #[derive(Default)]
+    struct MockSidecar {
+        invoice_hits: AtomicUsize,
+        status_hits: AtomicUsize,
+        seen_bearer: std::sync::Mutex<Option<String>>,
+    }
+
+    async fn spawn_mock(sidecar: StdArc<MockSidecar>, secret: String) -> String {
+        let sidecar_for_invoice = sidecar.clone();
+        let secret_for_invoice = secret.clone();
+        let sidecar_for_status = sidecar.clone();
+        let secret_for_status = secret.clone();
+
+        let app = Router::new()
+            .route(
+                "/v1/invoice",
+                post(move |headers: axum::http::HeaderMap, Json(body): Json<serde_json::Value>| {
+                    let sidecar = sidecar_for_invoice.clone();
+                    let secret = secret_for_invoice.clone();
+                    async move {
+                        sidecar.invoice_hits.fetch_add(1, Ordering::SeqCst);
+                        let bearer = headers
+                            .get(axum::http::header::AUTHORIZATION)
+                            .and_then(|v| v.to_str().ok())
+                            .map(|s| s.to_string());
+                        *sidecar.seen_bearer.lock().unwrap() = bearer.clone();
+                        if bearer.as_deref() != Some(&format!("Bearer {secret}")) {
+                            return (
+                                StatusCode::UNAUTHORIZED,
+                                Json(serde_json::json!({"error":"unauthorized"})),
+                            );
+                        }
+                        let amount = body["amount_sat"].as_u64().unwrap_or(0);
+                        if amount == 0 {
+                            return (
+                                StatusCode::BAD_REQUEST,
+                                Json(serde_json::json!({"error":"amount_sat must be > 0"})),
+                            );
+                        }
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({
+                                "bolt11": "lnbc10n1mockedinvoice",
+                                "payment_hash": "a".repeat(64),
+                                "amount_sat": amount,
+                                "expires_at": (Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+                            })),
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/v1/status/:hash",
+                get(move |AxPath(hash): AxPath<String>, headers: axum::http::HeaderMap| {
+                    let sidecar = sidecar_for_status.clone();
+                    let secret = secret_for_status.clone();
+                    async move {
+                        sidecar.status_hits.fetch_add(1, Ordering::SeqCst);
+                        let bearer = headers
+                            .get(axum::http::header::AUTHORIZATION)
+                            .and_then(|v| v.to_str().ok())
+                            .map(|s| s.to_string());
+                        if bearer.as_deref() != Some(&format!("Bearer {secret}")) {
+                            return (
+                                StatusCode::UNAUTHORIZED,
+                                Json(serde_json::json!({"error":"unauthorized"})),
+                            );
+                        }
+                        // First hex char encodes the state we want returned.
+                        // 'a' -> paid, 'b' -> failed, anything else -> pending.
+                        let status = match hash.chars().next() {
+                            Some('a') => "paid",
+                            Some('b') => "failed",
+                            _ => "pending",
+                        };
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({
+                                "status": status,
+                                "paid_at": if status == "paid" {
+                                    Some(Utc::now().to_rfc3339())
+                                } else {
+                                    None
+                                },
+                            })),
+                        )
+                    }
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}")
+    }
+
+    /// Happy-path round trip: HttpProvider should serialise the
+    /// request body the sidecar expects, attach the bearer header,
+    /// and decode the JSON response into the trait's `CreatedInvoice`
+    /// shape. Regressions here would silently break every Lightning
+    /// check-in.
+    #[tokio::test]
+    async fn http_provider_create_invoice_round_trips() {
+        let sidecar = StdArc::new(MockSidecar::default());
+        let secret = "test-secret-token".to_string();
+        let url = spawn_mock(sidecar.clone(), secret.clone()).await;
+
+        let provider = HttpProvider::new(url, secret.clone()).unwrap();
+        let invoice = provider
+            .create_invoice(7, "ghostkey:checkin:v1")
+            .await
+            .expect("invoice");
+
+        assert_eq!(invoice.amount_sat, 7);
+        assert_eq!(invoice.payment_hash.len(), 64);
+        assert!(invoice.bolt11.starts_with("lnbc"));
+        assert_eq!(sidecar.invoice_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            sidecar.seen_bearer.lock().unwrap().as_deref(),
+            Some(format!("Bearer {secret}").as_str()),
+            "bearer header must be presented verbatim"
+        );
+    }
+
+    /// Mismatched shared secret must bubble up as a Provider error so
+    /// the operator notices the configuration drift rather than the
+    /// UI silently looking broken.
+    #[tokio::test]
+    async fn http_provider_rejects_wrong_secret() {
+        let sidecar = StdArc::new(MockSidecar::default());
+        let url = spawn_mock(sidecar.clone(), "right-secret".into()).await;
+
+        let provider = HttpProvider::new(url, "WRONG-secret".into()).unwrap();
+        let err = provider
+            .create_invoice(1, "ghostkey:checkin:v1")
+            .await
+            .expect_err("must fail");
+        match err {
+            LightningError::Provider(msg) => assert!(msg.contains("401"), "got: {msg}"),
+            other => panic!("expected Provider, got {other:?}"),
+        }
+    }
+
+    /// Zero-amount requests must fail client-side without ever hitting
+    /// the network — InvalidAmount, not Provider. Catches a class of
+    /// bugs where a UI control accidentally sends 0 and the user sees
+    /// a misleading "sidecar error" toast.
+    #[tokio::test]
+    async fn http_provider_rejects_zero_amount_locally() {
+        let provider =
+            HttpProvider::new("http://127.0.0.1:1".into(), "secret".into()).unwrap();
+        let err = provider
+            .create_invoice(0, "x")
+            .await
+            .expect_err("must fail");
+        assert!(matches!(err, LightningError::InvalidAmount(_)), "got {err:?}");
+    }
+
+    /// Status lookup must map the sidecar's lowercase string into the
+    /// trait's enum exactly. The poller dispatches on these variants
+    /// to mark paid vs. tombstone — a mis-mapping would corrupt vault
+    /// state.
+    #[tokio::test]
+    async fn http_provider_status_mapping() {
+        let sidecar = StdArc::new(MockSidecar::default());
+        let secret = "ok".to_string();
+        let url = spawn_mock(sidecar.clone(), secret.clone()).await;
+        let provider = HttpProvider::new(url, secret).unwrap();
+
+        // Hashes are 64 hex chars; first nibble chooses the mock state.
+        let paid_hash = format!("a{}", "0".repeat(63));
+        let pend_hash = format!("c{}", "0".repeat(63));
+        let fail_hash = format!("b{}", "0".repeat(63));
+
+        assert_eq!(
+            provider.invoice_status(&paid_hash).await.unwrap(),
+            InvoiceStatus::Paid
+        );
+        assert_eq!(
+            provider.invoice_status(&pend_hash).await.unwrap(),
+            InvoiceStatus::Pending
+        );
+        match provider.invoice_status(&fail_hash).await.unwrap() {
+            InvoiceStatus::Failed(_) => {}
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert_eq!(sidecar.status_hits.load(Ordering::SeqCst), 3);
+    }
+
+    /// Malformed payment_hash must be rejected before we open a
+    /// socket. The sidecar would also reject it, but failing fast
+    /// keeps the error message clear and saves a round trip.
+    #[tokio::test]
+    async fn http_provider_rejects_bad_payment_hash() {
+        let provider =
+            HttpProvider::new("http://127.0.0.1:1".into(), "secret".into()).unwrap();
+        assert!(provider.invoice_status("too-short").await.is_err());
+        assert!(provider
+            .invoice_status(&"z".repeat(64)) // not hex
+            .await
+            .is_err());
+    }
+
+    /// `is_enabled()` must NOT make a network call. Routes hit it
+    /// on every request; a blocking syscall there would be a foot-gun.
+    /// We assert by pointing the provider at an unroutable address —
+    /// any real I/O would hang or surface as an error.
+    #[tokio::test]
+    async fn http_provider_is_enabled_is_synchronous_and_cheap() {
+        let provider =
+            HttpProvider::new("http://0.0.0.0:1".into(), "secret".into()).unwrap();
+        // Repeated calls, fast — if this ever does I/O the test will
+        // either hang or take 10s+. CI will surface either.
+        for _ in 0..1000 {
+            assert!(provider.is_enabled());
+        }
     }
 }

@@ -109,10 +109,9 @@ async fn main() -> Result<()> {
 
     let pool = db::connect(&args.database_url).await?;
 
-    // Lightning provider: real Breez backend when the `lightning`
-    // cargo feature is enabled AND BREEZ_API_KEY/MNEMONIC are set,
-    // otherwise a Noop that returns "not configured" on every call.
-    // build_provider() never panics.
+    // Lightning provider: HttpProvider talking to the Breez sidecar
+    // when GHOSTKEY_LN_BREEZ_URL + GHOSTKEY_LN_BREEZ_SHARED_SECRET
+    // are set, otherwise NoopProvider. build_provider() never panics.
     let lightning = lightning::build_provider().await;
     let state = Arc::new(AppState {
         db: pool.clone(),

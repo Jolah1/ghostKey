@@ -1,0 +1,65 @@
+[package]
+name = "ghostkey-lightning-breez"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Standalone Breez SDK Liquid sidecar for the GhostKey Lightning check-in system"
+publish = false
+
+# Deliberately NOT a member of the root workspace. See the comment
+# in `../../Cargo.toml` [workspace.exclude] for the rationale; in
+# short, breez-sdk-liquid pins `reqwest =0.12.18` exactly which
+# conflicts with the rest of the project.
+#
+# `[workspace]` with no members makes this directory its own
+# single-crate workspace, so cargo doesn't try to walk up the tree
+# and find the GhostKey workspace.
+[workspace]
+
+[[bin]]
+name = "ghostkey-lightning-breez"
+path = "src/main.rs"
+
+[dependencies]
+# The thing we're here for. Pulled from git because not on crates.io.
+# Pinned to 0.12.2 (the latest stable as of 2026-04-06). When upgrading,
+# verify the API surface for prepare_receive_payment, receive_payment,
+# list_payments, and parse_invoice — those are the only four we call.
+#
+# KNOWN ISSUE (2026-05-26): tag 0.12.2 currently does NOT compile from
+# a clean checkout. The failure is in the transitive boltz-client git
+# dep (SatoshiPortal/boltz-rust@d62288f), which references MuSig types
+# that no longer exist in the secp256k1_zkp version Breez's `elements`
+# resolves. tag 0.12.3-dev1 pins the same boltz-client rev so it does
+# not help. See README.md "Current upstream build status" for details.
+# This does not affect the rest of GhostKey — see the workspace-exclude
+# comment in ../../Cargo.toml.
+breez-sdk-liquid = { git = "https://github.com/breez/breez-sdk-liquid", tag = "0.12.2" }
+
+# Minimal HTTP surface. We use axum so the API style matches the main
+# ghostkey-server crate; tower-http only for tracing, no CORS (the
+# sidecar only ever talks to localhost). Reqwest version is forced
+# to whatever Breez wants — we don't ship our own reqwest here.
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync"] }
+tower-http = { version = "0.6", features = ["trace"] }
+
+# Logs + config.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+thiserror = "1"
+
+# JSON shapes mirrored to the main server's HttpProvider.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+
+# Constant-time compare for the shared-secret auth header.
+subtle = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
