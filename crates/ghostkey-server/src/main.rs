@@ -20,6 +20,7 @@ use std::sync::Arc;
 mod auth;
 mod crypto;
 mod db;
+mod demo;
 mod lightning;
 mod notifier;
 mod psbt_routes;
@@ -107,6 +108,12 @@ async fn main() -> Result<()> {
         );
     }
 
+    // Probe the demo-mode flag at startup so the warning (if any)
+    // appears in the boot log rather than on the first vault
+    // creation. The function caches the result in a OnceLock; this
+    // call pins it before any handler can race.
+    let _ = demo::demo_mode();
+
     let pool = db::connect(&args.database_url).await?;
 
     // Lightning provider: HttpProvider talking to the Breez sidecar
@@ -119,16 +126,40 @@ async fn main() -> Result<()> {
     });
 
     // Background scheduler.
+    //
+    // Demo mode forces the scheduler tick down to 1 s (regardless of
+    // what the operator passed on the CLI / env) so a seconds-scale
+    // cadence is actually observable. We log the override so the
+    // operator can see why their `GHOSTKEY_TICK_SECS=30` is being
+    // ignored. The same overide is applied to the Lightning poller
+    // below for the same reason.
+    let sched_tick = if demo::demo_mode() {
+        if args.tick_secs != demo::DEMO_SCHEDULER_TICK_SECS {
+            tracing::info!(
+                requested = args.tick_secs,
+                effective = demo::DEMO_SCHEDULER_TICK_SECS,
+                "demo mode: overriding scheduler tick"
+            );
+        }
+        demo::DEMO_SCHEDULER_TICK_SECS
+    } else {
+        args.tick_secs
+    };
     let sched_state = state.clone();
     tokio::spawn(async move {
-        scheduler::run(sched_state, std::time::Duration::from_secs(args.tick_secs)).await;
+        scheduler::run(sched_state, std::time::Duration::from_secs(sched_tick)).await;
     });
 
     // Background Lightning poller. Cheap when disabled (the first
     // check in tick_once early-returns), so we always spawn it.
+    let ln_tick = if demo::demo_mode() {
+        demo::DEMO_LIGHTNING_TICK_SECS
+    } else {
+        args.ln_tick_secs
+    };
     let ln_state = state.clone();
     tokio::spawn(async move {
-        lightning::run_poller(ln_state, std::time::Duration::from_secs(args.ln_tick_secs)).await;
+        lightning::run_poller(ln_state, std::time::Duration::from_secs(ln_tick)).await;
     });
 
     // Background notification worker. Runs on the same DB pool as

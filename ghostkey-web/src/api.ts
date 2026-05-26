@@ -353,9 +353,12 @@ export interface CreatedVault extends VaultView {
 
 export const api = {
   health: () =>
-    request<{ ok: boolean; version: string; lightning_enabled: boolean }>(
-      "/health",
-    ),
+    request<{
+      ok: boolean;
+      version: string;
+      lightning_enabled: boolean;
+      demo_mode: boolean;
+    }>("/health"),
   getVault: (id: string, ownerToken: string | null) =>
     request<VaultView>(`/vaults/${id}`, {}, ownerToken),
   createVault: (req: CreateVaultRequest) =>

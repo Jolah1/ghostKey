@@ -109,6 +109,14 @@ struct Health {
     /// affordance. When false the button is hidden and only the
     /// regular HTTP check-in is offered.
     lightning_enabled: bool,
+    /// Whether this server is running in demonstration mode. When
+    /// true, the web client surfaces the seconds-scale cadence
+    /// presets and a prominent "DEMO MODE" banner; vault creation
+    /// accepts cadences as low as a few seconds; mainnet vault
+    /// creation is disabled. See `crate::demo` for the full list of
+    /// loosened invariants. Operators MUST NOT enable demo mode on a
+    /// production server.
+    demo_mode: bool,
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
@@ -116,6 +124,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         ok: true,
         version: env!("CARGO_PKG_VERSION"),
         lightning_enabled: state.lightning.is_enabled(),
+        demo_mode: crate::demo::demo_mode(),
     })
 }
 
@@ -205,9 +214,8 @@ async fn create_vault(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateVaultRequest>,
 ) -> Result<(StatusCode, Json<CreatedVault>), ApiError> {
-    if req.checkin_period_secs <= 0 || req.grace_period_secs < 0 {
-        return Err(ApiError::Validation("non-positive period".into()));
-    }
+    crate::demo::validate_periods(req.checkin_period_secs, req.grace_period_secs)
+        .map_err(ApiError::Validation)?;
     if req.timelock_blocks == 0 || req.timelock_blocks > 0xFFFF {
         return Err(ApiError::Validation(format!(
             "timelock_blocks {} out of range 1..=65535",
@@ -223,6 +231,7 @@ async fn create_vault(
         "bitcoin" | "testnet" | "signet" | "regtest" => {}
         other => return Err(ApiError::Validation(format!("unknown network {other}"))),
     }
+    crate::demo::ensure_demo_safe_for_network(&req.network).map_err(ApiError::Validation)?;
 
     let id = Uuid::new_v4().to_string();
     let now = Utc::now();
@@ -386,9 +395,8 @@ async fn create_vault_from_xpub(
     Json(req): Json<CreateVaultFromXpubRequest>,
 ) -> Result<(StatusCode, Json<CreatedVault>), ApiError> {
     // ---- Validate periods + timelock ---------------------------------
-    if req.checkin_period_secs <= 0 || req.grace_period_secs < 0 {
-        return Err(ApiError::Validation("non-positive period".into()));
-    }
+    crate::demo::validate_periods(req.checkin_period_secs, req.grace_period_secs)
+        .map_err(ApiError::Validation)?;
     if req.timelock_blocks == 0 || req.timelock_blocks > 0xFFFF {
         return Err(ApiError::Validation(format!(
             "timelock_blocks {} out of range 1..=65535",
@@ -422,6 +430,7 @@ async fn create_vault_from_xpub(
             return Err(ApiError::Validation(format!("unknown network {other}")));
         }
     };
+    crate::demo::ensure_demo_safe_for_network(&req.network).map_err(ApiError::Validation)?;
     let path = vault_account_path(network);
 
     // ---- Parse owner + heir xpubs ------------------------------------

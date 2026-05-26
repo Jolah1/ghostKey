@@ -180,9 +180,7 @@ pub async fn build_provider() -> Arc<dyn LightningProvider> {
             }
         }
         _ => {
-            if std::env::var("BREEZ_API_KEY").is_ok()
-                || std::env::var("BREEZ_MNEMONIC").is_ok()
-            {
+            if std::env::var("BREEZ_API_KEY").is_ok() || std::env::var("BREEZ_MNEMONIC").is_ok() {
                 tracing::warn!(
                     "BREEZ_API_KEY/MNEMONIC present but GHOSTKEY_LN_BREEZ_URL / \
                      GHOSTKEY_LN_BREEZ_SHARED_SECRET are not set. The Breez SDK \
@@ -641,10 +639,7 @@ impl LightningProvider for HttpProvider {
         if !status.is_success() {
             // Best-effort error body; the sidecar always returns
             // `{ "error": "..." }` on failure.
-            let msg = resp
-                .text()
-                .await
-                .unwrap_or_else(|_| "<no body>".into());
+            let msg = resp.text().await.unwrap_or_else(|_| "<no body>".into());
             return Err(LightningError::Provider(format!(
                 "invoice returned HTTP {status}: {msg}"
             )));
@@ -681,10 +676,7 @@ impl LightningProvider for HttpProvider {
 
         let status = resp.status();
         if !status.is_success() {
-            let msg = resp
-                .text()
-                .await
-                .unwrap_or_else(|_| "<no body>".into());
+            let msg = resp.text().await.unwrap_or_else(|_| "<no body>".into());
             return Err(LightningError::Provider(format!(
                 "status returned HTTP {status}: {msg}"
             )));
@@ -1038,13 +1030,15 @@ mod tests {
     /// a misleading "sidecar error" toast.
     #[tokio::test]
     async fn http_provider_rejects_zero_amount_locally() {
-        let provider =
-            HttpProvider::new("http://127.0.0.1:1".into(), "secret".into()).unwrap();
+        let provider = HttpProvider::new("http://127.0.0.1:1".into(), "secret".into()).unwrap();
         let err = provider
             .create_invoice(0, "x")
             .await
             .expect_err("must fail");
-        assert!(matches!(err, LightningError::InvalidAmount(_)), "got {err:?}");
+        assert!(
+            matches!(err, LightningError::InvalidAmount(_)),
+            "got {err:?}"
+        );
     }
 
     /// Status lookup must map the sidecar's lowercase string into the
@@ -1083,8 +1077,7 @@ mod tests {
     /// keeps the error message clear and saves a round trip.
     #[tokio::test]
     async fn http_provider_rejects_bad_payment_hash() {
-        let provider =
-            HttpProvider::new("http://127.0.0.1:1".into(), "secret".into()).unwrap();
+        let provider = HttpProvider::new("http://127.0.0.1:1".into(), "secret".into()).unwrap();
         assert!(provider.invoice_status("too-short").await.is_err());
         assert!(provider
             .invoice_status(&"z".repeat(64)) // not hex
@@ -1098,8 +1091,7 @@ mod tests {
     /// any real I/O would hang or surface as an error.
     #[tokio::test]
     async fn http_provider_is_enabled_is_synchronous_and_cheap() {
-        let provider =
-            HttpProvider::new("http://0.0.0.0:1".into(), "secret".into()).unwrap();
+        let provider = HttpProvider::new("http://0.0.0.0:1".into(), "secret".into()).unwrap();
         // Repeated calls, fast — if this ever does I/O the test will
         // either hang or take 10s+. CI will surface either.
         for _ in 0..1000 {

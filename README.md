@@ -99,6 +99,31 @@ cd ghostkey-web && npm run dev
 # → http://127.0.0.1:5173
 ```
 
+### Demo mode
+
+For live demonstrations and screen recordings, the server can be
+started in demo mode so the entire setup → missed-check-in → alarm →
+claim flow finishes in well under a minute:
+
+```bash
+GHOSTKEY_DEMO_MODE=1 \
+GHOSTKEY_MASTER_KEY=$(openssl rand -base64 32) \
+cargo run -p ghostkey-server
+```
+
+In demo mode:
+
+- The setup wizard exposes seconds-scale cadence (10 s / 30 s / 2 min)
+  and grace-period (5 s / 15 s / 1 min) presets.
+- The scheduler tick drops to 1 s so transitions are observable in
+  real time.
+- The web UI shows a sticky amber "Demo mode" banner on every page.
+- Mainnet vault creation is refused. signet / testnet / regtest only.
+
+Do **not** set `GHOSTKEY_DEMO_MODE` on a production server. A real
+owner who picked a 10-second cadence would lose access to recovery
+the moment they put their phone down.
+
 ### Tests
 
 ```bash

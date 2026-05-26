@@ -101,6 +101,12 @@ function locationFromHash(): Location {
 export default function App() {
   const [location, setLocation] = useState<Location>(locationFromHash);
   const [health, setHealth] = useState<"unknown" | "ok" | "offline">("unknown");
+  // Demo-mode flag from /health. Surfaced as a sticky banner across
+  // every page so the operator (and anyone watching the demo) can
+  // never miss that this server is loose with cadence validation.
+  // Defaults to false until the first probe completes, so we don't
+  // flash a banner that turns out to be wrong on a normal server.
+  const [demoMode, setDemoMode] = useState(false);
 
   // Sync the URL hash with the current location. Only writes back for
   // simple routes; the claim page's token-bearing URL is owned by the
@@ -121,14 +127,20 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  // Health probe — only used to surface the offline banner.
+  // Health probe — also captures the demo_mode flag so we can render
+  // the sticky banner. Polls every 20s; if the operator toggles the
+  // flag without restarting the page, we'll pick it up within one
+  // poll cycle.
   useEffect(() => {
     let alive = true;
     let timer: number | null = null;
     async function probe() {
       try {
-        await api.health();
-        if (alive) setHealth("ok");
+        const h = await api.health();
+        if (alive) {
+          setHealth("ok");
+          setDemoMode(Boolean(h.demo_mode));
+        }
       } catch {
         if (alive) setHealth("offline");
       }
@@ -147,6 +159,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-app">
       <AlphaBanner />
+      {demoMode && <DemoBanner />}
       {health === "offline" && <ServerOfflineBanner />}
       {/*
         The heir claim page renders without the standard nav. The heir
@@ -216,6 +229,41 @@ function AlphaBanner() {
           <span className="font-medium text-[var(--text)]">Alpha:</span>{" "}
           GhostKey is running on Bitcoin <span className="font-mono">testnet</span>.
           Don&apos;t use real-money keys yet.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------- DemoBanner ------------------------------- */
+
+/**
+ * Persistent banner shown when the server reports `demo_mode: true`
+ * on /health. Demo mode loosens cadence validation to seconds-scale
+ * so the entire alarm → claim flow can be shown live; anyone landing
+ * on this server should be told immediately, on every page, that the
+ * timings are not realistic and the server is unsuitable for real
+ * funds. The banner sits directly under AlphaBanner so the two read
+ * as one stack of warnings; styled in amber to be visually distinct
+ * from the alpha warning (grey) and the offline warning (red).
+ */
+function DemoBanner() {
+  return (
+    <div
+      role="status"
+      className="border-b border-amber-400/40 bg-amber-400/10"
+      style={{ fontSize: 12 }}
+    >
+      <div className="mx-auto flex max-w-6xl items-center gap-3 px-5 py-1.5 md:px-8">
+        <span
+          aria-hidden="true"
+          className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400"
+        />
+        <p className="leading-tight text-amber-200">
+          <span className="font-semibold">Demo mode:</span> check-in
+          cadences on this server are measured in seconds so the alarm
+          and claim flow can be shown live. Do not store real funds
+          here.
         </p>
       </div>
     </div>

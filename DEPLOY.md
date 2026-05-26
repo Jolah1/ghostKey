@@ -331,6 +331,39 @@ deploys, and machine upgrades. You only need to re-run the commands
 above if you deliberately rotate (which currently requires manual
 re-encryption of existing rows — see ARCHITECTURE.md).
 
+### Demo mode (do NOT enable in production)
+
+`GHOSTKEY_DEMO_MODE=1` loosens the cadence/grace validation to seconds
+so the entire owner-misses-check-in → alarm → claim flow can be
+demonstrated live in under a minute. It also drops the scheduler tick
+to one second and surfaces an amber "Demo mode" banner in the web UI.
+
+Use it for sandbox deployments (a `ghostkey-demo.fly.dev` you point
+at conference attendees, a local laptop for screen recordings) and
+nowhere else. The flag is forbidden in combination with mainnet
+vault creation — the server refuses to create a `"bitcoin"` vault
+when demo mode is on — but a careless owner who tapped through a
+demo signup with a 10-second cadence would still be locked out of
+recovery the moment they closed the tab. Keep demo and production
+deployments on different fly apps / different `GHOSTKEY_BIND` ports
+to avoid mixing them up.
+
+To run a demo on Fly:
+
+```sh
+fly apps create ghostkey-demo
+fly secrets set GHOSTKEY_DEMO_MODE=1 -a ghostkey-demo
+fly secrets set GHOSTKEY_MASTER_KEY="$(openssl rand -base64 32)" -a ghostkey-demo
+fly secrets set GHOSTKEY_ALLOWED_ORIGINS="https://ghostkey-demo.example.com" -a ghostkey-demo
+fly deploy -a ghostkey-demo
+```
+
+Audit your logs after the first boot: the server prints a `tracing::warn`
+the first time it observes the flag is on, plus an `info` line every
+time the demo override clamps the scheduler tick. Both should appear
+exactly once at startup; if they appear on a server you didn't mean to
+make a demo, unset the env var and redeploy immediately.
+
 ### Deploy
 
 ```sh

@@ -113,3 +113,115 @@ export function cadenceById(id: string): CadencePreset {
 export function graceById(id: string): GracePreset {
   return GRACE_PRESETS.find((g) => g.id === id) ?? GRACE_PRESETS[0];
 }
+
+/* -------------------------------------------------------------------------- *
+ *  Demo-mode presets                                                         *
+ *                                                                            *
+ *  When the server reports `demo_mode: true` on /health we surface a         *
+ *  second pair of pickers with seconds-scale cadences and grace periods.     *
+ *  These exist so the entire setup -> miss-check-in -> alarm -> claim flow   *
+ *  can be demonstrated on a video call in under a minute.                    *
+ *                                                                            *
+ *  The seconds-scale values match the floors enforced server-side by         *
+ *  `crate::demo::validate_periods`. Keep them in lockstep: if you raise      *
+ *  the server-side minimum, raise the lowest preset here too, otherwise      *
+ *  the UI will let the user pick a value the server then rejects.            *
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Cadence presets exposed only in demo mode. Sub-labels narrate what
+ * the demo will look like at that cadence so the operator can pick
+ * the right one for the audience.
+ */
+export const DEMO_CADENCE_PRESETS: readonly CadencePreset[] = [
+  {
+    id: "demo-10s",
+    label: "Every 10 seconds",
+    sub: "Fastest — for screen recordings",
+    seconds: 10,
+  },
+  {
+    id: "demo-30s",
+    label: "Every 30 seconds",
+    sub: "Recommended for live demos",
+    seconds: 30,
+  },
+  {
+    id: "demo-2m",
+    label: "Every 2 minutes",
+    sub: "Slow enough to talk through",
+    seconds: 120,
+  },
+] as const;
+
+/**
+ * Grace presets exposed only in demo mode. Same shape as the
+ * production presets; just much shorter.
+ */
+export const DEMO_GRACE_PRESETS: readonly GracePreset[] = [
+  {
+    id: "demo-5s",
+    label: "5 seconds",
+    sub: "Fastest",
+    seconds: 5,
+  },
+  {
+    id: "demo-15s",
+    label: "15 seconds",
+    sub: "Recommended for live demos",
+    seconds: 15,
+  },
+  {
+    id: "demo-1m",
+    label: "1 minute",
+    sub: "More room to narrate",
+    seconds: 60,
+  },
+] as const;
+
+export const DEFAULT_DEMO_CADENCE_ID = "demo-30s";
+export const DEFAULT_DEMO_GRACE_ID = "demo-15s";
+
+/**
+ * Pick the right preset list (real or demo) for the current server.
+ * Callers should pass the `demo_mode` flag they read from `/health`.
+ * Centralising the choice keeps the two setup portals from drifting.
+ */
+export function cadencePresetsFor(demoMode: boolean): readonly CadencePreset[] {
+  return demoMode ? DEMO_CADENCE_PRESETS : CADENCE_PRESETS;
+}
+
+export function gracePresetsFor(demoMode: boolean): readonly GracePreset[] {
+  return demoMode ? DEMO_GRACE_PRESETS : GRACE_PRESETS;
+}
+
+export function defaultCadenceIdFor(demoMode: boolean): string {
+  return demoMode ? DEFAULT_DEMO_CADENCE_ID : DEFAULT_CADENCE_ID;
+}
+
+export function defaultGraceIdFor(demoMode: boolean): string {
+  return demoMode ? DEFAULT_DEMO_GRACE_ID : DEFAULT_GRACE_ID;
+}
+
+/**
+ * Resolve a preset id against the union of production + demo lists.
+ * The setup portals start with a production default; if the operator
+ * later turns on demo mode and the user reloads, the previously
+ * selected id will no longer match either list — fall back through
+ * the union before defaulting.
+ */
+export function cadenceByIdAnywhere(id: string): CadencePreset {
+  return (
+    CADENCE_PRESETS.find((c) => c.id === id) ??
+    DEMO_CADENCE_PRESETS.find((c) => c.id === id) ??
+    CADENCE_PRESETS[1]
+  );
+}
+
+export function graceByIdAnywhere(id: string): GracePreset {
+  return (
+    GRACE_PRESETS.find((g) => g.id === id) ??
+    DEMO_GRACE_PRESETS.find((g) => g.id === id) ??
+    GRACE_PRESETS[0]
+  );
+}

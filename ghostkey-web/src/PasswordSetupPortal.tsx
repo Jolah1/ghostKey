@@ -55,7 +55,7 @@
  *     the check-in cadence; no further action is needed before
  *     funding.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Button,
   Field,
@@ -79,12 +79,14 @@ import {
 } from "./crypto/sealing";
 import { randomBytes } from "@noble/hashes/utils.js";
 import {
-  CADENCE_PRESETS,
-  GRACE_PRESETS,
   DEFAULT_CADENCE_ID,
   DEFAULT_GRACE_ID,
-  cadenceById,
-  graceById,
+  cadencePresetsFor,
+  gracePresetsFor,
+  defaultCadenceIdFor,
+  defaultGraceIdFor,
+  cadenceByIdAnywhere,
+  graceByIdAnywhere,
 } from "./timing";
 
 interface Props {
@@ -146,6 +148,40 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [kdfProgress, setKdfProgress] = useState<number>(0);
+  // Demo-mode flag from /health. See SetupPortal.tsx for the
+  // rationale; both portals share the same gating logic so the
+  // experience is consistent across the two creation paths.
+  const [demoMode, setDemoMode] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .health()
+      .then((h) => {
+        if (!alive) return;
+        const d = Boolean(h.demo_mode);
+        setDemoMode(d);
+        setDraft((draft0) => {
+          if (
+            draft0.cadenceId !== DEFAULT_CADENCE_ID ||
+            draft0.graceId !== DEFAULT_GRACE_ID
+          ) {
+            return draft0;
+          }
+          return {
+            ...draft0,
+            cadenceId: defaultCadenceIdFor(d),
+            graceId: defaultGraceIdFor(d),
+          };
+        });
+      })
+      .catch(() => {
+        if (alive) setDemoMode(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // After creation we move to step 3 (Fund) and need to remember the
   // vault id + address. We keep them in component state only — a page
@@ -280,8 +316,8 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
       // the two xpubs and persists the ciphertexts atomically.
       const label = `${draft.heirName.trim()}'s inheritance`;
       const timelockBlocks = monthsToBlocks(draft.waitingMonths);
-      const checkinSecs = cadenceById(draft.cadenceId).seconds;
-      const graceSecs = graceById(draft.graceId).seconds;
+      const checkinSecs = cadenceByIdAnywhere(draft.cadenceId).seconds;
+      const graceSecs = graceByIdAnywhere(draft.graceId).seconds;
 
       const heirContactPayload = JSON.stringify({
         name: draft.heirName.trim(),
@@ -418,7 +454,7 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
         </div>
 
         <div className="mt-8">
-          {step === 0 && <StepHeir draft={draft} patch={patch} />}
+          {step === 0 && <StepHeir draft={draft} patch={patch} demoMode={demoMode} />}
           {step === 1 && (
             <StepPassword
               draft={draft}
@@ -513,12 +549,16 @@ function monthsLabel(n: number): string {
 function StepHeir({
   draft,
   patch,
+  demoMode,
 }: {
   draft: Draft;
   patch: (p: Partial<Draft>) => void;
+  demoMode: boolean;
 }) {
   const channelMeta =
     CHANNELS.find((c) => c.id === draft.heirContactChannel) ?? CHANNELS[0];
+  const cadenceList = cadencePresetsFor(demoMode);
+  const graceList = gracePresetsFor(demoMode);
 
   return (
     <div>
@@ -604,8 +644,16 @@ function StepHeir({
         </Field>
 
         <Field label="Remind me to check in">
+          {demoMode && (
+            <div
+              role="note"
+              className="mb-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200"
+            >
+              Demo server: cadences are in seconds. Not for real funds.
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {CADENCE_PRESETS.map((c) => (
+            {cadenceList.map((c) => (
               <Tile
                 key={c.id}
                 title={c.label}
@@ -622,7 +670,7 @@ function StepHeir({
           hint="Extra slack before the vault enters its alarm state. The heir still cannot claim for the full waiting period above."
         >
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {GRACE_PRESETS.map((g) => (
+            {graceList.map((g) => (
               <Tile
                 key={g.id}
                 title={g.label}

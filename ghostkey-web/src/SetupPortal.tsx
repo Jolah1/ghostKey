@@ -31,7 +31,7 @@
  * paste is the universal connector. The "What is this?" disclosure
  * tells the user where to find it in each wallet.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Button,
   Field,
@@ -48,12 +48,14 @@ import {
 } from "./api";
 import { saveVaultMeta } from "./vaultStore";
 import {
-  CADENCE_PRESETS,
-  GRACE_PRESETS,
   DEFAULT_CADENCE_ID,
   DEFAULT_GRACE_ID,
-  cadenceById,
-  graceById,
+  cadencePresetsFor,
+  gracePresetsFor,
+  defaultCadenceIdFor,
+  defaultGraceIdFor,
+  cadenceByIdAnywhere,
+  graceByIdAnywhere,
 } from "./timing";
 
 interface Props {
@@ -149,6 +151,49 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
   const [draft, setDraft] = useState<Draft>(EMPTY);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Demo-mode flag from /health. When true we surface the
+  // seconds-scale cadence/grace presets and adjust the initial
+  // selection so the picker has a valid default for this server.
+  // Read once on mount; a server that flips the flag mid-session
+  // would only take effect on the next page load.
+  const [demoMode, setDemoMode] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .health()
+      .then((h) => {
+        if (!alive) return;
+        const d = Boolean(h.demo_mode);
+        setDemoMode(d);
+        // Realign the initial cadence/grace selection if the user
+        // hasn't picked anything yet. Without this, a demo-mode
+        // server would show the production defaults (bi-weekly / 3d)
+        // selected by EMPTY and the demo pickers wouldn't visually
+        // reflect the current draft.
+        setDraft((draft0) => {
+          if (
+            draft0.cadenceId !== DEFAULT_CADENCE_ID ||
+            draft0.graceId !== DEFAULT_GRACE_ID
+          ) {
+            return draft0;
+          }
+          return {
+            ...draft0,
+            cadenceId: defaultCadenceIdFor(d),
+            graceId: defaultGraceIdFor(d),
+          };
+        });
+      })
+      .catch(() => {
+        // Health probe failed; assume production posture. The user
+        // can still create a vault; the server will validate.
+        if (alive) setDemoMode(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   function patch(p: Partial<Draft>) {
     setDraft((d) => ({ ...d, ...p }));
@@ -223,8 +268,8 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
       const label = `${draft.heirName.trim()}'s inheritance`;
       // Months → Bitcoin blocks. ~144 blocks/day, 30 days/month.
       const timelockBlocks = Math.max(144, draft.waitingMonths * 30 * 144);
-      const checkinSecs = cadenceById(draft.cadenceId).seconds;
-      const graceSecs = graceById(draft.graceId).seconds;
+      const checkinSecs = cadenceByIdAnywhere(draft.cadenceId).seconds;
+      const graceSecs = graceByIdAnywhere(draft.graceId).seconds;
 
       const heirContactPayload = JSON.stringify({
         name: draft.heirName.trim(),
@@ -321,7 +366,7 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
         <div className="mt-8">
           {step === 0 && <StepWallet draft={draft} patch={patch} />}
           {step === 1 && <StepHeir   draft={draft} patch={patch} />}
-          {step === 2 && <StepTiming draft={draft} patch={patch} />}
+          {step === 2 && <StepTiming draft={draft} patch={patch} demoMode={demoMode} />}
           {step === 3 && <StepReview draft={draft} />}
         </div>
 
@@ -641,12 +686,20 @@ const MONTH_OPTIONS = [1, 2, 3, 6, 9, 12];
 function StepTiming({
   draft,
   patch,
+  demoMode,
 }: {
   draft: Draft;
   patch: (p: Partial<Draft>) => void;
+  demoMode: boolean;
 }) {
+  // Pick the right preset list for this server's posture. The lookup
+  // is centralised in timing.ts so the two setup portals stay in
+  // lockstep — see cadencePresetsFor / gracePresetsFor there.
+  const cadenceList = cadencePresetsFor(demoMode);
+  const graceList = gracePresetsFor(demoMode);
   return (
     <div>
+      {demoMode && <DemoTimingNote />}
       <h1 className="font-serif text-3xl md:text-4xl">How long should we wait</h1>
       <p className="mt-2 text-muted">
         If you stop checking in, this is how long before the person you named can
@@ -677,7 +730,7 @@ function StepTiming({
 
         <Field label="Check-in reminder">
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {CADENCE_PRESETS.map((c) => (
+            {cadenceList.map((c) => (
               <Tile
                 key={c.id}
                 title={c.label}
@@ -694,7 +747,7 @@ function StepTiming({
           hint="Extra slack after a missed reminder, before the vault enters its alarm state."
         >
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {GRACE_PRESETS.map((g) => (
+            {graceList.map((g) => (
               <Tile
                 key={g.id}
                 title={g.label}
@@ -715,6 +768,28 @@ function monthsLabel(n: number): string {
   return `${n} month${n === 1 ? "" : "s"}`;
 }
 
+/**
+ * Small inline reminder shown above the timing pickers when the
+ * server reports demo mode. It's deliberately the only signal in
+ * this step; the global red banner shipped by App.tsx already tells
+ * the user this is a demo server, but it's easy to forget at the
+ * moment of choosing a 10-second cadence. This note is in their
+ * eyeline at the exact instant they make that choice.
+ */
+function DemoTimingNote() {
+  return (
+    <div
+      role="note"
+      className="mb-4 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-200"
+    >
+      <strong className="font-semibold">Demo server.</strong>{" "}
+      Cadences and grace periods are measured in seconds so the alarm
+      and claim flow are observable in real time. Don't use this server
+      for real funds.
+    </div>
+  );
+}
+
 /* --------------------------- Step 4: review ------------------------------- */
 
 function StepReview({ draft }: { draft: Draft }) {
@@ -731,8 +806,8 @@ function StepReview({ draft }: { draft: Draft }) {
       ["Their contact", short(draft.heirContact) || "—"],
       ["Their xpub", usedAdvanced ? "(in descriptor)" : (short(draft.heirXpub) || "—")],
       ["Waiting period", monthsLabel(draft.waitingMonths)],
-      ["Reminder", cadenceById(draft.cadenceId).label],
-      ["Grace period", graceById(draft.graceId).label],
+      ["Reminder", cadenceByIdAnywhere(draft.cadenceId).label],
+      ["Grace period", graceByIdAnywhere(draft.graceId).label],
       ["Your xpub", usedAdvanced ? "(in descriptor)" : (short(draft.ownerXpub) || "—")],
     ],
     [draft, usedAdvanced],
