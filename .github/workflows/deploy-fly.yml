@@ -1,0 +1,68 @@
+# Auto-deploy the Rust server to Fly.io on every push to main.
+#
+# Why this exists:
+#   Before this workflow, the live server at ghostkey.fly.dev only
+#   updated when a maintainer remembered to run `fly deploy` from
+#   their laptop. This led to weeks of drift between main and
+#   production — at one point /vaults/from-xpub returned 405 because
+#   the deployed binary predated the password-vault redesign. CI
+#   passing meant "the code compiles", not "the code is live".
+#
+# What it does:
+#   On every push to main that changes server-relevant files, build
+#   the Docker image via Fly's remote builder and deploy it to the
+#   `ghostkey` app. SQLite migrations run automatically at server
+#   startup (sqlx::migrate!), so we don't need a separate migration
+#   step.
+#
+# What it does NOT do:
+#   - Deploy the web frontend. Vercel handles that on its own based
+#     on the vercel.json at the repo root.
+#   - Run tests. The rust.yml workflow already gates merges on tests
+#     passing; if those didn't pass, the PR wouldn't be on main.
+#   - Roll back on failure. Fly keeps the previous machine running
+#     until the new one passes its health check (/health), so a
+#     broken deploy doesn't take the site down — but it doesn't
+#     automatically revert main either. Watch the action log.
+#
+# Required secret (Settings → Secrets and variables → Actions):
+#   FLY_API_TOKEN  — created with `fly tokens create deploy -x 8760h`
+#                    (one-year token; rotate annually). NOT your
+#                    personal Fly login token; use a deploy-scoped
+#                    token so a leak is bounded to deploys of this
+#                    one app.
+#
+# Manual override:
+#   `fly deploy` from your laptop still works if you need to push
+#   a hotfix without going through main. See DEPLOY.md.
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "Dockerfile"
+      - "fly.toml"
+      - ".github/workflows/deploy-fly.yml"
+  # Allow re-running manually from the Actions tab.
+  workflow_dispatch:
+
+# Don't pile up deploys; one at a time, latest wins.
+concurrency:
+  group: deploy-fly
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: fly deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

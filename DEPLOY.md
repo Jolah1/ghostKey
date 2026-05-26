@@ -302,6 +302,29 @@ fly logs                      # tail the server log
 curl https://ghostkey.fly.dev/health
 ```
 
+### Continuous deploy from GitHub Actions
+
+`.github/workflows/deploy-fly.yml` re-deploys the server on every push
+to `main` that touches `crates/`, `Cargo.*`, `Dockerfile`, or
+`fly.toml`. This avoids the "stale binary in production" trap where
+the code on `main` and the binary at `ghostkey.fly.dev` drift apart
+for weeks until someone notices a 4xx.
+
+**One-time setup:**
+
+1. Create a deploy-scoped Fly token (don't use your personal one):
+   ```sh
+   fly tokens create deploy -x 8760h   # 1 year; rotate annually
+   ```
+2. Add it as a repository secret named `FLY_API_TOKEN`:
+   GitHub → Settings → Secrets and variables → Actions → New
+   repository secret.
+3. The workflow's next push to `main` (or `workflow_dispatch` from
+   the Actions tab) will deploy.
+
+Manual `fly deploy` from your laptop still works any time you want
+to ship a hotfix without going through `main`.
+
 ### Field-by-field for the Fly Launcher UI
 
 If you're using the web Launcher (instead of `flyctl`), the screen you
