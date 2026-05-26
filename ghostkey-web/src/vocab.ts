@@ -14,24 +14,6 @@ export const brand = {
     "Set up once. Tap once a month to say you're here. If you ever stop, the people you chose can claim what's theirs.",
 };
 
-export const portals = {
-  setup: {
-    title: "Set up your vault",
-    blurb: "Five minutes. No documents. No lawyers.",
-  },
-  checkin: {
-    title: "I'm still here",
-    blurb: "Tap to reset the clock and let your people know you're around.",
-  },
-  inherit: {
-    title: "Someone left you something",
-    blurb: "Look up the vault you were named in. We'll tell you what to do.",
-  },
-  dashboard: {
-    title: "You're still here",
-  },
-};
-
 export function statusCopy(status: VaultStatus): {
   label: string;
   long: string;

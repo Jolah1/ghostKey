@@ -110,43 +110,6 @@ export function generateParty(network: Network): GeneratedParty {
   };
 }
 
-/**
- * Re-derive an HDKey from a stored xprv string, ready to derive a
- * concrete child for signing. Used at check-in time (owner) and at
- * claim time (heir) once the xprv has been unsealed.
- */
-export function hdKeyFromXprv(xprv: string, network: Network): HDKey {
-  return HDKey.fromExtendedKey(xprv, bip32Versions(network));
-}
-
-/**
- * Derive a single child x-only pubkey + private key from an account
- * xprv, for the given chain index (0 = external/receive, 1 = internal/
- * change) and address index. Returns the 32-byte x-only pubkey and the
- * 32-byte private scalar — both the format @scure/btc-signer expects
- * for Taproot signing.
- */
-export interface ChildKey {
-  privKey: Uint8Array; // 32 bytes
-  pubKeyXOnly: Uint8Array; // 32 bytes (x-only)
-}
-
-export function deriveChildKey(
-  accountXprv: string,
-  network: Network,
-  chain: 0 | 1,
-  index: number,
-): ChildKey {
-  const account = hdKeyFromXprv(accountXprv, network);
-  const child = account.deriveChild(chain).deriveChild(index);
-  if (!child.privateKey || !child.publicKey) {
-    throw new Error("child derivation produced no key");
-  }
-  // @noble/curves x-only: drop the parity byte from the compressed pubkey.
-  const xOnly = child.publicKey.slice(1);
-  return { privKey: child.privateKey, pubKeyXOnly: xOnly };
-}
-
 /** Best-effort zero-fill of a Uint8Array. Not a security boundary —
  *  V8 may have copied it — but signals intent and clears the obvious
  *  in-memory residue. */

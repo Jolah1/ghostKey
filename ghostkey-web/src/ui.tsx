@@ -403,22 +403,6 @@ export function usePolling(
 
 /* ----------------------- Friendly formatters ------------------------ */
 
-export function prettyDuration(secs: number): string {
-  if (secs >= 86_400) {
-    const d = Math.round(secs / 86_400);
-    return `${d} day${d === 1 ? "" : "s"}`;
-  }
-  if (secs >= 3_600) {
-    const h = Math.round(secs / 3_600);
-    return `${h} hour${h === 1 ? "" : "s"}`;
-  }
-  if (secs >= 60) {
-    const m = Math.round(secs / 60);
-    return `${m} minute${m === 1 ? "" : "s"}`;
-  }
-  return `${secs} second${secs === 1 ? "" : "s"}`;
-}
-
 export function friendlyEventKind(kind: string): string {
   switch (kind) {
     case "registered": return "Vault activated";

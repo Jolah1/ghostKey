@@ -133,9 +133,11 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
   const [kdfProgress, setKdfProgress] = useState<number>(0);
 
   // After creation we move to step 3 (Fund) and need to remember the
-  // vault id + address. We keep them in component state so a page
-  // refresh sends the user back to the dashboard (which can re-derive
-  // the address via the same /vaults/:id/address endpoint).
+  // vault id + address. We keep them in component state only — a page
+  // refresh during the funding step will lose the address (the user
+  // is bounced to /dashboard which doesn't display the address today),
+  // but the funds are safe on-chain regardless and the address can be
+  // re-derived from /vaults/:id/address at any time.
   const [created, setCreated] = useState<{
     vaultId: string;
     address: string | null;
@@ -326,7 +328,6 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
         label,
         owner: {
           address: draft.ownerEmail.trim(),
-          wallet: null,
         },
         heir: {
           name: draft.heirName.trim(),

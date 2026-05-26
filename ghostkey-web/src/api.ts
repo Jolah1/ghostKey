@@ -335,9 +335,6 @@ export interface CreatedVault extends VaultView {
 
 export const api = {
   health: () => request<{ ok: boolean; version: string }>("/health"),
-  /** Admin-only on the server. The web app does not call this. */
-  listVaults: (adminToken: string) =>
-    request<VaultListItem[]>("/vaults", {}, adminToken),
   getVault: (id: string, ownerToken: string | null) =>
     request<VaultView>(`/vaults/${id}`, {}, ownerToken),
   createVault: (req: CreateVaultRequest) =>
