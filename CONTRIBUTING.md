@@ -218,14 +218,23 @@ of [`README.md`](./README.md) for the full list.
   this is a generalisation of the existing builder.
 
 ### Translations
-- **Yoruba, Igbo, Hausa.** GhostKey's target audience includes
-  Nigeria. Family-inheritance conversations happen in the family's
-  first language, not English. We need help translating
-  user-facing copy (the landing page, the setup wizard, the claim
-  page) without losing the calm, plain-English tone of the
-  original. See `ghostkey-web/src/vocab.ts` for centralised
-  brand strings.
-- **French.** Useful for Francophone West Africa.
+- **Pidgin (planned first).** GhostKey's primary audience is
+  Nigerian, and Pidgin is the single language with the widest reach
+  across the country. We've scoped a small i18n shell + an EN/PCM
+  toggle (auto-detecting `*-NG` browser locales) as the first
+  translation milestone — see the JOURNAL "left for later" lists.
+  Help reviewing draft Pidgin copy for tone and accuracy will be
+  the gating step; the engineering side is straightforward.
+- **Yoruba, Igbo, Hausa.** Family-inheritance conversations happen
+  in the family's first language, not English. Once the Pidgin
+  shell ships, adding more locales is a `vocab/<lang>.ts` file plus
+  a toggle option — mechanical work. We need native speakers to
+  translate user-facing copy (the landing page, the setup wizard,
+  the claim page) without losing the calm, plain-English tone of
+  the original. See `ghostkey-web/src/vocab.ts` for centralised
+  brand strings today; the i18n shell will expand that surface.
+- **French.** Useful for Francophone West Africa. Same shape as the
+  three above.
 
 ### Documentation
 - **Wallet-specific xpub guides.** Step-by-step screenshots for

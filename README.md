@@ -73,7 +73,7 @@ What's still being built:
 - Check-in reminders for owners
 - Multiple heirs
 - Hardware wallet PSBT export
-- Translations — Yoruba, Igbo, Hausa especially needed
+- Translations — Pidgin first (planned), then Yoruba, Igbo, Hausa
 - Mainnet security review
 
 ---

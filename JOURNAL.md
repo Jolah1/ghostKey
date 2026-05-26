@@ -78,7 +78,7 @@ The first version was visibly built by engineers for engineers. Before adding mo
 
 ### What we left for later
 
-- Everything is still in English. Yoruba, Igbo, and Hausa translations are on the list.
+- Everything is still in English. Pidgin is the first translation we plan to ship; Yoruba, Igbo, and Hausa follow.
 - There was still no landing page — the app opened directly into the dashboard.
 
 ---
@@ -262,7 +262,7 @@ The live path — signing an actual transaction on a real test network and broad
 - The live test on signet (see above — highest priority).
 - Notifications: email, SMS, WhatsApp. The heir currently has to be told about the link some other way.
 - Multiple heirs.
-- Translations into Yoruba, Igbo, Hausa.
+- Translations: Pidgin first (highest-impact for the Nigerian audience, single language so the i18n shell stays simple), then Yoruba, Igbo, Hausa.
 - Key rotation for the server master secret.
 
 ---

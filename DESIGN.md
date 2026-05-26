@@ -347,7 +347,7 @@ Add a `notifications` table, a worker that polls unsent events and pushes throug
 
 **Guided wallet import.** Screenshots and step-by-step instructions for the three most common wallets (Sparrow, Blue Wallet, Cake Wallet) on the "find your xpub" step of setup.
 
-**Translations.** All copy is English. Yoruba, Igbo, and Hausa would be high-impact for our primary audience. Mechanical work; no architectural changes needed.
+**Translations.** All copy is English. Pidgin (BCP-47 `pcm`) is the first translation we plan to ship — single language, broadest reach in Nigeria, lets us stand up the i18n shell with one target instead of three. Yoruba, Igbo, and Hausa follow once the shell is proven. Mechanical work; no architectural changes needed.
 
 **CLI claim from link.** Add `claim --from-link <url>` so a paranoid heir can complete the claim locally without trusting our Esplora endpoint, using a local Bitcoin node instead.
 
