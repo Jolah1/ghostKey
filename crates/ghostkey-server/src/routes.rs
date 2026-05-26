@@ -50,6 +50,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/vaults/:id/seal-owner-token", post(seal_owner_token))
         .route("/vaults/:id/checkin", post(checkin))
         .route(
+            "/vaults/:id/checkin-from-link/:token",
+            post(checkin_from_link),
+        )
+        .route(
             "/vaults/:id/lightning-checkin/invoice",
             post(lightning_create_invoice),
         )
@@ -883,7 +887,11 @@ async fn checkin(
                   claim_eligible_at    = ?,
                   claim_token_hash     = NULL,
                   claim_token_issued_at = NULL,
-                  claim_token_used_at  = NULL
+                  claim_token_used_at  = NULL,
+                  pre_deadline_reminder_sent_at = NULL,
+                  checkin_link_token_hash      = NULL,
+                  checkin_link_token_issued_at = NULL,
+                  checkin_link_token_used_at   = NULL
             WHERE id = ?"#,
     )
     .bind(&now_s)
@@ -894,6 +902,150 @@ async fn checkin(
     .await?;
 
     record_event(&state.db, &id, "checkin", None).await?;
+
+    Ok(Json(CheckinResponse {
+        vault_id: id,
+        last_checkin_at: now,
+        next_deadline_at: next,
+        status: "ok".into(),
+    }))
+}
+
+/* -------------------------------------------------------------------------- *
+ *  POST /vaults/:id/checkin-from-link/:token                                 *
+ *                                                                            *
+ *  One-tap check-in from the link the scheduler embeds in pre-deadline       *
+ *  reminders and alarm-fired owner emails. The link carries a fresh          *
+ *  per-cycle bearer token; the server stores only its SHA-256 hash so a     *
+ *  DB leak cannot impersonate the owner. The token is single-use AND        *
+ *  single-cycle: consumed on first POST, AND cleared on every successful    *
+ *  check-in (button, Lightning, or one-tap).                                *
+ *                                                                            *
+ *  Threat model: anyone who reads the owner's email can check in for that   *
+ *  vault until the next cycle starts or the link is consumed. That's the    *
+ *  same shape as the heir's claim link. We document the trade-off and       *
+ *  rely on the per-cycle expiry to bound the blast radius of a leaked       *
+ *  email.                                                                    *
+ *                                                                            *
+ *  No `OwnerAuth` extractor here: the token IS the auth. We index the row   *
+ *  by `checkin_link_token_hash` (the migration adds the index), then        *
+ *  constant-time-verify the presented token against the stored hash before  *
+ *  doing anything else.                                                      *
+ * -------------------------------------------------------------------------- */
+
+async fn checkin_from_link(
+    State(state): State<Arc<AppState>>,
+    Path((id, token)): Path<(String, String)>,
+) -> Result<Json<CheckinResponse>, ApiError> {
+    let hash = hash_claim_token(&token);
+
+    // Look up by hash AND vault id together. Two reasons:
+    //   - matches the index `idx_vaults_checkin_link_token`,
+    //   - refuses to authenticate a token that was minted for a
+    //     different vault (defence in depth — a hash collision
+    //     would be astronomical for a 256-bit token, but the cost
+    //     of the extra predicate is one column compare).
+    let row: Option<(
+        Option<String>, // checkin_link_token_hash
+        Option<String>, // checkin_link_token_used_at
+        i64,            // checkin_period_secs
+        i64,            // grace_period_secs
+    )> = sqlx::query_as(
+        r#"SELECT checkin_link_token_hash, checkin_link_token_used_at,
+                  checkin_period_secs, grace_period_secs
+             FROM vaults
+            WHERE id = ?
+              AND checkin_link_token_hash = ?"#,
+    )
+    .bind(&id)
+    .bind(&hash)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let (stored_hash, used_at, checkin_secs, grace_secs) = row.ok_or(ApiError::NotFound)?;
+    let stored_hash = stored_hash.ok_or(ApiError::NotFound)?;
+    if !crypto::claim_token_matches(&token, &stored_hash) {
+        return Err(ApiError::NotFound);
+    }
+    if used_at.is_some() {
+        // Single-use: the owner (or someone with the email) has already
+        // tapped this link. Don't silently re-check-in; tell the caller
+        // so they can show "already used" rather than "success".
+        return Err(ApiError::Conflict("check-in link already used".into()));
+    }
+
+    // Reset the vault state exactly the way `checkin` does, plus
+    // mark the one-tap token used. Wrapped in a single transaction
+    // so the marker write is atomic with the deadline reset; a
+    // partial commit would let the link be tapped twice.
+    let now = Utc::now();
+    let next = now + Duration::seconds(checkin_secs + grace_secs);
+    let claim_eligible = next + Duration::seconds(grace_secs);
+    let now_s = now.to_rfc3339();
+    let next_s = next.to_rfc3339();
+    let claim_eligible_s = claim_eligible.to_rfc3339();
+
+    let mut tx = state.db.begin().await?;
+    let upd = sqlx::query(
+        r#"UPDATE vaults
+              SET last_checkin_at      = ?,
+                  next_deadline_at     = ?,
+                  status               = 'ok',
+                  claim_eligible_at    = ?,
+                  claim_token_hash     = NULL,
+                  claim_token_issued_at = NULL,
+                  claim_token_used_at  = NULL,
+                  pre_deadline_reminder_sent_at = NULL,
+                  -- single-use marker: write used_at first so a
+                  -- racing second tap sees `used_at IS NOT NULL`
+                  -- and gets a 409 above.
+                  checkin_link_token_used_at = ?
+            WHERE id = ?
+              AND checkin_link_token_hash = ?
+              AND checkin_link_token_used_at IS NULL"#,
+    )
+    .bind(&now_s)
+    .bind(&next_s)
+    .bind(&claim_eligible_s)
+    .bind(&now_s)
+    .bind(&id)
+    .bind(&stored_hash)
+    .execute(&mut *tx)
+    .await?;
+    if upd.rows_affected() == 0 {
+        // Lost the race against another concurrent tap. Treat as
+        // "already used" — the owner is checked in either way.
+        return Err(ApiError::Conflict("check-in link already used".into()));
+    }
+
+    // Now that we've recorded the use, scrub the hash columns so the
+    // link can't be tapped again even if `used_at` were somehow
+    // cleared by an admin script. This mirrors the routes::checkin
+    // behaviour of clearing the columns on every successful check-in.
+    sqlx::query(
+        r#"UPDATE vaults
+              SET checkin_link_token_hash      = NULL,
+                  checkin_link_token_issued_at = NULL,
+                  checkin_link_token_used_at   = NULL
+            WHERE id = ?"#,
+    )
+    .bind(&id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    record_event(
+        &state.db,
+        &id,
+        "checkin",
+        Some(serde_json::json!({ "source": "one_tap_link" })),
+    )
+    .await?;
+
+    tracing::info!(
+        vault_id = %id,
+        "one-tap check-in accepted; deadline reset"
+    );
 
     Ok(Json(CheckinResponse {
         vault_id: id,

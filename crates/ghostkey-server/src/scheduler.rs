@@ -36,12 +36,249 @@ pub async fn run(state: Arc<AppState>, tick: Duration) {
 
 async fn tick_once(state: &AppState) -> anyhow::Result<()> {
     let now = Utc::now().to_rfc3339();
+    issue_pre_deadline_reminders(state, &now).await?;
     transition_ok_to_alarmed(state, &now).await?;
     transition_alarmed_to_claimable(state, &now).await?;
     Ok(())
 }
 
-/// Move every vault past its `next_deadline_at` from `ok` to `alarmed`.
+/// How far ahead of the deadline we send the pre-deadline reminder.
+/// 24 hours matches what most calendar apps do; the picker is not
+/// user-configurable in this pass (see JOURNAL "left for later").
+///
+/// Tests and the scheduler share this constant so a future tweak
+/// stays consistent. Demo-mode deployments (`GHOSTKEY_DEMO_MODE=1`)
+/// have a cadence shorter than this lead time on purpose — when the
+/// cadence is 10 seconds, the lead-time check fires immediately, so
+/// the reminder shows up in the same demo as the alarm. That's the
+/// behaviour we want: the demo demonstrates BOTH emails fire.
+const PRE_DEADLINE_REMINDER_LEAD_SECS: i64 = 24 * 3600;
+
+/// Mint a one-tap check-in token for `vault_id` if the row doesn't
+/// already have one for the current cycle, otherwise reuse the
+/// existing hash. Returns the *raw* token the caller can embed in
+/// an email URL.
+///
+/// "Current cycle" means: there is a row, its `checkin_link_token_hash`
+/// is non-NULL, AND its `checkin_link_token_used_at` is NULL (an
+/// unused token from a still-open cycle). When the token has been
+/// used, OR the column is NULL because the previous cycle's check-in
+/// cleared it, we mint a fresh one.
+///
+/// The CAS-style INSERT guard (`AND checkin_link_token_hash IS NULL`)
+/// means two scheduler ticks racing on the same row will produce one
+/// fresh token, not two — the second tick reads back the hash the
+/// first one wrote. We do still need to return the raw token from
+/// THIS tick to embed it in the email; if we ever lost that race we'd
+/// have a hash in the DB and no raw token to email out. We accept
+/// that edge case: the next tick will see the marker and skip; the
+/// reminder simply doesn't go out that cycle. Logged loudly so it's
+/// observable.
+async fn mint_or_reuse_one_tap_token(
+    state: &AppState,
+    vault_id: &str,
+    now_iso: &str,
+) -> anyhow::Result<Option<String>> {
+    // Try to read an existing live token first. If the previous
+    // reminder enqueued one and the owner hasn't used it yet,
+    // re-issuing would break the previously-sent email.
+    let existing: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT checkin_link_token_hash, checkin_link_token_used_at \
+         FROM vaults WHERE id = ?",
+    )
+    .bind(vault_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some((hash, used_at)) = existing else {
+        return Ok(None);
+    };
+    if hash.is_some() && used_at.is_none() {
+        // A live token exists. We can't recover the raw value — it
+        // only ever lived in the email URL — so the best we can do
+        // is NOT mint a new one (which would invalidate the existing
+        // email link). Returning None tells the caller to skip the
+        // enqueue; the email link from the previous reminder is
+        // still valid.
+        tracing::info!(
+            vault_id = %vault_id,
+            "one-tap token already issued this cycle; skipping re-enqueue"
+        );
+        return Ok(None);
+    }
+
+    let issued = issue_claim_token();
+    let updated = sqlx::query(
+        r#"UPDATE vaults
+              SET checkin_link_token_hash       = ?,
+                  checkin_link_token_issued_at  = ?,
+                  checkin_link_token_used_at    = NULL
+            WHERE id = ?
+              AND (checkin_link_token_hash IS NULL
+                   OR checkin_link_token_used_at IS NOT NULL)"#,
+    )
+    .bind(&issued.hash_hex)
+    .bind(now_iso)
+    .bind(vault_id)
+    .execute(&state.db)
+    .await?;
+
+    if updated.rows_affected() == 0 {
+        // Another tick won the race. The other tick has the raw
+        // token; we have nothing to email. Skip silently — the
+        // next cycle's reminder will get a fresh shot.
+        return Ok(None);
+    }
+    Ok(Some(issued.token))
+}
+
+/// One scheduler step: fire a pre-deadline reminder for every vault
+/// whose next deadline is within `PRE_DEADLINE_REMINDER_LEAD_SECS`
+/// of now, has not been reminded this cycle, and has a sealed owner
+/// contact we can deliver to.
+///
+/// The `pre_deadline_reminder_sent_at` column is the per-cycle
+/// guard. It's set on every successful enqueue here, and cleared on
+/// every successful check-in (button, Lightning, one-tap link) so
+/// the next cycle starts fresh.
+async fn issue_pre_deadline_reminders(state: &AppState, now_iso: &str) -> anyhow::Result<()> {
+    // Window upper bound: now + lead. We send the reminder for any
+    // vault whose deadline is within this window. The lower bound
+    // (we must not have passed the deadline yet) is encoded as
+    // `next_deadline_at > now`.
+    let now_dt = chrono::DateTime::parse_from_rfc3339(now_iso)
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now());
+    let window_end = (now_dt + chrono::Duration::seconds(PRE_DEADLINE_REMINDER_LEAD_SECS))
+        .to_rfc3339();
+
+    let due = sqlx::query_as::<
+        _,
+        (
+            String,         // id
+            Option<String>, // label
+            Option<String>, // owner_contact_ciphertext
+            Option<String>, // owner_contact_nonce
+            Option<String>, // owner_contact_channel
+            String,         // next_deadline_at
+        ),
+    >(
+        r#"SELECT id, label,
+                  owner_contact_ciphertext, owner_contact_nonce, owner_contact_channel,
+                  next_deadline_at
+             FROM vaults
+            WHERE status = 'ok'
+              AND next_deadline_at > ?
+              AND next_deadline_at <= ?
+              AND pre_deadline_reminder_sent_at IS NULL
+              AND owner_contact_ciphertext IS NOT NULL"#,
+    )
+    .bind(now_iso)
+    .bind(&window_end)
+    .fetch_all(&state.db)
+    .await?;
+
+    for (id, label, ow_ct, ow_nn, ow_ch, next_deadline_at) in due {
+        if let Err(e) = enqueue_pre_deadline_reminder(
+            state,
+            &id,
+            label.as_deref(),
+            ow_ct.as_deref(),
+            ow_nn.as_deref(),
+            ow_ch.as_deref(),
+            &next_deadline_at,
+            now_iso,
+        )
+        .await
+        {
+            tracing::warn!(vault_id = %id, error = ?e, "could not enqueue pre-deadline reminder");
+        }
+    }
+    Ok(())
+}
+
+/// Build the pre-deadline reminder email and enqueue it. Also sets
+/// the per-cycle marker so the next tick doesn't re-send.
+async fn enqueue_pre_deadline_reminder(
+    state: &AppState,
+    vault_id: &str,
+    label: Option<&str>,
+    ow_ct: Option<&str>,
+    ow_nn: Option<&str>,
+    ow_ch: Option<&str>,
+    next_deadline_at_iso: &str,
+    now_iso: &str,
+) -> anyhow::Result<()> {
+    let Some(contact) = parse_owner_contact(vault_id, ow_ct, ow_nn, ow_ch)? else {
+        // Defensive: SQL already filtered on
+        // `owner_contact_ciphertext IS NOT NULL`, but the contact
+        // could still parse to None if the channel column holds a
+        // value we don't know how to deliver to. Don't set the marker
+        // in that case — leave the row eligible so a future code
+        // change that adds the channel can still ship the reminder.
+        return Ok(());
+    };
+    if !matches!(contact.channel, Channel::Email) {
+        return Ok(());
+    }
+
+    let token = match mint_or_reuse_one_tap_token(state, vault_id, now_iso).await? {
+        Some(t) => t,
+        None => return Ok(()), // race with concurrent tick; see helper
+    };
+
+    let deadline_friendly = chrono::DateTime::parse_from_rfc3339(next_deadline_at_iso)
+        .ok()
+        .map(|d| {
+            d.with_timezone(&chrono::Utc)
+                .format("%Y-%m-%d %H:%M UTC")
+                .to_string()
+        })
+        .unwrap_or_else(|| next_deadline_at_iso.to_string());
+
+    let base = public_base_url();
+    let one_tap_url = format!("{base}/#/checkin-link/{vault_id}/{token}");
+    let display_label = label.unwrap_or("your GhostKey vault");
+
+    let subject = format!("Reminder: {display_label} check-in due {deadline_friendly}");
+    let body = format!(
+        "Hello,\n\n\
+         A quick reminder that {display_label} needs a check-in by \
+         {deadline_friendly}. That's about 24 hours from now.\n\n\
+         Tap this link to check in. One tap. Nothing else.\n\n\
+         {one_tap_url}\n\n\
+         If you can't tap from this email, open the dashboard on any \
+         device and tap \"I'm still here\":\n\n\
+         {base}/#/checkin\n\n\
+         If we don't hear from you by the deadline, you'll get one more \
+         email — and then your heir will be contacted after the \
+         grace period.\n\n\
+         If this email reached you by mistake, you can ignore it.\n\n\
+         — GhostKey\n"
+    );
+
+    notifier::enqueue(
+        &state.db,
+        vault_id,
+        NotificationKind::PreDeadlineReminder,
+        Channel::Email,
+        &contact.address,
+        &subject,
+        &body,
+    )
+    .await?;
+
+    // Set the per-cycle marker so we don't re-send on the next tick.
+    // Cleared on every successful check-in (see routes::checkin,
+    // psbt_routes, lightning::mark_paid_and_checkin).
+    sqlx::query("UPDATE vaults SET pre_deadline_reminder_sent_at = ? WHERE id = ?")
+        .bind(now_iso)
+        .bind(vault_id)
+        .execute(&state.db)
+        .await?;
+
+    tracing::info!(vault_id = %vault_id, "pre-deadline reminder enqueued");
+    Ok(())
+}
 /// Records an `alarm` event so operators / notifier integrations can
 /// surface "missed check-in" to the owner.
 ///
@@ -52,6 +289,21 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
 /// a failure here logs and continues; the status transition has
 /// already committed, and the next scheduler tick won't re-issue
 /// because the row's status is no longer `ok`.
+/// Move every vault past its `next_deadline_at` from `ok` to `alarmed`.
+/// Records an `alarm` event so operators / notifier integrations can
+/// surface "missed check-in" to the owner.
+///
+/// Also: when the vault has a sealed owner contact (set by the web
+/// wizard), enqueue an `AlarmOwner` email so the owner gets a real
+/// nudge rather than learning about the missed check-in only when
+/// their heir starts asking questions. The email carries the same
+/// per-cycle one-tap token as the pre-deadline reminder (when the
+/// pre-deadline reminder fired and the token is still live), so the
+/// owner can check in from the alarm email without typing a password.
+/// The enqueue is best-effort — a failure here logs and continues;
+/// the status transition has already committed, and the next
+/// scheduler tick won't re-issue because the row's status is no
+/// longer `ok`.
 async fn transition_ok_to_alarmed(state: &AppState, now_iso: &str) -> anyhow::Result<()> {
     let due = sqlx::query_as::<
         _,
@@ -107,6 +359,7 @@ async fn transition_ok_to_alarmed(state: &AppState, now_iso: &str) -> anyhow::Re
             ow_nn.as_deref(),
             ow_ch.as_deref(),
             &claim_eligible_at,
+            now_iso,
         )
         .await
         {
@@ -129,6 +382,7 @@ async fn enqueue_alarm_owner(
     ow_nn: Option<&str>,
     ow_ch: Option<&str>,
     claim_eligible_at_iso: &str,
+    now_iso: &str,
 ) -> anyhow::Result<()> {
     let Some(contact) = parse_owner_contact(vault_id, ow_ct, ow_nn, ow_ch)? else {
         tracing::info!(vault_id = %vault_id, "no sealed owner contact; skipping owner alarm notification");
@@ -164,18 +418,30 @@ async fn enqueue_alarm_owner(
         .unwrap_or_else(|| claim_eligible_at_iso.to_string());
 
     let base = public_base_url();
-    let checkin_url = format!("{base}/#/checkin");
     let display_label = label.unwrap_or("your GhostKey vault");
+
+    // Reuse the pre-deadline reminder's token when it's still live,
+    // otherwise mint a fresh one. Either way `Some(token)` means the
+    // alarm email carries a working one-tap URL; `None` means we lost
+    // a race or the row vanished — skip silently.
+    let one_tap_block = match mint_or_reuse_one_tap_token(state, vault_id, now_iso).await? {
+        Some(token) => format!(
+            "Tap this link to check in. One tap. Nothing else.\n\n\
+             {base}/#/checkin-link/{vault_id}/{token}\n\n"
+        ),
+        None => String::new(),
+    };
 
     let subject = "You missed your GhostKey check-in".to_string();
     let body = format!(
         "Hello,\n\n\
          {display_label} just missed its check-in deadline. We'd usually \
-         remind you sooner — this is the last reminder before the next \
-         step.\n\n\
-         If you're still around: open this link on any device and tap \
-         \"I'm still here\" to reset the clock. Nothing else changes.\n\n\
-         {checkin_url}\n\n\
+         remind you sooner — this is the last reminder before the \
+         next step.\n\n\
+         {one_tap_block}\
+         You can also open the dashboard on any device and tap \
+         \"I'm still here\" to reset the clock:\n\n\
+         {base}/#/checkin\n\n\
          If we don't hear from you by {claim_friendly}, your heir will \
          receive their claim link automatically. You can stop that at \
          any moment up to then by checking in.\n\n\

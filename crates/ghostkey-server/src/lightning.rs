@@ -364,7 +364,11 @@ pub async fn mark_paid_and_checkin(
                   claim_eligible_at    = ?,
                   claim_token_hash     = NULL,
                   claim_token_issued_at = NULL,
-                  claim_token_used_at  = NULL
+                  claim_token_used_at  = NULL,
+                  pre_deadline_reminder_sent_at = NULL,
+                  checkin_link_token_hash      = NULL,
+                  checkin_link_token_issued_at = NULL,
+                  checkin_link_token_used_at   = NULL
             WHERE id = ?"#,
     )
     .bind(&now_s)

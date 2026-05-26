@@ -85,6 +85,14 @@ pub enum NotificationKind {
     /// CLI route, which writes the plaintext column) don't have a
     /// sealed contact and skip silently.
     AlarmOwner,
+    /// Owner-side, BEFORE the deadline: "your check-in is due in 24h".
+    /// Friendly nudge that lands while the owner still has a full
+    /// day of slack to act. Wired into
+    /// [`crate::scheduler::issue_pre_deadline_reminders`] (20260528).
+    /// At most one per check-in cycle; the scheduler tracks this via
+    /// `vaults.pre_deadline_reminder_sent_at`, which is cleared on
+    /// every successful check-in.
+    PreDeadlineReminder,
 }
 
 impl NotificationKind {
@@ -92,6 +100,7 @@ impl NotificationKind {
         match self {
             NotificationKind::ClaimLink => "claim_link",
             NotificationKind::AlarmOwner => "alarm_owner",
+            NotificationKind::PreDeadlineReminder => "pre_deadline_reminder",
         }
     }
 }
