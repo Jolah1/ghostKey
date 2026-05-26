@@ -293,6 +293,44 @@ fly launch --no-deploy --copy-config --name ghostkey --region ams
 fly volumes create ghostkey_data --region ams --size 1   # 1 GB is plenty
 ```
 
+### Required secrets
+
+The server **will not boot** without `GHOSTKEY_MASTER_KEY`, and CORS
+preflight will reject every browser request unless `GHOSTKEY_ALLOWED_ORIGINS`
+includes your frontend origin. Set both before the first deploy:
+
+```sh
+# 1. Server master key — encrypts heir-contact rows at rest.
+#    Generate ONE fresh 32-byte key, save a copy to your password
+#    manager, then set it:
+KEY=$(openssl rand 32 | base64 | tr -d '=\n')
+echo "$KEY"       # <-- save this somewhere safe BEFORE pasting it into Fly
+fly secrets set GHOSTKEY_MASTER_KEY="$KEY" -a ghostkey
+
+# 2. CORS allowlist — comma-separated exact-match origins.
+#    Default (when unset) is localhost:5173 only, which is correct for
+#    `cargo run` but breaks every browser pointed at the live frontend.
+fly secrets set GHOSTKEY_ALLOWED_ORIGINS="https://ghostkeyapp.vercel.app" -a ghostkey
+```
+
+**About `GHOSTKEY_MASTER_KEY`:** lose it and every heir-contact row
+already in the database becomes unrecoverable. The heir's *Bitcoin* is
+still safe (the on-chain script enforces inheritance independently),
+but the server can no longer email the heir when the alarm fires. Treat
+it the way you'd treat your database backup key — back it up to a
+second location.
+
+**About `GHOSTKEY_ALLOWED_ORIGINS`:** add new origins as a
+comma-separated list (`fly secrets set GHOSTKEY_ALLOWED_ORIGINS="a,b,c"`).
+The list is exact-match; subdomain wildcards are not supported. If you
+add a custom domain, list both `https://yourdomain.tld` and any
+`www.` variant you'll serve from.
+
+Both are stored encrypted in Fly's secret store and survive restarts,
+deploys, and machine upgrades. You only need to re-run the commands
+above if you deliberately rotate (which currently requires manual
+re-encryption of existing rows — see ARCHITECTURE.md).
+
 ### Deploy
 
 ```sh
