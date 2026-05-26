@@ -82,6 +82,30 @@ These are documented gaps, not findings:
 
 If you find an unknown limitation, *that* is in scope.
 
+## Accepted supply-chain advisories
+
+`cargo audit` runs in CI on every push to `main` and nightly. Five
+advisories are listed in [`.cargo/audit.toml`](./.cargo/audit.toml)
+with explicit per-advisory reasoning rather than a blanket ignore.
+The TL;DR:
+
+| Advisory | Crate | Why we accept it |
+|---|---|---|
+| RUSTSEC-2023-0071 | `rsa` | We use no RSA. The crate is pulled in transitively by `sqlx-mysql` features we never instantiate (we use SQLite). The vulnerable code path is unreachable. |
+| RUSTSEC-2026-0098 / 0099 / 0104 | `rustls-webpki 0.101` | Pulled in via `bdk_esplora 0.20 → esplora-client 0.11 → minreq 2.x → rustls 0.21`. Fixing the chain requires a semver-incompatible `bdk_esplora` bump (0.20 → 0.22), which is its own multi-day migration. The vulnerable surface is TLS certificate validation in `minreq`, used only to talk to an operator-configured Esplora URL (default Blockstream). All three CVEs require a malicious server certificate path; we do not accept user-supplied URLs at this layer. |
+| RUSTSEC-2025-0134 | `rustls-pemfile 1.x` | Unmaintained notice (not a CVE). Same dep chain as above; resolves the day we bump the BDK family. |
+
+`npm audit` also reports two **moderate** dev-only advisories
+(`esbuild ≤0.24.2`, `vite ≤6.4.1`). These affect the local
+`npm run dev` server only — the production bundle on Vercel is the
+output of `npm run build`, which doesn't ship the affected code. The
+fix is `vite@8`, which is a major-version jump with breaking changes
+to our build config; we'll bundle it with the next planned Vite
+upgrade rather than chase a green badge for a non-issue.
+
+Genuine new advisories — anything not in the table above — will fail
+the `audit` job and block the next merge.
+
 ## Credit
 
 We maintain a list of reporters who chose to be credited in the

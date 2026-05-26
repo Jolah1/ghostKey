@@ -20,6 +20,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Daily 04:17 UTC re-scan so a freshly-disclosed CVE in a transitive
+  # dep can't sit unnoticed until the next push. The audit job is the
+  # only consumer of this trigger — the build/test jobs only run on
+  # actual code changes.
+  schedule:
+    - cron: "17 4 * * *"
 
 # Cancel older in-flight runs for the same ref so a force-push doesn't
 # pile up queue depth.
@@ -65,3 +71,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
+
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    # Don't block PRs on supply-chain noise — but DO surface it on every
+    # push to main so a new advisory can't sit unnoticed for weeks. The
+    # audit also runs nightly via the cron below so a freshly-disclosed
+    # CVE shows up even if nobody pushes for a few days.
+    steps:
+      - uses: actions/checkout@v4
+      # rustsec/audit-check reads .cargo/audit.toml for our explicit
+      # ignore list with per-CVE reasoning. Any *new* advisory not in
+      # that file fails the job; the four rustls/rsa entries we've
+      # already triaged pass silently.
+      - uses: rustsec/audit-check@v1.4.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

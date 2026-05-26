@@ -1,0 +1,80 @@
+# cargo-audit configuration.
+#
+# Every entry below is an explicit decision NOT to fix an advisory, with
+# the reasoning. We don't blanket-ignore: each `id` carries a per-CVE
+# justification + a "what would it take to actually fix this" note so a
+# future maintainer can revisit the decision when upstream catches up.
+#
+# This file is read by `cargo audit` (both locally and in CI). The CI
+# workflow asserts that *only* the advisories listed here are ignored —
+# any new advisory will fail the build until either fixed or explicitly
+# ignored.
+
+[advisories]
+ignore = [
+  # RUSTSEC-2023-0071: Marvin attack — timing sidechannel in RSA key recovery.
+  #
+  # Why this doesn't apply to GhostKey:
+  #   GhostKey uses no RSA anywhere. All on-chain crypto is secp256k1
+  #   Taproot; all server-side authenticated-encryption is
+  #   XChaCha20-Poly1305 with HKDF-SHA256 + Argon2id. The `rsa` crate
+  #   is pulled in transitively by sqlx-mysql features that we never
+  #   instantiate (we use SQLite). The vulnerable code path is therefore
+  #   unreachable at runtime.
+  # Status:
+  #   No upstream fix exists in the rsa crate as of this writing.
+  # Revisit when:
+  #   `rsa` ships a constant-time fix, OR sqlx publishes a version that
+  #   drops the rsa dependency from its sqlite feature tree.
+  "RUSTSEC-2023-0071",
+
+  # RUSTSEC-2026-0098: rustls-webpki accepted name constraints for URI names.
+  # RUSTSEC-2026-0099: rustls-webpki accepted wildcard name constraints.
+  # RUSTSEC-2026-0104: rustls-webpki panics on malformed certificate revocation list.
+  #
+  # Why we can't currently fix these:
+  #   All three reach us through:
+  #     ghostkey-{server,cli}
+  #       └── bdk_esplora 0.20  ← pinned by us
+  #             └── esplora-client 0.11
+  #                   └── minreq 2.14
+  #                         └── rustls 0.21
+  #                               └── rustls-webpki 0.101 (vulnerable)
+  #   minreq 2.x only accepts rustls 0.21.x; rustls 0.21 only accepts
+  #   rustls-webpki 0.101.x. To pull in the fixed >=0.103.13 we would
+  #   need to bump esplora-client past 0.11, which requires bumping
+  #   bdk_esplora past 0.20, which is a semver-incompatible BDK bump
+  #   (0.22 is the next available version) and would force a
+  #   significant API migration we have not yet planned.
+  #
+  # Why the impact in our case is low:
+  #   The vulnerable code path is TLS certificate validation in minreq.
+  #   ghostkey-server uses minreq only to talk to Esplora at a URL the
+  #   operator configures (default https://blockstream.info/api on
+  #   mainnet, https://blockstream.info/testnet/api on testnet). All
+  #   three CVEs require a malicious server certificate path that the
+  #   operator would have to explicitly point us at. We are not
+  #   accepting arbitrary URLs from users; the URL is operator-set at
+  #   startup. The ghostkey-cli reaches the same code via the user's
+  #   own bitcoind RPC endpoint, which they likewise control.
+  # Status:
+  #   Tracked. The right fix is to migrate to bdk_esplora 0.22+ when
+  #   we next do a BDK upgrade pass. Until then we accept this with
+  #   eyes open and the threat model above.
+  # Revisit when:
+  #   We schedule the next BDK upgrade pass, OR a minreq 3.x release
+  #   trickles down through esplora-client.
+  "RUSTSEC-2026-0098",
+  "RUSTSEC-2026-0099",
+  "RUSTSEC-2026-0104",
+
+  # RUSTSEC-2025-0134: rustls-pemfile 1.x is unmaintained.
+  #
+  # Same dependency chain as the rustls-webpki entries above (reqwest
+  # 0.11 -> esplora-client -> bdk_esplora). Not a security CVE — just
+  # a notice that 1.x will receive no further patches. Resolves
+  # automatically the day we bump esplora-client / bdk_esplora.
+  # Revisit when:
+  #   Same trigger as the rustls-webpki entries.
+  "RUSTSEC-2025-0134",
+]
