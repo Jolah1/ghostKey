@@ -378,7 +378,10 @@ mod tests {
     #[tokio::test]
     async fn ok_past_deadline_transitions_to_alarmed() {
         let pool = fresh_db().await;
-        let state = AppState { db: pool.clone() };
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
         // Deadline 1 hour in the past.
         insert_vault(
             &pool,
@@ -396,7 +399,10 @@ mod tests {
     #[tokio::test]
     async fn alarmed_past_eligibility_transitions_and_issues_token() {
         let pool = fresh_db().await;
-        let state = AppState { db: pool.clone() };
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
         // Already alarmed; eligibility in the past.
         insert_vault(
             &pool,
@@ -415,7 +421,10 @@ mod tests {
     #[tokio::test]
     async fn alarmed_before_eligibility_does_not_transition() {
         let pool = fresh_db().await;
-        let state = AppState { db: pool.clone() };
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
         // Eligibility in the far future.
         insert_vault(
             &pool,
@@ -434,7 +443,10 @@ mod tests {
     #[tokio::test]
     async fn does_not_reissue_token_for_vault_with_existing_hash() {
         let pool = fresh_db().await;
-        let state = AppState { db: pool.clone() };
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
         insert_vault(
             &pool,
             "vault-d",
@@ -466,7 +478,10 @@ mod tests {
     #[tokio::test]
     async fn claim_issued_event_does_not_contain_raw_token() {
         let pool = fresh_db().await;
-        let state = AppState { db: pool.clone() };
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
         insert_vault(
             &pool,
             "vault-e",
@@ -509,7 +524,10 @@ mod tests {
     #[tokio::test]
     async fn password_vault_reuses_at_rest_token_on_trigger() {
         let pool = fresh_db().await;
-        let state = AppState { db: pool.clone() };
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
         insert_vault(
             &pool,
             "vault-pw",

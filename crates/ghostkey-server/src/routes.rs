@@ -49,6 +49,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/vaults/:id/sealed-blobs", get(get_sealed_blobs))
         .route("/vaults/:id/seal-owner-token", post(seal_owner_token))
         .route("/vaults/:id/checkin", post(checkin))
+        .route(
+            "/vaults/:id/lightning-checkin/invoice",
+            post(lightning_create_invoice),
+        )
+        .route(
+            "/vaults/:id/lightning-checkin/status/:payment_hash",
+            get(lightning_invoice_status),
+        )
         .route("/vaults/:id/events", get(list_events))
         .route("/vaults/:id/issue-claim", post(issue_claim))
         .route("/claim/:token", get(resolve_claim))
@@ -95,12 +103,19 @@ fn make_request_span(request: &axum::http::Request<axum::body::Body>) -> Span {
 struct Health {
     ok: bool,
     version: &'static str,
+    /// Whether this server has a configured Lightning provider. The
+    /// web client uses this to decide whether to show the "check in
+    /// with Lightning" button next to the existing tap-to-checkin
+    /// affordance. When false the button is hidden and only the
+    /// regular HTTP check-in is offered.
+    lightning_enabled: bool,
 }
 
-async fn health() -> Json<Health> {
+async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
     Json(Health {
         ok: true,
         version: env!("CARGO_PKG_VERSION"),
+        lightning_enabled: state.lightning.is_enabled(),
     })
 }
 
@@ -1362,6 +1377,167 @@ async fn get_vault_address(
         network: network_str,
         address,
     }))
+}
+
+/* -------------------------------------------------------------------------- *
+ *  Lightning check-ins.                                                      *
+ *                                                                            *
+ *  Two routes, both scoped to a single vault:                                *
+ *                                                                            *
+ *    POST /vaults/:id/lightning-checkin/invoice                              *
+ *        Owner-authenticated. Mints a 1-sat BOLT11 invoice through the      *
+ *        configured LightningProvider, writes a `lightning_invoices` row,    *
+ *        and returns the bolt11 + payment_hash + expiry to the browser.     *
+ *                                                                            *
+ *    GET  /vaults/:id/lightning-checkin/status/:payment_hash                 *
+ *        Owner-authenticated. Returns the current status of a previously    *
+ *        minted invoice. The browser polls this while showing the QR code   *
+ *        and flips to "checked in!" when status becomes `paid`. The         *
+ *        background poller (lightning::run_poller) also updates the row;    *
+ *        this route just surfaces whatever is in the DB. If you need a       *
+ *        live read from the provider on demand, prefer waiting for the      *
+ *        next poller tick (default 3s) — that's what the UI does.           *
+ *                                                                            *
+ *  Both routes return 503 when no Lightning provider is configured. The      *
+ *  UI uses the body field `lightning_enabled` on `GET /health` (added in    *
+ *  a follow-up) to decide whether to surface the Lightning option at all.   *
+ * -------------------------------------------------------------------------- */
+
+#[derive(Debug, Serialize)]
+pub struct LightningInvoiceView {
+    pub bolt11: String,
+    pub payment_hash: String,
+    pub amount_sat: u64,
+    pub expires_at: DateTime<Utc>,
+    pub status: String,
+}
+
+async fn lightning_create_invoice(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<LightningInvoiceView>, ApiError> {
+    if !state.lightning.is_enabled() {
+        return Err(ApiError::Validation(
+            "lightning provider not configured on this server".into(),
+        ));
+    }
+
+    let description = format!("ghostkey:checkin:{}", auth.vault_id);
+    let invoice = state
+        .lightning
+        .create_invoice(crate::lightning::HEARTBEAT_AMOUNT_SAT, &description)
+        .await
+        .map_err(|e| match e {
+            crate::lightning::LightningError::NotConfigured => {
+                ApiError::Validation("lightning provider not configured".into())
+            }
+            crate::lightning::LightningError::InvalidAmount(m) => ApiError::Validation(m),
+            crate::lightning::LightningError::Provider(m) => {
+                tracing::error!(error = %m, "lightning provider failed to mint invoice");
+                ApiError::Validation(format!("lightning provider error: {m}"))
+            }
+        })?;
+
+    let rec = crate::lightning::insert_invoice(&state.db, &auth.vault_id, &invoice).await?;
+
+    record_event(
+        &state.db,
+        &auth.vault_id,
+        "lightning_invoice_issued",
+        Some(serde_json::json!({
+            "payment_hash": invoice.payment_hash,
+            "amount_sat": invoice.amount_sat,
+        })),
+    )
+    .await?;
+
+    Ok(Json(LightningInvoiceView {
+        bolt11: rec.bolt11,
+        payment_hash: rec.payment_hash,
+        amount_sat: rec.amount_sat as u64,
+        expires_at: rec.expires_at,
+        status: rec.status,
+    }))
+}
+
+#[derive(Debug, Serialize)]
+pub struct LightningInvoiceStatusView {
+    pub payment_hash: String,
+    pub status: String,
+    pub paid_at: Option<DateTime<Utc>>,
+    pub expires_at: DateTime<Utc>,
+}
+
+async fn lightning_invoice_status(
+    State(state): State<Arc<AppState>>,
+    Path((vault_id, payment_hash)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<LightningInvoiceStatusView>, ApiError> {
+    // Two-param route so we can't use the OwnerAuth extractor (it
+    // assumes a single :id path param). Inline the same check.
+    inline_owner_auth(&state, &vault_id, &headers).await?;
+
+    let rec = crate::lightning::fetch_invoice_by_hash(&state.db, &payment_hash)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+
+    if rec.vault_id != vault_id {
+        // Caller authenticated for vault A but is asking about an
+        // invoice that belongs to vault B. Treat as 404 to avoid
+        // leaking the cross-vault relationship.
+        return Err(ApiError::NotFound);
+    }
+
+    Ok(Json(LightningInvoiceStatusView {
+        payment_hash: rec.payment_hash,
+        status: rec.status,
+        paid_at: rec.paid_at,
+        expires_at: rec.expires_at,
+    }))
+}
+
+/// Inline equivalent of the `OwnerAuth` extractor for routes that
+/// have more than one path parameter (axum's `Path<String>` extractor
+/// can't be used in that case). Returns the same error types so the
+/// HTTP responses are indistinguishable.
+async fn inline_owner_auth(
+    state: &Arc<AppState>,
+    vault_id: &str,
+    headers: &axum::http::HeaderMap,
+) -> Result<(), ApiError> {
+    use axum::http::header;
+
+    if crate::auth::auth_disabled() {
+        tracing::warn!(
+            vault_id = %vault_id,
+            "owner auth bypassed by GHOSTKEY_AUTH_DISABLED"
+        );
+        return Ok(());
+    }
+
+    let raw = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| ApiError::Validation("missing Authorization header".into()))?;
+    let token = raw
+        .strip_prefix("Bearer ")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::Validation("Authorization must be Bearer ...".into()))?;
+
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT owner_token_hash FROM vaults WHERE id = ?")
+            .bind(vault_id)
+            .fetch_optional(&state.db)
+            .await?;
+    let stored_hash = match row {
+        Some((Some(h),)) => h,
+        _ => return Err(ApiError::Validation("unauthorized".into())),
+    };
+    if !crate::crypto::owner_token_matches(token, &stored_hash) {
+        return Err(ApiError::Validation("unauthorized".into()));
+    }
+    Ok(())
 }
 
 /* -------------------------------------------------------------------------- *

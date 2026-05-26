@@ -78,6 +78,14 @@ import {
   b64encode,
 } from "./crypto/sealing";
 import { randomBytes } from "@noble/hashes/utils.js";
+import {
+  CADENCE_PRESETS,
+  GRACE_PRESETS,
+  DEFAULT_CADENCE_ID,
+  DEFAULT_GRACE_ID,
+  cadenceById,
+  graceById,
+} from "./timing";
 
 interface Props {
   onCancel: () => void;
@@ -92,7 +100,13 @@ interface Draft {
   heirContact: string;
   heirContactChannel: ContactChannel;
   waitingMonths: number;
-  reminderEveryTwoWeeks: boolean;
+  // Replaces the legacy `reminderEveryTwoWeeks: boolean`. Holds the
+  // string id of a CADENCE_PRESETS entry. See ./timing.ts for the
+  // full enumeration.
+  cadenceId: string;
+  // New: explicit grace period (previously hard-coded to 3 days).
+  // Holds the string id of a GRACE_PRESETS entry.
+  graceId: string;
 
   // Step 2 — owner identity + password
   ownerEmail: string;
@@ -105,7 +119,8 @@ const EMPTY: Draft = {
   heirContact: "",
   heirContactChannel: "email",
   waitingMonths: 3,
-  reminderEveryTwoWeeks: true,
+  cadenceId: DEFAULT_CADENCE_ID,
+  graceId: DEFAULT_GRACE_ID,
   ownerEmail: "",
   password: "",
   passwordConfirm: "",
@@ -265,8 +280,8 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
       // the two xpubs and persists the ciphertexts atomically.
       const label = `${draft.heirName.trim()}'s inheritance`;
       const timelockBlocks = monthsToBlocks(draft.waitingMonths);
-      const checkinSecs = draft.reminderEveryTwoWeeks ? 14 * 86_400 : 30 * 86_400;
-      const graceSecs = 3 * 86_400;
+      const checkinSecs = cadenceById(draft.cadenceId).seconds;
+      const graceSecs = graceById(draft.graceId).seconds;
 
       const heirContactPayload = JSON.stringify({
         name: draft.heirName.trim(),
@@ -589,19 +604,33 @@ function StepHeir({
         </Field>
 
         <Field label="Remind me to check in">
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <Tile
-              selected={draft.reminderEveryTwoWeeks}
-              onClick={() => patch({ reminderEveryTwoWeeks: true })}
-              title="Every 2 weeks"
-              sub="Recommended"
-            />
-            <Tile
-              selected={!draft.reminderEveryTwoWeeks}
-              onClick={() => patch({ reminderEveryTwoWeeks: false })}
-              title="Every month"
-              sub="More relaxed"
-            />
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {CADENCE_PRESETS.map((c) => (
+              <Tile
+                key={c.id}
+                title={c.label}
+                sub={c.sub}
+                selected={draft.cadenceId === c.id}
+                onClick={() => patch({ cadenceId: c.id })}
+              />
+            ))}
+          </div>
+        </Field>
+
+        <Field
+          label="Grace period after a missed reminder"
+          hint="Extra slack before the vault enters its alarm state. The heir still cannot claim for the full waiting period above."
+        >
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {GRACE_PRESETS.map((g) => (
+              <Tile
+                key={g.id}
+                title={g.label}
+                sub={g.sub}
+                selected={draft.graceId === g.id}
+                onClick={() => patch({ graceId: g.id })}
+              />
+            ))}
           </div>
         </Field>
 

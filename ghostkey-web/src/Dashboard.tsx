@@ -33,6 +33,7 @@ import {
 import { countdown, parseRfc } from "./time";
 import { statusCopy } from "./vocab";
 import { getActiveVaultId, getVaultMeta, getVaultOwnerToken, type VaultMeta } from "./vaultStore";
+import { LightningCheckin } from "./LightningCheckin";
 import type { Route } from "./App";
 
 interface Props {
@@ -60,6 +61,14 @@ export function Dashboard({ onNavigate }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [justChecked, setJustChecked] = useState(false);
+  // Whether this server has a Lightning provider wired up. We read
+  // it once on mount via /health; if the server flips state we'll
+  // pick it up on the next page load. Treating it as static-per-load
+  // avoids re-rendering the dashboard every poll.
+  const [lightningEnabled, setLightningEnabled] = useState(false);
+  // Whether the Lightning check-in modal is open. The modal owns its
+  // own invoice + polling state; we just toggle visibility here.
+  const [lightningOpen, setLightningOpen] = useState(false);
 
   const now = useTicker(1000);
 
@@ -91,6 +100,23 @@ export function Dashboard({ onNavigate }: Props) {
   useEffect(() => {
     if (activeId) void refresh();
   }, [activeId, refresh]);
+
+  // Probe the server once to learn whether Lightning check-ins are
+  // available. Silent on failure — we just leave the button hidden.
+  useEffect(() => {
+    let alive = true;
+    api
+      .health()
+      .then((h) => {
+        if (alive) setLightningEnabled(Boolean(h.lightning_enabled));
+      })
+      .catch(() => {
+        if (alive) setLightningEnabled(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // Live polling while visible.
   usePolling(refresh, 8000, [activeId]);
@@ -129,6 +155,8 @@ export function Dashboard({ onNavigate }: Props) {
             justChecked={justChecked}
             error={error}
             onCheckin={onCheckin}
+            lightningEnabled={lightningEnabled}
+            onLightning={() => setLightningOpen(true)}
           />
         </div>
 
@@ -159,6 +187,20 @@ export function Dashboard({ onNavigate }: Props) {
           <ActivityList events={events} />
         </div>
       </div>
+
+      {lightningOpen && activeId ? (
+        <LightningCheckin
+          vaultId={activeId}
+          ownerToken={ownerToken}
+          onPaid={() => {
+            setLightningOpen(false);
+            setJustChecked(true);
+            window.setTimeout(() => setJustChecked(false), 2400);
+            void refresh();
+          }}
+          onClose={() => setLightningOpen(false)}
+        />
+      ) : null}
     </main>
   );
 }
@@ -202,6 +244,8 @@ function HeartbeatCard({
   justChecked,
   error,
   onCheckin,
+  lightningEnabled,
+  onLightning,
 }: {
   meta: VaultMeta;
   vault: VaultView | null;
@@ -210,6 +254,8 @@ function HeartbeatCard({
   justChecked: boolean;
   error: string | null;
   onCheckin: () => void;
+  lightningEnabled: boolean;
+  onLightning: () => void;
 }) {
   const cd = vault
     ? countdown(parseRfc(vault.next_deadline_at), now)
@@ -229,11 +275,22 @@ function HeartbeatCard({
             : `Let ${meta.heir.name} know the clock is reset.`}
         </p>
 
-        <div className="mt-6">
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
           <Button onClick={onCheckin} loading={busy} size="lg">
             {justChecked ? "Checked in" : "I'm still here"}
           </Button>
+          {lightningEnabled ? (
+            <Button variant="ghost" size="lg" onClick={onLightning}>
+              ⚡ Pay 1 sat
+            </Button>
+          ) : null}
         </div>
+
+        {lightningEnabled ? (
+          <p className="mt-2 text-[11px] text-dim">
+            Pay a 1-sat Lightning invoice for cryptographic proof of liveness.
+          </p>
+        ) : null}
 
         {cd ? (
           <p className="mt-5 text-xs text-muted" aria-live="polite">

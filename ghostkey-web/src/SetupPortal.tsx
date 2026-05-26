@@ -47,6 +47,14 @@ import {
   type PartyXpub,
 } from "./api";
 import { saveVaultMeta } from "./vaultStore";
+import {
+  CADENCE_PRESETS,
+  GRACE_PRESETS,
+  DEFAULT_CADENCE_ID,
+  DEFAULT_GRACE_ID,
+  cadenceById,
+  graceById,
+} from "./timing";
 
 interface Props {
   onCancel: () => void;
@@ -70,7 +78,11 @@ interface Draft {
 
   // Timing
   waitingMonths: number;
-  reminderEveryTwoWeeks: boolean;
+  // String ids into CADENCE_PRESETS / GRACE_PRESETS — see
+  // ./timing.ts. Replaces the legacy single `reminderEveryTwoWeeks`
+  // boolean and the hard-coded 3-day grace.
+  cadenceId: string;
+  graceId: string;
 
   // Legacy fallback (Advanced disclosure)
   descriptorExternal: string;
@@ -87,7 +99,8 @@ const EMPTY: Draft = {
   heirXpub: "",
   heirFingerprint: "",
   waitingMonths: 3,
-  reminderEveryTwoWeeks: true,
+  cadenceId: DEFAULT_CADENCE_ID,
+  graceId: DEFAULT_GRACE_ID,
   descriptorExternal: "",
   descriptorInternal: "",
 };
@@ -210,10 +223,8 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
       const label = `${draft.heirName.trim()}'s inheritance`;
       // Months → Bitcoin blocks. ~144 blocks/day, 30 days/month.
       const timelockBlocks = Math.max(144, draft.waitingMonths * 30 * 144);
-      const checkinSecs = draft.reminderEveryTwoWeeks
-        ? 14 * 86_400
-        : 30 * 86_400;
-      const graceSecs = 3 * 86_400;
+      const checkinSecs = cadenceById(draft.cadenceId).seconds;
+      const graceSecs = graceById(draft.graceId).seconds;
 
       const heirContactPayload = JSON.stringify({
         name: draft.heirName.trim(),
@@ -665,19 +676,33 @@ function StepTiming({
         </Field>
 
         <Field label="Check-in reminder">
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <Tile
-              selected={draft.reminderEveryTwoWeeks}
-              onClick={() => patch({ reminderEveryTwoWeeks: true })}
-              title="Every 2 weeks"
-              sub="Recommended"
-            />
-            <Tile
-              selected={!draft.reminderEveryTwoWeeks}
-              onClick={() => patch({ reminderEveryTwoWeeks: false })}
-              title="Every month"
-              sub="More relaxed"
-            />
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {CADENCE_PRESETS.map((c) => (
+              <Tile
+                key={c.id}
+                title={c.label}
+                sub={c.sub}
+                selected={draft.cadenceId === c.id}
+                onClick={() => patch({ cadenceId: c.id })}
+              />
+            ))}
+          </div>
+        </Field>
+
+        <Field
+          label="Grace period"
+          hint="Extra slack after a missed reminder, before the vault enters its alarm state."
+        >
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {GRACE_PRESETS.map((g) => (
+              <Tile
+                key={g.id}
+                title={g.label}
+                sub={g.sub}
+                selected={draft.graceId === g.id}
+                onClick={() => patch({ graceId: g.id })}
+              />
+            ))}
           </div>
         </Field>
       </div>
@@ -706,10 +731,8 @@ function StepReview({ draft }: { draft: Draft }) {
       ["Their contact", short(draft.heirContact) || "—"],
       ["Their xpub", usedAdvanced ? "(in descriptor)" : (short(draft.heirXpub) || "—")],
       ["Waiting period", monthsLabel(draft.waitingMonths)],
-      [
-        "Reminder",
-        draft.reminderEveryTwoWeeks ? "Every 2 weeks" : "Every month",
-      ],
+      ["Reminder", cadenceById(draft.cadenceId).label],
+      ["Grace period", graceById(draft.graceId).label],
       ["Your xpub", usedAdvanced ? "(in descriptor)" : (short(draft.ownerXpub) || "—")],
     ],
     [draft, usedAdvanced],

@@ -196,6 +196,35 @@ The trade-off: anyone who intercepts the URL can act as the heir. We accept this
 
 The notifier's data fits comfortably in one file on one disk. A busy deployment might serve hundreds of thousands of vaults — SQLite handles that on a $5/month VPS with WAL mode enabled. Postgres adds an operational dependency and failure modes we don't need. If the project ever outgrows SQLite, switching is a small `sqlx` change. We'd rather have the problem first.
 
+### Lightning check-ins vs button heartbeat vs on-chain re-vault
+
+The owner can confirm liveness three ways, each with different guarantees and costs:
+
+| Method | What it proves | What it does to state | Cost |
+|---|---|---|---|
+| Tap the heartbeat button | Someone with the owner bearer token clicked. Trusts the server's clock. | Resets `next_deadline_at`, `claim_eligible_at`, clears any pending claim token. | Free, one click. |
+| Pay a 1-sat Lightning invoice | Cryptographic act the owner performs with their own wallet keys. The server cannot forge it. | Same as button: resets the same database fields via the same code path. | 1 sat + routing fee (typically <1 sat). |
+| Run the CLI `check-in` command | Spends the vault UTXO into a fresh vault address, resetting the BIP68 timer on-chain. | Everything the button does, **plus** the heir's claim window genuinely restarts from zero confirmations. | Bitcoin network fee. |
+
+Honest framing: the Lightning check-in is *stronger than the button* (it's cryptographic, not click-based) but *weaker than an on-chain re-vault* (it doesn't move the BIP68 clock). The dashboard surfaces Lightning as a "stronger sign-in" when the operator has wired up a provider, and the CLI re-vault remains the authoritative path for mainnet vaults.
+
+Why we ship the Lightning option at all, given the button does the same database work:
+
+1. **Trust minimisation.** A compromised server could record a fake button check-in. It cannot forge a Lightning payment without spending sats from its own node — the audit trail is on the Lightning network itself.
+2. **Anti-grief.** A leaked owner token still costs 1 sat per fake check-in. Sustained griefing has a marginal cost.
+3. **Path to better.** Once Lightning is wired we have a notification rail for the owner that doesn't require an email server. (Future work — not in the current build.)
+
+The Lightning backend is intentionally abstracted behind a `LightningProvider` trait (`crates/ghostkey-server/src/lightning.rs`) with a `NoopProvider` default. The intended real implementation uses Breez SDK - Liquid, but is isolated in a planned sibling crate so its heavy / git-only dependency graph (~6 forked transitives, pinned `reqwest =0.12.18`) does not poison the main workspace. Until that crate exists the `/lightning-checkin/*` routes return 503 and the web UI hides the button — gated on `health.lightning_enabled`.
+
+### Check-in cadence and grace period as user choices
+
+Earlier builds hard-coded the check-in cadence to "every 2 weeks or every month" with a fixed 3-day grace. We expanded this to:
+
+- **Cadence:** weekly · 2-weekly (default) · monthly · quarterly
+- **Grace period:** 3 days (default) · 1 week · 2 weeks · 1 month
+
+Both are explicit enumerations (`ghostkey-web/src/timing.ts`) rather than free-form numeric inputs, so a careless user can't pick `graceSecs = 60` and lock themselves out of recovery. The presets cover the realistic spectrum, from "I want to be reminded weekly and have a tight 3-day budget" to "quarterly nudge, full month of slack." The owner picks once at setup; changing it later requires recreating the vault (no migration path planned for the alpha).
+
 ---
 
 ## 7. Where AI fits and where it doesn't

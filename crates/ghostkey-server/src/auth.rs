@@ -363,7 +363,10 @@ mod http_tests {
             .run(&pool)
             .await
             .expect("run migrations");
-        std::sync::Arc::new(crate::AppState { db: pool })
+        std::sync::Arc::new(crate::AppState {
+            db: pool,
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        })
     }
 
     /// Insert a vault directly so we can pin its id + token hash for

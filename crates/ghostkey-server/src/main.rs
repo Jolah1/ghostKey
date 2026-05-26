@@ -20,6 +20,7 @@ use std::sync::Arc;
 mod auth;
 mod crypto;
 mod db;
+mod lightning;
 mod notifier;
 mod psbt_routes;
 mod routes;
@@ -49,11 +50,22 @@ struct Args {
     /// timeouts have their own cadence. Reasonable default: 15s.
     #[arg(long, env = "GHOSTKEY_NOTIF_TICK_SECS", default_value_t = 15)]
     notif_tick_secs: u64,
+
+    /// How often the Lightning poller checks pending invoices.
+    /// Only used when a Lightning provider is configured. Faster than
+    /// the scheduler tick because users wait on this synchronously
+    /// (they're staring at a QR code).
+    #[arg(long, env = "GHOSTKEY_LN_TICK_SECS", default_value_t = 3)]
+    ln_tick_secs: u64,
 }
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: sqlx::SqlitePool,
+    /// Lightning provider. Always present (Noop when not configured)
+    /// so handlers can call it without an Option check; the provider
+    /// itself reports `is_enabled()`.
+    pub lightning: std::sync::Arc<dyn lightning::LightningProvider>,
 }
 
 #[tokio::main]
@@ -96,12 +108,28 @@ async fn main() -> Result<()> {
     }
 
     let pool = db::connect(&args.database_url).await?;
-    let state = Arc::new(AppState { db: pool.clone() });
+
+    // Lightning provider: real Breez backend when the `lightning`
+    // cargo feature is enabled AND BREEZ_API_KEY/MNEMONIC are set,
+    // otherwise a Noop that returns "not configured" on every call.
+    // build_provider() never panics.
+    let lightning = lightning::build_provider().await;
+    let state = Arc::new(AppState {
+        db: pool.clone(),
+        lightning: lightning.clone(),
+    });
 
     // Background scheduler.
     let sched_state = state.clone();
     tokio::spawn(async move {
         scheduler::run(sched_state, std::time::Duration::from_secs(args.tick_secs)).await;
+    });
+
+    // Background Lightning poller. Cheap when disabled (the first
+    // check in tick_once early-returns), so we always spawn it.
+    let ln_state = state.clone();
+    tokio::spawn(async move {
+        lightning::run_poller(ln_state, std::time::Duration::from_secs(args.ln_tick_secs)).await;
     });
 
     // Background notification worker. Runs on the same DB pool as

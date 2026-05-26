@@ -259,6 +259,24 @@ export interface HeirClaimRequest {
   heir_xprv: string;
 }
 
+/** Response shape from `POST /vaults/:id/lightning-checkin/invoice`. */
+export interface LightningInvoiceView {
+  bolt11: string;
+  payment_hash: string;
+  amount_sat: number;
+  expires_at: string;
+  status: string;
+}
+
+/** Response shape from
+ *  `GET /vaults/:id/lightning-checkin/status/:payment_hash`. */
+export interface LightningInvoiceStatusView {
+  payment_hash: string;
+  status: string;
+  paid_at: string | null;
+  expires_at: string;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -334,7 +352,10 @@ export interface CreatedVault extends VaultView {
 }
 
 export const api = {
-  health: () => request<{ ok: boolean; version: string }>("/health"),
+  health: () =>
+    request<{ ok: boolean; version: string; lightning_enabled: boolean }>(
+      "/health",
+    ),
   getVault: (id: string, ownerToken: string | null) =>
     request<VaultView>(`/vaults/${id}`, {}, ownerToken),
   createVault: (req: CreateVaultRequest) =>
@@ -385,6 +406,31 @@ export const api = {
     request<CheckinResponse>(
       `/vaults/${id}/checkin`,
       { method: "POST" },
+      ownerToken,
+    ),
+  /** Lightning check-in: mint a 1-sat BOLT11 invoice. Paying it from
+   *  any Lightning wallet resets the vault's check-in deadline,
+   *  identical semantics to the regular HTTP `checkin` above.
+   *  Returns 4xx with `error: "lightning provider not configured..."`
+   *  if the server has no Breez backend wired up — call `health()`
+   *  first and hide the option when `lightning_enabled === false`. */
+  lightningCreateInvoice: (id: string, ownerToken: string | null) =>
+    request<LightningInvoiceView>(
+      `/vaults/${id}/lightning-checkin/invoice`,
+      { method: "POST" },
+      ownerToken,
+    ),
+  /** Poll an invoice's status while the user is paying. The server's
+   *  background poller updates the row on a ~3s tick; this just
+   *  surfaces whatever is in the DB. */
+  lightningInvoiceStatus: (
+    id: string,
+    paymentHash: string,
+    ownerToken: string | null,
+  ) =>
+    request<LightningInvoiceStatusView>(
+      `/vaults/${id}/lightning-checkin/status/${encodeURIComponent(paymentHash)}`,
+      {},
       ownerToken,
     ),
   listEvents: (id: string, ownerToken: string | null) =>

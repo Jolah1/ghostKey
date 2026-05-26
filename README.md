@@ -60,6 +60,8 @@ No one at GhostKey can touch the funds. The rules are enforced by Bitcoin, not b
 What works today:
 - Full vault setup from xpub
 - Monthly check-in with owner authentication
+- Lightning check-ins — pay a 1 sat invoice from any wallet for cryptographic proof of liveness (requires the optional Breez SDK Liquid backend; see DESIGN.md "Lightning check-ins")
+- Configurable check-in cadence (weekly / 2-weekly / monthly / quarterly) and grace period (3 days / 1 week / 2 weeks / 1 month)
 - Scheduler that tracks deadlines and transitions vault state
 - Encrypted heir contact storage
 - Email notification when the alarm fires
@@ -68,7 +70,6 @@ What works today:
 What's still being built:
 - SMS and WhatsApp notifications
 - Setup from a plain Bitcoin address (without needing an xpub)
-- Lightning check-ins (pay 1 sat to confirm you're alive)
 - Check-in reminders for owners
 - Multiple heirs
 - Hardware wallet PSBT export
