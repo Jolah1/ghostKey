@@ -11,7 +11,7 @@
  *   - Recent activity
  *
  * If there is no active vault on this device, we offer the two paths
- * out: set one up, or look up by id (heir / cross-device case).
+ * out: set one up, or sign in with email + password.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -23,7 +23,6 @@ import {
   shortAddr,
   useTicker,
   usePolling,
-  prettyDuration,
 } from "./ui";
 import {
   ApiError,
@@ -391,11 +390,6 @@ function humanAgo(then: Date, now: Date): string {
   const d = Math.floor(ms / 86_400_000);
   return `${d} day${d === 1 ? "" : "s"} ago`;
 }
-
-// Note: prettyDuration is imported but only used by some debug paths. Keep
-// the import so future iterations don't have to re-add it. (Linter is fine
-// because we re-export from ui.tsx for other modules.)
-void prettyDuration;
 
 /* ----------------------------- Empty state -------------------------------- */
 

@@ -14,25 +14,34 @@
  *   - resolves the token against `GET /claim/:token`
  *   - renders one of five states (loading / not-found / used / not-ready /
  *     claimable) with calm, accessible copy
- *   - on the claimable path, walks the heir through getting a wallet
- *     (if they don't have one), capturing a Bitcoin address, asking the
- *     server to build an unsigned PSBT that drains the vault on the
- *     timelock branch, and broadcasting it once the heir signs.
+ *   - on the claimable path, probes /sealed-heir once to decide which
+ *     of the two sub-flows applies:
  *
- * Why we hand the heir a base64 PSBT instead of signing in-browser:
- *   The signature has to come from the heir's wallet (Sparrow, Coldcard,
- *   etc.). GhostKey never holds keys. We give the heir a string to copy
- *   into their wallet's PSBT signer, then accept the signed string back.
+ *     • Password-vault flow (PasswordVaultClaim, default for new
+ *       vaults): the heir pastes a Bitcoin address from any receive-
+ *       capable wallet. The browser unwraps the heir xprv locally
+ *       from the URL fragment and POSTs it to /heir-claim, where the
+ *       server builds + signs + broadcasts in one shot. No PSBT, no
+ *       Sparrow, no signing in another app.
+ *
+ *     • Legacy PSBT-handoff flow (ManualPsbtClaim, reachable when
+ *       /sealed-heir returns 422): the server hands the heir an
+ *       unsigned PSBT to copy into a real Bitcoin wallet (Sparrow,
+ *       Coldcard, etc.), then accepts the signed string back. This
+ *       is the original flow for vaults created before the password
+ *       redesign — kept for backwards compatibility.
  *
  * What the page does NOT do:
- *   - hold keys, sign for the heir, or co-sign anything
- *   - hide failure modes: if /build-psbt or /broadcast fails (no UTXOs,
+ *   - hold keys for the heir or persist their xprv beyond a single
+ *     async call (password-vault flow)
+ *   - co-sign anything on the legacy path
+ *   - hide failure modes: if any of the server calls fail (no UTXOs,
  *     Esplora down, timelock not yet mined, etc.) we surface the
  *     server's error message verbatim so a Bitcoin-literate helper
  *     can debug it
  *
  * The whole page intentionally bypasses the GhostKey navbar — the heir
- * shouldn't see "Set up" / "Dashboard" / "Check in" controls that don't
+ * shouldn't see "Set up" / "Dashboard" / "Sign in" controls that don't
  * apply to them. App.tsx handles that swap.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -203,7 +212,11 @@ function ErrorState({
 /* ----------------------------- Resolved ----------------------------------- */
 
 function Resolved({ view, token }: { view: ClaimView; token: string }) {
-  // Decide which sub-flow to show based on vault status.
+  // Decide which sub-flow to show based on vault status. The switch
+  // is exhaustive over today's `VaultStatus` union; the `default`
+  // branch exists so a server adding a new status doesn't silently
+  // render an empty page — it shows the generic NotReadyState until
+  // the web app catches up.
   switch (view.status) {
     case "ok":
     case "warning":
@@ -215,6 +228,8 @@ function Resolved({ view, token }: { view: ClaimView; token: string }) {
       return <ClaimableState view={view} token={token} />;
     case "claimed":
       return <AlreadyClaimedState view={view} />;
+    default:
+      return <NotReadyState view={view} />;
   }
 }
 
@@ -763,7 +778,7 @@ function ManualPsbtClaim({
           />
         </div>
 
-        {hasWallet === false && <WalletGuide />}
+        {hasWallet === false && <WalletGuide requirePsbt />}
       </div>
 
       {/* ---- Step 2: paste address + (optional) fee rate ---- */}
@@ -1016,6 +1031,13 @@ interface WalletRec {
   blurb: string;
   url: string;
   note: string;
+  /**
+   * Can this wallet sign a PSBT? Self-custody wallets can; LN-style
+   * custodial apps (Blink, Wallet of Satoshi) cannot. The legacy
+   * PSBT-handoff claim path needs `true`; the password-vault claim
+   * path only needs the wallet to receive, so any value works.
+   */
+  canSignPsbt: boolean;
 }
 
 const WALLETS: WalletRec[] = [
@@ -1024,22 +1046,41 @@ const WALLETS: WalletRec[] = [
     blurb: "Free. Popular in Nigeria. Works without ID.",
     url: "https://blink.sv/",
     note: "Tap Receive → Bitcoin → copy the address.",
+    canSignPsbt: false,
   },
   {
     name: "Wallet of Satoshi",
     blurb: "Free. Works on any phone. No setup.",
     url: "https://www.walletofsatoshi.com/",
     note: "Tap Receive → On-chain → copy the address.",
+    canSignPsbt: false,
   },
   {
     name: "Cake Wallet",
     blurb: "Free. You hold your own keys.",
     url: "https://cakewallet.com/",
     note: "Tap the QR icon top-right → copy the address.",
+    canSignPsbt: true,
+  },
+  {
+    name: "Sparrow",
+    blurb: "Desktop. Power user. Hardware wallet support.",
+    url: "https://sparrowwallet.com/",
+    note: "File → New Wallet → Receive tab → copy the address.",
+    canSignPsbt: true,
   },
 ];
 
-function WalletGuide() {
+/**
+ * `requirePsbt` filters the wallet list down to ones that can sign
+ * PSBTs. Set to `true` on the legacy ManualPsbtClaim flow (where the
+ * heir has to sign a base64 PSBT in their wallet), `false` on the
+ * password-vault flow (where the heir only needs to receive).
+ */
+function WalletGuide({ requirePsbt = false }: { requirePsbt?: boolean } = {}) {
+  const list = requirePsbt
+    ? WALLETS.filter((w) => w.canSignPsbt)
+    : WALLETS;
   return (
     <div className="mt-5 card-flat p-5">
       <p className="text-sm text-body">
@@ -1047,7 +1088,7 @@ function WalletGuide() {
         steps inside.
       </p>
       <ul role="list" className="mt-4 space-y-3">
-        {WALLETS.map((w) => (
+        {list.map((w) => (
           <li key={w.name} className="flex flex-col gap-1">
             <a
               href={w.url}

@@ -297,13 +297,13 @@ const REASONS: Reason[] = [
   },
   {
     tag: "Portable",
-    title: "PSBT standard",
-    body: "Funding and claiming use Partially Signed Bitcoin Transactions. Sparrow, BlueWallet, Ledger, Coldcard — any modern wallet works.",
+    title: "PSBT under the hood",
+    body: "Funding uses ordinary Bitcoin transactions. Claiming works in any browser — and if you prefer, advanced users can also sign with Sparrow, BlueWallet, Ledger, or Coldcard via PSBT.",
   },
   {
     tag: "Trustless",
     title: "Self-custodied keys",
-    body: "Your private key never leaves your device. GhostKey only watches public addresses to send reminders. We can never spend your Bitcoin.",
+    body: "Your private key never sits on our servers. We can never spend your Bitcoin on our own.",
   },
   {
     tag: "Durable",

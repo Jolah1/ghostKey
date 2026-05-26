@@ -3,8 +3,9 @@
  *
  * Replaces the legacy `CheckinPortal` (which required the user to know
  * the vault UUID and only worked on the device where the vault was
- * created). The lookup-by-id path lives on as `LegacyCheckinPortal`
- * for users with vaults created before the password flow shipped.
+ * created). The lookup-by-id path lives on as `CheckinPortal` at
+ * #/checkin-legacy for users with vaults created before the password
+ * flow shipped.
  *
  * Flow:
  *
@@ -35,10 +36,10 @@
  *     server returns 422 from /sealed-blobs. We show a specific
  *     "this vault was created in the legacy flow; check in from the
  *     original device" message.
- *   - Server cleared the owner-token ciphertext is still the
- *     placeholder (the post-create re-seal call failed silently
- *     during setup) → unsealing the placeholder gives us the literal
- *     string `ghostkey-placeholder-owner-token-v1`. We detect this
+ *   - The post-create owner-token re-seal call failed silently during
+ *     setup, so the owner-token ciphertext on the server is still the
+ *     placeholder. Unsealing the placeholder gives us the literal
+ *     string `ghostkey-placeholder-owner-token-v1`; we detect this
  *     and tell the user to do one check-in from the original device.
  */
 import { useState } from "react";
@@ -180,7 +181,7 @@ export function SignInPortal({ onNavigate }: Props) {
       saveVaultMeta({
         id: v.id,
         label: v.label ?? "Your vault",
-        owner: { address: email.trim(), wallet: null },
+        owner: { address: email.trim() },
         heir: { name: "Heir", email: "", address: "" },
         createdAt: v.created_at,
         ownerToken: out.ownerToken,

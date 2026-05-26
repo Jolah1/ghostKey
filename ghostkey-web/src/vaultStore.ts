@@ -27,12 +27,16 @@
 export interface HeirInfo {
   name: string;
   email: string;
+  /**
+   * Heir's BTC xpub (legacy bring-your-own-wallet flow only). Empty
+   * string for password vaults — the heir xprv is sealed server-side
+   * and never surfaces in the UI.
+   */
   address: string;
 }
 
 export interface OwnerInfo {
   address: string;
-  wallet: string | null; // "Sparrow" | "BlueWallet" | "Ledger" | null
 }
 
 export interface VaultMeta {
@@ -80,12 +84,6 @@ export function getVaultMeta(id: string): VaultMeta | null {
 /** Returns the stored owner token for a vault, or null. */
 export function getVaultOwnerToken(id: string): string | null {
   return readAll()[id]?.ownerToken ?? null;
-}
-
-export function listVaultMeta(): VaultMeta[] {
-  return Object.values(readAll()).sort((a, b) =>
-    a.createdAt < b.createdAt ? 1 : -1,
-  );
 }
 
 export function setActiveVaultId(id: string | null) {

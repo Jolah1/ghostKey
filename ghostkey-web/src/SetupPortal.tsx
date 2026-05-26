@@ -1,10 +1,22 @@
 /**
- * Setup wizard — click-driven, four steps:
+ * Legacy setup wizard — click-driven, four steps:
  *
  *   1. Wallet  — owner's xpub (with origin info or fingerprint + bare xpub)
  *   2. Heir    — name, contact (sms / email / whatsapp), and their xpub
  *   3. Timing  — waiting period (timelock) + reminder cadence
  *   4. Review  — summary + activate
+ *
+ * This is the demoted #/setup-legacy flow. The default at #/setup is
+ * now `PasswordSetupPortal`, which generates keys in-browser and seals
+ * them under the user's password. This file is kept for advanced users
+ * who already hold an xpub in Sparrow / BlueWallet / Coldcard / etc.
+ * and want to bring their own wallet rather than have GhostKey mint
+ * keys for them.
+ *
+ * Vaults created here do NOT participate in the password-vault flow:
+ * no sealed blobs, no cross-device sign-in. The owner_token only lives
+ * on the browser that ran setup; losing localStorage on that device
+ * means losing programmatic access to the vault.
  *
  * The xpubs flow through POST /vaults/from-xpub, which the Rust server
  * uses to render the real Taproot inheritance descriptor. The legacy
@@ -250,15 +262,15 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
       //
       // The owner_token is captured here for the first and only time.
       // It's the bearer credential needed on every authenticated
-      // route. Losing this entry means losing the ability to drive
-      // this vault's check-in from this browser; the user would have
-      // to create a new vault. Worth noting in the UI eventually.
+      // route. Losing this entry on this device means losing the
+      // ability to drive this vault's check-in from any browser —
+      // vaults created via the legacy flow can't use the password
+      // sign-in flow, so there is no cross-device recovery for them.
       saveVaultMeta({
         id: resp.id,
         label,
         owner: {
           address: draft.ownerXpub.trim() || advExt,
-          wallet: draft.ownerWallet,
         },
         heir: {
           name: draft.heirName.trim(),

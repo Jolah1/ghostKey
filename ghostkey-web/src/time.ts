@@ -69,14 +69,3 @@ function friendlyDuration(ms: number): string {
   if (abs < 2_592_000_000) return out(Math.floor(abs / 604_800_000), "week");
   return out(Math.floor(abs / 2_592_000_000), "month");
 }
-
-/** Approximate threshold for "warning" vs "ok" before the alarm trips. */
-export function severityFromDeadline(
-  cd: Countdown,
-  graceSecs: number,
-): "ok" | "warning" | "alarmed" {
-  if (cd.ms <= 0) return "alarmed";
-  // Within the last 25% of the grace period? Show "warning".
-  if (cd.ms < graceSecs * 250) return "warning";
-  return "ok";
-}

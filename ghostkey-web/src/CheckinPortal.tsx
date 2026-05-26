@@ -1,10 +1,11 @@
 /**
- * Check-in portal — lookup-by-ID.
+ * Legacy check-in portal — lookup-by-vault-id.
  *
- * Secondary entry point for the cross-device / returning-user case
- * (your dashboard sessionStorage is gone but you remember the vault
- * id). Renders a single big heartbeat card after a successful lookup,
- * just like the dashboard but ad-hoc.
+ * Reached at #/checkin-legacy. The primary cross-device entry point
+ * is now SignInPortal at #/checkin (email + password). This file
+ * exists for vaults created before the password flow shipped, where
+ * the only way back to the vault from another browser is its UUID
+ * plus the locally-cached owner_token.
  *
  * Authentication note: the server requires a per-vault owner token on
  * `getVault`, `listEvents`, and `checkin`. We read the token from the
@@ -179,10 +180,17 @@ export function CheckinPortal({ initialId }: { initialId?: string }) {
               This device doesn't have the credentials for vault{" "}
               <span className="font-mono">{state.id.slice(0, 8)}…</span>.
               <br />
-              Check in from the browser you used to set up the vault, or
-              import its credentials onto this device first. (We're working
-              on a cleaner cross-device flow — for now the owner token only
-              lives on the device that created the vault.)
+              If the vault was set up via the password flow, sign in
+              instead with your email and password —{" "}
+              <a
+                href="#/checkin"
+                className="underline hover:text-[var(--text)]"
+              >
+                go to sign in
+              </a>
+              . For legacy vaults, check in from the browser you used
+              to set the vault up; the owner token only lives on that
+              device.
             </InlineAlert>
           </div>
         )}

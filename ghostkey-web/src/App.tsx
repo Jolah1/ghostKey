@@ -2,14 +2,21 @@
  * Top-level app shell.
  *
  * Routes (single-page, hash-driven):
- *   landing       — marketing + how-it-works
- *   setup         — 4-step wizard
- *   success       — celebration screen shown right after activation
- *   dashboard     — active vault on this device
- *   checkin       — lookup-by-ID check-in (heir/cross-device)
- *   inherit       — heir-side status lookup
- *   claim/<token> — heir lands here from their one-time link; not
- *                   navigable from the nav, no localStorage state
+ *   landing         — marketing + how-it-works
+ *   setup           — 3-step PasswordSetupPortal (default)
+ *   setup-legacy    — original bring-your-own-xpub wizard (advanced/CLI)
+ *   setup-password  — alias of `setup` (preserved so Pass 3 preview
+ *                     links don't 404; safe to retire once nobody
+ *                     references it externally)
+ *   success         — celebration screen shown right after activation
+ *   dashboard       — active vault on this device
+ *   checkin         — SignInPortal: email + password unlocks the
+ *                     vault on any device
+ *   checkin-legacy  — original lookup-by-vault-id portal, kept for
+ *                     vaults created before the password flow
+ *   inherit         — heir-side status lookup
+ *   claim/<token>   — heir lands here from their one-time link; not
+ *                     navigable from the nav, no localStorage state
  *
  * State that crosses routes lives in localStorage (active vault id and
  * heir metadata) via vaultStore.ts. There is no global store beyond
