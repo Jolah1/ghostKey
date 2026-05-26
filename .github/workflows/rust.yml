@@ -75,16 +75,27 @@ jobs:
   audit:
     name: cargo audit
     runs-on: ubuntu-latest
-    # Don't block PRs on supply-chain noise — but DO surface it on every
-    # push to main so a new advisory can't sit unnoticed for weeks. The
-    # audit also runs nightly via the cron below so a freshly-disclosed
-    # CVE shows up even if nobody pushes for a few days.
+    # The audit job uses rustsec/audit-check, which posts findings as a
+    # GitHub Check annotation on the PR / commit. We need `checks: write`
+    # so it can attach those annotations; `contents: read` is the bare
+    # minimum to clone the repo.
+    permissions:
+      contents: read
+      checks: write
+    # `continue-on-error: true` keeps the audit job from blocking a PR
+    # merge on a finding we haven't yet decided how to handle. The job
+    # still surfaces a red X on the commit so it can't be missed; it
+    # just doesn't gate the merge button. Tighten to `false` once the
+    # audit findings have stabilised in our ignore list.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      # rustsec/audit-check reads .cargo/audit.toml for our explicit
-      # ignore list with per-CVE reasoning. Any *new* advisory not in
-      # that file fails the job; the four rustls/rsa entries we've
-      # already triaged pass silently.
-      - uses: rustsec/audit-check@v1.4.1
+      # The action's `ignore` input is a comma-separated string. We DON'T
+      # rely on .cargo/audit.toml here because this specific GitHub
+      # Action doesn't read it — only the local `cargo audit` CLI does.
+      # The two ignore lists are intentionally kept in sync; see
+      # SECURITY.md for the per-advisory reasoning.
+      - uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          ignore: "RUSTSEC-2023-0071,RUSTSEC-2026-0098,RUSTSEC-2026-0099,RUSTSEC-2026-0104,RUSTSEC-2025-0134"

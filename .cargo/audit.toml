@@ -5,10 +5,13 @@
 # justification + a "what would it take to actually fix this" note so a
 # future maintainer can revisit the decision when upstream catches up.
 #
-# This file is read by `cargo audit` (both locally and in CI). The CI
-# workflow asserts that *only* the advisories listed here are ignored —
-# any new advisory will fail the build until either fixed or explicitly
-# ignored.
+# Scope:
+#   This file is read by the local `cargo audit` CLI. The CI workflow
+#   uses `rustsec/audit-check@v2.0.0`, which does NOT read this file —
+#   it takes a comma-separated `ignore:` input on the action instead.
+#   The two ignore lists are kept in sync by hand; when adding or
+#   removing an advisory here, also update
+#   `.github/workflows/rust.yml::jobs.audit.steps[1].with.ignore`.
 
 [advisories]
 ignore = [
