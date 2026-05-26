@@ -398,6 +398,41 @@ fly deploy
 The image rebuilds, the volume reattaches with the existing SQLite
 file, no manual migration step.
 
+### Backups (mandatory)
+
+The Fly volume is single-host. A corrupted block, an accidental
+`fly volumes destroy`, or a long region outage takes the only copy
+of the database with it. Bitcoin custody software cannot live on a
+single-copy database.
+
+A small helper script lives at `scripts/backup-fly-db.sh`. It pulls
+`/data/ghostkey.sqlite` off the volume, verifies the file is actually
+a SQLite database (and not e.g. an HTML error page), and keeps the
+12 most recent backups in a cloud-synced folder of your choice.
+
+One-time setup:
+
+```sh
+# Point BACKUP_DIR at a folder that's synced to a second physical
+# location: Google Drive, OneDrive, Dropbox, iCloud Drive, etc.
+# A backup that only lives on the same laptop as the laptop you
+# might lose tomorrow is not a backup.
+echo 'export BACKUP_DIR="/mnt/c/Users/you/OneDrive/ghostkey-backups"' \
+  >> ~/.bashrc
+source ~/.bashrc
+```
+
+Routine:
+
+```sh
+./scripts/backup-fly-db.sh
+```
+
+Frequency: monthly while traffic is low (set a calendar reminder —
+don't trust your memory). Bump to weekly once you have real users.
+For mainnet you'll want a server-side cron pushing to S3-class
+storage; the manual script is the bridge until then.
+
 ### Things to know
 
 - **Region pinned to the volume**. Once you create the volume in `ams`,
