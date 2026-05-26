@@ -43,6 +43,7 @@ export interface CreateVaultRequest {
   checkin_period_secs: number;
   grace_period_secs: number;
   owner_contact?: string | null;
+  owner_contact_channel?: "sms" | "email" | "whatsapp" | null;
   heir_contact?: string | null;
 }
 
@@ -74,6 +75,10 @@ export interface CreateVaultFromXpubRequest {
   checkin_period_secs: number;
   grace_period_secs: number;
   owner_contact?: string | null;
+  /** Optional channel hint for the owner contact above. Defaults to
+   *  `"email"` server-side when an `owner_contact` is supplied
+   *  without an explicit channel. Mirrors `heir_contact_channel`. */
+  owner_contact_channel?: "sms" | "email" | "whatsapp" | null;
   heir_contact?: string | null;
   heir_contact_channel?: "sms" | "email" | "whatsapp" | null;
   /**

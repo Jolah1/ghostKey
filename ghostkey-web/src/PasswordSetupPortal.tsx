@@ -340,6 +340,13 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
         checkin_period_secs: checkinSecs,
         grace_period_secs: graceSecs,
         owner_contact: draft.ownerEmail.trim(),
+        // Owner contact in this flow is always the email the owner
+        // signed up with — that's what `draft.ownerEmail` holds.
+        // The server uses this to send "you missed your check-in"
+        // notifications; without the channel hint it would default
+        // to email anyway, but being explicit avoids relying on the
+        // default if a future server build flips it.
+        owner_contact_channel: "email",
         heir_contact: heirContactPayload,
         heir_contact_channel: draft.heirContactChannel,
         sealed: sealedBody,

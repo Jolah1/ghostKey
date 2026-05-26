@@ -70,6 +70,12 @@ interface Draft {
   ownerXpub: string;            // bare or origin-tagged
   ownerFingerprint: string;     // optional when ownerXpub is origin-tagged
   ownerWallet: string | null;   // soft hint, not used in payload
+  // Where to send "you missed your check-in" reminders. Optional —
+  // a vault without one still works, the owner just won't get an
+  // email when their deadline passes. We capture it on the Wallet
+  // step so it's near the other owner-side fields. Empty means
+  // "don't notify me".
+  ownerEmail: string;
 
   // Heir side
   heirName: string;
@@ -95,6 +101,7 @@ const EMPTY: Draft = {
   ownerXpub: "",
   ownerFingerprint: "",
   ownerWallet: null,
+  ownerEmail: "",
   heirName: "",
   heirContact: "",
   heirContactChannel: "sms",
@@ -218,6 +225,11 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
       if (!isOriginTagged(draft.ownerXpub) && !isHexFingerprint(draft.ownerFingerprint)) {
         return "Your xpub has no origin tag. Add your wallet's fingerprint (8 hex characters).";
       }
+      // Owner email is optional. Only sanity-check shape when supplied.
+      const oe = draft.ownerEmail.trim();
+      if (oe.length > 0 && !/^.+@.+\..+$/.test(oe)) {
+        return "That email looks off. Double-check it, or leave the field blank to skip reminders.";
+      }
     }
     if (s === 1) {
       if (!draft.heirName.trim()) return "Tell us who is inheriting.";
@@ -281,6 +293,15 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
       const advInt = draft.descriptorInternal.trim();
       const useAdvanced = advExt && advInt;
 
+      // Owner contact: empty string means "skip notifications for me".
+      // The server treats null and "" identically (the route's
+      // `match req.owner_contact.as_deref() { Some(pt) if !pt.is_empty() =>
+      // ... }` clause filters both out), so we can ship either; null
+      // makes the wire intent clearer when the owner declined.
+      const ownerEmail = draft.ownerEmail.trim();
+      const ownerContact: string | null = ownerEmail.length > 0 ? ownerEmail : null;
+      const ownerContactChannel: "email" | null = ownerContact ? "email" : null;
+
       const resp = useAdvanced
         ? await api.createVault({
             label,
@@ -295,7 +316,8 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
             timelock_blocks: timelockBlocks,
             checkin_period_secs: checkinSecs,
             grace_period_secs: graceSecs,
-            owner_contact: null,
+            owner_contact: ownerContact,
+            owner_contact_channel: ownerContactChannel,
             heir_contact: heirContactPayload,
           })
         : await api.createVaultFromXpub({
@@ -306,7 +328,8 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
             timelock_blocks: timelockBlocks,
             checkin_period_secs: checkinSecs,
             grace_period_secs: graceSecs,
-            owner_contact: null,
+            owner_contact: ownerContact,
+            owner_contact_channel: ownerContactChannel,
             heir_contact: heirContactPayload,
             heir_contact_channel: draft.heirContactChannel,
           });
@@ -493,6 +516,22 @@ function StepWallet({
               />
             ))}
           </div>
+        </Field>
+
+        <Field
+          label="Your email (optional)"
+          hint="If you miss a check-in we'll send a reminder here before your heir is contacted. Leave blank if you'd rather not be reminded."
+        >
+          <input
+            type="email"
+            value={draft.ownerEmail}
+            onChange={(e) => patch({ ownerEmail: e.target.value })}
+            placeholder="you@example.com"
+            spellCheck={false}
+            autoComplete="email"
+            inputMode="email"
+            className="input"
+          />
         </Field>
 
         <div className="mt-2 space-y-2">

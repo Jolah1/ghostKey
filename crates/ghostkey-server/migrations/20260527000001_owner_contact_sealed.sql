@@ -1,0 +1,32 @@
+-- Encrypted owner contact, with channel discriminator.
+--
+-- Until now the only place to put the owner's contact was the
+-- plaintext `owner_contact TEXT` column added in 20260521 init.sql.
+-- That column was never populated by the web UI (the SetupPortal
+-- didn't collect it) and storing personal information in plaintext
+-- is the wrong shape: we already do per-vault sealed storage for
+-- the heir's contact, and the same threat model applies — a DB
+-- backup leak should not also leak everyone's owner email.
+--
+-- This migration adds three new columns mirroring the heir layout:
+--
+--   owner_contact_ciphertext   base64(XChaCha20-Poly1305 sealed body)
+--   owner_contact_nonce        base64(24-byte nonce)
+--   owner_contact_channel      "email" | "sms" | "whatsapp"
+--
+-- All nullable. Existing rows stay readable; new rows created via
+-- the web UI populate the sealed pair when the operator has a
+-- master key configured. The legacy `owner_contact` plaintext
+-- column is NOT dropped — that would orphan any rows where an
+-- operator wrote into it through a non-UI path (e.g. the legacy
+-- CLI workflow). New code reads the sealed columns first and only
+-- falls back to plaintext when the sealed columns are NULL.
+--
+-- Why now: the scheduler is being wired to send an "alarm fired"
+-- email to the owner when their vault transitions ok -> alarmed.
+-- Without owner contact data, that email goes nowhere. Capturing
+-- the address in the wizard AND storing it encrypted are required
+-- on the same path; both ship in this commit.
+ALTER TABLE vaults ADD COLUMN owner_contact_ciphertext TEXT;
+ALTER TABLE vaults ADD COLUMN owner_contact_nonce      TEXT;
+ALTER TABLE vaults ADD COLUMN owner_contact_channel    TEXT;

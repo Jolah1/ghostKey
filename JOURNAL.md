@@ -267,6 +267,101 @@ The live path — signing an actual transaction on a real test network and broad
 
 ---
 
+## Entry 10 — Lightning check-ins and a sidecar that can be replaced
+
+A second way for the owner to prove they're still alive: pay a one-sat Lightning invoice that the server mints for them. Tapping the dashboard button trusts the server's clock; paying a real Lightning invoice is a cryptographic act the server cannot forge. We call it "stronger than a button, weaker than an on-chain re-vault."
+
+What we built:
+
+- A `LightningProvider` trait in `crates/ghostkey-server/src/lightning.rs` with two implementations: `NoopProvider` (the default; routes return 503 and the web UI hides the button) and `HttpProvider` (talks JSON over localhost to a backend binary).
+- A standalone crate, `crates/ghostkey-lightning-breez`, that wraps Breez SDK Liquid and exposes three routes (`POST /v1/invoice`, `GET /v1/status/:hash`, `GET /v1/health`). It's explicitly excluded from the root workspace; it lives in its own single-crate workspace so its dependencies don't poison the main build.
+- Server-side plumbing: a `lightning_invoices` table, a background poller, a state machine that marks invoices `paid` / `expired` / `failed` and resets the vault's check-in deadlines on payment exactly the way the dashboard button does.
+- Tests for the HTTP wire surface: happy path, wrong-secret 401, zero-amount client-side rejection, status-string mapping, malformed payment hash, and a proof that `is_enabled()` never does I/O.
+
+### Why a sidecar instead of a direct dependency
+
+Breez SDK Liquid pins `reqwest = "=0.12.18"` exactly. That collides with every other crate in the GhostKey workspace. The crate is also only on git, not on crates.io, and pulls in roughly six forked transitive deps. We tried adding it as an optional feature and the build broke immediately.
+
+The sidecar pattern is what Lexe and Breez themselves use for their public SDKs. The trade-off — one extra process to run — buys us a clean main build, independent restarts, and the ability for any contributor to clone GhostKey and `cargo build` without ever needing a Breez API key.
+
+### What was hard
+
+**Breez itself doesn't currently compile.** Tag `0.12.2` (the latest stable as of writing) fails on its transitive `boltz-client` git revision, which references MuSig types absent from the resolved `secp256k1_zkp`. Tag `0.12.3-dev1` pins the same boltz-client and breaks identically. None of this is our code. We documented the failure in three places (the sidecar's README, its Cargo.toml header, and DESIGN.md) and noted that *any* Lightning backend implementing the same three-route HTTP surface will work: LND, CLN, LNbits, BTCPay, Phoenixd. The wire protocol is the long-lived contract; Breez is the first implementation, not the only one.
+
+**The server has to stay completely insulated.** Whether the sidecar builds or not, whether it runs or not, the main `ghostkey-server` must compile, ship, and serve real traffic. We enforced this by selecting between providers via env vars (`GHOSTKEY_LN_BREEZ_URL` + `GHOSTKEY_LN_BREEZ_SHARED_SECRET`); unset means `NoopProvider` and the `/lightning-checkin/*` routes return 503 with a clear message.
+
+### What we left for later
+
+- An ops endpoint that surfaces the sidecar's `/v1/health` readiness on the main server's `/health` (currently we only report `lightning_enabled` as a binary).
+- Webhooks. We poll every three seconds (one second in demo mode). Adding the SDK's event stream would be lower-latency.
+- A second backend implementing the wire surface against LND or CLN, useful for any operator who can't run Liquid.
+
+---
+
+## Entry 11 — Demo mode
+
+Real GhostKey cadences are measured in days. That makes the product impossible to show on a video call: you'd have to fake-forward the clock or wait a fortnight to demonstrate the alarm → claim-token → heir-page transition. Demo mode trades safety for showability, but only on a deployment where the operator explicitly opts in.
+
+What we built:
+
+- `GHOSTKEY_DEMO_MODE=1` env flag in a new `crates/ghostkey-server/src/demo.rs` module. Cached in a `OnceLock`, logs a loud warning on first read so an accidental production toggle is unmissable in the boot log.
+- Two cadence floors: 1 hour / 60 seconds in production, 5 seconds / 3 seconds in demo. A `validate_periods()` helper applies the right floor and is called from both creation routes; adding a third creation path later inherits the gate for free.
+- Network safety: `ensure_demo_safe_for_network()` refuses to create a `"bitcoin"` (mainnet) vault when demo mode is on. The flag is forbidden in that combination; signet/testnet/regtest only.
+- Scheduler tick and Lightning poller tick automatically drop to one second when demo mode is on, regardless of what the operator passed on the CLI. We log the override so a stale `GHOSTKEY_TICK_SECS=30` carried over from production doesn't silently kill the demo.
+- `/health` now returns `demo_mode: bool` alongside `lightning_enabled`.
+- Web: `timing.ts` exposes `DEMO_CADENCE_PRESETS` (10 s / 30 s / 2 min) and `DEMO_GRACE_PRESETS` (5 s / 15 s / 1 min). Both setup portals fetch `demo_mode` from `/health` on mount and swap their pickers. `App.tsx` renders a persistent amber "Demo mode" banner directly under the alpha banner on every non-claim page.
+- Compile-time `const _: () = assert!(...)` in `demo.rs` guarantees the demo floors stay strictly below the production floors — a future contributor who narrows one without the other gets a build error.
+
+### Why now
+
+The Lightning + sidecar work in Entry 10 unlocked a new way to demonstrate liveness, but the rest of the flow — set up vault → miss check-in → alarm → claim — still takes weeks at realistic cadences. We can now walk a person through the whole story in under a minute, which makes the project actually showable.
+
+### What was hard
+
+**Drawing the line between "loose" and "dangerous".** Demo mode loosens cadence validation but does not loosen any cryptographic check: owner tokens, master-key encryption, claim-token single-use enforcement — all unchanged. It also refuses mainnet vaults outright. Even with those guards, "I made this server unsafe for demos" is the kind of mistake that's easy to forget about in production, so we settled on three independent signals: a startup warning, a persistent UI banner, and a per-creation-step inline note next to the cadence picker.
+
+**Test isolation.** `demo_mode()` is cached in a `OnceLock`, so a test that flipped the env var would pollute every later test in the same process. The unit tests therefore exercise `validate_periods()` directly with both branches rather than trying to toggle the global flag.
+
+### What we left for later
+
+- A `/demo` landing page that scripts the full walkthrough (set up → check in → wait → alarm → claim) with narration. Right now the operator drives it manually.
+- A signet integration so demos can include the on-chain claim. The off-chain state machine is now demoable; the on-chain part still needs blocks.
+
+---
+
+## Entry 12 — The owner finds out before the heir does
+
+Before this entry, the owner only learned they missed a check-in when their heir's claim window opened — that is, after the system had already started the inheritance process. Too late. They needed a real nudge at the moment the alarm fired, with one last chance to come back.
+
+What we built:
+
+- A small migration (`20260527000001_owner_contact_sealed.sql`) adding three nullable columns: `owner_contact_ciphertext`, `owner_contact_nonce`, `owner_contact_channel`. Same encryption story as the heir's contact — sealed per-vault with a key derived from the server master secret, plaintext never lands in SQLite.
+- A new `OwnerContact` helper and `parse_owner_contact()` function in `notifier.rs`, mirroring the shape of the existing heir-contact helper.
+- The scheduler's `transition_ok_to_alarmed()` now decrypts the owner contact (when present) and enqueues an `AlarmOwner` email through the same worker that already delivers heir claim links. The `NotificationKind::AlarmOwner` enum variant had been sitting `#[allow(dead_code)]` since the notifier was built — we removed the lint and the comment, and the worker has nothing to add because it didn't care about the kind in the first place.
+- Both setup portals (`PasswordSetupPortal`, `SetupPortal`) now capture an owner email and send it as `owner_contact` + `owner_contact_channel: "email"` to the server. The password portal already had `ownerEmail` for the password-vault sign-in; the legacy portal needed a new optional field on the Wallet step.
+- Three new scheduler tests pinning the contract: a vault with sealed owner contact enqueues exactly one notification on alarm, a legacy vault without one transitions silently, and a follow-on tick doesn't re-enqueue.
+
+### Why now
+
+The notifier was already capable of sending the email — only the scheduler trigger and the storage shape were missing. The product had a credibility hole until this shipped: an owner who set up a vault, then forgot about it for a few weeks, would discover the problem when their heir got an email that they (the owner) never got first. With this change there's always a hop in between, and that hop happens at the exact moment the owner can still act.
+
+### What was hard
+
+**Where to put the channel column.** The heir's contact is a JSON blob with name + address + channel inside the ciphertext. We considered the same shape for the owner. We ended up with a separate `owner_contact_channel` plaintext column because the owner contact is much simpler — there's no name to display, no list of secondary contacts — and the channel itself is not a secret. Keeping it out of the ciphertext lets us filter on it in SQL later (e.g. "fetch every vault whose owner is reachable via SMS") without a per-row decrypt.
+
+**Avoiding double-sends.** A naïve scheduler tick that re-checked every `alarmed` vault would re-enqueue an "you missed your check-in" email every 30 seconds. The fix is implicit: the `transition_ok_to_alarmed()` query already filters `WHERE status = 'ok'`, so the second tick sees an empty result set. A new test (`alarm_does_not_re_enqueue_on_subsequent_ticks`) pins this against an accidental refactor that broadens the predicate.
+
+**The legacy plaintext column.** `owner_contact TEXT` from the original schema is still there. We considered dropping it; we decided not to, because some operator might have written into it through a non-UI path (the legacy CLI route, an admin script). New code reads the sealed columns first; the legacy column is now write-NULL from the xpub route and stays untouched for everything else.
+
+### What we left for later
+
+- A pre-deadline reminder ("your check-in is due in 24h"). We deliberately shipped only the alarm-fired notice this round to avoid a new column and migration; the pre-deadline version needs a `last_reminder_at` field to avoid re-sending every tick.
+- SMS and WhatsApp delivery rails. The data model now carries the channel; the worker still only knows how to talk SMTP.
+- An owner-side "I got your email, here's my check-in" deep link that takes the bearer token from the email and reduces the dashboard to a single tap.
+- A live signet end-to-end run. This remains Entry 9's highest-priority open item.
+
+---
+
 ## How to use this journal
 
 **Read it front to back once** when you join the project. Then use it as a reference when you encounter something confusing in the code.

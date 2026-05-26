@@ -74,15 +74,16 @@ pub enum NotificationKind {
     /// link.
     ClaimLink,
     /// Owner-side: the deadline passed and the alarm fired. Body is
-    /// a reminder to check in.
-    //
-    // Not yet wired into the scheduler: the existing `owner_contact`
-    // column is a plaintext TEXT field that the web wizard does not
-    // populate (the SetupPortal only collects an address + wallet
-    // hint for the owner, not a contact channel). Once we add owner
-    // contact capture in the UI we can enqueue these alongside
-    // ClaimLink notifications.
-    #[allow(dead_code)]
+    /// a reminder that they missed the check-in and that the heir
+    /// will be contacted after `claim_eligible_at` unless they act.
+    ///
+    /// Wired into [`crate::scheduler::transition_ok_to_alarmed`] as
+    /// of 20260527: every vault that has an `owner_contact_*` sealed
+    /// pair (set by the web setup wizard) gets one of these enqueued
+    /// the first time it transitions from `ok` to `alarmed`. Vaults
+    /// created before that migration (or via the legacy `POST /vaults`
+    /// CLI route, which writes the plaintext column) don't have a
+    /// sealed contact and skip silently.
     AlarmOwner,
 }
 
@@ -588,6 +589,72 @@ pub fn parse_heir_contact(
     )?;
     let parsed: HeirContact = serde_json::from_slice(&bytes).map_err(|_| CryptoError::Decrypt)?;
     Ok(Some(parsed))
+}
+
+/* -------------------------------------------------------------------------- *
+ *  Owner-contact helpers                                                     *
+ *                                                                            *
+ *  Unlike the heir, the owner contact is stored as a plain UTF-8 string     *
+ *  (no JSON, no name field). The channel lives in its own column            *
+ *  (`owner_contact_channel`) rather than inside the ciphertext. This is     *
+ *  intentional: the owner's contact is a much simpler thing — it's their   *
+ *  own email/phone, set once at setup, never displayed to them again —      *
+ *  so the wrapper JSON the heir flow uses would just be overhead.          *
+ * -------------------------------------------------------------------------- */
+
+/// Decrypted owner contact pulled from `owner_contact_ciphertext` +
+/// `owner_contact_nonce`. The channel comes from the separate
+/// `owner_contact_channel` column and is passed in by the caller —
+/// the helper just owns the decryption, not the SQL.
+#[derive(Debug, Clone)]
+pub struct OwnerContact {
+    pub address: String,
+    pub channel: Channel,
+}
+
+/// Decrypt the owner-contact ciphertext for a vault. Returns
+/// `Ok(None)` when either of the two ciphertext columns is NULL
+/// (the owner didn't supply one at setup, or the row pre-dates the
+/// 20260527 sealed-owner-contact migration). Returns `Ok(None)` and
+/// logs a single `tracing::info` when the channel column holds a
+/// value we don't know how to deliver to — better than failing the
+/// caller, since the caller (the scheduler) doesn't need to know
+/// the difference between "no contact" and "contact on a channel we
+/// can't deliver" — both mean "skip".
+pub fn parse_owner_contact(
+    vault_id: &str,
+    ciphertext_b64: Option<&str>,
+    nonce_b64: Option<&str>,
+    channel: Option<&str>,
+) -> Result<Option<OwnerContact>, CryptoError> {
+    let (ct, nn) = match (ciphertext_b64, nonce_b64) {
+        (Some(c), Some(n)) => (c, n),
+        _ => return Ok(None),
+    };
+    // Default to email when the channel column was somehow left NULL
+    // — the routes always populate it for sealed rows, but defending
+    // against a hand-edited DB row is cheap.
+    let ch_str = channel.unwrap_or("email");
+    let Some(channel) = Channel::from_str(ch_str) else {
+        tracing::info!(
+            vault_id = %vault_id,
+            channel = %ch_str,
+            "owner channel not yet supported; skipping owner notification"
+        );
+        return Ok(None);
+    };
+    let bytes = open_for_vault(
+        vault_id,
+        &SealedContact {
+            ciphertext_b64: ct.to_string(),
+            nonce_b64: nn.to_string(),
+        },
+    )?;
+    let address = String::from_utf8(bytes).map_err(|_| CryptoError::Decrypt)?;
+    if address.trim().is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(OwnerContact { address, channel }))
 }
 
 #[cfg(test)]

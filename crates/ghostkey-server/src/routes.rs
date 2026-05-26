@@ -138,6 +138,11 @@ pub struct CreateVaultRequest {
     pub checkin_period_secs: i64,
     pub grace_period_secs: i64,
     pub owner_contact: Option<String>,
+    /// Optional channel for the owner contact above. Same vocabulary
+    /// as `heir_contact_channel`: `"email"` (default if omitted),
+    /// `"sms"`, or `"whatsapp"`. The scheduler uses this when it
+    /// fires an "you missed your check-in" notification.
+    pub owner_contact_channel: Option<String>,
     pub heir_contact: Option<String>,
 }
 
@@ -210,6 +215,30 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// Reject anything that isn't one of the channels the notifier
+/// understands. Both heir_contact_channel and owner_contact_channel
+/// share this vocabulary so the wire shape stays consistent and the
+/// notifier can switch on a single column.
+///
+/// Returning `Err` is preferable to silently coercing — an unknown
+/// channel almost always means the caller typo'd or invented a name
+/// we don't deliver to yet; we'd rather fail loudly at creation
+/// than enqueue a notification with `channel = "telegram"` that
+/// the worker will then skip forever.
+fn validate_contact_channel(field: &str, ch: Option<&str>) -> Result<(), ApiError> {
+    if let Some(c) = ch {
+        match c {
+            "email" | "sms" | "whatsapp" => {}
+            _ => {
+                return Err(ApiError::Validation(format!(
+                    "unknown {field} {c:?}; expected email, sms, or whatsapp"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn create_vault(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateVaultRequest>,
@@ -222,6 +251,10 @@ async fn create_vault(
             req.timelock_blocks
         )));
     }
+    validate_contact_channel(
+        "owner_contact_channel",
+        req.owner_contact_channel.as_deref(),
+    )?;
     // Refuse to store anything that isn't a parseable inheritance descriptor.
     parse_descriptor(&req.descriptor_external)
         .map_err(|e| ApiError::Validation(format!("descriptor_external: {e}")))?;
@@ -339,6 +372,11 @@ pub struct CreateVaultFromXpubRequest {
     pub checkin_period_secs: i64,
     pub grace_period_secs: i64,
     pub owner_contact: Option<String>,
+    /// Optional channel for the owner contact above. Same vocabulary
+    /// as `heir_contact_channel`: `"email"` (default if omitted),
+    /// `"sms"`, or `"whatsapp"`. The scheduler uses this when it
+    /// fires an "you missed your check-in" notification.
+    pub owner_contact_channel: Option<String>,
     pub heir_contact: Option<String>,
     /// Optional channel hint for the heir contact (`sms` / `email` /
     /// `whatsapp`). Stored as-is for the step-3 claim-link flow. Until
@@ -404,21 +442,16 @@ async fn create_vault_from_xpub(
         )));
     }
 
-    // ---- Validate heir contact channel -------------------------------
+    // ---- Validate heir + owner contact channels ---------------------
     // The channel string is echoed back to the heir at claim time and
     // also winds up in tracing logs. We refuse anything that isn't one
     // of the recognised channels so an attacker (creation is currently
     // unauthenticated) can't stuff control characters into our logs.
-    if let Some(ref ch) = req.heir_contact_channel {
-        match ch.as_str() {
-            "email" | "sms" | "whatsapp" => {}
-            _ => {
-                return Err(ApiError::Validation(format!(
-                    "unknown heir_contact_channel {ch:?}; expected email, sms, or whatsapp"
-                )));
-            }
-        }
-    }
+    validate_contact_channel("heir_contact_channel", req.heir_contact_channel.as_deref())?;
+    validate_contact_channel(
+        "owner_contact_channel",
+        req.owner_contact_channel.as_deref(),
+    )?;
 
     // ---- Resolve network ---------------------------------------------
     let network = match req.network.as_str() {
@@ -486,6 +519,27 @@ async fn create_vault_from_xpub(
     };
     let ciphertext_b64 = sealed.as_ref().map(|s| s.ciphertext_b64.clone());
     let nonce_b64 = sealed.as_ref().map(|s| s.nonce_b64.clone());
+
+    // Seal the owner contact the same way. New as of 20260527: this
+    // unlocks the scheduler's "you missed your check-in" email path.
+    // We don't populate the legacy plaintext `owner_contact` column
+    // for sealed rows; the scheduler reads from the sealed columns
+    // first and only falls back to plaintext for legacy rows that
+    // pre-date this migration.
+    let owner_sealed: Option<SealedContact> = match req.owner_contact.as_deref() {
+        Some(pt) if !pt.is_empty() => Some(seal_for_vault(&id, pt.as_bytes())?),
+        _ => None,
+    };
+    let owner_ct_b64 = owner_sealed.as_ref().map(|s| s.ciphertext_b64.clone());
+    let owner_nn_b64 = owner_sealed.as_ref().map(|s| s.nonce_b64.clone());
+    // Default the channel to "email" when an address is supplied
+    // without one. Today email is the only delivery rail, so this
+    // matches behaviour; when SMS / WhatsApp arrive, defaulting will
+    // need a deliberate decision but no migration.
+    let owner_channel = req
+        .owner_contact_channel
+        .clone()
+        .or_else(|| owner_sealed.as_ref().map(|_| "email".to_string()));
 
     // When may the scheduler issue a claim token? We add one extra
     // grace window past `next_deadline_at` (which already includes
@@ -570,6 +624,7 @@ async fn create_vault_from_xpub(
             heir_xpub_fragment_external,  heir_xpub_fragment_internal,
             heir_contact_channel,
             heir_contact_ciphertext, heir_contact_nonce,
+            owner_contact_ciphertext, owner_contact_nonce, owner_contact_channel,
             claim_eligible_at,
             owner_token_hash,
             password_salt_b64, password_kdf_mem_kib, password_kdf_iters,
@@ -581,6 +636,7 @@ async fn create_vault_from_xpub(
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'ok',
                   ?, ?, ?, ?, ?,
                   ?, ?,
+                  ?, ?, ?,
                   ?,
                   ?,
                   ?, ?, ?,
@@ -598,7 +654,10 @@ async fn create_vault_from_xpub(
     .bind(timelock)
     .bind(req.checkin_period_secs)
     .bind(req.grace_period_secs)
-    .bind(&req.owner_contact)
+    // Legacy plaintext owner_contact column: write NULL for sealed
+    // rows, so we have a single source of truth per vault. Only the
+    // legacy CLI route (`POST /vaults`) still populates this column.
+    .bind(Option::<String>::None)
     .bind(&now_s)
     .bind(&next_s)
     .bind(&owner_ext)
@@ -608,6 +667,9 @@ async fn create_vault_from_xpub(
     .bind(&req.heir_contact_channel)
     .bind(&ciphertext_b64)
     .bind(&nonce_b64)
+    .bind(&owner_ct_b64)
+    .bind(&owner_nn_b64)
+    .bind(&owner_channel)
     .bind(&claim_eligible_s)
     .bind(&issued_owner.hash_hex)
     .bind(&sealed_password_salt)
