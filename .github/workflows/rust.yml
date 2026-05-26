@@ -20,6 +20,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Daily 04:17 UTC re-scan so a freshly-disclosed CVE in a transitive
+  # dep can't sit unnoticed until the next push. The audit job is the
+  # only consumer of this trigger — the build/test jobs only run on
+  # actual code changes.
+  schedule:
+    - cron: "17 4 * * *"
 
 # Cancel older in-flight runs for the same ref so a force-push doesn't
 # pile up queue depth.
@@ -65,3 +71,36 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
+
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Findings shouldn't block PRs while the ignore list is calibrating;
+    # the job still surfaces a red X on the commit. Tighten to `false`
+    # once we're confident the ignore list is stable.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      # We deliberately do NOT use dtolnay/rust-toolchain here, even
+      # though the build/test/clippy/fmt jobs do. Two reasons:
+      #   (a) The GitHub-hosted ubuntu-latest runner ships with a recent
+      #       stable Rust + cargo pre-installed, which is plenty for
+      #       running cargo-audit (audit doesn't compile our crates).
+      #   (b) `dtolnay/rust-toolchain` pulls from codeload.github.com,
+      #       which has had multiple outages serving its tarball during
+      #       the past 48 hours. The audit job is the easiest one to
+      #       harden against that infrastructure, so it stays online
+      #       even when the rest of the workflow can't bootstrap.
+      #
+      # We cache ~/.cargo/bin so the cargo-audit install is a no-op on
+      # warm runs. actions/cache is first-party and uses GitHub's
+      # internal cache service (not codeload), so it doesn't share the
+      # same failure mode.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-bin-${{ runner.os }}
+      - run: which cargo-audit || cargo install --locked cargo-audit
+      - run: cargo audit
