@@ -32,6 +32,7 @@ import { SignInPortal } from "./SignInPortal";
 import { InheritPortal } from "./InheritPortal";
 import { Dashboard } from "./Dashboard";
 import { ClaimPage } from "./ClaimPage";
+import { OneTapCheckinPage } from "./OneTapCheckinPage";
 import { ServerOfflineBanner } from "./ServerOfflineBanner";
 import { Button } from "./ui";
 import { api } from "./api";
@@ -76,12 +77,14 @@ const VALID: Route[] = [
 
 /**
  * Resolved hash → either a navigable Route, or a parameterised location
- * (today: only `claim` with its token). Kept as a discriminated union so
- * the renderer can pattern-match cleanly.
+ * (today: `claim` with a token, and `checkin-link` with a vault id +
+ * token). Kept as a discriminated union so the renderer can
+ * pattern-match cleanly.
  */
 type Location =
   | { kind: "route"; route: Route }
-  | { kind: "claim"; token: string };
+  | { kind: "claim"; token: string }
+  | { kind: "one-tap-checkin"; vaultId: string; token: string };
 
 function locationFromHash(): Location {
   if (typeof window === "undefined") return { kind: "route", route: "landing" };
@@ -90,6 +93,22 @@ function locationFromHash(): Location {
   if (raw.startsWith("claim/")) {
     const token = raw.slice("claim/".length).trim();
     if (token) return { kind: "claim", token };
+  }
+  // checkin-link/<vaultId>/<token>
+  // Emitted by the scheduler's pre-deadline reminder + alarm emails.
+  // We split on the first `/` after the prefix; the token can contain
+  // any URL-safe character and we don't validate its shape here (the
+  // server is the source of truth on that).
+  if (raw.startsWith("checkin-link/")) {
+    const rest = raw.slice("checkin-link/".length);
+    const slash = rest.indexOf("/");
+    if (slash > 0) {
+      const vaultId = rest.slice(0, slash).trim();
+      const token = rest.slice(slash + 1).trim();
+      if (vaultId && token) {
+        return { kind: "one-tap-checkin", vaultId, token };
+      }
+    }
   }
   const slug = raw as Route;
   return {
@@ -155,6 +174,11 @@ export default function App() {
 
   const setRoute = (r: Route) => setLocation({ kind: "route", route: r });
   const isClaim = location.kind === "claim";
+  // Nav is also hidden for the one-tap check-in page. The owner
+  // arrived from an email link; "Set up" / "Dashboard" / "Sign in"
+  // in the top bar would just be noise for the one thing they came
+  // here to do. Same rationale as the claim page.
+  const isOneTap = location.kind === "one-tap-checkin";
 
   return (
     <div className="min-h-screen bg-app">
@@ -166,7 +190,7 @@ export default function App() {
         has never seen GhostKey before; "Set up" / "Dashboard" in the
         nav are noise that confuses the one thing they're here for.
       */}
-      {!isClaim && (
+      {!isClaim && !isOneTap && (
         <NavBar
           route={location.kind === "route" ? location.route : "landing"}
           onNavigate={setRoute}
@@ -199,6 +223,13 @@ export default function App() {
       )}
       {location.kind === "route" && location.route === "inherit"   && <InheritPortal />}
       {location.kind === "claim" && <ClaimPage token={location.token} />}
+      {location.kind === "one-tap-checkin" && (
+        <OneTapCheckinPage
+          vaultId={location.vaultId}
+          token={location.token}
+          onNavigate={setRoute}
+        />
+      )}
     </div>
   );
 }

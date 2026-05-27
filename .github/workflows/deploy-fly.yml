@@ -26,11 +26,17 @@
 #     automatically revert main either. Watch the action log.
 #
 # Required secret (Settings → Secrets and variables → Actions):
-#   FLY_API_TOKEN  — created with `fly tokens create deploy -x 8760h`
+#   FLY_API_TOKEN  — created with
+#                    `fly tokens create deploy --app ghostkey --expiry 8760h`
 #                    (one-year token; rotate annually). NOT your
 #                    personal Fly login token; use a deploy-scoped
 #                    token so a leak is bounded to deploys of this
 #                    one app.
+#
+#   We probe the token at the start of every run with
+#   `flyctl auth whoami` so an expired or revoked token surfaces
+#   with a clear error annotation rather than a silent 5-second
+#   exit-1 from `flyctl deploy` itself.
 #
 # Manual override:
 #   `fly deploy` from your laptop still works if you need to push
@@ -62,7 +68,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Pin to a known-good flyctl. `@master` worked for the early
+      # deploys but in 2026 any breaking-change release to the
+      # action's master branch would silently take CI down with it.
+      # Bump this when you've manually verified a newer version
+      # against `fly deploy --remote-only` locally.
       - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: flyctl deploy --remote-only
+        with:
+          version: 0.4.55
+      # Surface auth failures with a real error message BEFORE the
+      # deploy step runs. Without this, an expired or revoked
+      # FLY_API_TOKEN produces a 5-second exit-1 from `flyctl deploy`
+      # with no obvious cause in the GitHub Action log. The whoami
+      # call prints `email=...` and the org list, both of which make
+      # it obvious whether we're authenticated as the expected user
+      # and have access to the `ghostkey` app.
+      - name: Verify Fly auth
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          echo "::group::flyctl auth whoami"
+          flyctl auth whoami || {
+            echo "::error::FLY_API_TOKEN is missing, expired, or revoked."
+            echo "::error::Generate a new one with: fly tokens create deploy --app ghostkey --expiry 8760h"
+            echo "::error::Update the GitHub secret at https://github.com/Jolah1/ghostKey/settings/secrets/actions"
+            exit 1
+          }
+          echo "::endgroup::"
+          echo "::group::flyctl apps list"
+          flyctl apps list || true
+          echo "::endgroup::"
+      - name: Deploy
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only --verbose

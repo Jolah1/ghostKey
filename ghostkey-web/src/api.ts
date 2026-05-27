@@ -416,6 +416,17 @@ export const api = {
       { method: "POST" },
       ownerToken,
     ),
+  /** One-tap check-in from the link in a reminder or alarm email.
+   *  No Authorization header — the per-cycle token in the URL IS
+   *  the auth. Returns 404 if the token doesn't match, 409 if it
+   *  was already tapped, 200 with the new deadline on success.
+   *  Mirrors `crates/ghostkey-server/src/routes.rs::checkin_from_link`. */
+  checkinFromLink: (id: string, token: string) =>
+    request<CheckinResponse>(
+      `/vaults/${id}/checkin-from-link/${encodeURIComponent(token)}`,
+      { method: "POST" },
+      null,
+    ),
   /** Lightning check-in: mint a 1-sat BOLT11 invoice. Paying it from
    *  any Lightning wallet resets the vault's check-in deadline,
    *  identical semantics to the regular HTTP `checkin` above.

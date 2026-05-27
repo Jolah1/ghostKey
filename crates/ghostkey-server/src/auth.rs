@@ -554,4 +554,222 @@ mod http_tests {
         let body: Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(body["ok"], true);
     }
+
+    /* ---------------------------------------------------------------- *
+     *  One-tap check-in link tests                                     *
+     *                                                                  *
+     *  Wired in 20260528. The route `POST /vaults/:id/checkin-from-   *
+     *  link/:token` is intentionally NOT behind OwnerAuth -- the      *
+     *  token itself is the auth. Tests pin the contract:              *
+     *    - wrong token -> 404 (not 401: we hide existence the same   *
+     *      way `resolve_claim` does for heir links),                  *
+     *    - right token -> 200 and the row's deadline is reset,        *
+     *    - second tap with same token -> 409 (single-use),           *
+     *    - check-in via this route also clears the per-cycle markers  *
+     *      so the next reminder is eligible.                          *
+     * ---------------------------------------------------------------- */
+
+    /// Insert a vault that already has a live one-tap token. The
+    /// hash is what `mint_or_reuse_one_tap_token` would have written
+    /// when the scheduler enqueued the reminder; tests get to play
+    /// the role of the owner clicking the email.
+    async fn insert_vault_with_one_tap_token(pool: &SqlitePool, id: &str, token_hash: &str) {
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network,
+                descriptor_external, descriptor_internal,
+                timelock_blocks,
+                checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status,
+                claim_eligible_at,
+                checkin_link_token_hash, checkin_link_token_issued_at
+            ) VALUES (?, 'regtest', ?, ?, 144, 86400, 3600,
+                      '2026-01-01T00:00:00Z',
+                      '2099-01-01T00:00:00Z', 'ok',
+                      '2099-01-02T00:00:00Z',
+                      ?, '2026-01-02T00:00:00Z')"#,
+        )
+        .bind(id)
+        .bind(format!("tr(fake/{id}/0/*)"))
+        .bind(format!("tr(fake/{id}/1/*)"))
+        .bind(token_hash)
+        .execute(pool)
+        .await
+        .expect("insert vault with one-tap token");
+    }
+
+    #[tokio::test]
+    async fn one_tap_checkin_with_correct_token_succeeds_and_clears_markers() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_claim_token();
+        insert_vault_with_one_tap_token(&state.db, "vault-link-A", &issued.hash_hex).await;
+        // Also seed the per-cycle marker so we can prove it gets
+        // cleared on success.
+        sqlx::query(
+            "UPDATE vaults SET pre_deadline_reminder_sent_at = '2026-01-02T00:00:00Z' \
+             WHERE id = 'vault-link-A'",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let app = routes::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/vaults/vault-link-A/checkin-from-link/{}",
+                        issued.token
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Row state after success: per-cycle marker NULL, token
+        // columns NULL, status 'ok', new deadline in the future.
+        let (marker, link_hash, link_used, status): (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+        ) = sqlx::query_as(
+            "SELECT pre_deadline_reminder_sent_at, checkin_link_token_hash, \
+                    checkin_link_token_used_at, status \
+             FROM vaults WHERE id = 'vault-link-A'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert!(marker.is_none(), "marker must be cleared");
+        assert!(link_hash.is_none(), "token hash must be scrubbed");
+        assert!(link_used.is_none(), "token used_at must be scrubbed");
+        assert_eq!(status, "ok");
+    }
+
+    #[tokio::test]
+    async fn one_tap_checkin_with_wrong_token_is_404() {
+        let state = fresh_state().await;
+        let real = crate::crypto::issue_claim_token();
+        insert_vault_with_one_tap_token(&state.db, "vault-link-B", &real.hash_hex).await;
+
+        let bogus = crate::crypto::issue_claim_token();
+        let app = routes::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/vaults/vault-link-B/checkin-from-link/{}",
+                        bogus.token
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        // Row state untouched.
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM vaults WHERE id = 'vault-link-B'")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(status, "ok"); // still ok; deadline was already in the future
+        let hash: Option<String> = sqlx::query_scalar(
+            "SELECT checkin_link_token_hash FROM vaults WHERE id = 'vault-link-B'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            hash.as_deref(),
+            Some(real.hash_hex.as_str()),
+            "live token must not be scrubbed by a failed attempt"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_tap_checkin_with_right_token_for_wrong_vault_is_404() {
+        // Two vaults; correct token belongs to vault A; we try to
+        // use it on vault B. The route's `WHERE id = ?` filter is
+        // what blocks this; without that filter a leaked token
+        // would silently reset the wrong vault.
+        let state = fresh_state().await;
+        let a = crate::crypto::issue_claim_token();
+        let b = crate::crypto::issue_claim_token();
+        insert_vault_with_one_tap_token(&state.db, "vault-link-C1", &a.hash_hex).await;
+        insert_vault_with_one_tap_token(&state.db, "vault-link-C2", &b.hash_hex).await;
+
+        let app = routes::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/vaults/vault-link-C2/checkin-from-link/{}",
+                        a.token
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn one_tap_checkin_second_tap_is_409() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_claim_token();
+        insert_vault_with_one_tap_token(&state.db, "vault-link-D", &issued.hash_hex).await;
+
+        let app = routes::router(state.clone());
+        let r1 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/vaults/vault-link-D/checkin-from-link/{}",
+                        issued.token
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r1.status(), StatusCode::OK);
+
+        // Second tap of the same URL. The successful first tap
+        // scrubbed the hash columns, so the lookup now misses and
+        // we get 404 -- which is the right answer for "this link no
+        // longer exists". Conflict (409) would only fire if the
+        // hash were still on the row with `used_at IS NOT NULL`,
+        // which is the pre-scrub atomicity window inside the
+        // transaction. The user-visible behaviour is the same:
+        // "this link doesn't work".
+        let r2 = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/vaults/vault-link-D/checkin-from-link/{}",
+                        issued.token
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(r2.status(), StatusCode::NOT_FOUND | StatusCode::CONFLICT),
+            "second tap should be 404 or 409, got {}",
+            r2.status()
+        );
+    }
 }

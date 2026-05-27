@@ -385,7 +385,8 @@ for weeks until someone notices a 4xx.
 
 1. Create a deploy-scoped Fly token (don't use your personal one):
    ```sh
-   fly tokens create deploy -x 8760h   # 1 year; rotate annually
+   fly tokens create deploy --app ghostkey --expiry 8760h
+   # 1 year; rotate annually
    ```
 2. Add it as a repository secret named `FLY_API_TOKEN`:
    GitHub → Settings → Secrets and variables → Actions → New
@@ -395,6 +396,16 @@ for weeks until someone notices a 4xx.
 
 Manual `fly deploy` from your laptop still works any time you want
 to ship a hotfix without going through `main`.
+
+**If the deploy starts failing:** the workflow probes
+`flyctl auth whoami` before attempting `flyctl deploy`, so an
+expired or revoked `FLY_API_TOKEN` produces an explicit error
+annotation in the GitHub Action log (rather than a silent 5-second
+exit-1 from `flyctl deploy` itself, which was the failure mode
+before we hardened the workflow in commit `48ce916`'s follow-up).
+If you see "FLY_API_TOKEN is missing, expired, or revoked" in the
+action log, regenerate the token with the command above and update
+the GitHub secret.
 
 ### Field-by-field for the Fly Launcher UI
 
