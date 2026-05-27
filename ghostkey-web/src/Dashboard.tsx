@@ -129,7 +129,7 @@ export function Dashboard({ onNavigate }: Props) {
       await api.checkin(vault.id, ownerToken);
       await refresh();
       setJustChecked(true);
-      window.setTimeout(() => setJustChecked(false), 2400);
+      window.setTimeout(() => setJustChecked(false), 4000);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
     } finally {
@@ -195,7 +195,7 @@ export function Dashboard({ onNavigate }: Props) {
           onPaid={() => {
             setLightningOpen(false);
             setJustChecked(true);
-            window.setTimeout(() => setJustChecked(false), 2400);
+            window.setTimeout(() => setJustChecked(false), 4000);
             void refresh();
           }}
           onClose={() => setLightningOpen(false)}
@@ -262,7 +262,7 @@ function HeartbeatCard({
     : null;
 
   return (
-    <section className="card relative overflow-hidden p-8 text-center">
+    <section className="card relative overflow-hidden p-5 text-center md:p-8">
       <div className="flex flex-col items-center">
         <Heartbeat onTap={busy ? undefined : onCheckin} disabled={busy} />
 
@@ -275,9 +275,21 @@ function HeartbeatCard({
             : `Let ${meta.heir.name} know the clock is reset.`}
         </p>
 
-        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-          <Button onClick={onCheckin} loading={busy} size="lg">
-            {justChecked ? "Checked in" : "I'm still here"}
+        <div className="mt-6 flex w-full max-w-xs flex-col items-stretch gap-3 md:max-w-none md:flex-row md:flex-wrap md:items-center md:justify-center">
+          {/* Mobile: stacked full-width buttons (fat tap targets on
+              a 360px phone). md+: side-by-side. After a successful
+              check-in we disable the button for the duration of the
+              `justChecked` state so the user can't tap five times in
+              a panic; the server allows repeat check-ins (correct
+              for cross-device safety) but the UI shouldn't invite
+              that confusion. */}
+          <Button
+            onClick={onCheckin}
+            loading={busy}
+            disabled={justChecked}
+            size="lg"
+          >
+            {justChecked ? "Checked in ✓" : "I'm still here"}
           </Button>
           {lightningEnabled ? (
             <Button variant="ghost" size="lg" onClick={onLightning}>

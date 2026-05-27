@@ -43,21 +43,35 @@ export function Landing({ onNavigate }: Props) {
 function Hero({ onNavigate }: Props) {
   return (
     <section className="relative overflow-hidden hero-glow">
-      <div className="mx-auto flex max-w-5xl flex-col items-center px-5 py-20 text-center md:px-8 md:py-28">
+      {/* Mobile padding was `px-5 py-20` (1.25rem / 5rem). On a 360px
+          phone py-20 is 160px of vertical dead space before content.
+          Drop to py-12 (3rem = 48px) at base so the hero is visible
+          on first paint without scroll. md: keeps the generous
+          desktop spacing. */}
+      <div className="mx-auto flex max-w-5xl flex-col items-center px-5 py-12 text-center md:px-8 md:py-28">
         <Eyebrow>Bitcoin inheritance, without the lawyers</Eyebrow>
 
-        <h1 className="word-in mt-7 max-w-3xl font-display text-[clamp(44px,7vw,96px)] font-bold leading-[1.04] tracking-tight">
+        {/* Hero clamp floor was 44px which forces "lives on after you"
+            (~21ch) onto a single line of ~510px — wider than a 360px
+            phone, so the browser breaks awkwardly mid-word with the
+            title-gradient running through the break. 32px floor at
+            base keeps the line on two lines cleanly. The 7vw target
+            and 96px ceiling are unchanged. */}
+        <h1 className="word-in mt-7 max-w-3xl font-display text-[clamp(32px,7vw,96px)] font-bold leading-[1.04] tracking-tight">
           <span className="title-gradient">Your </span>
           <span className="text-accent">Bitcoin</span>
           <br />
           <span className="title-gradient">lives on after you</span>
         </h1>
 
-        <p className="mt-8 max-w-xl text-lg text-body md:text-xl">
+        <p className="mt-6 max-w-xl text-base text-body md:mt-8 md:text-xl">
           {brand.longTagline}
         </p>
 
-        <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
+        <div className="mt-8 flex w-full max-w-sm flex-col gap-3 md:mt-10 md:w-auto md:max-w-none md:flex-row md:flex-wrap md:items-center md:justify-center">
+          {/* Mobile-first: buttons stack full-width so the primary CTA
+              is a fat tap target instead of two cramped pills. md:
+              restores the horizontal pair. */}
           <button
             type="button"
             onClick={() => onNavigate("setup")}
@@ -133,7 +147,7 @@ const STEPS: Step[] = [
 function HowItWorks({ onNavigate }: Props) {
   return (
     <section id="how" className="border-t border-app bg-app">
-      <div className="mx-auto max-w-3xl px-5 py-20 md:px-8 md:py-28">
+      <div className="mx-auto max-w-3xl px-5 py-14 md:px-8 md:py-28">
         <Eyebrow dim>How it works</Eyebrow>
 
         <ol className="mt-12 space-y-0">
@@ -219,10 +233,10 @@ const STAGES: Stage[] = [
 function Lifecycle() {
   return (
     <section className="border-t border-app bg-app">
-      <div className="mx-auto max-w-5xl px-5 py-20 md:px-8 md:py-28">
+      <div className="mx-auto max-w-5xl px-5 py-14 md:px-8 md:py-28">
         <div className="max-w-2xl">
           <Eyebrow dim>Vault lifecycle</Eyebrow>
-          <h2 className="mt-4 font-display text-4xl font-bold leading-[1.05] tracking-tight md:text-6xl">
+          <h2 className="mt-4 font-display text-3xl font-bold leading-[1.05] tracking-tight md:text-6xl">
             <span className="title-gradient">From heartbeat to </span>
             <span className="text-accent">inheritance</span>
           </h2>
@@ -315,10 +329,10 @@ const REASONS: Reason[] = [
 function WhyBitcoin() {
   return (
     <section className="border-t border-app bg-app">
-      <div className="mx-auto max-w-5xl px-5 py-20 md:px-8 md:py-28">
+      <div className="mx-auto max-w-5xl px-5 py-14 md:px-8 md:py-28">
         <div className="max-w-2xl">
           <Eyebrow dim>Why Bitcoin</Eyebrow>
-          <h2 className="mt-4 font-display text-4xl font-bold leading-[1.05] tracking-tight md:text-6xl">
+          <h2 className="mt-4 font-display text-3xl font-bold leading-[1.05] tracking-tight md:text-6xl">
             <span className="title-gradient">Built on the chain that </span>
             <span className="text-accent">doesn't break</span>
           </h2>
@@ -359,27 +373,64 @@ const COMP: CompRow[] = [
 function Comparison() {
   return (
     <section className="border-t border-app bg-app">
-      <div className="mx-auto max-w-5xl px-5 py-20 md:px-8 md:py-28">
+      <div className="mx-auto max-w-5xl px-5 py-14 md:px-8 md:py-28">
         <div className="max-w-2xl">
           <Eyebrow dim>Comparison</Eyebrow>
-          <h2 className="mt-4 font-display text-4xl font-bold leading-[1.05] tracking-tight md:text-6xl">
+          <h2 className="mt-4 font-display text-3xl font-bold leading-[1.05] tracking-tight md:text-6xl">
             <span className="title-gradient">Nothing else </span>
             <span className="text-accent">comes close</span>
           </h2>
         </div>
 
-        {/* The table itself is `min-w-[560px]` so the four columns
-            don't crush on narrow widths. The wrapper carries
-            `max-w-full` AND `overflow-x-auto` so that on a 360px
-            phone the page does NOT horizontally scroll — only the
-            table does. Without max-w-full some mobile browsers
-            still let the table push the layout viewport wider, which
-            is the bug behind the "page is zoomed out and off-centre
-            on mobile" report. The html+body `overflow-x: hidden`
-            rules in index.css are belt-and-braces against the same
-            class of bug. */}
-        <div className="mt-12 max-w-full overflow-x-auto">
-          <table className="w-full min-w-[560px] border-separate border-spacing-0 text-sm">
+        {/* Two renderings of the same data:
+            - Mobile (`<md`): stacked cards. Each row becomes one
+              card with a heading and a 3-column mini-table inside.
+              No horizontal scroll, no `min-w` escape hatch needed.
+            - Desktop (`md:` and up): the comparison table. Wider
+              than mobile can fit, but we never show it there.
+            Mirroring data is fine — five rows; the data shape
+            (`COMP`) is the single source of truth above. */}
+        <div className="mt-10 grid gap-3 md:hidden">
+          {COMP.map((row) => (
+            <div
+              key={row.name}
+              className={`card-flat p-4 ${row.highlight ? "border-accent" : ""}`}
+              style={row.highlight ? { background: "var(--accent-tint)" } : undefined}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-medium">{row.name}</span>
+                {row.highlight && (
+                  <span
+                    className="rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider"
+                    style={{
+                      background: "var(--accent)",
+                      color: "var(--text-on-accent)",
+                    }}
+                  >
+                    Best
+                  </span>
+                )}
+              </div>
+              <dl className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                <div className="flex flex-col items-start gap-1">
+                  <dt className="text-dim">Self-custodial</dt>
+                  <dd><Mark v={row.selfCustody} /></dd>
+                </div>
+                <div className="flex flex-col items-start gap-1">
+                  <dt className="text-dim">Trustless</dt>
+                  <dd><Mark v={row.trustless} /></dd>
+                </div>
+                <div className="flex flex-col items-start gap-1">
+                  <dt className="text-dim">On-chain</dt>
+                  <dd><Mark v={row.onChain} /></dd>
+                </div>
+              </dl>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-12 hidden md:block">
+          <table className="w-full border-separate border-spacing-0 text-sm">
             <thead>
               <tr className="text-left text-xs uppercase tracking-wider text-dim">
                 <th scope="col" className="py-3 pr-4 font-medium">Solution</th>
@@ -519,10 +570,10 @@ const FAQS = [
 function FAQ() {
   return (
     <section className="border-t border-app bg-app">
-      <div className="mx-auto max-w-3xl px-5 py-20 md:px-8 md:py-28">
+      <div className="mx-auto max-w-3xl px-5 py-14 md:px-8 md:py-28">
         <div className="text-center">
           <Eyebrow dim>FAQ</Eyebrow>
-          <h2 className="mt-4 font-display text-4xl font-bold leading-[1.05] tracking-tight md:text-6xl">
+          <h2 className="mt-4 font-display text-3xl font-bold leading-[1.05] tracking-tight md:text-6xl">
             <span className="title-gradient">Common </span>
             <span className="text-accent">questions</span>
           </h2>
@@ -554,8 +605,8 @@ function FAQ() {
 function FinalCTA({ onNavigate }: Props) {
   return (
     <section className="border-t border-app bg-app">
-      <div className="mx-auto max-w-3xl px-5 py-20 text-center md:px-8 md:py-28">
-        <h2 className="font-display text-4xl font-bold leading-[1.05] tracking-tight md:text-6xl">
+      <div className="mx-auto max-w-3xl px-5 py-14 text-center md:px-8 md:py-28">
+        <h2 className="font-display text-3xl font-bold leading-[1.05] tracking-tight md:text-6xl">
           <span className="title-gradient">Don't let your Bitcoin </span>
           <span className="text-accent">die with you</span>
         </h2>
