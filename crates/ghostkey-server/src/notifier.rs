@@ -109,18 +109,27 @@ impl NotificationKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
     Email,
-    // Future: Sms, Whatsapp.
+    /// Plain SMS over Twilio's Programmable Messaging API.
+    Sms,
+    /// WhatsApp message via Twilio's WhatsApp Business API (the
+    /// `whatsapp:+...` prefix on the wire). Same auth, same
+    /// endpoint, different `From` shape; see `send_twilio`.
+    Whatsapp,
 }
 
 impl Channel {
     fn as_str(self) -> &'static str {
         match self {
             Channel::Email => "email",
+            Channel::Sms => "sms",
+            Channel::Whatsapp => "whatsapp",
         }
     }
     fn from_str(s: &str) -> Option<Self> {
         match s {
             "email" => Some(Channel::Email),
+            "sms" => Some(Channel::Sms),
+            "whatsapp" => Some(Channel::Whatsapp),
             _ => None,
         }
     }
@@ -177,6 +186,107 @@ impl SmtpConfig {
             from,
             starttls,
         })
+    }
+}
+
+/// Twilio configuration for SMS and WhatsApp delivery.
+///
+/// We accept four env vars, all required when SMS or WhatsApp is to
+/// be enabled:
+///
+///   - `TWILIO_ACCOUNT_SID`: `ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
+///   - `TWILIO_AUTH_TOKEN`: the API secret; treat like a password
+///   - `TWILIO_SMS_FROM`: `+15551234567` in E.164. Must be a number
+///     Twilio has provisioned for you.
+///   - `TWILIO_WHATSAPP_FROM`: `+15551234567`. The Twilio sandbox
+///     number `+14155238886` works during dev. We prefix `whatsapp:`
+///     ourselves on the wire so set this as plain E.164.
+///
+/// All four must be set to enable delivery on either channel. Setting
+/// only some (e.g. SID + auth but no `TWILIO_SMS_FROM`) returns `None`
+/// at load time: a partial config is almost always an operator
+/// mistake and we'd rather refuse to enable than send half the
+/// messages with a NULL `From`.
+///
+/// This crate uses Twilio's Programmable Messaging REST API
+/// (https://www.twilio.com/docs/messaging/api/message-resource).
+/// We don't pull in the official twilio crate — the surface we need
+/// is a single POST with form-encoded body and HTTP Basic auth, and
+/// we already depend on reqwest for the Lightning HttpProvider.
+/// Adding a crate would buy us nothing and pin another set of
+/// transitive deps.
+#[derive(Debug, Clone)]
+pub struct TwilioConfig {
+    pub account_sid: String,
+    pub auth_token: String,
+    pub sms_from: String,
+    pub whatsapp_from: String,
+    /// API base URL. Defaults to `https://api.twilio.com` in prod;
+    /// tests override via `TWILIO_API_BASE_URL` to point at an
+    /// in-process mock server. Real deployments should never set
+    /// this — there's no reason to talk to anything other than the
+    /// real Twilio endpoint.
+    pub api_base_url: String,
+}
+
+impl TwilioConfig {
+    /// Load from env. Returns `None` when ANY of the four required
+    /// vars is unset/empty, with a single warning enumerating what's
+    /// missing so the operator can fix the config in one pass.
+    pub fn from_env() -> Option<Self> {
+        let sid = std::env::var("TWILIO_ACCOUNT_SID")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let tok = std::env::var("TWILIO_AUTH_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let sms = std::env::var("TWILIO_SMS_FROM")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let wa = std::env::var("TWILIO_WHATSAPP_FROM")
+            .ok()
+            .filter(|s| !s.is_empty());
+
+        match (sid, tok, sms, wa) {
+            (Some(sid), Some(tok), Some(sms), Some(wa)) => Some(TwilioConfig {
+                account_sid: sid,
+                auth_token: tok,
+                sms_from: sms,
+                whatsapp_from: wa,
+                api_base_url: std::env::var("TWILIO_API_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.twilio.com".to_string()),
+            }),
+            (sid, tok, sms, wa) => {
+                // If ALL four are unset we stay silent (this is the
+                // normal "Twilio not configured" path). If SOME are
+                // set, that's a partial config -- warn loudly because
+                // it's almost certainly a deployment mistake.
+                let any_set = sid.is_some() || tok.is_some() || sms.is_some() || wa.is_some();
+                if any_set {
+                    let mut missing: Vec<&str> = Vec::new();
+                    if sid.is_none() {
+                        missing.push("TWILIO_ACCOUNT_SID");
+                    }
+                    if tok.is_none() {
+                        missing.push("TWILIO_AUTH_TOKEN");
+                    }
+                    if sms.is_none() {
+                        missing.push("TWILIO_SMS_FROM");
+                    }
+                    if wa.is_none() {
+                        missing.push("TWILIO_WHATSAPP_FROM");
+                    }
+                    tracing::warn!(
+                        missing = ?missing,
+                        "TWILIO_* env vars are partially set; SMS/WhatsApp \
+                         delivery is DISABLED until all four are supplied. \
+                         Set the missing vars or unset every TWILIO_* var to \
+                         silence this warning."
+                    );
+                }
+                None
+            }
+        }
     }
 }
 
@@ -254,9 +364,21 @@ enum WorkerOutcome {
 /// Long-lived background worker. Polls the queue every `tick` and
 /// processes one batch of due rows. Designed to be `tokio::spawn`ed
 /// alongside the scheduler.
+/// Delivery configuration bundle. One per worker process. Each
+/// inner Option is independent — operators can wire SMTP without
+/// Twilio (or vice versa) and the worker just skips rows whose
+/// channel has no backend configured.
+struct Backends {
+    smtp: Option<SmtpConfig>,
+    twilio: Option<TwilioConfig>,
+}
+
 pub async fn run(pool: SqlitePool, tick: Duration) {
-    let smtp = SmtpConfig::from_env();
-    match &smtp {
+    let backends = Backends {
+        smtp: SmtpConfig::from_env(),
+        twilio: TwilioConfig::from_env(),
+    };
+    match &backends.smtp {
         None => tracing::warn!(
             "SMTP_HOST unset; notification worker will accept enqueues but \
              every email-channel send will be Skipped (row stays pending). \
@@ -269,10 +391,24 @@ pub async fn run(pool: SqlitePool, tick: Duration) {
             "notification worker: SMTP configured"
         ),
     }
-    let smtp = Arc::new(smtp);
+    match &backends.twilio {
+        None => tracing::info!(
+            "TWILIO_* not configured; sms/whatsapp channels will be Skipped \
+             (row stays pending). Configure TWILIO_ACCOUNT_SID + \
+             TWILIO_AUTH_TOKEN + TWILIO_SMS_FROM + TWILIO_WHATSAPP_FROM to \
+             enable delivery."
+        ),
+        Some(cfg) => tracing::info!(
+            sid_prefix = %cfg.account_sid.chars().take(6).collect::<String>(),
+            sms_from = %cfg.sms_from,
+            wa_from = %cfg.whatsapp_from,
+            "notification worker: Twilio configured"
+        ),
+    }
+    let backends = Arc::new(backends);
 
     loop {
-        if let Err(e) = tick_once(&pool, smtp.clone()).await {
+        if let Err(e) = tick_once(&pool, backends.clone()).await {
             tracing::error!(error = ?e, "notifier tick errored");
         }
         tokio::time::sleep(tick).await;
@@ -283,7 +419,7 @@ pub async fn run(pool: SqlitePool, tick: Duration) {
 /// We deliberately keep batch size small so a backlog doesn't hog
 /// the worker for too long; the next tick picks up where this left
 /// off.
-async fn tick_once(pool: &SqlitePool, smtp: Arc<Option<SmtpConfig>>) -> anyhow::Result<()> {
+async fn tick_once(pool: &SqlitePool, backends: Arc<Backends>) -> anyhow::Result<()> {
     let now_s = Utc::now().to_rfc3339();
     let due = sqlx::query_as::<
         _,
@@ -363,45 +499,42 @@ async fn tick_once(pool: &SqlitePool, smtp: Arc<Option<SmtpConfig>>) -> anyhow::
         };
 
         let channel = Channel::from_str(&channel_s);
-        let outcome = match (channel, smtp.as_ref()) {
-            (Some(Channel::Email), Some(cfg)) => {
-                match send_email(cfg, &draft).await {
-                    Ok(()) => WorkerOutcome::Sent,
-                    Err(e) => {
-                        tracing::warn!(
-                            notif_id = id,
-                            kind = %kind,
-                            error = %e,
-                            "smtp send failed"
-                        );
-                        // Decide retry vs permanent.
-                        if attempts + 1 >= MAX_ATTEMPTS {
-                            mark_permanent(pool, id, &format!("smtp: {e}")).await?;
-                            WorkerOutcome::Permanent
-                        } else {
-                            let delay = backoff_secs(attempts + 1);
-                            reschedule(pool, id, attempts + 1, delay, &format!("smtp: {e}"))
-                                .await?;
-                            WorkerOutcome::Retry
-                        }
-                    }
-                }
-            }
-            (Some(Channel::Email), None) => {
-                // SMTP not configured; put the row back to pending
-                // so a future deployment with SMTP configured can
-                // deliver it. We don't increment attempts -- a skip
-                // is not a failure.
+        let Some(channel) = channel else {
+            tracing::error!(notif_id = id, channel = %channel_s, "unknown channel");
+            mark_permanent(pool, id, "unknown channel").await?;
+            continue;
+        };
+
+        // Dispatch to the right backend. `None` means "no backend
+        // configured for this channel" — leave the row pending so a
+        // future deployment with the backend wired can pick it up;
+        // do NOT count it as an attempt.
+        let dispatch = dispatch_send(&backends, channel, &draft).await;
+        let outcome = match dispatch {
+            None => {
                 sqlx::query("UPDATE notifications SET status = 'pending' WHERE id = ?")
                     .bind(id)
                     .execute(pool)
                     .await?;
                 WorkerOutcome::Skip
             }
-            (None, _) => {
-                tracing::error!(notif_id = id, channel = %channel_s, "unknown channel");
-                mark_permanent(pool, id, "unknown channel").await?;
-                WorkerOutcome::Permanent
+            Some(Ok(())) => WorkerOutcome::Sent,
+            Some(Err(e)) => {
+                tracing::warn!(
+                    notif_id = id,
+                    kind = %kind,
+                    channel = ?channel,
+                    error = %e,
+                    "send failed"
+                );
+                if attempts + 1 >= MAX_ATTEMPTS {
+                    mark_permanent(pool, id, &format!("{e}")).await?;
+                    WorkerOutcome::Permanent
+                } else {
+                    let delay = backoff_secs(attempts + 1);
+                    reschedule(pool, id, attempts + 1, delay, &format!("{e}")).await?;
+                    WorkerOutcome::Retry
+                }
             }
         };
 
@@ -413,10 +546,42 @@ async fn tick_once(pool: &SqlitePool, smtp: Arc<Option<SmtpConfig>>) -> anyhow::
             .bind(id)
             .execute(pool)
             .await?;
-            tracing::info!(notif_id = id, vault_id = %vault_id, kind = %kind, "notification sent");
+            tracing::info!(notif_id = id, vault_id = %vault_id, kind = %kind, channel = ?channel, "notification sent");
         }
     }
     Ok(())
+}
+
+/// Route a draft to the right backend.
+///
+/// Return values:
+///   - `None`: no backend configured for this channel; the caller
+///     should leave the row pending (a Skip, not a failure).
+///   - `Some(Ok)`: delivered. Caller flips to `sent`.
+///   - `Some(Err)`: backend rejected or timed out. Caller decides
+///     retry vs. permanent.
+///
+/// This split keeps the worker loop's success/skip/retry bookkeeping
+/// in one place and the per-channel transport details out of it.
+async fn dispatch_send(
+    backends: &Backends,
+    channel: Channel,
+    draft: &DraftPayload,
+) -> Option<Result<(), SendError>> {
+    // Each arm awaits a different `async fn`, which produces a
+    // different opaque future type. We resolve each future to a
+    // `Result` inside its own arm and only THEN wrap in Some/None,
+    // which keeps the match-arm types compatible without boxing.
+    match channel {
+        Channel::Email => {
+            let cfg = backends.smtp.as_ref()?;
+            Some(send_email(cfg, draft).await)
+        }
+        Channel::Sms | Channel::Whatsapp => {
+            let cfg = backends.twilio.as_ref()?;
+            Some(send_twilio(cfg, channel, draft).await)
+        }
+    }
 }
 
 /// Compute exponential-backoff delay seconds for the Nth retry.
@@ -558,6 +723,103 @@ enum SendError {
     Build(String),
     #[error("smtp: {0}")]
     Smtp(String),
+    /// Twilio HTTP error or non-2xx response. Carries the body
+    /// snippet so the operator can read the API's complaint.
+    #[error("twilio: {0}")]
+    Twilio(String),
+}
+
+/// Deliver a Draft via Twilio's Programmable Messaging API.
+///
+/// One POST per send:
+///
+///   POST https://api.twilio.com/2010-04-01/Accounts/{SID}/Messages.json
+///   Authorization: Basic base64(SID:AUTH_TOKEN)
+///   Content-Type: application/x-www-form-urlencoded
+///
+///   From={E.164 or whatsapp:+E.164}
+///   To={E.164 or whatsapp:+E.164}
+///   Body={url-encoded message}
+///
+/// The same endpoint handles both SMS and WhatsApp. The only wire
+/// difference is the `whatsapp:` prefix on `From`/`To` for the
+/// WhatsApp channel — Twilio routes by prefix.
+///
+/// Body is the email body verbatim. SMS has a 1600-char SMS limit
+/// (Twilio handles concatenation behind the scenes); WhatsApp has
+/// no practical length limit. The "subject" field is dropped on
+/// purpose — SMS has no subject concept and WhatsApp doesn't either.
+/// We embed the URL in the body itself, which is what `enqueue_*`
+/// already does for the email path.
+///
+/// Returns `Err` on:
+///   - HTTP/network failure (Twilio's API down, DNS lookup failed),
+///   - Twilio rejection (4xx/5xx with body containing the reason).
+///
+/// The worker's existing retry/backoff logic handles both.
+async fn send_twilio(
+    cfg: &TwilioConfig,
+    channel: Channel,
+    draft: &DraftPayload,
+) -> Result<(), SendError> {
+    // Build the per-channel From/To shapes. WhatsApp on Twilio needs
+    // the `whatsapp:` URI scheme on both sides; SMS uses bare E.164.
+    let (from, to) = match channel {
+        Channel::Sms => (cfg.sms_from.clone(), draft.recipient.clone()),
+        Channel::Whatsapp => (
+            format!("whatsapp:{}", cfg.whatsapp_from),
+            format!("whatsapp:{}", draft.recipient),
+        ),
+        Channel::Email => {
+            // Defensive: send_twilio should only ever be called for
+            // sms/whatsapp. If a caller routes Email here it's a bug;
+            // surface it loudly rather than silently sending the
+            // email body over SMS to a phone number that doesn't
+            // exist.
+            return Err(SendError::Twilio(
+                "send_twilio called with Channel::Email; this is a bug".into(),
+            ));
+        }
+    };
+
+    let url = format!(
+        "{}/2010-04-01/Accounts/{}/Messages.json",
+        cfg.api_base_url, cfg.account_sid
+    );
+
+    // Keep the client local: notifications are infrequent and the
+    // worker is single-threaded. Sharing a long-lived client would
+    // save micros and add a lifecycle to manage.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| SendError::Twilio(format!("client build: {e}")))?;
+
+    let form = [
+        ("From", from.as_str()),
+        ("To", to.as_str()),
+        ("Body", draft.body.as_str()),
+    ];
+
+    let resp = client
+        .post(&url)
+        .basic_auth(&cfg.account_sid, Some(&cfg.auth_token))
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| SendError::Twilio(format!("send: {e}")))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        // Twilio puts a structured error body on 4xx/5xx; we don't
+        // parse it (the field names are documented but stable enough
+        // to read by eye). Truncate to 500 chars so a log explosion
+        // doesn't fill the disk.
+        let body = resp.text().await.unwrap_or_else(|_| "<no body>".into());
+        let snippet: String = body.chars().take(500).collect();
+        return Err(SendError::Twilio(format!("HTTP {status}: {snippet}")));
+    }
+    Ok(())
 }
 
 /* -------------------------------------------------------------------------- *
@@ -682,8 +944,12 @@ mod tests {
     #[test]
     fn channel_round_trip() {
         assert_eq!(Channel::from_str("email"), Some(Channel::Email));
-        assert_eq!(Channel::from_str("sms"), None);
+        assert_eq!(Channel::from_str("sms"), Some(Channel::Sms));
+        assert_eq!(Channel::from_str("whatsapp"), Some(Channel::Whatsapp));
+        assert_eq!(Channel::from_str("telegram"), None);
         assert_eq!(Channel::Email.as_str(), "email");
+        assert_eq!(Channel::Sms.as_str(), "sms");
+        assert_eq!(Channel::Whatsapp.as_str(), "whatsapp");
     }
 
     #[test]
@@ -702,5 +968,284 @@ mod tests {
         assert!(cfg.starttls);
         unsafe { std::env::remove_var("SMTP_HOST") };
         assert!(SmtpConfig::from_env().is_none());
+    }
+
+    /* ---------------------------------------------------------------- *
+     *  Twilio (SMS + WhatsApp) tests                                   *
+     *                                                                  *
+     *  We isolate env access behind a Mutex per the same pattern used  *
+     *  in crypto::tests: TwilioConfig::from_env() reads the process    *
+     *  env, so two parallel tests would race. The config tests also    *
+     *  scrub every TWILIO_* var on entry so a previous test's state    *
+     *  doesn't leak.                                                   *
+     * ---------------------------------------------------------------- */
+
+    static TWILIO_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn clear_twilio_env() {
+        for k in [
+            "TWILIO_ACCOUNT_SID",
+            "TWILIO_AUTH_TOKEN",
+            "TWILIO_SMS_FROM",
+            "TWILIO_WHATSAPP_FROM",
+            "TWILIO_API_BASE_URL",
+        ] {
+            // SAFETY: tests are single-process; the lock serialises access.
+            unsafe { std::env::remove_var(k) };
+        }
+    }
+
+    #[test]
+    fn twilio_config_unset_returns_none_silently() {
+        let _g = TWILIO_ENV_LOCK.lock().unwrap();
+        clear_twilio_env();
+        assert!(TwilioConfig::from_env().is_none());
+    }
+
+    #[test]
+    fn twilio_config_loads_when_all_four_vars_set() {
+        let _g = TWILIO_ENV_LOCK.lock().unwrap();
+        clear_twilio_env();
+        unsafe {
+            std::env::set_var("TWILIO_ACCOUNT_SID", "ACtestsid");
+            std::env::set_var("TWILIO_AUTH_TOKEN", "secrettoken");
+            std::env::set_var("TWILIO_SMS_FROM", "+15550000001");
+            std::env::set_var("TWILIO_WHATSAPP_FROM", "+15550000002");
+        }
+        let cfg = TwilioConfig::from_env().expect("with all four set");
+        assert_eq!(cfg.account_sid, "ACtestsid");
+        assert_eq!(cfg.auth_token, "secrettoken");
+        assert_eq!(cfg.sms_from, "+15550000001");
+        assert_eq!(cfg.whatsapp_from, "+15550000002");
+        assert_eq!(cfg.api_base_url, "https://api.twilio.com");
+        clear_twilio_env();
+    }
+
+    /// Partial config is an operator mistake. We refuse to load
+    /// (returns None) so SMS/WhatsApp stay disabled; a warning in
+    /// the log (which we don't assert on here) names which vars
+    /// are missing.
+    #[test]
+    fn twilio_config_partial_returns_none() {
+        let _g = TWILIO_ENV_LOCK.lock().unwrap();
+        clear_twilio_env();
+        unsafe {
+            std::env::set_var("TWILIO_ACCOUNT_SID", "ACtestsid");
+            std::env::set_var("TWILIO_AUTH_TOKEN", "secrettoken");
+            // TWILIO_SMS_FROM + TWILIO_WHATSAPP_FROM deliberately unset.
+        }
+        assert!(
+            TwilioConfig::from_env().is_none(),
+            "partial config must NOT load"
+        );
+        clear_twilio_env();
+    }
+
+    /// API-base override picked up from env so the mock-server test
+    /// below can point us at 127.0.0.1.
+    #[test]
+    fn twilio_config_honours_api_base_override() {
+        let _g = TWILIO_ENV_LOCK.lock().unwrap();
+        clear_twilio_env();
+        unsafe {
+            std::env::set_var("TWILIO_ACCOUNT_SID", "ACtestsid");
+            std::env::set_var("TWILIO_AUTH_TOKEN", "secrettoken");
+            std::env::set_var("TWILIO_SMS_FROM", "+15550000001");
+            std::env::set_var("TWILIO_WHATSAPP_FROM", "+15550000002");
+            std::env::set_var("TWILIO_API_BASE_URL", "http://127.0.0.1:1");
+        }
+        let cfg = TwilioConfig::from_env().expect("config loads");
+        assert_eq!(cfg.api_base_url, "http://127.0.0.1:1");
+        clear_twilio_env();
+    }
+
+    /* ---------------------------------------------------------------- *
+     *  Twilio HTTP round-trip                                          *
+     *                                                                  *
+     *  Spin up a tiny in-process axum server that mimics Twilio's     *
+     *  POST /2010-04-01/Accounts/{SID}/Messages.json shape, point     *
+     *  send_twilio at it, and assert we sent the right From/To/Body  *
+     *  + the right Authorization header. The mock is generous about  *
+     *  what it accepts (we're testing the client, not Twilio).       *
+     * ---------------------------------------------------------------- */
+
+    use axum::extract::{Form, Path as AxPath, State as AxState};
+    use axum::http::HeaderMap as AxHeaderMap;
+    use axum::http::StatusCode as AxStatusCode;
+    use axum::routing::post as ax_post;
+    use axum::Router;
+    use base64::Engine as _;
+    use std::collections::HashMap;
+    use std::net::SocketAddr;
+    use std::sync::Mutex;
+
+    /// Recorded shape of a single inbound request. The mock pushes
+    /// one of these per call so tests can assert on the body the
+    /// real Twilio API would have received.
+    #[derive(Debug, Default, Clone)]
+    struct CapturedCall {
+        sid_in_path: String,
+        authorization: Option<String>,
+        form: HashMap<String, String>,
+    }
+
+    #[derive(Default)]
+    struct MockTwilio {
+        calls: Mutex<Vec<CapturedCall>>,
+    }
+
+    async fn spawn_mock_twilio() -> (Arc<MockTwilio>, String) {
+        let mock = Arc::new(MockTwilio::default());
+        let mock_for_handler = mock.clone();
+        let app = Router::new()
+            .route(
+                "/2010-04-01/Accounts/:sid/Messages.json",
+                ax_post(
+                    |AxState(mock): AxState<Arc<MockTwilio>>,
+                     AxPath(sid): AxPath<String>,
+                     headers: AxHeaderMap,
+                     Form(form): Form<HashMap<String, String>>| async move {
+                        mock.calls.lock().unwrap().push(CapturedCall {
+                            sid_in_path: sid,
+                            authorization: headers
+                                .get(axum::http::header::AUTHORIZATION)
+                                .and_then(|v| v.to_str().ok())
+                                .map(str::to_string),
+                            form,
+                        });
+                        // Twilio returns 201 on a successful create.
+                        AxStatusCode::CREATED
+                    },
+                ),
+            )
+            .with_state(mock_for_handler);
+
+        let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (mock, format!("http://{addr}"))
+    }
+
+    /// Build a minimal config pointing at the mock. We bypass
+    /// `from_env` here because the env-loading tests above already
+    /// pin that surface; this test is about the wire shape.
+    fn mock_cfg(api_base: String) -> TwilioConfig {
+        TwilioConfig {
+            account_sid: "ACtestsid".into(),
+            auth_token: "secrettoken".into(),
+            sms_from: "+15550000001".into(),
+            whatsapp_from: "+15550000002".into(),
+            api_base_url: api_base,
+        }
+    }
+
+    fn dummy_draft(recipient: &str) -> DraftPayload {
+        DraftPayload {
+            recipient: recipient.to_string(),
+            subject: String::new(),
+            body: "Hi from GhostKey tests.".to_string(),
+        }
+    }
+
+    /// SMS round-trip: From is bare E.164, To is bare E.164, the
+    /// Authorization header is HTTP Basic with SID:AUTH_TOKEN.
+    #[tokio::test]
+    async fn twilio_sms_round_trips() {
+        let (mock, url) = spawn_mock_twilio().await;
+        let cfg = mock_cfg(url);
+        let draft = dummy_draft("+15558675309");
+
+        send_twilio(&cfg, Channel::Sms, &draft).await.expect("send");
+
+        let calls = mock.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        let c = &calls[0];
+        assert_eq!(c.sid_in_path, "ACtestsid");
+        assert_eq!(c.form["From"], "+15550000001");
+        assert_eq!(c.form["To"], "+15558675309");
+        assert_eq!(c.form["Body"], "Hi from GhostKey tests.");
+        let expected_basic = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("ACtestsid:secrettoken")
+        );
+        assert_eq!(c.authorization.as_deref(), Some(expected_basic.as_str()));
+    }
+
+    /// WhatsApp round-trip: the `whatsapp:` prefix is added to BOTH
+    /// From and To. Recipient comes in as bare E.164 from
+    /// owner_contact; we add the scheme on the wire.
+    #[tokio::test]
+    async fn twilio_whatsapp_prefixes_both_sides() {
+        let (mock, url) = spawn_mock_twilio().await;
+        let cfg = mock_cfg(url);
+        let draft = dummy_draft("+15558675309");
+
+        send_twilio(&cfg, Channel::Whatsapp, &draft)
+            .await
+            .expect("send");
+
+        let c = mock.calls.lock().unwrap().pop().unwrap();
+        assert_eq!(c.form["From"], "whatsapp:+15550000002");
+        assert_eq!(c.form["To"], "whatsapp:+15558675309");
+        assert_eq!(c.form["Body"], "Hi from GhostKey tests.");
+    }
+
+    /// send_twilio refuses Channel::Email loudly. The worker should
+    /// never route Email here \u2014 dispatch_send routes Email to
+    /// send_email \u2014 but a regression in the router would silently
+    /// send the email body over SMS to a phone number that doesn't
+    /// exist. This test pins the guard.
+    #[tokio::test]
+    async fn twilio_refuses_email_channel() {
+        let (_mock, url) = spawn_mock_twilio().await;
+        let cfg = mock_cfg(url);
+        let draft = dummy_draft("user@example.test");
+        let err = send_twilio(&cfg, Channel::Email, &draft)
+            .await
+            .expect_err("must refuse");
+        assert!(matches!(err, SendError::Twilio(_)), "got: {err:?}");
+    }
+
+    /// 4xx from Twilio surfaces as a SendError::Twilio carrying the
+    /// status. The worker's existing retry/permanent logic decides
+    /// what to do with it.
+    #[tokio::test]
+    async fn twilio_http_4xx_surfaces_as_send_error() {
+        // Spin up a mock that ALWAYS 400s so the failure path is
+        // exercised. Using a fresh router rather than the shared
+        // mock to keep the assertions tight.
+        let app = Router::new().route(
+            "/2010-04-01/Accounts/:sid/Messages.json",
+            ax_post(|| async {
+                (
+                    AxStatusCode::BAD_REQUEST,
+                    r#"{"code":21211,"message":"Invalid To number"}"#,
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let cfg = mock_cfg(format!("http://{addr}"));
+        let draft = dummy_draft("+15550001234");
+
+        let err = send_twilio(&cfg, Channel::Sms, &draft)
+            .await
+            .expect_err("must fail");
+        match err {
+            SendError::Twilio(msg) => {
+                assert!(msg.contains("400"), "should include status: {msg}");
+                assert!(msg.contains("21211"), "should include Twilio body: {msg}");
+            }
+            other => panic!("expected Twilio error, got {other:?}"),
+        }
     }
 }

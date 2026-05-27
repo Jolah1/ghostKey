@@ -63,14 +63,15 @@ What works today:
 - Lightning check-ins — pay a 1 sat invoice from any wallet for cryptographic proof of liveness (requires the optional Breez SDK Liquid backend; see DESIGN.md "Lightning check-ins")
 - Configurable check-in cadence (weekly / 2-weekly / monthly / quarterly) and grace period (3 days / 1 week / 2 weeks / 1 month)
 - Scheduler that tracks deadlines and transitions vault state
-- Encrypted heir contact storage
-- Email notification when the alarm fires
+- Pre-deadline owner reminder (24h before) + alarm-fired owner email
+- One-tap check-in link in those emails (no password needed for the owner to keep their vault alive)
+- Encrypted heir and owner contact storage
+- Email notification when the alarm fires (SMTP)
+- SMS + WhatsApp notifications via Twilio (optional, off by default)
 - One-time claim link and PSBT signing flow for heirs
 
 What's still being built:
-- SMS and WhatsApp notifications
 - Setup from a plain Bitcoin address (without needing an xpub)
-- Check-in reminders for owners
 - Multiple heirs
 - Hardware wallet PSBT export
 - Translations — Pidgin first (planned), then Yoruba, Igbo, Hausa

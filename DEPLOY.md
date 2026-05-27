@@ -331,6 +331,56 @@ deploys, and machine upgrades. You only need to re-run the commands
 above if you deliberately rotate (which currently requires manual
 re-encryption of existing rows — see ARCHITECTURE.md).
 
+### Optional: notification delivery
+
+The notifier worker accepts enqueues on any channel and skips delivery
+when the backend for that channel is not configured. A vault with a
+sealed owner contact on a channel without a backend stays `pending`
+until a deployment with the backend wired comes up — no data is lost,
+no row is dropped.
+
+#### Email (SMTP)
+
+```sh
+fly secrets set \
+  SMTP_HOST="smtp.postmarkapp.com" \
+  SMTP_PORT="587" \
+  SMTP_FROM="alerts@yourdomain.tld" \
+  SMTP_USER="postmark-server-token" \
+  SMTP_PASS="postmark-server-token" \
+  -a ghostkey
+```
+
+`SMTP_USER` and `SMTP_PASS` are optional. `SMTP_FROM` defaults to
+`noreply@localhost` with a startup warning if you don't set it; that's
+fine for local testing and wrong for production.
+
+#### SMS + WhatsApp (Twilio)
+
+A single Twilio account does both. Get the SID + auth token from
+https://console.twilio.com/, and provision a phone number (Twilio
+Trial gives you one for free). For WhatsApp during dev, use the
+shared sandbox number `+14155238886` after running the join command
+documented at https://www.twilio.com/docs/whatsapp/sandbox.
+
+```sh
+fly secrets set \
+  TWILIO_ACCOUNT_SID="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
+  TWILIO_AUTH_TOKEN="your-secret-token" \
+  TWILIO_SMS_FROM="+15551234567" \
+  TWILIO_WHATSAPP_FROM="+14155238886" \
+  -a ghostkey
+```
+
+All four are required together — setting some but not others puts the
+worker in a partial state and logs a loud warning. Set every
+`TWILIO_*` var or none.
+
+If `TWILIO_*` is unset, SMS and WhatsApp notifications stay queued
+(`status='pending'` in the `notifications` table) until a deployment
+with Twilio configured picks them up. A future deployment that adds
+Twilio will deliver the backlog automatically on its first tick.
+
 ### Demo mode (do NOT enable in production)
 
 `GHOSTKEY_DEMO_MODE=1` loosens the cadence/grace validation to seconds

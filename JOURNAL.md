@@ -355,10 +355,84 @@ The notifier was already capable of sending the email — only the scheduler tri
 
 ### What we left for later
 
-- A pre-deadline reminder ("your check-in is due in 24h"). We deliberately shipped only the alarm-fired notice this round to avoid a new column and migration; the pre-deadline version needs a `last_reminder_at` field to avoid re-sending every tick.
-- SMS and WhatsApp delivery rails. The data model now carries the channel; the worker still only knows how to talk SMTP.
-- An owner-side "I got your email, here's my check-in" deep link that takes the bearer token from the email and reduces the dashboard to a single tap.
+- A pre-deadline reminder ("your check-in is due in 24h"). We deliberately shipped only the alarm-fired notice this round to avoid a new column and migration; the pre-deadline version needs a `last_reminder_at` field to avoid re-sending every tick. — *Shipped in Entry 13.*
+- SMS and WhatsApp delivery rails. The data model now carries the channel; the worker still only knows how to talk SMTP. — *Shipped in Entry 14.*
+- An owner-side "I got your email, here's my check-in" deep link that takes the bearer token from the email and reduces the dashboard to a single tap. — *Shipped in Entry 13.*
 - A live signet end-to-end run. This remains Entry 9's highest-priority open item.
+
+---
+
+## Entry 13 — Tap once from the email
+
+Closes two gaps that had been on the "what we left for later" list since Entry 12. The owner now gets:
+
+1. A pre-deadline reminder 24 hours before their next check-in is due.
+2. A one-tap link in BOTH that reminder AND the alarm-fired email. Tapping it checks them in directly — no password, no dashboard, no friction.
+
+What we built:
+
+- **Migration `20260528000001_pre_deadline_and_one_tap.sql`** — four new nullable columns on `vaults`: `pre_deadline_reminder_sent_at` (the per-cycle marker), and `checkin_link_token_{hash,issued_at,used_at}` (the one-tap token, stored hashed at rest). An index on the hash column for the lookup.
+- **New scheduler step `issue_pre_deadline_reminders()`** — runs every tick before the existing `transition_ok_to_alarmed`. Finds vaults where the deadline is within 24h (configurable via the `PRE_DEADLINE_REMINDER_LEAD_SECS` constant), has a sealed owner contact, and hasn't been reminded this cycle. Enqueues a `NotificationKind::PreDeadlineReminder` and sets the marker.
+- **`mint_or_reuse_one_tap_token()` helper** — mints a fresh token if there isn't a live one, OR returns `None` if a live token already exists (so a follow-on reminder doesn't invalidate the URL we already mailed). The alarm email reuses the same helper, so the link from the reminder keeps working when the alarm hits.
+- **New HTTP route `POST /vaults/:id/checkin-from-link/:token`** — no `OwnerAuth` extractor, the token IS the auth. Constant-time hash compare, single-use (consumed on first POST), same SQL reset as the bearer-auth `checkin` route.
+- **All three check-in paths now clear the per-cycle markers** (the existing button/lightning routes plus the new one-tap route). Without this, a successful check-in would leave a "we already reminded you" marker on the row and the next cycle would skip.
+- **Web `OneTapCheckinPage.tsx`** — three states (checking-in, ok, expired), no navbar (came-from-email pattern), React 18 strict-mode guard against the double-fire that would otherwise flash "expired" on every dev page load.
+- **9 new tests** — 6 in scheduler covering the pre-deadline lifecycle (fires inside window, doesn't fire outside, single-shot per cycle, skips without sealed contact, re-eligible after check-in, token reused across reminder + alarm), and 4 in auth's `http_tests` covering the new route (success + markers cleared, wrong token, wrong vault, double-tap).
+
+### Why now
+
+Two parts of the same story. Entry 12 added the alarm-fired email but the owner still had to remember their password and dashboard URL to act on it. The realistic failure mode was: the owner sees the email on their phone, taps the link out of curiosity, lands on a sign-in page they don't remember the password for, closes the tab. Without the one-tap link, the alarm email was almost decorative. With it, the email becomes a real call to action — and the pre-deadline reminder gives them a chance to act *before* the alarm even fires.
+
+### What was hard
+
+**Reusing the token across emails.** The naive design mints a token in the pre-deadline reminder, then the alarm step a few hours later mints another one and stores a different hash — silently breaking the link in the reminder email the owner might tap any moment. The fix is `mint_or_reuse_one_tap_token`: if there's a live token on the row, return `None` (caller skips the new mint) so the alarm email reuses the existing URL. The CAS-style `UPDATE ... WHERE checkin_link_token_hash IS NULL` clause guards against two concurrent ticks producing two tokens.
+
+**React 18 strict-mode double-fire.** The one-tap page POSTs on mount. In strict mode (dev only), `useEffect` runs twice; the second run would land after the first scrubbed the token, and the user would see "expired" half a second after tapping. Standard fix: a `useRef` guard checked + set inside the effect. The production runtime doesn't double-mount, so the guard is no-op there.
+
+**The deploy was secretly broken for weeks.** While building this, we discovered the Fly deploy job had been silently failing on every push since Entry 10 — the workflow exited in 5 seconds because `FLY_API_TOKEN` was expired/revoked, but the failure looked like a no-op success because the older `flyctl-actions@master` didn't always propagate exit codes. Hardened the workflow to: pin `flyctl` to `v0.4.55`, probe `flyctl auth whoami` BEFORE the deploy with a clear `::error::` annotation when auth fails, and pass `--verbose` to the deploy itself.
+
+### What we left for later
+
+- User-configurable pre-deadline lead time (instead of the hardcoded 24h). Would need a new column + UI picker; deferred until someone asks.
+- An "and you can also stop the heir email" deep link, distinct from the regular check-in (e.g. for the owner who wants to pause the system without resetting the cadence).
+- A live signet end-to-end run. Still Entry 9's highest-priority open item.
+
+---
+
+## Entry 14 — SMS and WhatsApp, the same way Twilio sends both
+
+The notifier worker only spoke SMTP. The data model carried `Channel::Sms` and `Channel::Whatsapp` since Entry 12, and every vault wizard step lets the user pick a channel — but enqueueing a notification on either of those channels meant the row sat in `pending` forever. This entry closes that loop.
+
+What we built:
+
+- **`Channel::Sms` and `Channel::Whatsapp` are now real variants** — they were strings the wizard accepted; now they're enum members with `from_str` / `as_str` round-trips.
+- **`TwilioConfig::from_env()`** — reads `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_SMS_FROM`, `TWILIO_WHATSAPP_FROM`. All four required together; a partial config logs a loud warning listing the missing names and stays disabled. An optional `TWILIO_API_BASE_URL` override exists for tests (defaults to `https://api.twilio.com`).
+- **`send_twilio()`** — one POST to Twilio's Programmable Messaging endpoint, HTTP Basic auth with SID:AUTH_TOKEN, form-encoded body. WhatsApp gets the `whatsapp:` prefix on both `From` and `To` (Twilio routes by prefix). Same endpoint for both channels.
+- **`dispatch_send()` helper** — small switch that takes a `Channel` and the right backend config, and returns one of: `None` (no backend configured for this channel, leave the row pending), `Some(Ok(()))` (delivered, flip to `sent`), `Some(Err(e))` (retry or permanent per the existing backoff). Keeps the worker loop's bookkeeping in one place.
+- **`Backends` struct** — bundles the optional SMTP + optional Twilio configs so a future provider (Phoenixd, MessageBird, Africa's Talking, …) is a one-field addition rather than a function-signature change.
+- **8 new tests** — config loading (happy path + unset + partial + base-URL override), HTTP round-trip (SMS with bare E.164, WhatsApp with prefix, Twilio refusing the Email channel as a defensive guard, 4xx body surfaced as `SendError::Twilio`).
+
+### Why Twilio
+
+The earlier design question was "Twilio, Termii, or a full provider abstraction." Twilio wins for now because:
+
+1. **Same API for SMS and WhatsApp.** One config, one code path, one set of credentials. Adding a separate provider per channel would have meant two config-loading helpers, two HTTP clients, two retry-policy decisions. Twilio collapses those into one.
+2. **Available in Nigeria.** Both SMS and WhatsApp work in Nigeria via Twilio. Delivery rates aren't as good as Termii (which is Nigeria-native), but the difference is "92% vs 98%" not "works vs doesn't" — fine for alpha, and the abstraction we built lets us add a second backend later without touching the worker loop.
+3. **Free tier for development.** New Twilio accounts get a sandbox WhatsApp number and a small SMS credit, which is enough to test the whole flow end-to-end without a credit card.
+
+### What was hard
+
+**Different opaque future types in the dispatch match.** The first cut of `dispatch_send` looked like `Some(send_email(...))` in one arm and `Some(send_twilio(...))` in the other, then `.await`-ed the outer Option. Doesn't compile — each `async fn` produces a distinct opaque type, and `match` arms have to agree on their output type. The fix is to `await` inside each arm and only THEN wrap in `Some`, which is also what a reader would write without thinking; the cleverness was a mistake.
+
+**`twilio` crate vs raw `reqwest`.** The official Twilio Rust crate exists but pulls in its own HTTP stack and a much wider surface than we need. We already have `reqwest` for the Lightning HTTP provider, and the Twilio API surface we touch is one POST — adding a crate would have meant another dependency without saving any code.
+
+**Doc comment lint.** Clippy's `doc_list_item_overindented` lint started catching the four-space continuation lines I used for the env-var docs. Reformatted to single-line item descriptions; the file's prettier for it.
+
+### What we left for later
+
+- A second backend (Termii for Nigeria-native delivery, or LNbits for a non-Twilio WhatsApp path). The `Backends` struct already supports this — `tick_once` would learn one more `match` arm, no scheduler changes.
+- A delivery-status webhook from Twilio. Today we know we "sent" the message; we don't know if it was actually delivered to the device. Twilio POSTs a status callback if you give it a URL; we'd need to add one route to the server and update the `notifications.status` based on it.
+- A live signet end-to-end run. Still Entry 9's highest-priority open item.
 
 ---
 
