@@ -32,7 +32,13 @@ import {
 } from "./api";
 import { countdown, parseRfc } from "./time";
 import { statusCopy } from "./vocab";
-import { getActiveVaultId, getVaultMeta, getVaultOwnerToken, type VaultMeta } from "./vaultStore";
+import {
+  getActiveVaultId,
+  getVaultMeta,
+  getVaultOwnerToken,
+  getVaultsByGroup,
+  type VaultMeta,
+} from "./vaultStore";
 import { LightningCheckin } from "./LightningCheckin";
 import type { Route } from "./App";
 
@@ -55,6 +61,19 @@ export function Dashboard({ onNavigate }: Props) {
     () => (activeId ? getVaultOwnerToken(activeId) : null),
     [activeId],
   );
+  // Multi-heir groups: if this vault has a `groupId`, look up all
+  // sibling vaults on this device. The dashboard renders the group
+  // as one card (Heart-beat targets the active vault; the check-in
+  // button fans out to all siblings client-side so one tap resets
+  // every heir's countdown).
+  //
+  // For legacy single-heir vaults, `groupId` is null and `groupVaults`
+  // is just `[meta]`. The rendering paths handle both.
+  const groupVaults = useMemo(() => {
+    if (!meta) return [];
+    if (!meta.groupId) return [meta];
+    return getVaultsByGroup(meta.groupId);
+  }, [meta]);
 
   const [vault, setVault] = useState<VaultView | null>(null);
   const [events, setEvents] = useState<VaultEvent[]>([]);
@@ -126,7 +145,29 @@ export function Dashboard({ onNavigate }: Props) {
     setBusy(true);
     setError(null);
     try {
-      await api.checkin(vault.id, ownerToken);
+      // Fan out to every sibling in the group. For single-heir
+      // vaults this is just one call against `vault.id`; for
+      // multi-heir groups it loops through every sibling. Each
+      // sibling has its own ownerToken (issued at vault creation),
+      // so we read them from localStorage per vault.
+      //
+      // We don't parallelise: serial is friendlier to the server
+      // (the worker has rate-limit headroom for parallel but the
+      // optics of "5 simultaneous POSTs" surprise some operators
+      // looking at logs). The whole loop is dominated by network
+      // latency, not server work; sub-second total even for 5
+      // heirs.
+      //
+      // If any sibling fails, we surface the FIRST error and stop —
+      // partial fan-out leaves the group in mixed-state, which is
+      // visible in the dashboard list as "Heir #3 is alarmed but
+      // Heirs #1 and #2 are ok." Better than rolling back the
+      // successful ones (which would require an admin route we
+      // don't have).
+      for (const sibling of groupVaults) {
+        const token = getVaultOwnerToken(sibling.id);
+        await api.checkin(sibling.id, token);
+      }
       await refresh();
       setJustChecked(true);
       window.setTimeout(() => setJustChecked(false), 4000);
@@ -180,7 +221,25 @@ export function Dashboard({ onNavigate }: Props) {
         ) : null}
 
         <div className="mt-4">
-          <HeirCard meta={meta} vault={vault} />
+          {groupVaults.length > 1 ? (
+            <HeirGroupList
+              groupVaults={groupVaults}
+              activeId={activeId}
+              onSelect={(id) => {
+                // Switch active vault. Reload so the dashboard
+                // re-runs against the new active id. We could do
+                // this purely via state instead but a reload also
+                // refreshes the server state, which is what the
+                // user wants ("show me Bob now").
+                if (typeof window !== "undefined") {
+                  window.localStorage.setItem("gk:activeVaultId", id);
+                  window.location.reload();
+                }
+              }}
+            />
+          ) : (
+            <HeirCard meta={meta} vault={vault} />
+          )}
         </div>
 
         <div className="mt-6">
@@ -384,6 +443,77 @@ function HeirCard({
         </p>
       </div>
       <StatusPill tone={pill.tone} label={pill.label} />
+    </div>
+  );
+}
+
+/**
+ * Multi-heir group card. Lists every heir in the group with their
+ * name, contact, and a "this is the active one" indicator. Tapping
+ * a heir's row switches the active vault to that sibling — the
+ * heartbeat/check-in card above already drives the active vault, so
+ * this lets the owner inspect each heir's individual state without
+ * leaving the dashboard.
+ *
+ * The per-heir status pill is intentionally NOT shown here yet — we
+ * only have the active vault's `VaultView` from the server; fetching
+ * status for every sibling on every dashboard load would multiply
+ * server calls. Acceptable for an MVP: the active vault's status is
+ * the one in the big check-in card; switching active vault shows
+ * that sibling's status. Phase 2 (server-side vault_groups + a
+ * batch fetch endpoint) makes this less awkward.
+ */
+function HeirGroupList({
+  groupVaults,
+  activeId,
+  onSelect,
+}: {
+  groupVaults: VaultMeta[];
+  activeId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-xs uppercase tracking-wider text-dim">
+        Heirs ({groupVaults.length})
+      </p>
+      {groupVaults.map((meta) => {
+        const isActive = meta.id === activeId;
+        return (
+          <button
+            key={meta.id}
+            type="button"
+            onClick={() => onSelect(meta.id)}
+            disabled={isActive}
+            className={`card-flat flex items-center gap-4 p-4 text-left transition-colors ${
+              isActive
+                ? "border-accent"
+                : "hover:bg-[var(--surface-2)]"
+            }`}
+            style={isActive ? { background: "var(--accent-tint)" } : undefined}
+            aria-current={isActive ? "true" : undefined}
+          >
+            <Avatar name={meta.heir.name} />
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-semibold text-[var(--text)]">
+                {meta.heir.name || "(unnamed)"}
+              </p>
+              <p className="truncate text-xs text-muted">
+                {meta.heir.email || "—"}
+              </p>
+            </div>
+            {isActive ? (
+              <span className="text-xs text-accent font-medium">Active</span>
+            ) : (
+              <span className="text-xs text-muted">Tap to view</span>
+            )}
+          </button>
+        );
+      })}
+      <p className="mt-1 text-[11px] text-dim">
+        One tap on "I'm still here" checks in for all {groupVaults.length}{" "}
+        heirs at once.
+      </p>
     </div>
   );
 }

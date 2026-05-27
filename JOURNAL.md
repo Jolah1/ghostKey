@@ -436,6 +436,68 @@ The earlier design question was "Twilio, Termii, or a full provider abstraction.
 
 ---
 
+## Entry 15 — Network is no longer hard-coded; signet runbook
+
+Two adjacent things in one commit because they're inseparable: the web UI used to hard-code `network: "testnet"` in two places, which made any live signet test impossible without a code change. The runbook to actually do that test depended on the network plumbing being right.
+
+What we built:
+
+- **Server `crates/ghostkey-server/src/config.rs`** (new) with `default_network()`: a `OnceLock`-cached reader for the `GHOSTKEY_DEFAULT_NETWORK` env var. Same shape as `demo::demo_mode()` and `auth::auth_disabled()`. Defaults to `testnet`; allow-list is the same four values the routes already accept. `bitcoin` (mainnet) is permitted but logs a startup warning so the choice is unmissable in the boot log.
+- **`/health` now returns `default_network`** alongside `lightning_enabled` and `demo_mode`. A boot-time probe pins the OnceLock at startup so the log line lands in the boot output.
+- **Web `App.tsx`**: reads `default_network` from the same `/health` poll that already drives `demo_mode`. The `AlphaBanner` now takes the network as a prop and renders it dynamically — mainnet gets distinct copy and an alarm-coloured dot so it can't be mistaken for the testnet warning.
+- **Web `SetupPortal.tsx` + `PasswordSetupPortal.tsx`**: dropped the hard-coded `"testnet"` literal, send whatever the server reports. Safe fallback to testnet when `/health` is unreachable.
+- **`scripts/signet_e2e.sh`**: three-phase shell script (`setup` / `observe` / `diagnose`) that drives the curl side of the runbook. Refuses to continue if the server isn't on signet (caught the single biggest faucet-burner per the audit). Persists vault id + owner token to `.signet-e2e.json` (gitignored, chmod 600).
+- **`SIGNET_E2E_RUNBOOK.md`** at the repo root. 350-line walkthrough: prereqs, a separate Fly app with the right env vars, four phases of the test (setup → fund → observe → claim), what to check afterwards, and a generous "when something goes wrong" section keyed to the specific failure modes the pre-flight audit flagged.
+
+### Why now
+
+This was the single longest-standing open item — Entry 9 called it "the most important remaining task before GhostKey can be used with real funds." Until the infrastructure made it actually doable in one session by one person, the test just kept being pushed.
+
+### What was hard
+
+**Discovering the network was hard-coded.** The audit flagged this immediately, but the fix is a refactor that touches both setup wizards. Doing it as a separate commit before the runbook ships meant the runbook could be honest ("set GHOSTKEY_DEFAULT_NETWORK=signet and the same web bundle works") rather than gnarly ("apply this patch, rebuild, redeploy").
+
+**Picking what to ship vs what to defer.** I could have built the whole live signet test instead of the runbook. But that's a human-driven test — interactive faucet, real wallets, time-pressured. The right shape was to ship the infrastructure that makes the test cheap to run, then let a human run it. The runbook captures what the human needs to know without me having to be present.
+
+### What we left for later
+
+- The actual live run, captured in a Phase-2 Entry. A human (you, the reader, probably) executes the runbook and records what was surprising.
+- A `vault_groups` server table for multi-heir (see Entry 16) so the dashboard doesn't have to fan out check-ins client-side.
+
+---
+
+## Entry 16 — Multiple heirs (variant 4: parallel vaults, shared funding)
+
+For a long time the journal's "what we left for later" lists carried "Multiple heirs" without a clear shape. There are at least four shapes it could take (proportional split, M-of-N threshold, cascading fallback, parallel-with-shared-funding). We picked the lightest one — parallel vaults that share an owner xpub but have different heirs — as the first ship. The on-chain script is unchanged, the server is unchanged, only the web UI knows the concept of a "group."
+
+What we built:
+
+- **`vaultStore.ts` gains `groupId`** on `VaultMeta`. Optional — single-heir vaults omit it. Two new helpers: `getVaultsByGroup` (returns siblings in creation order) and `getGroupIdForVault`.
+- **`PasswordSetupPortal.tsx`**: the `Draft.heirs` field is now an array. The wizard renders the heir form in a list with a `+ Add another heir` button (max 5, arbitrary cap). Each additional heir gets a `Remove` button (the first heir can't be removed — the wizard always keeps at least one).
+- **`activate()`**: was one POST, now N. Owner xprv is generated ONCE, then per heir: fresh heir xprv + claim token, seal everything under the password, POST to `/vaults/from-xpub`. All vaults in the same wizard run get the same `groupId` (a client-side UUID).
+- **Funding step**: renders one address card per heir if N > 1, with helper copy explaining that most wallets can batch the N sends into one transaction.
+- **`Dashboard.tsx`**: when the active vault has a `groupId`, renders the group as a heir-list (one row per sibling, "Tap to view" switches active vault). The check-in button fans out client-side to every sibling.
+
+### Why parallel-vaults first
+
+It's the only variant that doesn't touch the on-chain script. The Taproot leaf set is unchanged, the descriptor builder is unchanged, the heir claim flow is unchanged. The only thing that changes is "the owner has N of these vaults instead of one, and the wizard / dashboard know about the relationship." It's a feature you can ship in 4 hours, and once it's in users' hands we'll learn whether they actually want a richer shape (proportional split, cascading) or whether parallel vaults are enough.
+
+### What was hard
+
+**Partial failures.** If the wizard creates 3 of 5 vaults and the 4th POST fails, the first 3 are real on the server and persisted in localStorage. We don't roll back. The user sees the error, the dashboard shows the partial group, and they can either accept it (3 heirs is also a fine setup) or delete the partial vaults from the server (no admin route for this yet — file an issue). The alternative (server-side group transaction) was rejected as Phase 2 scope.
+
+**Per-cycle check-in fan-out.** Each sibling has its own `ownerToken`, its own `pre_deadline_reminder_sent_at`, its own `checkin_link_token_*`. The dashboard's "I'm still here" button loops through every sibling and calls `/vaults/:id/checkin` for each. Serial, not parallel — sub-second total even for 5 heirs, and the optics of "5 simultaneous POSTs in the access log" surprise operators. Documented in the `onCheckin` comment.
+
+**One owner address shared across N vaults.** Each vault's `owner_contact` is the same email, so each vault enqueues its OWN pre-deadline reminder + alarm-fired notice on its own cycle. The owner gets N copies of each email. Not ideal; deferred to Phase 2 (server-side groups can dedupe). For now, the JOURNAL flags it and the wizard cap of 5 keeps the noise bounded.
+
+### What we left for later
+
+- **Phase 2: server-side `vault_groups` table.** Replace the client-side `groupId` with a real foreign key. New routes: `POST /vault-groups` (creates N vaults transactionally), `POST /vault-groups/:id/checkin` (one server call resets all siblings). Dedupes the owner emails by group.
+- **Other multi-heir variants.** Proportional split (one script, N outputs) and cascading fallback (nested CSV per heir) are bigger Bitcoin-script changes and warrant their own multi-day session each. The journal will track them.
+- **Group-scoped dashboard polling.** Currently the dashboard fetches `/vaults/:id` for the active vault only; the heir-list shows names but not per-sibling status. A batch `GET /vault-groups/:id/vaults` would let the dashboard render a real status pill per heir.
+
+---
+
 ## How to use this journal
 
 **Read it front to back once** when you join the project. Then use it as a reference when you encounter something confusing in the code.

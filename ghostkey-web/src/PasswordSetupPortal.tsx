@@ -96,11 +96,27 @@ interface Props {
 
 type ContactChannel = "sms" | "email" | "whatsapp";
 
+/**
+ * One heir's worth of contact info. The setup wizard collects an
+ * array of these (`Draft.heirs`) so multi-heir vaults are possible:
+ * each heir gets a separate vault with its own claim token and
+ * one-time link. All vaults in the same wizard run share the same
+ * owner xpub, timelock, cadence, and grace, and they get the same
+ * `groupId` in localStorage so the Dashboard renders them as one
+ * card.
+ */
+interface HeirDraft {
+  name: string;
+  contact: string;
+  channel: ContactChannel;
+}
+
+/** Largest number of heirs the wizard allows. Arbitrary cap. */
+const MAX_HEIRS = 5;
+
 interface Draft {
-  // Step 1 — heir + timing
-  heirName: string;
-  heirContact: string;
-  heirContactChannel: ContactChannel;
+  // Step 1 — heirs + timing
+  heirs: HeirDraft[];
   waitingMonths: number;
   // Replaces the legacy `reminderEveryTwoWeeks: boolean`. Holds the
   // string id of a CADENCE_PRESETS entry. See ./timing.ts for the
@@ -116,10 +132,14 @@ interface Draft {
   passwordConfirm: string;
 }
 
+const EMPTY_HEIR: HeirDraft = {
+  name: "",
+  contact: "",
+  channel: "email",
+};
+
 const EMPTY: Draft = {
-  heirName: "",
-  heirContact: "",
-  heirContactChannel: "email",
+  heirs: [{ ...EMPTY_HEIR }],
   waitingMonths: 3,
   cadenceId: DEFAULT_CADENCE_ID,
   graceId: DEFAULT_GRACE_ID,
@@ -200,15 +220,24 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
   }, []);
 
   // After creation we move to step 3 (Fund) and need to remember the
-  // vault id + address. We keep them in component state only — a page
-  // refresh during the funding step will lose the address (the user
-  // is bounced to /dashboard which doesn't display the address today),
-  // but the funds are safe on-chain regardless and the address can be
+  // vaults + addresses. Multi-heir wizards produce N entries here,
+  // one per heir; single-heir wizards produce a one-element list.
+  // We keep them in component state only — a page refresh during
+  // the funding step will lose the addresses (the user is bounced
+  // to /dashboard which doesn't display addresses today), but the
+  // funds are safe on-chain regardless and each address can be
   // re-derived from /vaults/:id/address at any time.
-  const [created, setCreated] = useState<{
-    vaultId: string;
-    address: string | null;
-  } | null>(null);
+  const [created, setCreated] = useState<
+    | {
+        groupId: string;
+        vaults: Array<{
+          vaultId: string;
+          heirName: string;
+          address: string | null;
+        }>;
+      }
+    | null
+  >(null);
 
   function patch(p: Partial<Draft>) {
     setDraft((d) => ({ ...d, ...p }));
@@ -217,15 +246,35 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
 
   function validate(s: number): string | null {
     if (s === 0) {
-      if (!draft.heirName.trim()) return "Tell us who is inheriting.";
-      if (!draft.heirContact.trim()) {
-        return "Add a phone number or email so we can reach them when the time comes.";
+      // Validate every heir in turn. Empty array would be a UX bug
+      // (the wizard always seeds one); guard against it anyway.
+      if (draft.heirs.length === 0) {
+        return "Add at least one heir.";
       }
-      if (
-        draft.heirContactChannel === "email" &&
-        !/^.+@.+\..+$/.test(draft.heirContact.trim())
-      ) {
-        return "That email looks off. Double-check it.";
+      for (let i = 0; i < draft.heirs.length; i++) {
+        const heir = draft.heirs[i];
+        const tag = draft.heirs.length === 1 ? "" : ` (heir #${i + 1})`;
+        if (!heir.name.trim()) {
+          return `Tell us who is inheriting${tag}.`;
+        }
+        if (!heir.contact.trim()) {
+          return `Add a phone number or email so we can reach them${tag}.`;
+        }
+        if (
+          heir.channel === "email" &&
+          !/^.+@.+\..+$/.test(heir.contact.trim())
+        ) {
+          return `That email looks off${tag}. Double-check it.`;
+        }
+      }
+      // Each heir contact must be unique across the group. The
+      // claim flow is keyed on (vault_id, claim_token), so duplicate
+      // contacts technically work but they're almost always a typo
+      // — the user pasted "alice@example.com" twice by mistake.
+      const contacts = draft.heirs.map((h) => h.contact.trim().toLowerCase());
+      const dup = contacts.find((c, i) => contacts.indexOf(c) !== i);
+      if (dup) {
+        return `Two heirs share the same contact (${dup}). Each heir needs a different email or phone.`;
       }
     }
     if (s === 1) {
@@ -275,172 +324,219 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
     setError(null);
     setKdfProgress(0);
 
-    // We declare these out here so we can wipe() them in the `finally`
-    // even if something throws partway through.
+    // Multi-heir is N parallel vaults that share owner xpub +
+    // timelock + cadence + grace. We generate the owner keys ONCE,
+    // then for each heir mint a fresh heir xprv + claim token,
+    // seal everything under the owner's password, POST, and save
+    // the local meta with a shared `groupId`. The Dashboard then
+    // renders the N vaults as one card.
+    //
+    // If a POST fails partway through (e.g. heir #3 of 5), the
+    // first two vaults are real on the server and registered in
+    // localStorage — we surface a clear error pointing at them
+    // and the user can either accept the partial group or delete
+    // the partial vaults from the server. We deliberately don't
+    // try to roll back a partial multi-vault setup: each vault is
+    // independently usable, and "delete two of the five" needs an
+    // admin route that doesn't exist yet.
+
+    // We declare these out here so we can wipe() them in the
+    // `finally` even if something throws partway through.
     let ownerParty: ReturnType<typeof generateParty> | null = null;
-    let heirParty: ReturnType<typeof generateParty> | null = null;
-    let claimToken: Uint8Array | null = null;
+    const heirParties: Array<ReturnType<typeof generateParty>> = [];
+    const claimTokens: Uint8Array[] = [];
     let ownerKek: Uint8Array | null = null;
 
     try {
-      // (a) Mint fresh keys + claim token.
+      // (a) Mint owner keys ONCE. Every heir's vault uses the same
+      // owner xpub; the same keypath spend works across all of them.
       ownerParty = generateParty(network);
-      heirParty = generateParty(network);
-      claimToken = randomBytes(32);
 
-      // (b) Seal under password. We ship a placeholder for the
-      // owner_token slot — the server only mints the real token in
-      // its response, so we re-seal it in step (g) below with the
-      // same KEK (kept in memory via keepOwnerKek).
-      //
-      // Why a placeholder rather than e.g. an empty string? The
-      // server validates that the nonce field is well-formed; sealing
-      // a known-bad string ensures the column is never accidentally
-      // openable to a meaningful value before the real seal lands.
-      const tokenPlaceholder = "ghostkey-placeholder-owner-token-v1";
+      // (b) Mint heir keys + claim token per heir. Heir xprvs are
+      // independent so a compromise of one heir's claim link doesn't
+      // touch the others.
+      for (let i = 0; i < draft.heirs.length; i++) {
+        heirParties.push(generateParty(network));
+        claimTokens.push(randomBytes(32));
+      }
 
-      const sealed = await sealVaultSecrets({
-        password: draft.password,
-        ownerXprv: ownerParty.xprv,
-        heirXprv: heirParty.xprv,
-        ownerToken: tokenPlaceholder,
-        claimTokenRaw: claimToken,
-        keepOwnerKek: true,
-        onProgress: (p) => setKdfProgress(Math.round(p * 100)),
-      });
-      ownerKek = sealed._owner_kek ?? null;
-
-      // (c) Hash the owner email for cross-device lookup.
+      // (c) Hash the owner email for cross-device lookup. Shared
+      // across all vaults in the group — sign-in by email returns
+      // every vault on the same owner key.
       const ownerEmailHash = hashEmailForLookup(draft.ownerEmail);
 
-      // (d) Build the SealedSetup body the server wants.
-      const sealedBody: SealedSetup = {
-        password_salt_b64: sealed.password_salt,
-        password_kdf_mem_kib: sealed.password_kdf_mem_kib,
-        password_kdf_iters: sealed.password_kdf_iters,
-        owner_xprv_ct_b64: sealed.owner_xprv.ct,
-        owner_xprv_nonce_b64: sealed.owner_xprv.nonce,
-        owner_token_ct_b64: sealed.owner_token.ct,
-        owner_token_nonce_b64: sealed.owner_token.nonce,
-        heir_xprv_ct_b64: sealed.heir_xprv.ct,
-        heir_xprv_nonce_b64: sealed.heir_xprv.nonce,
-        owner_email_hash: ownerEmailHash,
-        claim_token_b64: b64encode(claimToken),
-      };
-
-      // (e) Submit. The server builds the Taproot descriptor from
-      // the two xpubs and persists the ciphertexts atomically.
-      const label = `${draft.heirName.trim()}'s inheritance`;
+      // (d) Compute shared timing once.
       const timelockBlocks = monthsToBlocks(draft.waitingMonths);
       const checkinSecs = cadenceByIdAnywhere(draft.cadenceId).seconds;
       const graceSecs = graceByIdAnywhere(draft.graceId).seconds;
 
-      const heirContactPayload = JSON.stringify({
-        name: draft.heirName.trim(),
-        contact: draft.heirContact.trim(),
-        channel: draft.heirContactChannel,
-      });
+      // (e) Single shared groupId — only meaningful client-side
+      // (the Dashboard uses it to render the N vaults as one card).
+      // crypto.randomUUID is available in every browser we target.
+      const groupId = crypto.randomUUID();
 
-      const resp = await api.createVaultFromXpub({
-        label,
-        network,
-        owner: {
-          xpub: ownerParty.xpub,
-          fingerprint: ownerParty.fingerprint,
-        },
-        heir: {
-          xpub: heirParty.xpub,
-          fingerprint: heirParty.fingerprint,
-        },
-        timelock_blocks: timelockBlocks,
-        checkin_period_secs: checkinSecs,
-        grace_period_secs: graceSecs,
-        owner_contact: draft.ownerEmail.trim(),
-        // Owner contact in this flow is always the email the owner
-        // signed up with — that's what `draft.ownerEmail` holds.
-        // The server uses this to send "you missed your check-in"
-        // notifications; without the channel hint it would default
-        // to email anyway, but being explicit avoids relying on the
-        // default if a future server build flips it.
-        owner_contact_channel: "email",
-        heir_contact: heirContactPayload,
-        heir_contact_channel: draft.heirContactChannel,
-        sealed: sealedBody,
-      });
+      const createdEntries: Array<{
+        vaultId: string;
+        heirName: string;
+        address: string | null;
+      }> = [];
 
-      // (f) Re-seal the *real* owner_token under the same password
-      // KEK and ship it to the server. This is the second half of
-      // the chicken-and-egg dance described in the SealedSetup
-      // comments. We failure-tolerate this: the local owner_token
-      // cache in localStorage continues to work even if this fails,
-      // and the user can re-trigger via cross-device sign-in.
-      if (ownerKek) {
-        try {
-          const realSealed = sealWithKey(
-            ownerKek,
-            new TextEncoder().encode(resp.owner_token),
-          );
-          await api.sealOwnerToken(resp.id, resp.owner_token, {
-            owner_token_ct_b64: realSealed.ct,
-            owner_token_nonce_b64: realSealed.nonce,
-          });
-        } catch (e) {
-          // Non-fatal. The local copy still works on this device.
-          // Log so we notice in dev; production has no console.
-          console.warn(
-            "owner-token re-seal failed; cross-device sign-in will need a fresh check-in first",
-            e,
-          );
+      // (f) Per-heir loop: seal, POST, persist.
+      for (let i = 0; i < draft.heirs.length; i++) {
+        const heir = draft.heirs[i];
+        const heirParty = heirParties[i];
+        const claimToken = claimTokens[i];
+
+        // Placeholder owner-token slot — server returns the real
+        // one in the response, we re-seal it in (g) per vault.
+        const tokenPlaceholder = "ghostkey-placeholder-owner-token-v1";
+
+        // KDF progress is reported as the fraction of THIS heir's
+        // sealing pass. For a 5-heir group that means the bar runs
+        // 0→100 five times, with the step indicator showing
+        // "Heir 2 of 5" etc. Acceptable for an MVP.
+        setKdfProgress(0);
+        const sealed = await sealVaultSecrets({
+          password: draft.password,
+          ownerXprv: ownerParty.xprv,
+          heirXprv: heirParty.xprv,
+          ownerToken: tokenPlaceholder,
+          claimTokenRaw: claimToken,
+          keepOwnerKek: true,
+          onProgress: (p) => setKdfProgress(Math.round(p * 100)),
+        });
+        // Keep the most recent owner_kek so the post-loop re-seal
+        // pass (g) can run with the same key material. All heirs
+        // use the same owner password so all sealVaultSecrets calls
+        // derive the same KEK; we just need ONE reference for the
+        // re-seal step.
+        ownerKek = sealed._owner_kek ?? ownerKek;
+
+        const sealedBody: SealedSetup = {
+          password_salt_b64: sealed.password_salt,
+          password_kdf_mem_kib: sealed.password_kdf_mem_kib,
+          password_kdf_iters: sealed.password_kdf_iters,
+          owner_xprv_ct_b64: sealed.owner_xprv.ct,
+          owner_xprv_nonce_b64: sealed.owner_xprv.nonce,
+          owner_token_ct_b64: sealed.owner_token.ct,
+          owner_token_nonce_b64: sealed.owner_token.nonce,
+          heir_xprv_ct_b64: sealed.heir_xprv.ct,
+          heir_xprv_nonce_b64: sealed.heir_xprv.nonce,
+          owner_email_hash: ownerEmailHash,
+          claim_token_b64: b64encode(claimToken),
+        };
+
+        // Label disambiguates per-heir for the Dashboard list.
+        const label =
+          draft.heirs.length === 1
+            ? `${heir.name.trim()}'s inheritance`
+            : `${heir.name.trim()}'s share`;
+
+        const heirContactPayload = JSON.stringify({
+          name: heir.name.trim(),
+          contact: heir.contact.trim(),
+          channel: heir.channel,
+        });
+
+        const resp = await api.createVaultFromXpub({
+          label,
+          network,
+          owner: {
+            xpub: ownerParty.xpub,
+            fingerprint: ownerParty.fingerprint,
+          },
+          heir: {
+            xpub: heirParty.xpub,
+            fingerprint: heirParty.fingerprint,
+          },
+          timelock_blocks: timelockBlocks,
+          checkin_period_secs: checkinSecs,
+          grace_period_secs: graceSecs,
+          owner_contact: draft.ownerEmail.trim(),
+          owner_contact_channel: "email",
+          heir_contact: heirContactPayload,
+          heir_contact_channel: heir.channel,
+          sealed: sealedBody,
+        });
+
+        // (g) Re-seal the REAL owner_token under the same password
+        // KEK. Same chicken-and-egg dance as the single-heir flow;
+        // see the SealedSetup comments. Non-fatal on failure.
+        if (ownerKek) {
+          try {
+            const realSealed = sealWithKey(
+              ownerKek,
+              new TextEncoder().encode(resp.owner_token),
+            );
+            await api.sealOwnerToken(resp.id, resp.owner_token, {
+              owner_token_ct_b64: realSealed.ct,
+              owner_token_nonce_b64: realSealed.nonce,
+            });
+          } catch (e) {
+            console.warn(
+              "owner-token re-seal failed for vault",
+              resp.id,
+              "; cross-device sign-in will need a fresh check-in first",
+              e,
+            );
+          }
         }
+
+        // (h) Persist local meta with the shared groupId so the
+        // Dashboard groups this vault with its siblings.
+        saveVaultMeta({
+          id: resp.id,
+          label,
+          owner: {
+            address: draft.ownerEmail.trim(),
+          },
+          heir: {
+            name: heir.name.trim(),
+            email: heir.channel === "email" ? heir.contact.trim() : "",
+            address: "",
+          },
+          createdAt: new Date().toISOString(),
+          ownerToken: resp.owner_token,
+          groupId,
+        });
+
+        // (i) Fetch the receive address. Same per-heir best-effort.
+        let address: string | null = null;
+        try {
+          const a = await api.getVaultAddress(resp.id);
+          address = a.address;
+        } catch (e) {
+          console.warn("address fetch failed for vault", resp.id, e);
+        }
+
+        createdEntries.push({
+          vaultId: resp.id,
+          heirName: heir.name.trim(),
+          address,
+        });
+
+        // Notify the parent once per vault. The parent uses this to
+        // update its own state but doesn't navigate.
+        onCreated({
+          id: resp.id,
+          label: resp.label,
+          status: resp.status,
+          next_deadline_at: resp.next_deadline_at,
+        });
       }
 
-      // (g) Persist local metadata for the dashboard. Same shape the
-      // legacy flow uses, except `owner.address` carries the email
-      // for now (the user-facing "your account" identifier).
-      saveVaultMeta({
-        id: resp.id,
-        label,
-        owner: {
-          address: draft.ownerEmail.trim(),
-        },
-        heir: {
-          name: draft.heirName.trim(),
-          email:
-            draft.heirContactChannel === "email"
-              ? draft.heirContact.trim()
-              : "",
-          address: "", // unknown; the heir's xpub is sealed and never
-                      // surfaces in the UI.
-        },
-        createdAt: new Date().toISOString(),
-        ownerToken: resp.owner_token,
-      });
-
-      // (h) Fetch the receive address. Non-fatal if it fails — the
-      // user can grab it from the dashboard. We surface the error in
-      // a small inline note instead of bailing the whole flow.
-      let address: string | null = null;
-      try {
-        const a = await api.getVaultAddress(resp.id);
-        address = a.address;
-      } catch (e) {
-        console.warn("address fetch failed", e);
-      }
-
-      setCreated({ vaultId: resp.id, address });
+      setCreated({ groupId, vaults: createdEntries });
       setStep(2);
-
-      // Tell the parent we created a vault. We pass the VaultListItem
-      // shape it expects; the parent uses it to navigate to dashboard.
-      // We don't navigate immediately because the user is staring at
-      // the funding address; let them dismiss it.
-      onCreated({
-        id: resp.id,
-        label: resp.label,
-        status: resp.status,
-        next_deadline_at: resp.next_deadline_at,
-      });
     } catch (e) {
+      // Partial failure: any vaults already created above are real
+      // on the server AND in localStorage; we leave them alone. The
+      // user sees the error message and can decide what to do.
+      // localStorage will have entries with the SAME groupId as the
+      // ones that succeeded — the Dashboard will simply render N-1
+      // of N. If they retry, they'll get a NEW groupId; the partial
+      // group from this attempt stays as-is. Acceptable for an MVP
+      // (the alternative is a server-side group rollback API that
+      // doesn't exist yet).
       setError(
         e instanceof ApiError
           ? e.message
@@ -456,8 +552,9 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
         // keygen.ts as "best-effort, not a security boundary".
         ownerParty = null;
       }
-      if (heirParty) heirParty = null;
-      if (claimToken) wipe(claimToken);
+      heirParties.length = 0;
+      for (const t of claimTokens) wipe(t);
+      claimTokens.length = 0;
       if (ownerKek) wipe(ownerKek);
       setBusy(false);
     }
@@ -486,9 +583,7 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
               kdfProgress={kdfProgress}
             />
           )}
-          {step === 2 && created && (
-            <StepFund vaultId={created.vaultId} address={created.address} />
-          )}
+          {step === 2 && created && <StepFund created={created} />}
         </div>
 
         {error ? (
@@ -578,15 +673,31 @@ function StepHeir({
   patch: (p: Partial<Draft>) => void;
   demoMode: boolean;
 }) {
-  const channelMeta =
-    CHANNELS.find((c) => c.id === draft.heirContactChannel) ?? CHANNELS[0];
   const cadenceList = cadencePresetsFor(demoMode);
   const graceList = gracePresetsFor(demoMode);
+
+  // Per-heir mutation helpers. Each heir is mutated by index; the
+  // top-level Draft holds the heirs array.
+  const updateHeir = (index: number, p: Partial<HeirDraft>) => {
+    patch({
+      heirs: draft.heirs.map((h, i) => (i === index ? { ...h, ...p } : h)),
+    });
+  };
+  const removeHeir = (index: number) => {
+    if (draft.heirs.length <= 1) return; // must always have at least one
+    patch({ heirs: draft.heirs.filter((_, i) => i !== index) });
+  };
+  const addHeir = () => {
+    if (draft.heirs.length >= MAX_HEIRS) return;
+    patch({ heirs: [...draft.heirs, { ...EMPTY_HEIR }] });
+  };
 
   return (
     <div>
       <h1 className="font-serif text-3xl md:text-4xl">
-        Who should receive this
+        {draft.heirs.length === 1
+          ? "Who should receive this"
+          : `Who should receive this (${draft.heirs.length} heirs)`}
       </h1>
       <p className="mt-2 text-muted">
         They never have to know about this until the time comes. When it does,
@@ -594,52 +705,38 @@ function StepHeir({
         no wallet install, no setup on their end.
       </p>
 
-      <div className="mt-8">
-        <Field label="Their name">
-          <input
-            type="text"
-            value={draft.heirName}
-            onChange={(e) => patch({ heirName: e.target.value })}
-            placeholder="Sarah"
-            autoComplete="off"
-            className="input"
+      <div className="mt-8 flex flex-col gap-5">
+        {draft.heirs.map((heir, i) => (
+          <HeirCard
+            key={i}
+            index={i}
+            heir={heir}
+            removable={draft.heirs.length > 1}
+            showHeading={draft.heirs.length > 1}
+            onChange={(p) => updateHeir(i, p)}
+            onRemove={() => removeHeir(i)}
           />
-        </Field>
+        ))}
 
-        <Field label="How should we reach them">
-          <div className="grid grid-cols-3 gap-2">
-            {CHANNELS.map((c) => (
-              <Tile
-                key={c.id}
-                title={c.title}
-                sub={c.sub}
-                selected={draft.heirContactChannel === c.id}
-                onClick={() => patch({ heirContactChannel: c.id })}
-              />
-            ))}
-          </div>
-        </Field>
-
-        <Field
-          label={
-            draft.heirContactChannel === "email"
-              ? "Their email"
-              : "Their phone number"
-          }
-          hint="Stored encrypted. We don't message them until the alarm fires."
-        >
-          <input
-            type={draft.heirContactChannel === "email" ? "email" : "tel"}
-            value={draft.heirContact}
-            onChange={(e) => patch({ heirContact: e.target.value })}
-            placeholder={channelMeta.placeholder}
-            autoComplete="off"
-            inputMode={
-              draft.heirContactChannel === "email" ? "email" : "tel"
-            }
-            className="input"
-          />
-        </Field>
+        {/* Cap + helper text. We deliberately keep the cap small (5)
+            because each heir multiplies the on-chain funding tx
+            outputs the owner has to send. Bigger groups need the
+            server-side `vault_groups` table the JOURNAL flags as
+            Phase 2; today everything is client-side. */}
+        {draft.heirs.length < MAX_HEIRS ? (
+          <button
+            type="button"
+            onClick={addHeir}
+            className="btn btn-ghost self-start"
+          >
+            + Add another heir
+          </button>
+        ) : (
+          <p className="text-xs text-muted">
+            Maximum of {MAX_HEIRS} heirs per setup. Need more? File an issue —
+            we'll lift the cap when there's a real reason to.
+          </p>
+        )}
 
         <Field label="If you stop checking in, wait this long before they can claim">
           <div className="flex items-center gap-4">
@@ -716,6 +813,94 @@ function StepHeir({
           to paste your own xpub instead.
         </p>
       </div>
+    </div>
+  );
+}
+
+/**
+ * One heir's name + channel + contact, in a compact card. Rendered
+ * once per entry in `draft.heirs`. The "Remove" button is hidden
+ * when there's only one heir (the wizard always keeps at least one).
+ */
+function HeirCard({
+  index,
+  heir,
+  removable,
+  showHeading,
+  onChange,
+  onRemove,
+}: {
+  index: number;
+  heir: HeirDraft;
+  removable: boolean;
+  showHeading: boolean;
+  onChange: (p: Partial<HeirDraft>) => void;
+  onRemove: () => void;
+}) {
+  const channelMeta =
+    CHANNELS.find((c) => c.id === heir.channel) ?? CHANNELS[0];
+
+  return (
+    <div className="card-flat p-4 md:p-5">
+      {showHeading && (
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <span className="text-sm font-medium text-[var(--text)]">
+            Heir #{index + 1}
+          </span>
+          {removable && (
+            <button
+              type="button"
+              onClick={onRemove}
+              className="text-xs text-muted hover:text-alarm"
+              aria-label={`Remove heir #${index + 1}`}
+            >
+              Remove
+            </button>
+          )}
+        </div>
+      )}
+
+      <Field label="Their name">
+        <input
+          type="text"
+          value={heir.name}
+          onChange={(e) => onChange({ name: e.target.value })}
+          placeholder="Sarah"
+          autoComplete="off"
+          className="input"
+        />
+      </Field>
+
+      <Field label="How should we reach them">
+        <div className="grid grid-cols-3 gap-2">
+          {CHANNELS.map((c) => (
+            <Tile
+              key={c.id}
+              title={c.title}
+              sub={c.sub}
+              selected={heir.channel === c.id}
+              onClick={() => onChange({ channel: c.id })}
+            />
+          ))}
+        </div>
+      </Field>
+
+      <Field
+        label={
+          heir.channel === "email" ? "Their email" : "Their phone number"
+        }
+        hint="Stored encrypted. We don't message them until the alarm fires."
+      >
+        <input
+          type={heir.channel === "email" ? "email" : "tel"}
+          value={heir.contact}
+          onChange={(e) => onChange({ contact: e.target.value })}
+          placeholder={channelMeta.placeholder}
+          autoComplete="off"
+          inputMode={heir.channel === "email" ? "email" : "tel"}
+          className="input"
+        />
+      </Field>
     </div>
   );
 }
@@ -868,14 +1053,94 @@ function StepPassword({
 /* ============================================================ */
 
 function StepFund({
-  vaultId,
-  address,
+  created,
 }: {
-  vaultId: string;
+  created: {
+    groupId: string;
+    vaults: Array<{
+      vaultId: string;
+      heirName: string;
+      address: string | null;
+    }>;
+  };
+}) {
+  const isGroup = created.vaults.length > 1;
+  return (
+    <div>
+      <h1 className="font-serif text-3xl md:text-4xl">
+        {isGroup ? "Fund your vaults" : "Fund your vault"}
+      </h1>
+      <p className="mt-2 text-muted">
+        {isGroup ? (
+          <>
+            Each heir gets their own vault address. Send each one the
+            share you want them to inherit. Your wallet probably lets
+            you batch all {created.vaults.length} sends into a single
+            transaction (one fee, one signature) — Sparrow and Bitcoin
+            Core both do, most others do too.
+          </>
+        ) : (
+          <>
+            Send Bitcoin to the address below. It lands in a script only
+            you can spend right now, and only your heir can spend after
+            the waiting period if you stop checking in.
+          </>
+        )}
+      </p>
+
+      <div className="mt-8 flex flex-col gap-4">
+        {created.vaults.map((v) => (
+          <FundAddressCard
+            key={v.vaultId}
+            heirName={v.heirName}
+            address={v.address}
+            vaultId={v.vaultId}
+            showHeading={isGroup}
+          />
+        ))}
+      </div>
+
+      <div className="mt-6">
+        <InlineAlert tone="neutral">
+          {isGroup ? (
+            <>
+              Bookmark this page or write down any of your vault ids —
+              the dashboard is also reachable from any browser by signing
+              in with your email and password. All {created.vaults.length}
+              {" "}vaults appear together once you sign in.
+            </>
+          ) : (
+            <>
+              Bookmark this page or note your vault id (
+              <code className="font-mono text-xs">
+                {shortId(created.vaults[0]?.vaultId ?? "")}
+              </code>
+              ) — the dashboard is also reachable from any browser by
+              signing in with your email and password.
+            </>
+          )}
+        </InlineAlert>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One address card. Used both by the single-heir and multi-heir
+ * funding step; `showHeading` controls the per-heir label.
+ */
+function FundAddressCard({
+  heirName,
+  address,
+  vaultId,
+  showHeading,
+}: {
+  heirName: string;
   address: string | null;
+  vaultId: string;
+  showHeading: boolean;
 }) {
   const [copied, setCopied] = useState(false);
-
   async function copy() {
     if (!address) return;
     try {
@@ -883,22 +1148,37 @@ function StepFund({
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
     } catch {
-      // Some browsers (older Safari over http) block clipboard access.
-      // Falling back to manual select is fine — the address is visible.
+      // Some browsers block clipboard access; the address is still
+      // visible for manual selection.
     }
   }
 
   return (
     <div>
-      <h1 className="font-serif text-3xl md:text-4xl">Fund your vault</h1>
-      <p className="mt-2 text-muted">
-        Send Bitcoin to the address below. It lands in a script only you can
-        spend right now, and only your heir can spend after the waiting
-        period if you stop checking in.
-      </p>
-
+      {showHeading && (
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <span className="text-sm font-medium text-[var(--text)]">
+            For {heirName || "this heir"}
+          </span>
+          <code className="font-mono text-[10px] text-dim">
+            vault {shortId(vaultId)}
+          </code>
+        </div>
+      )}
       {address ? (
-        <div className="mt-8">
+        showHeading ? (
+          // In group mode the heading + vault id already names the
+          // card; render the address row directly without the Field
+          // wrapper (which insists on a label).
+          <div className="card flex items-center gap-3 px-4 py-3">
+            <code className="flex-1 break-all font-mono text-sm">
+              {address}
+            </code>
+            <Button variant="quiet" onClick={copy}>
+              {copied ? "Copied" : "Copy"}
+            </Button>
+          </div>
+        ) : (
           <Field
             label="Your vault address"
             hint="Testnet only during alpha. Don't send real-money BTC here."
@@ -912,21 +1192,12 @@ function StepFund({
               </Button>
             </div>
           </Field>
-
-          <InlineAlert tone="neutral">
-            Bookmark this page or note your vault id (
-            <code className="font-mono text-xs">{shortId(vaultId)}</code>) —
-            the dashboard is also reachable from any browser by signing in
-            with your email and password.
-          </InlineAlert>
-        </div>
+        )
       ) : (
-        <div className="mt-8">
-          <InlineAlert tone="warning">
-            We couldn't fetch the address automatically. Open the dashboard to
-            see it.
-          </InlineAlert>
-        </div>
+        <InlineAlert tone="warning">
+          We couldn't fetch this address automatically. Open the
+          dashboard to see it.
+        </InlineAlert>
       )}
     </div>
   );

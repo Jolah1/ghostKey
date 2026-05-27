@@ -51,6 +51,23 @@ export interface VaultMeta {
    * New vaults always populate this.
    */
   ownerToken?: string;
+  /**
+   * Client-side grouping for multi-heir vaults (variant 4 from the
+   * design discussion: N parallel vaults that share the same owner
+   * xpub but have different heirs). All vaults created in a single
+   * setup-wizard run share the same `groupId`; the Dashboard groups
+   * vaults by it so the owner sees one card per group rather than N
+   * separate vaults.
+   *
+   * Optional — single-heir vaults (the historical case) omit it,
+   * and the Dashboard treats `undefined` as "this vault is its own
+   * group of one." A future server-side `vault_groups` table would
+   * replace this localStorage-only field; until then, the group
+   * concept exists only on the device that did the setup. Other
+   * devices that recover the vaults via password sign-in see each
+   * vault individually.
+   */
+  groupId?: string;
 }
 
 const STORE_KEY = "gk:vaults";
@@ -99,4 +116,27 @@ export function getActiveVaultId(): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Return every vault sharing the given `groupId`, in stable creation
+ * order. Used by the Dashboard to render a multi-heir group as one
+ * card. A `groupId` of `undefined` (or a group that no longer has
+ * any members) returns an empty array.
+ */
+export function getVaultsByGroup(groupId: string | null | undefined): VaultMeta[] {
+  if (!groupId) return [];
+  const all = readAll();
+  return Object.values(all)
+    .filter((v) => v.groupId === groupId)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+/**
+ * Look up the groupId of a vault by its id. Returns null if the
+ * vault doesn't exist on this device, or if it has no groupId (i.e.
+ * a legacy single-heir vault).
+ */
+export function getGroupIdForVault(id: string): string | null {
+  return readAll()[id]?.groupId ?? null;
 }
