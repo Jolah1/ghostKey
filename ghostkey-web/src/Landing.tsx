@@ -368,7 +368,17 @@ function Comparison() {
           </h2>
         </div>
 
-        <div className="mt-12 overflow-x-auto">
+        {/* The table itself is `min-w-[560px]` so the four columns
+            don't crush on narrow widths. The wrapper carries
+            `max-w-full` AND `overflow-x-auto` so that on a 360px
+            phone the page does NOT horizontally scroll — only the
+            table does. Without max-w-full some mobile browsers
+            still let the table push the layout viewport wider, which
+            is the bug behind the "page is zoomed out and off-centre
+            on mobile" report. The html+body `overflow-x: hidden`
+            rules in index.css are belt-and-braces against the same
+            class of bug. */}
+        <div className="mt-12 max-w-full overflow-x-auto">
           <table className="w-full min-w-[560px] border-separate border-spacing-0 text-sm">
             <thead>
               <tr className="text-left text-xs uppercase tracking-wider text-dim">

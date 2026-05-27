@@ -144,7 +144,35 @@
 @layer base {
   *, *::before, *::after { box-sizing: border-box; }
   html { scroll-behavior: smooth; }
+  /* Belt-and-braces defence against horizontal overflow on mobile.
+   *
+   * If anything in the page (a wide table, an unbroken xpub string,
+   * an overscale SVG) sticks out past the viewport, mobile browsers
+   * react by zooming the layout viewport out to fit. The page then
+   * appears tiny, off-centre, and impossible to read.
+   *
+   * The comparison table in Landing intentionally uses
+   * `min-w-[560px]` wrapped in `overflow-x-auto` so the TABLE
+   * scrolls horizontally. But the `overflow-x-auto` only constrains
+   * its direct ancestor — without these `overflow-x: hidden` rules
+   * on the html+body, some Android browsers (and iOS Safari in
+   * certain orientation-change races) compute the layout viewport
+   * width from the table anyway. The result is the bug the user
+   * reported: "zooming out and not in the centre on mobile phone".
+   *
+   * We apply hidden at the html+body level. Individual scrollable
+   * sub-regions (the comparison table wrapper, any future wide
+   * code blocks) still scroll horizontally inside themselves — the
+   * page just doesn't.
+   */
+  html { overflow-x: hidden; }
   body {
+    overflow-x: hidden;
+    /* width: 100% explicitly so mobile browsers don't infer a wider
+     * viewport from a descendant. Without this, `min-h-screen` +
+     * `bg-app` on the root can still allow horizontal expansion in
+     * some engines. */
+    width: 100%;
     margin: 0;
     background-color: var(--bg);
     color: var(--text-body);
