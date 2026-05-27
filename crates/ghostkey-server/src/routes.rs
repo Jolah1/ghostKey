@@ -121,6 +121,13 @@ struct Health {
     /// loosened invariants. Operators MUST NOT enable demo mode on a
     /// production server.
     demo_mode: bool,
+    /// Which Bitcoin network the web UI should pre-select for new
+    /// vault creation. Mirrors the server's `GHOSTKEY_DEFAULT_NETWORK`
+    /// env var (`testnet` when unset). Lets a single web bundle work
+    /// against testnet, signet, and regtest servers — the alpha
+    /// banner names this network, and the setup wizards POST it as
+    /// `network` in the create-vault payload.
+    default_network: &'static str,
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
@@ -129,6 +136,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         version: env!("CARGO_PKG_VERSION"),
         lightning_enabled: state.lightning.is_enabled(),
         demo_mode: crate::demo::demo_mode(),
+        default_network: crate::config::default_network(),
     })
 }
 

@@ -381,6 +381,32 @@ If `TWILIO_*` is unset, SMS and WhatsApp notifications stay queued
 with Twilio configured picks them up. A future deployment that adds
 Twilio will deliver the backlog automatically on its first tick.
 
+### Picking which Bitcoin network the UI defaults to
+
+The web UI defaults new vaults to **testnet**. The server-side
+allow-list accepts all four — `bitcoin`, `testnet`, `signet`,
+`regtest` — but the wizards POST whichever the server reports on
+`GET /health.default_network`. This means: a single web bundle on
+Vercel can serve testnet on `ghostkey.fly.dev`, signet on
+`ghostkey-signet.fly.dev`, etc., with no per-deployment rebuild.
+
+```sh
+# Default (when unset) is testnet.
+fly secrets set GHOSTKEY_DEFAULT_NETWORK=signet -a ghostkey-signet
+```
+
+Valid values are `bitcoin`, `testnet`, `signet`, `regtest`. Any
+other string falls back to `testnet` with an error logged at boot.
+Setting `GHOSTKEY_DEFAULT_NETWORK=bitcoin` (mainnet) is permitted
+and logs a startup warning so the choice is unmissable in the boot
+log.
+
+The alpha banner on the web UI reads the same value and names the
+network it's on, so a user landing on the signet test deployment
+sees "Alpha: GhostKey is running on Bitcoin signet" instead of the
+historical hard-coded "testnet". For the live signet end-to-end
+test runbook see `SIGNET_E2E_RUNBOOK.md` at the repo root.
+
 ### Demo mode (do NOT enable in production)
 
 `GHOSTKEY_DEMO_MODE=1` loosens the cadence/grace validation to seconds

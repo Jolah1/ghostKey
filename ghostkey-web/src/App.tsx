@@ -126,6 +126,12 @@ export default function App() {
   // Defaults to false until the first probe completes, so we don't
   // flash a banner that turns out to be wrong on a normal server.
   const [demoMode, setDemoMode] = useState(false);
+  // Bitcoin network this server is on. Read from /health on the same
+  // probe as `demoMode`; falls back to "testnet" when unknown. The
+  // alpha banner names this network so anyone landing on a signet
+  // demo server sees "signet" instead of the historical "testnet"
+  // literal. See `crates/ghostkey-server/src/config.rs`.
+  const [network, setNetwork] = useState<"bitcoin" | "testnet" | "signet" | "regtest">("testnet");
 
   // Sync the URL hash with the current location. Only writes back for
   // simple routes; the claim page's token-bearing URL is owned by the
@@ -159,6 +165,7 @@ export default function App() {
         if (alive) {
           setHealth("ok");
           setDemoMode(Boolean(h.demo_mode));
+          if (h.default_network) setNetwork(h.default_network);
         }
       } catch {
         if (alive) setHealth("offline");
@@ -182,7 +189,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-app">
-      <AlphaBanner />
+      <AlphaBanner network={network} />
       {demoMode && <DemoBanner />}
       {health === "offline" && <ServerOfflineBanner />}
       {/*
@@ -237,14 +244,27 @@ export default function App() {
 /* ------------------------------- AlphaBanner ------------------------------ */
 
 /**
- * Top-of-page reminder that this is alpha software running against
- * Bitcoin testnet, not mainnet. Vaults created here use testnet keys
- * and testnet UTXOs; nothing here moves real money. The banner is
- * deliberately small but persistent — losing it on scroll would
- * encourage someone to forget what network they're on and paste a
- * mainnet xpub by accident.
+ * Top-of-page reminder about the network this server is on. Reads
+ * the actual network from `/health.default_network` so a single web
+ * bundle can correctly name testnet, signet, regtest, or (with the
+ * appropriate operator consent) bitcoin mainnet. Vaults created
+ * here use keys on that network; nothing crosses network boundaries.
+ *
+ * The banner is deliberately small but persistent — losing it on
+ * scroll would encourage someone to forget what network they're on
+ * and paste a mainnet xpub into a testnet vault by accident.
+ *
+ * Mainnet is allowed — the server's `GHOSTKEY_DEFAULT_NETWORK=bitcoin`
+ * already logs a startup warning making the choice explicit — but
+ * the banner copy here changes to something more cautious so the
+ * user knows real money is in scope.
  */
-function AlphaBanner() {
+function AlphaBanner({
+  network,
+}: {
+  network: "bitcoin" | "testnet" | "signet" | "regtest";
+}) {
+  const isMainnet = network === "bitcoin";
   return (
     <div
       role="status"
@@ -254,12 +274,28 @@ function AlphaBanner() {
       <div className="mx-auto flex max-w-6xl items-center gap-3 px-5 py-1.5 md:px-8">
         <span
           aria-hidden="true"
-          className="inline-block h-1.5 w-1.5 rounded-full bg-warning"
+          className={`inline-block h-1.5 w-1.5 rounded-full ${
+            isMainnet ? "bg-alarm" : "bg-warning"
+          }`}
         />
         <p className="leading-tight text-muted">
-          <span className="font-medium text-[var(--text)]">Alpha:</span>{" "}
-          GhostKey is running on Bitcoin <span className="font-mono">testnet</span>.
-          Don&apos;t use real-money keys yet.
+          {isMainnet ? (
+            <>
+              <span className="font-medium text-[var(--text)]">
+                Mainnet:
+              </span>{" "}
+              GhostKey is running on Bitcoin{" "}
+              <span className="font-mono">mainnet</span>. Real money is in
+              scope. Confirm your security review is complete.
+            </>
+          ) : (
+            <>
+              <span className="font-medium text-[var(--text)]">Alpha:</span>{" "}
+              GhostKey is running on Bitcoin{" "}
+              <span className="font-mono">{network}</span>. Don&apos;t use
+              real-money keys yet.
+            </>
+          )}
         </p>
       </div>
     </div>

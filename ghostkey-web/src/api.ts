@@ -363,6 +363,11 @@ export const api = {
       version: string;
       lightning_enabled: boolean;
       demo_mode: boolean;
+      /** Which Bitcoin network the server wants the UI to default
+       *  new vaults to. Mirrors GHOSTKEY_DEFAULT_NETWORK on the
+       *  server side. Falls back to `"testnet"` on older servers
+       *  that don't yet emit this field. */
+      default_network?: "bitcoin" | "testnet" | "signet" | "regtest";
     }>("/health"),
   getVault: (id: string, ownerToken: string | null) =>
     request<VaultView>(`/vaults/${id}`, {}, ownerToken),

@@ -22,6 +22,8 @@ Cargo.lock.bak
 *.sqlite-shm
 .ghostkey/
 data/
+# Signet e2e runbook state (vault id + owner token from a test run)
+.signet-e2e.json
 
 # Node
 node_modules/

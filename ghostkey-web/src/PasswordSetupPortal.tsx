@@ -130,9 +130,14 @@ const EMPTY: Draft = {
 
 const STEPS = ["Heir", "Password", "Fund"] as const;
 
-// Alpha: testnet only. Mirrors the comment in SetupPortal.tsx — we
-// will flip this to "bitcoin" when the operational story is finished.
-const NETWORK: Network = "testnet";
+// Default Bitcoin network for new vaults on this server. Overridden
+// at runtime from the server's `/health.default_network` value if it
+// emits one (older servers don't). The `NETWORK` const stays here as
+// the SAFE fallback when /health is unreachable or the field is
+// missing — picking testnet rather than mainnet on the failure path
+// is by design: a wrong-network vault is recoverable, a mainnet vault
+// created against an unconfigured server is not.
+const NETWORK_FALLBACK: Network = "testnet";
 
 // Bitcoin block cadence: ~144 blocks/day, 30 days/month. Min 144 (1d)
 // guards against the user dragging the slider to zero on an edge case.
@@ -152,6 +157,11 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
   // rationale; both portals share the same gating logic so the
   // experience is consistent across the two creation paths.
   const [demoMode, setDemoMode] = useState(false);
+  // Bitcoin network for this server. Read from /health on mount;
+  // falls back to NETWORK_FALLBACK ("testnet") if /health is
+  // unreachable or the server is old enough not to emit the field.
+  // See `crates/ghostkey-server/src/config.rs` for the env var.
+  const [network, setNetwork] = useState<Network>(NETWORK_FALLBACK);
 
   useEffect(() => {
     let alive = true;
@@ -161,6 +171,9 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
         if (!alive) return;
         const d = Boolean(h.demo_mode);
         setDemoMode(d);
+        if (h.default_network) {
+          setNetwork(h.default_network);
+        }
         setDraft((draft0) => {
           if (
             draft0.cadenceId !== DEFAULT_CADENCE_ID ||
@@ -176,7 +189,10 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
         });
       })
       .catch(() => {
-        if (alive) setDemoMode(false);
+        if (alive) {
+          setDemoMode(false);
+          // Leave `network` at the fallback ("testnet").
+        }
       });
     return () => {
       alive = false;
@@ -268,8 +284,8 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
 
     try {
       // (a) Mint fresh keys + claim token.
-      ownerParty = generateParty(NETWORK);
-      heirParty = generateParty(NETWORK);
+      ownerParty = generateParty(network);
+      heirParty = generateParty(network);
       claimToken = randomBytes(32);
 
       // (b) Seal under password. We ship a placeholder for the
@@ -327,7 +343,7 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
 
       const resp = await api.createVaultFromXpub({
         label,
-        network: NETWORK,
+        network,
         owner: {
           xpub: ownerParty.xpub,
           fingerprint: ownerParty.fingerprint,

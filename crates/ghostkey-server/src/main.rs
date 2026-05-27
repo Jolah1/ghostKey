@@ -18,6 +18,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 mod auth;
+mod config;
 mod crypto;
 mod db;
 mod demo;
@@ -113,6 +114,9 @@ async fn main() -> Result<()> {
     // creation. The function caches the result in a OnceLock; this
     // call pins it before any handler can race.
     let _ = demo::demo_mode();
+    // Same shape for the default-network flag: pin at boot so the
+    // log line lands in the startup output.
+    tracing::info!(default_network = %config::default_network(), "config loaded");
 
     let pool = db::connect(&args.database_url).await?;
 

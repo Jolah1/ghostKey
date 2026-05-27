@@ -164,6 +164,11 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
   // Read once on mount; a server that flips the flag mid-session
   // would only take effect on the next page load.
   const [demoMode, setDemoMode] = useState(false);
+  // Bitcoin network for this server, mirrored from /health. Falls
+  // back to "testnet" if /health is unreachable or the server is too
+  // old to emit the field. See PasswordSetupPortal.tsx and
+  // `crates/ghostkey-server/src/config.rs` for the rationale.
+  const [network, setNetwork] = useState<"bitcoin" | "testnet" | "signet" | "regtest">("testnet");
 
   useEffect(() => {
     let alive = true;
@@ -173,6 +178,9 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
         if (!alive) return;
         const d = Boolean(h.demo_mode);
         setDemoMode(d);
+        if (h.default_network) {
+          setNetwork(h.default_network);
+        }
         // Realign the initial cadence/grace selection if the user
         // hasn't picked anything yet. Without this, a demo-mode
         // server would show the production defaults (bi-weekly / 3d)
@@ -305,12 +313,13 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
       const resp = useAdvanced
         ? await api.createVault({
             label,
-            // Alpha: testnet only. The cryptography is correct on mainnet
-            // too, but the operational story (mainnet Esplora indexer
-            // owned by us, backups, security review) is not finished.
-            // Vaults created here are watch-only testnet outputs and do
-            // not move real money.
-            network: "testnet",
+            // Network is read from the server's /health.default_network
+            // (set via GHOSTKEY_DEFAULT_NETWORK env var on the server).
+            // Defaults to "testnet" — historical alpha posture, also the
+            // safe fallback for any older server that doesn't emit the
+            // field. To run a vault on signet, set the env var on the
+            // server; no UI change needed.
+            network,
             descriptor_external: advExt,
             descriptor_internal: advInt,
             timelock_blocks: timelockBlocks,
@@ -322,7 +331,7 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
           })
         : await api.createVaultFromXpub({
             label,
-            network: "testnet",
+            network,
             owner: partyFromDraft(draft.ownerXpub, draft.ownerFingerprint),
             heir: partyFromDraft(draft.heirXpub, draft.heirFingerprint),
             timelock_blocks: timelockBlocks,
