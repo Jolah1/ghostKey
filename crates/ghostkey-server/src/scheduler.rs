@@ -36,9 +36,231 @@ pub async fn run(state: Arc<AppState>, tick: Duration) {
 
 async fn tick_once(state: &AppState) -> anyhow::Result<()> {
     let now = Utc::now().to_rfc3339();
+    unfreeze_expired_panics(state, &now).await?;
     issue_pre_deadline_reminders(state, &now).await?;
     transition_ok_to_alarmed(state, &now).await?;
+    send_alarm_escalations(state, &now).await?;
     transition_alarmed_to_claimable(state, &now).await?;
+    Ok(())
+}
+
+/// How often the alarm-escalation email re-fires while the owner is
+/// in the `alarmed` state. Daily is loud enough to be impossible to
+/// miss, infrequent enough not to land in spam.
+const ALARM_ESCALATION_INTERVAL_SECS: i64 = 24 * 3600;
+
+/// While a vault is `alarmed`, send a daily reminder to the owner so
+/// the 14-day cancellation window is genuinely impossible to sleep
+/// through. Each email mentions how many days are left before the
+/// heir is notified, escalating in tone with each successive reminder.
+///
+/// We fire when there's no prior reminder for this alarm cycle, OR
+/// the previous reminder was sent more than 24h ago. The columns
+/// `last_alarm_reminder_sent_at` and `alarm_reminder_count` are both
+/// cleared whenever the owner checks in (so a fresh alarm starts the
+/// count back at 0).
+async fn send_alarm_escalations(state: &AppState, now_iso: &str) -> anyhow::Result<()> {
+    let cutoff = chrono::DateTime::parse_from_rfc3339(now_iso)
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now())
+        - chrono::Duration::seconds(ALARM_ESCALATION_INTERVAL_SECS);
+    let cutoff_s = cutoff.to_rfc3339();
+
+    let due = sqlx::query_as::<
+        _,
+        (
+            String,         // id
+            Option<String>, // label
+            Option<String>, // owner_contact_ciphertext
+            Option<String>, // owner_contact_nonce
+            Option<String>, // owner_contact_channel
+            String,         // claim_eligible_at
+            i64,            // alarm_reminder_count
+        ),
+    >(
+        r#"SELECT id, label,
+                  owner_contact_ciphertext, owner_contact_nonce, owner_contact_channel,
+                  claim_eligible_at,
+                  alarm_reminder_count
+             FROM vaults
+            WHERE status = 'alarmed'
+              AND claim_eligible_at IS NOT NULL
+              AND claim_eligible_at > ?
+              AND owner_contact_ciphertext IS NOT NULL
+              AND (last_alarm_reminder_sent_at IS NULL
+                   OR last_alarm_reminder_sent_at <= ?)"#,
+    )
+    .bind(now_iso)
+    .bind(&cutoff_s)
+    .fetch_all(&state.db)
+    .await?;
+
+    for (id, label, ct, nn, ch, claim_eligible_at, count_so_far) in due {
+        if let Err(e) = enqueue_alarm_escalation(
+            state,
+            &id,
+            label.as_deref(),
+            SealedOwnerContactRow {
+                ciphertext_b64: ct.as_deref(),
+                nonce_b64: nn.as_deref(),
+                channel: ch.as_deref(),
+            },
+            &claim_eligible_at,
+            count_so_far,
+            now_iso,
+        )
+        .await
+        {
+            tracing::warn!(vault_id = %id, error = ?e, "alarm escalation enqueue failed");
+            continue;
+        }
+        sqlx::query(
+            r#"UPDATE vaults
+                  SET last_alarm_reminder_sent_at = ?,
+                      alarm_reminder_count        = alarm_reminder_count + 1
+                WHERE id = ?
+                  AND status = 'alarmed'"#,
+        )
+        .bind(now_iso)
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Email body for a single escalation tick. Tone escalates with
+/// `count_so_far` (0 = first reminder, 1 = second, …) so the owner
+/// notices a difference between day 2 and day 12 of the alarmed window.
+async fn enqueue_alarm_escalation(
+    state: &AppState,
+    vault_id: &str,
+    label: Option<&str>,
+    owner: SealedOwnerContactRow<'_>,
+    claim_eligible_at_iso: &str,
+    count_so_far: i64,
+    now_iso: &str,
+) -> anyhow::Result<()> {
+    let Some(contact) = parse_owner_contact(
+        vault_id,
+        owner.ciphertext_b64,
+        owner.nonce_b64,
+        owner.channel,
+    )?
+    else {
+        return Ok(());
+    };
+    if !matches!(contact.channel, Channel::Email) {
+        return Ok(());
+    }
+
+    // Days remaining is what makes these emails actually scary; the
+    // user is reading at a glance.
+    let claim_dt = chrono::DateTime::parse_from_rfc3339(claim_eligible_at_iso)
+        .ok()
+        .map(|d| d.with_timezone(&Utc));
+    let now_dt = chrono::DateTime::parse_from_rfc3339(now_iso)
+        .ok()
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now);
+    let days_left = claim_dt
+        .map(|d| ((d - now_dt).num_seconds().max(0) + 86_399) / 86_400)
+        .unwrap_or(0);
+
+    let base = public_base_url();
+    let display_label = label.unwrap_or("your GhostKey vault");
+
+    let one_tap_block = match mint_or_reuse_one_tap_token(state, vault_id, now_iso).await? {
+        Some(token) => format!(
+            "Tap this link to check in. One tap. Nothing else.\n\n\
+             {base}/#/checkin-link/{vault_id}/{token}\n\n"
+        ),
+        None => String::new(),
+    };
+
+    let (subject, lead) = match count_so_far {
+        0 => (
+            format!("You missed a check-in — {days_left} days until your heir is notified"),
+            "This is the first daily reminder.".to_string(),
+        ),
+        n if n < 7 => (
+            format!("{days_left} days left to check in before your heir is contacted"),
+            format!("You've now missed {} daily reminders.", n + 1),
+        ),
+        _ => (
+            format!(
+                "Last few days: {days_left} days until your heir is notified about {display_label}"
+            ),
+            "This is one of the final reminders.".to_string(),
+        ),
+    };
+
+    let body = format!(
+        "Hello,\n\n\
+         {lead} {display_label} is past its check-in deadline.\n\n\
+         {one_tap_block}\
+         You can also open the dashboard on any device:\n\n\
+         {base}/#/checkin\n\n\
+         If we don't hear from you within {days_left} day(s), your heir \
+         will receive a claim link for this vault. You can stop that \
+         instantly by checking in.\n\n\
+         — GhostKey\n"
+    );
+
+    notifier::enqueue(
+        &state.db,
+        vault_id,
+        NotificationKind::AlarmEscalation,
+        Channel::Email,
+        &contact.address,
+        &subject,
+        &body,
+    )
+    .await?;
+    Ok(())
+}
+
+/// Release any vault whose `panic_frozen_until` has passed. Resets
+/// status to `ok` and clears the freeze marker; the owner can then
+/// check in normally to restart the deadline cadence.
+///
+/// We do NOT recompute `next_deadline_at` here on purpose: while the
+/// vault was frozen the heir was blocked, but the deadline clock kept
+/// ticking. Forcing the owner to do an explicit check-in after the
+/// freeze releases avoids a class of "I forgot I panicked" bugs where
+/// a vault silently reverts to alarmed seconds after unfreeze.
+async fn unfreeze_expired_panics(state: &AppState, now_iso: &str) -> anyhow::Result<()> {
+    let expired: Vec<(String,)> = sqlx::query_as(
+        r#"SELECT id
+             FROM vaults
+            WHERE status = 'frozen'
+              AND panic_frozen_until IS NOT NULL
+              AND panic_frozen_until <= ?"#,
+    )
+    .bind(now_iso)
+    .fetch_all(&state.db)
+    .await?;
+
+    for (id,) in expired {
+        sqlx::query(
+            r#"UPDATE vaults
+                  SET status              = 'alarmed',
+                      panic_frozen_until  = NULL
+                WHERE id = ?
+                  AND status = 'frozen'"#,
+        )
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
+        record_event(
+            &state.db,
+            &id,
+            "panic_expired",
+            Some(serde_json::json!({ "reason": "freeze_window_elapsed" })),
+        )
+        .await?;
+        tracing::info!(vault_id = %id, "panic freeze expired; vault unfrozen to alarmed");
+    }
     Ok(())
 }
 
@@ -679,7 +901,14 @@ async fn enqueue_claim_link(
     let base = public_base_url();
     let claim_url = format!("{base}/#/claim/{token}");
 
-    let display_label = label.unwrap_or("a Bitcoin inheritance");
+    // F5: the heir must not learn the vault label before they open
+    // the claim link — the label often names the asset ("BTC for
+    // mom"), which leaks the owner's identity to anyone who can read
+    // the heir's email. The label is still rendered inside the claim
+    // UI, behind the one-time token. `label` is intentionally read
+    // (and dropped) here so any future copy change has the variable
+    // to hand without re-plumbing the function signature.
+    let _ = label;
     let heir_name = contact.name.as_deref().unwrap_or("there");
     let subject = "A message for you about something someone left you".to_string();
     let body = format!(
@@ -691,7 +920,6 @@ async fn enqueue_claim_link(
          and the next steps:\n\n\
          {claim_url}\n\n\
          The link works once. You don't need an account.\n\n\
-         What's being passed on: {display_label}.\n\n\
          If this message reached you by mistake, you can ignore it -- \
          nothing happens until you open the link.\n\n\
          — GhostKey\n"

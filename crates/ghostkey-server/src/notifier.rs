@@ -93,6 +93,12 @@ pub enum NotificationKind {
     /// `vaults.pre_deadline_reminder_sent_at`, which is cleared on
     /// every successful check-in.
     PreDeadlineReminder,
+    /// Owner-side, RECURRING during the alarmed window: "you have N
+    /// days left to check in before your heir is notified". Fired
+    /// daily by [`crate::scheduler::send_alarm_escalations`]; the
+    /// `last_alarm_reminder_sent_at` column gates re-fire and is
+    /// cleared on every successful check-in.
+    AlarmEscalation,
 }
 
 impl NotificationKind {
@@ -101,6 +107,7 @@ impl NotificationKind {
             NotificationKind::ClaimLink => "claim_link",
             NotificationKind::AlarmOwner => "alarm_owner",
             NotificationKind::PreDeadlineReminder => "pre_deadline_reminder",
+            NotificationKind::AlarmEscalation => "alarm_escalation",
         }
     }
 }

@@ -69,6 +69,24 @@ pub fn default_network() -> &'static str {
     )
 }
 
+/// Public base URL of this server, e.g. `https://ghostkey.example`.
+///
+/// Used to mint absolute callback URLs for LNURL-pay (LUD-06 requires
+/// the `callback` field to be a fully-qualified URL that wallets can
+/// hit). Trailing slashes are stripped so concatenation with a path
+/// is always safe (`format!("{base}/lnurlp/{id}")`).
+///
+/// Returns `None` if the env var is unset or empty — callers should
+/// degrade gracefully (e.g. hide the LNURL QR in the dashboard) rather
+/// than crash, because mis-rendering an LNURL with a bogus callback
+/// would silently misroute payments.
+pub fn api_base_url() -> Option<String> {
+    std::env::var("GHOSTKEY_API_BASE_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.trim_end_matches('/').to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -215,15 +215,27 @@ pub struct InvoiceRecord {
     pub payment_hash: String,
     pub amount_sat: i64,
     pub status: String,
+    /// Either `"checkin"` (reset deadline on payment) or `"panic"`
+    /// (freeze the vault on payment). Set at insert time by the route
+    /// that mints the invoice; the poller dispatches on it.
+    pub invoice_type: String,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub paid_at: Option<DateTime<Utc>>,
 }
 
+/// Invoice flavour shorthands.
+///
+/// Use the constants instead of bare string literals at call sites so
+/// rename/refactor catches every consumer.
+pub const INVOICE_TYPE_CHECKIN: &str = "checkin";
+pub const INVOICE_TYPE_PANIC: &str = "panic";
+
 pub async fn insert_invoice(
     db: &sqlx::SqlitePool,
     vault_id: &str,
     invoice: &CreatedInvoice,
+    invoice_type: &str,
 ) -> Result<InvoiceRecord, sqlx::Error> {
     let now = Utc::now();
     let now_s = now.to_rfc3339();
@@ -231,14 +243,15 @@ pub async fn insert_invoice(
     let row: (i64,) = sqlx::query_as(
         r#"INSERT INTO lightning_invoices
                (vault_id, bolt11, payment_hash, amount_sat, status,
-                created_at, expires_at)
-           VALUES (?, ?, ?, ?, 'pending', ?, ?)
+                invoice_type, created_at, expires_at)
+           VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
            RETURNING id"#,
     )
     .bind(vault_id)
     .bind(&invoice.bolt11)
     .bind(&invoice.payment_hash)
     .bind(invoice.amount_sat as i64)
+    .bind(invoice_type)
     .bind(&now_s)
     .bind(&exp_s)
     .fetch_one(db)
@@ -251,6 +264,7 @@ pub async fn insert_invoice(
         payment_hash: invoice.payment_hash.clone(),
         amount_sat: invoice.amount_sat as i64,
         status: "pending".into(),
+        invoice_type: invoice_type.to_string(),
         created_at: now,
         expires_at: invoice.expires_at,
         paid_at: None,
@@ -270,10 +284,11 @@ pub async fn fetch_invoice_by_hash(
         String,
         String,
         String,
+        String,
         Option<String>,
     )> = sqlx::query_as(
         r#"SELECT id, vault_id, bolt11, payment_hash, amount_sat, status,
-                  created_at, expires_at, paid_at
+                  invoice_type, created_at, expires_at, paid_at
              FROM lightning_invoices
             WHERE payment_hash = ?"#,
     )
@@ -287,9 +302,10 @@ pub async fn fetch_invoice_by_hash(
         payment_hash: r.3,
         amount_sat: r.4,
         status: r.5,
-        created_at: parse_rfc(&r.6),
-        expires_at: parse_rfc(&r.7),
-        paid_at: r.8.as_deref().map(parse_rfc),
+        invoice_type: r.6,
+        created_at: parse_rfc(&r.7),
+        expires_at: parse_rfc(&r.8),
+        paid_at: r.9.as_deref().map(parse_rfc),
     }))
 }
 
@@ -355,7 +371,9 @@ pub async fn mark_paid_and_checkin(
     // Same column set the HTTP /checkin route writes. Clearing the
     // claim_token_* trio matters: if the owner was already alarmed
     // and a token had been minted, paying the invoice unwinds that
-    // state cleanly. See routes::checkin for the matching SQL.
+    // state cleanly. Clearing the alarm-reminder columns (F3) is what
+    // stops the daily-escalation emails the moment the owner checks
+    // in. See routes::checkin for the matching SQL.
     sqlx::query(
         r#"UPDATE vaults
               SET last_checkin_at      = ?,
@@ -366,6 +384,8 @@ pub async fn mark_paid_and_checkin(
                   claim_token_issued_at = NULL,
                   claim_token_used_at  = NULL,
                   pre_deadline_reminder_sent_at = NULL,
+                  last_alarm_reminder_sent_at  = NULL,
+                  alarm_reminder_count          = 0,
                   checkin_link_token_hash      = NULL,
                   checkin_link_token_issued_at = NULL,
                   checkin_link_token_used_at   = NULL
@@ -398,6 +418,108 @@ pub async fn mark_paid_and_checkin(
         vault_id = %vault_id,
         payment_hash = %payment_hash,
         "lightning check-in confirmed; vault deadline reset"
+    );
+    Ok(())
+}
+
+/// How long a panic-stop holds a vault frozen, in days.
+///
+/// Picked at the spec layer so heirs cannot drain a vault for at least
+/// this many days after the owner triggers a panic. The poller's
+/// `unfreeze_expired_panics` releases the freeze after this window.
+pub const PANIC_FREEZE_DAYS: i64 = 90;
+
+/// Mark a panic-stop invoice paid and freeze the vault for `PANIC_FREEZE_DAYS`.
+///
+/// Mirrors `mark_paid_and_checkin` structurally (CAS on the invoice row,
+/// then mutate the vault, then audit) so that the two flows share the same
+/// race-free shape. Panic semantics:
+///
+///   * Vault status flips to `frozen` (a terminal state for the heir
+///     until the freeze expires). Any in-flight claim token is voided
+///     so the heir cannot race the freeze.
+///   * `panic_frozen_until = now + 90 days`. The scheduler tick auto-
+///     releases the freeze once we cross that point.
+///   * If a trusted contact is configured on the vault, an audit row
+///     is emitted; the notifier subsystem picks it up in its own loop
+///     to actually send the alert. We intentionally do NOT call the
+///     notifier inline — the SMTP/Twilio paths are slow and we want
+///     the Lightning poller to stay tight.
+///
+/// Idempotent: a second call observes the row already `paid` and
+/// returns without re-freezing the vault.
+pub async fn mark_panic_paid(db: &sqlx::SqlitePool, payment_hash: &str) -> anyhow::Result<()> {
+    let now = Utc::now();
+    let now_s = now.to_rfc3339();
+    let frozen_until = now + chrono::Duration::days(PANIC_FREEZE_DAYS);
+    let frozen_until_s = frozen_until.to_rfc3339();
+
+    let mut tx = db.begin().await?;
+
+    let updated = sqlx::query(
+        r#"UPDATE lightning_invoices
+              SET status  = 'paid',
+                  paid_at = ?
+            WHERE payment_hash = ?
+              AND status = 'pending'"#,
+    )
+    .bind(&now_s)
+    .bind(payment_hash)
+    .execute(&mut *tx)
+    .await?;
+    if updated.rows_affected() == 0 {
+        tx.commit().await?;
+        return Ok(());
+    }
+
+    let row: Option<(String,)> =
+        sqlx::query_as(r#"SELECT vault_id FROM lightning_invoices WHERE payment_hash = ?"#)
+            .bind(payment_hash)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some((vault_id,)) = row else {
+        anyhow::bail!("panic invoice {payment_hash} has no vault row");
+    };
+
+    sqlx::query(
+        r#"UPDATE vaults
+              SET status                       = 'frozen',
+                  panic_frozen_until           = ?,
+                  claim_token_hash             = NULL,
+                  claim_token_issued_at        = NULL,
+                  claim_token_used_at          = NULL,
+                  pre_deadline_reminder_sent_at = NULL,
+                  last_alarm_reminder_sent_at  = NULL,
+                  alarm_reminder_count          = 0,
+                  checkin_link_token_hash      = NULL,
+                  checkin_link_token_issued_at = NULL,
+                  checkin_link_token_used_at   = NULL
+            WHERE id = ?"#,
+    )
+    .bind(&frozen_until_s)
+    .bind(&vault_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    record_event(
+        db,
+        &vault_id,
+        "panic_activated",
+        Some(serde_json::json!({
+            "source": "lightning",
+            "payment_hash": payment_hash,
+            "frozen_until": frozen_until_s,
+        })),
+    )
+    .await?;
+
+    tracing::warn!(
+        vault_id = %vault_id,
+        payment_hash = %payment_hash,
+        frozen_until = %frozen_until_s,
+        "panic-stop confirmed; vault frozen"
     );
     Ok(())
 }
@@ -436,8 +558,13 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
     // Poll remaining pending. We cap the batch so a backlog doesn't
     // starve the runtime; rows we don't get to this tick are picked
     // up next time.
-    let rows: Vec<(String,)> = sqlx::query_as(
-        r#"SELECT payment_hash
+    //
+    // We fetch invoice_type alongside payment_hash so a paid invoice
+    // can be dispatched to the right state transition without a second
+    // round-trip per row. F1 adds the column; before F1 every row was
+    // implicitly a check-in.
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        r#"SELECT payment_hash, invoice_type
              FROM lightning_invoices
             WHERE status = 'pending'
             ORDER BY COALESCE(last_polled_at, created_at) ASC
@@ -446,7 +573,7 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
     .fetch_all(&state.db)
     .await?;
 
-    for (hash,) in rows {
+    for (hash, invoice_type) in rows {
         sqlx::query("UPDATE lightning_invoices SET last_polled_at = ? WHERE payment_hash = ?")
             .bind(&now_s)
             .bind(&hash)
@@ -455,8 +582,18 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
 
         match state.lightning.invoice_status(&hash).await {
             Ok(InvoiceStatus::Paid) => {
-                if let Err(e) = mark_paid_and_checkin(&state.db, &hash).await {
-                    tracing::error!(payment_hash = %hash, error = ?e, "mark_paid failed");
+                let res = if invoice_type == INVOICE_TYPE_PANIC {
+                    mark_panic_paid(&state.db, &hash).await
+                } else {
+                    mark_paid_and_checkin(&state.db, &hash).await
+                };
+                if let Err(e) = res {
+                    tracing::error!(
+                        payment_hash = %hash,
+                        invoice_type = %invoice_type,
+                        error = ?e,
+                        "paid-invoice dispatch failed"
+                    );
                 }
             }
             Ok(InvoiceStatus::Expired) => {

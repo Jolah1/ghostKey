@@ -58,10 +58,13 @@ import {
   type BroadcastClaimResponse,
   type BuildClaimPsbtResponse,
   type ClaimView,
+  type HeirDerivationParamsView,
   type SealedHeirView,
 } from "./api";
 import { countdown, parseRfc } from "./time";
 import { b64decode, unsealHeirXprv } from "./crypto/sealing";
+import { deriveHeirKey } from "./crypto/heirKey";
+import type { Network } from "./crypto/keygen";
 
 type State =
   | { kind: "loading" }
@@ -304,6 +307,7 @@ function ClaimableState({
   const [flow, setFlow] = useState<
     | { kind: "probing" }
     | { kind: "password-vault"; sealed: SealedHeirView }
+    | { kind: "derived-heir"; params: HeirDerivationParamsView }
     | { kind: "manual-psbt" }
     | { kind: "probe-error"; message: string }
   >({ kind: "probing" });
@@ -311,6 +315,32 @@ function ClaimableState({
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      // F2 first: if this vault was created with heir_derivation, the
+      // dedicated endpoint returns 200 with the derivation params and
+      // we skip the sealed-heir path entirely. 422 means this is NOT
+      // an F2 vault, in which case we fall through to the
+      // password-vault / manual-psbt detection that pre-dated F2.
+      try {
+        const params = await api.getHeirDerivationParams(token);
+        if (!cancelled) setFlow({ kind: "derived-heir", params });
+        return;
+      } catch (e) {
+        if (cancelled) return;
+        if (!(e instanceof ApiError) || e.status !== 422) {
+          if (e instanceof ApiError && (e.status === 404 || e.status === 409)) {
+            // These are handled by the outer Resolved switch; bubble.
+            setFlow({ kind: "probe-error", message: e.message });
+            return;
+          }
+          setFlow({
+            kind: "probe-error",
+            message: e instanceof Error ? e.message : String(e),
+          });
+          return;
+        }
+        // 422 -> not an F2 vault. Fall through.
+      }
+
       try {
         const sealed = await api.getSealedHeirXprv(token);
         if (!cancelled) setFlow({ kind: "password-vault", sealed });
@@ -359,6 +389,9 @@ function ClaimableState({
   }
   if (flow.kind === "password-vault") {
     return <PasswordVaultClaim view={view} token={token} sealed={flow.sealed} />;
+  }
+  if (flow.kind === "derived-heir") {
+    return <DerivedHeirClaim view={view} token={token} params={flow.params} />;
   }
   return <ManualPsbtClaim view={view} token={token} />;
 }
@@ -633,6 +666,206 @@ function PasswordVaultClaim({
  * "esplora: connection refused") all need a Bitcoin-literate human to
  * interpret. Sugaring those is misleading.
  */
+
+/* -------------------- F2: heir-derived claim flow ------------------------- */
+
+/**
+ * Claim flow for vaults where the heir's xpub was server-derived
+ * from an email. The heir doesn't need any setup ahead of time: we
+ * recompute their BIP86 mnemonic + xprv locally from the server's
+ * `vault_secret`, ship the xprv to the heir-claim endpoint (held
+ * in memory only there), and then show the heir the 12-word
+ * mnemonic so they can record it.
+ *
+ * Why also show the mnemonic? The heir-claim flow sweeps to a
+ * destination address; once the funds land there, the derived key
+ * is functionally retired. But the mnemonic is the only artefact
+ * that exists OUTSIDE the server's master key — if the operator ever
+ * loses the master key, the only way back to the derived xpub is the
+ * mnemonic. Showing it once gives the heir a personal escape hatch.
+ */
+function DerivedHeirClaim({
+  view,
+  token,
+  params,
+}: {
+  view: ClaimView;
+  token: string;
+  params: HeirDerivationParamsView;
+}) {
+  const [address, setAddress] = useState("");
+  const [feeRate, setFeeRate] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState<
+    | { kind: "ok"; resp: BroadcastClaimResponse; mnemonic: string }
+    | null
+  >(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const heir = view.heir_display_name?.trim() || "you";
+  const validAddr = looksLikeBitcoinAddress(address);
+  const feeRateNum = parseFeeRate(feeRate);
+  const feeRateValid = feeRate.trim() === "" || feeRateNum !== null;
+
+  const onSubmit = useCallback(async () => {
+    if (!validAddr || !feeRateValid) return;
+    setSubmitting(true);
+    setError(null);
+
+    let heirXprv: string | null = null;
+    let mnemonic: string | null = null;
+    try {
+      const network = params.network as Network;
+      const derived = deriveHeirKey(
+        params.vault_secret_hex,
+        params.heir_email,
+        network,
+      );
+      heirXprv = derived.xprvBase58;
+      mnemonic = derived.mnemonic;
+      const resp = await api.heirClaim(token, {
+        destination: address.trim(),
+        fee_rate_sat_per_vb: feeRateNum,
+        heir_xprv: heirXprv,
+      });
+      setResult({ kind: "ok", resp, mnemonic });
+    } catch (e) {
+      const msg =
+        e instanceof ApiError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : String(e);
+      setError(msg);
+    } finally {
+      heirXprv = null;
+      // Keep `mnemonic` only inside `result` (state) on the success
+      // path. On error we drop it.
+      if (!mnemonic) mnemonic = null;
+      setSubmitting(false);
+    }
+  }, [address, feeRateNum, feeRateValid, params, token, validAddr]);
+
+  if (result) {
+    return (
+      <section>
+        <p className="eyebrow">Someone left you something</p>
+        <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-5xl">
+          Hello {heir}.
+        </h1>
+        <BroadcastSuccess result={result.resp} />
+
+        <div className="mt-10 card-flat p-5">
+          <p className="text-[11px] uppercase tracking-wider text-dim">
+            Your backup phrase
+          </p>
+          <p className="mt-2 text-sm text-soft">
+            Write these 12 words down somewhere safe. They're the only
+            way to recover this key without GhostKey. The funds you just
+            claimed are already on their way to your address — this is
+            insurance.
+          </p>
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
+            {result.mnemonic.split(/\s+/).map((w, i) => (
+              <div
+                key={`${i}-${w}`}
+                className="rounded bg-[var(--bg-elev)] p-2 font-mono text-xs"
+              >
+                <span className="text-dim">{i + 1}.</span> {w}
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <p className="eyebrow">Someone left you something</p>
+      <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-5xl">
+        Hello {heir}.
+      </h1>
+      <p className="mt-4 text-base text-body md:text-lg">
+        Someone you knew left you Bitcoin. They set up GhostKey so that if
+        they ever stopped checking in, the link would reach you. That's
+        what happened. This page is for you.
+      </p>
+
+      <div className="mt-8 card-flat p-5">
+        <p className="text-[11px] uppercase tracking-wider text-dim">
+          Confirm this is you
+        </p>
+        <p className="mt-2 text-sm">
+          They told us to expect <strong>{params.heir_email}</strong>. If
+          that's not your email, stop and reach out to whoever sent you
+          this link.
+        </p>
+      </div>
+
+      <div className="mt-10">
+        <p className="text-[11px] uppercase tracking-wider text-dim">Step 1</p>
+        <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
+          Where should the Bitcoin go?
+        </h2>
+        <p className="mt-2 text-sm text-soft">
+          Paste any Bitcoin address you control. Wallet of Satoshi, Cake
+          Wallet, Blink, Phoenix — anything that can receive on the{" "}
+          {params.network === "bitcoin"
+            ? "Bitcoin network"
+            : `${params.network} network`}
+          .
+        </p>
+
+        <div className="mt-4">
+          <input
+            type="text"
+            value={address}
+            onChange={(e) => setAddress(e.target.value)}
+            placeholder="bc1q... / tb1q..."
+            autoComplete="off"
+            className="input"
+            disabled={submitting}
+          />
+        </div>
+
+        <details className="mt-3">
+          <summary className="cursor-pointer text-xs text-muted">
+            Advanced: custom fee rate
+          </summary>
+          <div className="mt-2">
+            <input
+              type="text"
+              value={feeRate}
+              onChange={(e) => setFeeRate(e.target.value)}
+              placeholder="sat/vB (optional, e.g. 4)"
+              autoComplete="off"
+              className="input"
+              disabled={submitting}
+            />
+          </div>
+        </details>
+      </div>
+
+      {error ? (
+        <p className="mt-4 text-sm text-alarm" role="alert">
+          {error}
+        </p>
+      ) : null}
+
+      <div className="mt-8">
+        <Button
+          onClick={onSubmit}
+          loading={submitting}
+          disabled={!validAddr || !feeRateValid}
+        >
+          Claim and send
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 function ManualPsbtClaim({
   view,
   token,

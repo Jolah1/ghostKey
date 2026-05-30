@@ -119,6 +119,16 @@ pub fn ensure_master_key_loaded() -> Result<(), CryptoError> {
     master_key().map(|_| ())
 }
 
+/// Return a heap-allocated copy of the 32-byte master key.
+///
+/// Used by heir-key-derivation paths (F2) that have to hand the master
+/// secret to `ghostkey-core::keys::derive_heir_seed`, which lives outside
+/// this crate and cannot reach the `'static` reference behind `master_key`.
+/// Callers should drop the `Vec` as soon as derivation is done.
+pub fn master_key_bytes() -> Result<Vec<u8>, CryptoError> {
+    master_key().map(|k| k.to_vec())
+}
+
 /// Derive the per-vault AEAD key from the master key + vault id.
 ///
 /// The vault id is uuid v4 in this codebase; we hash it through HKDF

@@ -109,6 +109,11 @@ interface HeirDraft {
   name: string;
   contact: string;
   channel: ContactChannel;
+  /** F2: heir has no Bitcoin wallet yet. When true and `channel ===
+   *  "email"`, the server derives the heir's xpub from the email +
+   *  master key, and the heir's browser re-derives the matching
+   *  xprv at claim time. */
+  noWallet?: boolean;
 }
 
 /** Largest number of heirs the wizard allows. Arbitrary cap. */
@@ -130,6 +135,12 @@ interface Draft {
   ownerEmail: string;
   password: string;
   passwordConfirm: string;
+
+  /** F4: optional trusted contact who is alerted if the owner ever
+   *  pays the panic-stop LNURL. Same channel vocabulary as heirs;
+   *  the dashboard surfaces this field as "Trusted contact (panic-stop)". */
+  trustedContact: string;
+  trustedContactChannel: ContactChannel;
 }
 
 const EMPTY_HEIR: HeirDraft = {
@@ -146,6 +157,8 @@ const EMPTY: Draft = {
   ownerEmail: "",
   password: "",
   passwordConfirm: "",
+  trustedContact: "",
+  trustedContactChannel: "email",
 };
 
 const STEPS = ["Heir", "Password", "Fund"] as const;
@@ -438,6 +451,16 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
           channel: heir.channel,
         });
 
+        // F2: when the heir has no Bitcoin wallet (`noWallet` flag),
+        // tell the server to derive the heir's xpub itself. The
+        // `heir.xpub` we send in this branch is a throwaway — the
+        // server ignores it. We still seal a heir_xprv into
+        // `sealedBody.heir_xprv_ct_b64` because the password-vault
+        // path requires *some* sealed material; the heir's browser
+        // will use the F2-derivation xprv at claim time and ignore
+        // the sealed blob.
+        const useHeirDerivation =
+          Boolean(heir.noWallet) && heir.channel === "email";
         const resp = await api.createVaultFromXpub({
           label,
           network,
@@ -457,6 +480,13 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
           heir_contact: heirContactPayload,
           heir_contact_channel: heir.channel,
           sealed: sealedBody,
+          heir_derivation: useHeirDerivation
+            ? { email: heir.contact.trim() }
+            : null,
+          trusted_contact: draft.trustedContact.trim() || null,
+          trusted_contact_channel: draft.trustedContact.trim()
+            ? draft.trustedContactChannel
+            : null,
         });
 
         // (g) Re-seal the REAL owner_token under the same password
@@ -901,6 +931,22 @@ function HeirCard({
           className="input"
         />
       </Field>
+
+      {heir.channel === "email" ? (
+        <label className="mt-1 flex items-start gap-2 text-xs text-muted">
+          <input
+            type="checkbox"
+            checked={Boolean(heir.noWallet)}
+            onChange={(e) => onChange({ noWallet: e.target.checked })}
+            className="mt-0.5"
+          />
+          <span>
+            They don't have a Bitcoin wallet yet. We'll generate one for
+            them from their email when they open the claim link — no
+            setup ahead of time.
+          </span>
+        </label>
+      ) : null}
     </div>
   );
 }
@@ -995,6 +1041,21 @@ function StepPassword({
             value={draft.passwordConfirm}
             onChange={(e) => patch({ passwordConfirm: e.target.value })}
             autoComplete="new-password"
+            className="input"
+            disabled={busy}
+          />
+        </Field>
+
+        <Field
+          label="Trusted contact (optional, for panic-stop)"
+          hint="If your wallet is ever stolen, you can pay a 1-sat 'panic stop' invoice from any wallet to freeze this vault for 90 days. This person is then alerted that you triggered it. Leave blank to skip."
+        >
+          <input
+            type="email"
+            value={draft.trustedContact}
+            onChange={(e) => patch({ trustedContact: e.target.value })}
+            placeholder="someone-who-can-help@example.com"
+            autoComplete="off"
             className="input"
             disabled={busy}
           />

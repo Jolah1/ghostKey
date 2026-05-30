@@ -23,6 +23,7 @@ mod crypto;
 mod db;
 mod demo;
 mod lightning;
+mod lnurl;
 mod notifier;
 mod psbt_routes;
 mod routes;

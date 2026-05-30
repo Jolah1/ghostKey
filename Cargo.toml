@@ -29,7 +29,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 # Bitcoin stack
 bdk_wallet = { version = "1.0.0", features = ["keys-bip39"] }
-bdk_esplora = { version = "0.20", features = ["blocking", "async-https"] }
+bdk_esplora = { version = "0.20", default-features = false, features = ["std", "blocking-https-rustls", "async-https-rustls"] }
 bdk_bitcoind_rpc = "0.18"
 bitcoin = { version = "0.32", features = ["rand-std", "serde"] }
 miniscript = { version = "12", features = ["serde"] }
@@ -61,6 +61,8 @@ hkdf  = "0.12"
 sha2  = "0.10"
 base64 = "0.22"
 subtle = "2"
+bech32 = "0.11"
+bip39  = "2"
 
 # SMTP for the notification fan-out. rustls + tokio so we don't pull
 # in OpenSSL, and the "builder" feature gives the `Message::builder()`

@@ -50,5 +50,11 @@ export function statusCopy(status: VaultStatus): {
         long: "This vault has been claimed.",
         tone: "neutral",
       };
+    case "frozen":
+      return {
+        label: "Panic stop",
+        long: "You triggered a panic. The vault is frozen for 90 days.",
+        tone: "alarm",
+      };
   }
 }

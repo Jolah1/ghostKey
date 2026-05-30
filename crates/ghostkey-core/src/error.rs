@@ -30,4 +30,10 @@ pub enum Error {
 
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+
+    #[error("bip39 error: {0}")]
+    Bip39(String),
+
+    #[error("hkdf error: {0}")]
+    Hkdf(String),
 }

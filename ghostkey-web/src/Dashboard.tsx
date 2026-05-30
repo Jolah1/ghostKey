@@ -187,6 +187,16 @@ export function Dashboard({ onNavigate }: Props) {
       <div className="mx-auto max-w-2xl px-5 py-10 md:py-14">
         <Greeting meta={meta} vault={vault} now={now} />
 
+        {vault?.status === "frozen" ? (
+          <div className="mt-4">
+            <FrozenBanner vault={vault} now={now} />
+          </div>
+        ) : vault?.status === "alarmed" ? (
+          <div className="mt-4">
+            <AlarmBanner vault={vault} now={now} />
+          </div>
+        ) : null}
+
         <div className="mt-8">
           <HeartbeatCard
             meta={meta}
@@ -200,6 +210,12 @@ export function Dashboard({ onNavigate }: Props) {
             onLightning={() => setLightningOpen(true)}
           />
         </div>
+
+        {vault?.lnurl_checkin ? (
+          <div className="mt-4">
+            <LnurlCard lnurl={vault.lnurl_checkin} />
+          </div>
+        ) : null}
 
         {vault ? (
           <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -241,6 +257,12 @@ export function Dashboard({ onNavigate }: Props) {
             <HeirCard meta={meta} vault={vault} />
           )}
         </div>
+
+        {vault?.lnurl_panic && vault.status !== "frozen" ? (
+          <div className="mt-4">
+            <PanicCard lnurl={vault.lnurl_panic} />
+          </div>
+        ) : null}
 
         <div className="mt-6">
           <ActivityList events={events} />
@@ -612,5 +634,192 @@ function EmptyState({ onNavigate }: { onNavigate: (r: Route) => void }) {
         </div>
       </div>
     </main>
+  );
+}
+
+/* ----------------------------- Alarm banner ------------------------------- */
+
+function AlarmBanner({ vault, now }: { vault: VaultView; now: Date }) {
+  // claim_eligible_at is when the heir gets emailed if the owner does
+  // nothing. "Days remaining" is the number the user reads first; we
+  // round up to whole days (12.1 hours left → "1 day") so the copy
+  // never under-counts how urgent things are.
+  const due = vault.claim_eligible_at
+    ? parseRfc(vault.claim_eligible_at)
+    : null;
+  const daysLeft = due
+    ? Math.max(
+        0,
+        Math.ceil((due.getTime() - now.getTime()) / (24 * 3600 * 1000)),
+      )
+    : null;
+  return (
+    <section className="rounded-md border border-red-500/40 bg-red-500/10 p-4">
+      <p className="text-sm font-semibold text-red-300">
+        You missed a check-in.
+      </p>
+      <p className="mt-1 text-xs text-red-200/80">
+        {daysLeft != null
+          ? `${daysLeft} day${daysLeft === 1 ? "" : "s"} left before your heir is notified. Tap "I'm still here" above to reset.`
+          : "Tap \"I'm still here\" above to reset the clock."}
+      </p>
+    </section>
+  );
+}
+
+/* ----------------------------- Frozen banner ------------------------------ */
+
+function FrozenBanner({ vault, now }: { vault: VaultView; now: Date }) {
+  const until = vault.panic_frozen_until
+    ? parseRfc(vault.panic_frozen_until)
+    : null;
+  const daysLeft = until
+    ? Math.max(
+        0,
+        Math.ceil((until.getTime() - now.getTime()) / (24 * 3600 * 1000)),
+      )
+    : null;
+  return (
+    <section className="rounded-md border border-amber-500/40 bg-amber-500/10 p-4">
+      <p className="text-sm font-semibold text-amber-200">
+        Panic stop active — vault is frozen.
+      </p>
+      <p className="mt-1 text-xs text-amber-100/80">
+        {daysLeft != null
+          ? `Auto-unfreezes in ${daysLeft} day${daysLeft === 1 ? "" : "s"}. Your trusted contact has been alerted.`
+          : "Auto-unfreezes after the 90-day window. Your trusted contact has been alerted."}
+      </p>
+    </section>
+  );
+}
+
+/* ----------------------------- LNURL card --------------------------------- */
+
+function LnurlCard({ lnurl }: { lnurl: string }) {
+  const [copied, setCopied] = useState(false);
+  function copy() {
+    void navigator.clipboard.writeText(lnurl).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    });
+  }
+  // `lightning:` URI lets a wallet on the same device pick up the
+  // LNURL directly when the user taps the button on mobile. On
+  // desktop it's a no-op (no handler) — the QR rendering would help
+  // there, but a string-copy fallback gets us 90% of the way without
+  // pulling in a QR library.
+  const deepLink = `lightning:${lnurl}`;
+  return (
+    <section className="card-flat p-5">
+      <p className="text-[11px] uppercase tracking-wider text-dim">
+        Check in by paying 1 sat
+      </p>
+      <p className="mt-1 text-xs text-muted">
+        Scan this with any Lightning wallet. The same code works every
+        time — no setup, no expiry.
+      </p>
+      <div className="mt-3 break-all rounded bg-[var(--bg-elev)] p-3 font-mono text-[11px]">
+        {lnurl}
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button size="sm" variant="ghost" onClick={copy}>
+          {copied ? "Copied ✓" : "Copy LNURL"}
+        </Button>
+        <a href={deepLink} className="inline-block">
+          <Button size="sm" variant="ghost">
+            Open in wallet
+          </Button>
+        </a>
+      </div>
+    </section>
+  );
+}
+
+/* ----------------------------- Panic card --------------------------------- */
+
+function PanicCard({ lnurl }: { lnurl: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const [copied, setCopied] = useState(false);
+  if (!expanded) {
+    return (
+      <section className="card-flat p-5">
+        <p className="text-[11px] uppercase tracking-wider text-dim">
+          Emergency stop
+        </p>
+        <p className="mt-1 text-xs text-muted">
+          If your wallet is compromised, freeze this vault for 90 days
+          and alert your trusted contact.
+        </p>
+        <div className="mt-3">
+          <Button size="sm" variant="ghost" onClick={() => setExpanded(true)}>
+            Show panic stop
+          </Button>
+        </div>
+      </section>
+    );
+  }
+  if (!confirm) {
+    return (
+      <section className="rounded-md border border-amber-500/40 bg-amber-500/5 p-5">
+        <p className="text-sm font-semibold text-amber-200">
+          Sure you want a panic stop?
+        </p>
+        <p className="mt-1 text-xs text-amber-100/80">
+          Paying the next QR freezes this vault for 90 days. Your heir
+          cannot claim during that window. Your trusted contact will be
+          alerted that you triggered a panic.
+        </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setConfirm(true)}
+          >
+            Yes, show me the QR
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setExpanded(false)}>
+            Cancel
+          </Button>
+        </div>
+      </section>
+    );
+  }
+  const deepLink = `lightning:${lnurl}`;
+  return (
+    <section className="rounded-md border border-amber-500/40 bg-amber-500/5 p-5">
+      <p className="text-sm font-semibold text-amber-200">
+        Panic stop — pay 1 sat to freeze
+      </p>
+      <p className="mt-1 text-xs text-amber-100/80">
+        Pay this from any Lightning wallet. The freeze takes effect the
+        moment the invoice settles.
+      </p>
+      <div className="mt-3 break-all rounded bg-[var(--bg-elev)] p-3 font-mono text-[11px]">
+        {lnurl}
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            void navigator.clipboard.writeText(lnurl).then(() => {
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 2000);
+            });
+          }}
+        >
+          {copied ? "Copied ✓" : "Copy"}
+        </Button>
+        <a href={deepLink} className="inline-block">
+          <Button size="sm" variant="ghost">
+            Open in wallet
+          </Button>
+        </a>
+        <Button size="sm" variant="ghost" onClick={() => setExpanded(false)}>
+          Hide
+        </Button>
+      </div>
+    </section>
   );
 }

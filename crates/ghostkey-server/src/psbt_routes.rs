@@ -883,6 +883,105 @@ impl From<BlockingErr> for ApiError {
 }
 
 /* -------------------------------------------------------------------------- *
+ *  GET /claim/:token/heir-derivation-params  (F2)                             *
+ *                                                                            *
+ *  Returns the material a server-derived heir's browser needs to recompute   *
+ *  its mnemonic + xprv: `vault_secret` (32 bytes of HKDF output) and the     *
+ *  heir's own email (which was used as the second derivation input). The    *
+ *  browser then re-runs `derive_heir_seed` locally and feeds the resulting   *
+ *  xprv into the heir-claim flow.                                            *
+ *                                                                            *
+ *  Why hand back the email at all? The browser already typed it in to       *
+ *  authenticate at the start of the claim flow. We echo it back from the    *
+ *  sealed column so the browser is using the exact byte sequence the server *
+ *  used to derive — heir_derived rows are byte-sensitive to the email and    *
+ *  silent mis-derivation (wrong xpub → can't sweep funds) would be a horror. *
+ * -------------------------------------------------------------------------- */
+
+#[derive(Debug, Serialize)]
+pub struct HeirDerivationParamsView {
+    pub vault_id: String,
+    pub network: String,
+    pub timelock_blocks: i64,
+    /// 32 bytes of HKDF output, hex-encoded. The browser HKDFs again with
+    /// the heir's email as IKM to reach the 16-byte BIP39 entropy.
+    pub vault_secret_hex: String,
+    /// The heir email this vault was derived against. Plaintext on this
+    /// hop only — the heir is already authenticated by holding the claim
+    /// token. Should be displayed for confirmation, not stored.
+    pub heir_email: String,
+}
+
+pub async fn get_heir_derivation_params(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+) -> Result<Json<HeirDerivationParamsView>, ApiError> {
+    let hash = hash_claim_token(&token);
+    type Row = (
+        String,         // id
+        String,         // network
+        i64,            // timelock_blocks
+        Option<String>, // claim_token_hash
+        Option<String>, // claim_token_used_at
+        i64,            // heir_derived
+        Option<String>, // heir_contact_ciphertext
+        Option<String>, // heir_contact_nonce
+    );
+    let row: Option<Row> = sqlx::query_as(
+        r#"SELECT id, network, timelock_blocks,
+                  claim_token_hash, claim_token_used_at,
+                  heir_derived,
+                  heir_contact_ciphertext, heir_contact_nonce
+             FROM vaults
+            WHERE claim_token_hash = ?"#,
+    )
+    .bind(&hash)
+    .fetch_optional(&state.db)
+    .await?;
+    let row = row.ok_or(ApiError::NotFound)?;
+    let stored_hash = row.3.ok_or(ApiError::NotFound)?;
+    if !claim_token_matches(&token, &stored_hash) {
+        return Err(ApiError::NotFound);
+    }
+    if row.4.is_some() {
+        return Err(ApiError::Conflict("claim token already used".into()));
+    }
+    if row.5 == 0 {
+        return Err(ApiError::Validation(
+            "this vault was not created with heir_derivation; the heir has their own xpub".into(),
+        ));
+    }
+    let ct = row.6.ok_or_else(|| {
+        ApiError::Validation(
+            "heir_derived=1 but no sealed heir contact on file (server inconsistency)".into(),
+        )
+    })?;
+    let nonce = row
+        .7
+        .ok_or_else(|| ApiError::Validation("heir contact ciphertext without nonce".into()))?;
+    let sealed = crate::crypto::SealedContact {
+        ciphertext_b64: ct,
+        nonce_b64: nonce,
+    };
+    let email_bytes = crate::crypto::open_for_vault(&row.0, &sealed)?;
+    let heir_email = String::from_utf8(email_bytes)
+        .map_err(|e| ApiError::Validation(format!("heir contact is not utf8: {e}")))?;
+
+    let master = crate::crypto::master_key_bytes()?;
+    let vault_secret = ghostkey_core::keys::compute_vault_secret(&row.0, &master)
+        .map_err(|e| ApiError::Validation(format!("vault_secret derivation: {e}")))?;
+    let vault_secret_hex = hex::encode(vault_secret);
+
+    Ok(Json(HeirDerivationParamsView {
+        vault_id: row.0,
+        network: row.1,
+        timelock_blocks: row.2,
+        vault_secret_hex,
+        heir_email,
+    }))
+}
+
+/* -------------------------------------------------------------------------- *
  *  Tests                                                                     *
  *  Unit-level only; the blocking-task body that does Esplora I/O is not      *
  *  exercised here.                                                           *

@@ -12,7 +12,8 @@ export type VaultStatus =
   | "warning"
   | "alarmed"
   | "timelock_started"
-  | "claimed";
+  | "claimed"
+  | "frozen";
 
 export interface VaultListItem {
   id: string;
@@ -32,6 +33,17 @@ export interface VaultView {
   created_at: string;
   last_checkin_at: string | null;
   next_deadline_at: string;
+  /** When the heir becomes eligible to claim if the owner doesn't check in.
+   *  Surfaced by the dashboard as "X days until heir is notified". */
+  claim_eligible_at?: string | null;
+  /** Present only when `status === "frozen"`: when the panic freeze
+   *  auto-releases (90 days after activation). */
+  panic_frozen_until?: string | null;
+  /** Bech32 `lnurl1...` for the static check-in QR code. `null` when
+   *  the server's Lightning sidecar isn't configured. */
+  lnurl_checkin?: string | null;
+  /** Bech32 `lnurl1...` for the panic-stop QR code. */
+  lnurl_panic?: string | null;
 }
 
 export interface CreateVaultRequest {
@@ -91,6 +103,19 @@ export interface CreateVaultFromXpubRequest {
    * Mirrors `crates/ghostkey-server/src/routes.rs::SealedSetup`.
    */
   sealed?: SealedSetup | null;
+  /**
+   * F2: opt the heir into server-side key derivation. When set, the
+   * server derives the heir's xpub deterministically from the email,
+   * the vault id, and the master key — the `heir` xpub above is
+   * ignored. The heir's browser re-derives the matching xprv at claim
+   * time via `crypto/heirKey.ts`. Use this when the heir has no
+   * Bitcoin wallet yet.
+   */
+  heir_derivation?: { email: string } | null;
+  /** F4: trusted contact who will be alerted if the owner triggers
+   *  a panic-stop. Optional. */
+  trusted_contact?: string | null;
+  trusted_contact_channel?: "sms" | "email" | "whatsapp" | null;
 }
 
 /** Snake-cased to match the Rust struct exactly; the server is the
@@ -216,6 +241,20 @@ export interface BroadcastClaimRequest {
 export interface BroadcastClaimResponse {
   txid: string;
   explorer_url: string;
+}
+
+/**
+ * Returned by `GET /claim/:token/heir-derivation-params` for F2
+ * server-derived heirs. The browser HKDFs the `vault_secret_hex` with
+ * `heir_email` to reach the BIP39 entropy that built the heir's xpub,
+ * then derives the corresponding xprv locally.
+ */
+export interface HeirDerivationParamsView {
+  vault_id: string;
+  network: string;
+  timelock_blocks: number;
+  vault_secret_hex: string;
+  heir_email: string;
 }
 
 /**
@@ -477,6 +516,13 @@ export const api = {
    *  not created with a password (legacy vault). */
   getSealedHeirXprv: (token: string) =>
     request<SealedHeirView>(`/claim/${encodeURIComponent(token)}/sealed-heir`),
+  /** F2: fetch the parameters a server-derived heir's browser needs
+   *  to recompute the heir BIP39 mnemonic + xprv. Returns 422 if the
+   *  vault was not created with `heir_derivation`. */
+  getHeirDerivationParams: (token: string) =>
+    request<HeirDerivationParamsView>(
+      `/claim/${encodeURIComponent(token)}/heir-derivation-params`,
+    ),
   /** Password-vault flow: one-shot build + sign + broadcast. The
    *  server uses the supplied heir_xprv in memory only and discards
    *  it after the response is sent. */

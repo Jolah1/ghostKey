@@ -61,6 +61,18 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/vaults/:id/lightning-checkin/status/:payment_hash",
             get(lightning_invoice_status),
         )
+        // Static LNURL-pay endpoints. No auth — the vault UUID is the
+        // access control (1-sat invoices are cheap; a stolen UUID lets
+        // a stranger help the owner stay alive, which is harmless).
+        // See lnurl.rs for the LUD-06 spec links.
+        .route("/lnurlp/:vault_id", get(lnurlp_pay_request))
+        .route("/lnurlp/:vault_id/cb", get(lnurlp_callback))
+        .route("/lnurlp/:vault_id/panic", get(lnurlp_panic_pay_request))
+        .route("/lnurlp/:vault_id/panic/cb", get(lnurlp_panic_callback))
+        .route(
+            "/claim/:token/heir-derivation-params",
+            get(crate::psbt_routes::get_heir_derivation_params),
+        )
         .route("/vaults/:id/events", get(list_events))
         .route("/vaults/:id/issue-claim", post(issue_claim))
         .route("/claim/:token", get(resolve_claim))
@@ -170,6 +182,25 @@ pub struct VaultView {
     pub created_at: DateTime<Utc>,
     pub last_checkin_at: Option<DateTime<Utc>>,
     pub next_deadline_at: DateTime<Utc>,
+    /// When the heir will be eligible to claim, if the owner does
+    /// not check in. Mirrors the `claim_eligible_at` column. The
+    /// dashboard surfaces this as "X days until heir is notified".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim_eligible_at: Option<DateTime<Utc>>,
+    /// If a panic-stop is active, when the vault auto-unfreezes.
+    /// `None` whenever `status != "frozen"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub panic_frozen_until: Option<DateTime<Utc>>,
+    /// LNURL-pay string for the check-in invoice. `None` when
+    /// Lightning is disabled (the operator has not set
+    /// `GHOSTKEY_API_BASE_URL` and/or has not configured the
+    /// Breez sidecar).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lnurl_checkin: Option<String>,
+    /// LNURL-pay string for the panic-stop invoice. Same null rules
+    /// as `lnurl_checkin`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lnurl_panic: Option<String>,
 }
 
 /// Response shape from a successful vault creation.
@@ -336,6 +367,10 @@ async fn create_vault(
                 created_at: now,
                 last_checkin_at: None,
                 next_deadline_at: next_deadline,
+                claim_eligible_at: Some(claim_eligible),
+                panic_frozen_until: None,
+                lnurl_checkin: None,
+                lnurl_panic: None,
             },
             owner_token: issued_owner.token,
         }),
@@ -405,6 +440,29 @@ pub struct CreateVaultFromXpubRequest {
     /// payloads are rejected as a validation error.
     #[serde(default)]
     pub sealed: Option<SealedSetup>,
+
+    /// F2: heir has no Bitcoin wallet. When present, the server derives
+    /// the heir's xpub deterministically from `heir_derivation.email`
+    /// (which is also stored as the heir contact) and the master key.
+    /// The `heir` field's xpub is ignored in that path — the browser
+    /// can pass any placeholder.
+    #[serde(default)]
+    pub heir_derivation: Option<HeirDerivation>,
+
+    /// F4: trusted contact for panic-stop. Optional. When present and
+    /// the owner triggers panic-pay, this address receives an alert.
+    pub trusted_contact: Option<String>,
+    /// Channel for `trusted_contact`. Same vocabulary as `heir_contact_channel`.
+    pub trusted_contact_channel: Option<String>,
+}
+
+/// Opt-in heir-derivation parameters (F2).
+#[derive(Debug, Deserialize)]
+pub struct HeirDerivation {
+    /// The heir's email address. Lowercased + trimmed before use, and
+    /// also stored as the heir contact (so the claim email reaches
+    /// them through the existing scheduler). Required.
+    pub email: String,
 }
 
 /// Sealed material the browser ships during the password-vault flow.
@@ -464,6 +522,10 @@ async fn create_vault_from_xpub(
         "owner_contact_channel",
         req.owner_contact_channel.as_deref(),
     )?;
+    validate_contact_channel(
+        "trusted_contact_channel",
+        req.trusted_contact_channel.as_deref(),
+    )?;
 
     // ---- Resolve network ---------------------------------------------
     let network = match req.network.as_str() {
@@ -481,8 +543,46 @@ async fn create_vault_from_xpub(
     // ---- Parse owner + heir xpubs ------------------------------------
     let (owner_fp, owner_xpub) =
         resolve_party("owner", &req.owner.xpub, req.owner.fingerprint.as_deref())?;
-    let (heir_fp, heir_xpub) =
-        resolve_party("heir", &req.heir.xpub, req.heir.fingerprint.as_deref())?;
+
+    // F2: when heir_derivation is opted into, the server derives the
+    // heir's account xpub from (heir_email, vault_id, master_key) and
+    // the user-supplied heir.xpub is ignored. The fingerprint is a
+    // synthetic zero — heirs in this flow have no hardware wallet, so
+    // there is no real BIP32 master to fingerprint. We allocate the
+    // vault id earlier than the non-derived branch so the derivation
+    // can consume it.
+    //
+    // The result is byte-for-byte reconstructible in the heir's browser
+    // at claim time via `crypto/heirKey.ts`, which is the whole point
+    // of the feature: an heir with nothing but an email gets a real
+    // BIP86 key without setup ahead of time.
+    let (id, heir_fp, heir_xpub, heir_derived) = if let Some(hd) = req.heir_derivation.as_ref() {
+        let id = Uuid::new_v4().to_string();
+        let email = hd.email.trim();
+        if email.is_empty() {
+            return Err(ApiError::Validation(
+                "heir_derivation.email must be non-empty".into(),
+            ));
+        }
+        let master = crate::crypto::master_key_bytes()?;
+        // network is already resolved above (see Network match below);
+        // re-resolve locally so this block is self-contained.
+        let net = match req.network.as_str() {
+            "bitcoin" => Network::Bitcoin,
+            "testnet" => Network::Testnet,
+            "signet" => Network::Signet,
+            "regtest" => Network::Regtest,
+            other => return Err(ApiError::Validation(format!("unknown network {other}"))),
+        };
+        let (_entropy, derived_xpub) =
+            ghostkey_core::keys::derive_heir_seed(email, &id, &master, net)
+                .map_err(|e| ApiError::Validation(format!("heir_derivation: {e}")))?;
+        (id, Fingerprint::default(), derived_xpub, true)
+    } else {
+        let (fp, xpub) = resolve_party("heir", &req.heir.xpub, req.heir.fingerprint.as_deref())?;
+        (Uuid::new_v4().to_string(), fp, xpub, false)
+    };
+
     if owner_xpub == heir_xpub {
         return Err(ApiError::Validation(
             "owner and heir xpubs must differ".into(),
@@ -513,7 +613,8 @@ async fn create_vault_from_xpub(
         .map_err(|e| ApiError::Validation(format!("descriptor_internal: {e}")))?;
 
     // ---- Persist ------------------------------------------------------
-    let id = Uuid::new_v4().to_string();
+    // `id` was allocated above as part of resolving the heir xpub so
+    // the F2 derivation can be bound to it. Reusing here.
     let now = Utc::now();
     let next_deadline = now + Duration::seconds(req.checkin_period_secs + req.grace_period_secs);
     let now_s = now.to_rfc3339();
@@ -525,12 +626,44 @@ async fn create_vault_from_xpub(
     // — there's nothing to encrypt — and leave the legacy plaintext
     // column NULL too. Only one of (legacy plaintext, sealed) should
     // ever be populated for a given row.
-    let sealed: Option<SealedContact> = match req.heir_contact.as_deref() {
+    //
+    // F2: when the heir is server-derived, the email used for derivation
+    // is also the heir contact. The browser may still pass `heir_contact`
+    // explicitly — we honour an explicit value when provided, otherwise
+    // fall back to the derivation email so the scheduler can email the
+    // claim link without needing a second field.
+    let effective_heir_contact: Option<String> = req
+        .heir_contact
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            req.heir_derivation
+                .as_ref()
+                .map(|hd| hd.email.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+    let sealed: Option<SealedContact> = match effective_heir_contact.as_deref() {
         Some(pt) if !pt.is_empty() => Some(seal_for_vault(&id, pt.as_bytes())?),
         _ => None,
     };
     let ciphertext_b64 = sealed.as_ref().map(|s| s.ciphertext_b64.clone());
     let nonce_b64 = sealed.as_ref().map(|s| s.nonce_b64.clone());
+
+    // F4: seal the trusted contact (panic-alert recipient) the same way.
+    // This is the only contact who learns the owner triggered a panic;
+    // we encrypt at rest so a compromised DB doesn't leak the
+    // relationship.
+    let trusted_sealed: Option<SealedContact> = match req.trusted_contact.as_deref() {
+        Some(pt) if !pt.is_empty() => Some(seal_for_vault(&id, pt.as_bytes())?),
+        _ => None,
+    };
+    let trusted_ct_b64 = trusted_sealed.as_ref().map(|s| s.ciphertext_b64.clone());
+    let trusted_nn_b64 = trusted_sealed.as_ref().map(|s| s.nonce_b64.clone());
+    let trusted_channel = req
+        .trusted_contact_channel
+        .clone()
+        .or_else(|| trusted_sealed.as_ref().map(|_| "email".to_string()));
 
     // Seal the owner contact the same way. New as of 20260527: this
     // unlocks the scheduler's "you missed your check-in" email path.
@@ -644,7 +777,9 @@ async fn create_vault_from_xpub(
             owner_token_sealed_ct_b64, owner_token_sealed_nonce,
             heir_xprv_sealed_ct_b64, heir_xprv_sealed_nonce,
             owner_email_hash,
-            claim_token_at_rest_b64, claim_token_hash, claim_token_issued_at
+            claim_token_at_rest_b64, claim_token_hash, claim_token_issued_at,
+            heir_derived,
+            trusted_contact_ciphertext, trusted_contact_nonce, trusted_contact_channel
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'ok',
                   ?, ?, ?, ?, ?,
                   ?, ?,
@@ -655,6 +790,8 @@ async fn create_vault_from_xpub(
                   ?, ?,
                   ?, ?,
                   ?, ?,
+                  ?,
+                  ?, ?, ?,
                   ?,
                   ?, ?, ?)"#,
     )
@@ -697,6 +834,10 @@ async fn create_vault_from_xpub(
     .bind(&sealed_claim_token_at_rest)
     .bind(&sealed_claim_token_hash)
     .bind(&sealed_claim_token_issued_at)
+    .bind(if heir_derived { 1_i64 } else { 0_i64 })
+    .bind(&trusted_ct_b64)
+    .bind(&trusted_nn_b64)
+    .bind(&trusted_channel)
     .execute(&state.db)
     .await?;
 
@@ -727,6 +868,10 @@ async fn create_vault_from_xpub(
                 created_at: now,
                 last_checkin_at: None,
                 next_deadline_at: next_deadline,
+                claim_eligible_at: Some(claim_eligible),
+                panic_frozen_until: None,
+                lnurl_checkin: None,
+                lnurl_panic: None,
             },
             owner_token: issued_owner.token,
         }),
@@ -828,17 +973,36 @@ async fn get_vault(
             String,         // created_at
             Option<String>, // last_checkin_at
             String,         // next_deadline_at
+            Option<String>, // claim_eligible_at
+            Option<String>, // panic_frozen_until
         ),
     >(
         r#"SELECT id, label, network, timelock_blocks,
                   checkin_period_secs, grace_period_secs,
-                  status, created_at, last_checkin_at, next_deadline_at
+                  status, created_at, last_checkin_at, next_deadline_at,
+                  claim_eligible_at, panic_frozen_until
            FROM vaults WHERE id = ?"#,
     )
     .bind(&id)
     .fetch_optional(&state.db)
     .await?
     .ok_or(ApiError::NotFound)?;
+
+    // Build the LNURL pair only when both prerequisites hold: Lightning
+    // is wired up (otherwise the QR is a footgun — the owner would scan
+    // it and the callback would 503) AND the operator has set the public
+    // base URL (otherwise we'd encode `None` and produce garbage).
+    let (lnurl_checkin, lnurl_panic) = if state.lightning.is_enabled() {
+        match crate::config::api_base_url() {
+            Some(base) => (
+                Some(crate::lnurl::encode(&format!("{base}/lnurlp/{id}"))),
+                Some(crate::lnurl::encode(&format!("{base}/lnurlp/{id}/panic"))),
+            ),
+            None => (None, None),
+        }
+    } else {
+        (None, None)
+    };
 
     Ok(Json(VaultView {
         id: row.0,
@@ -851,6 +1015,10 @@ async fn get_vault(
         created_at: parse_rfc(&row.7),
         last_checkin_at: row.8.as_deref().map(parse_rfc),
         next_deadline_at: parse_rfc(&row.9),
+        claim_eligible_at: row.10.as_deref().map(parse_rfc),
+        panic_frozen_until: row.11.as_deref().map(parse_rfc),
+        lnurl_checkin,
+        lnurl_panic,
     }))
 }
 
@@ -897,6 +1065,8 @@ async fn checkin(
                   claim_token_issued_at = NULL,
                   claim_token_used_at  = NULL,
                   pre_deadline_reminder_sent_at = NULL,
+                  last_alarm_reminder_sent_at  = NULL,
+                  alarm_reminder_count          = 0,
                   checkin_link_token_hash      = NULL,
                   checkin_link_token_issued_at = NULL,
                   checkin_link_token_used_at   = NULL
@@ -1004,6 +1174,8 @@ async fn checkin_from_link(
                   claim_token_issued_at = NULL,
                   claim_token_used_at  = NULL,
                   pre_deadline_reminder_sent_at = NULL,
+                  last_alarm_reminder_sent_at  = NULL,
+                  alarm_reminder_count          = 0,
                   -- single-use marker: write used_at first so a
                   -- racing second tap sees `used_at IS NOT NULL`
                   -- and gets a 409 above.
@@ -1669,7 +1841,13 @@ async fn lightning_create_invoice(
             }
         })?;
 
-    let rec = crate::lightning::insert_invoice(&state.db, &auth.vault_id, &invoice).await?;
+    let rec = crate::lightning::insert_invoice(
+        &state.db,
+        &auth.vault_id,
+        &invoice,
+        crate::lightning::INVOICE_TYPE_CHECKIN,
+    )
+    .await?;
 
     record_event(
         &state.db,
@@ -1769,6 +1947,201 @@ async fn inline_owner_auth(
         return Err(ApiError::Validation("unauthorized".into()));
     }
     Ok(())
+}
+
+/* -------------------------------------------------------------------------- *
+ *  LNURL-pay handlers (F1, F4)                                                *
+ *                                                                            *
+ *  Static per-vault URLs that wallets like Phoenix and BlueWallet hit when    *
+ *  the owner scans the QR rendered in the dashboard. Two endpoints per       *
+ *  vault: check-in (resets the deadline) and panic (freezes the vault).      *
+ *                                                                            *
+ *  No auth. The vault UUID IS the access control — a 1-sat payment can only  *
+ *  ever help the owner stay alive (check-in) or freeze their own vault       *
+ *  (panic). Both are favourable to the owner; neither leaks information to   *
+ *  the payer.                                                                *
+ *                                                                            *
+ *  LNURL spec demands HTTP 200 with `{ status: "ERROR", reason: ... }` on    *
+ *  protocol-level errors, never 4xx/5xx. We honour that strictly: every     *
+ *  branch below returns an axum `Response` rather than `ApiError`.          *
+ * -------------------------------------------------------------------------- */
+
+async fn lnurlp_pay_request(
+    State(state): State<Arc<AppState>>,
+    Path(vault_id): Path<String>,
+) -> axum::response::Response {
+    lnurlp_pay_request_inner(state, vault_id, /*panic=*/ false).await
+}
+
+async fn lnurlp_panic_pay_request(
+    State(state): State<Arc<AppState>>,
+    Path(vault_id): Path<String>,
+) -> axum::response::Response {
+    lnurlp_pay_request_inner(state, vault_id, /*panic=*/ true).await
+}
+
+async fn lnurlp_pay_request_inner(
+    state: Arc<AppState>,
+    vault_id: String,
+    is_panic: bool,
+) -> axum::response::Response {
+    if !state.lightning.is_enabled() {
+        return lnurl_error("lightning disabled on this server");
+    }
+    let Some(base) = crate::config::api_base_url() else {
+        return lnurl_error("server misconfigured (no GHOSTKEY_API_BASE_URL)");
+    };
+
+    // Confirm the vault row exists; an LNURL on a deleted vault should
+    // fail clean rather than mint orphan invoices.
+    let exists: Option<(String,)> = match sqlx::query_as("SELECT id FROM vaults WHERE id = ?")
+        .bind(&vault_id)
+        .fetch_optional(&state.db)
+        .await
+    {
+        Ok(row) => row,
+        Err(e) => {
+            tracing::error!(vault_id = %vault_id, error = ?e, "lnurlp_pay_request db error");
+            return lnurl_error("internal");
+        }
+    };
+    if exists.is_none() {
+        return lnurl_error("unknown vault");
+    }
+
+    let cb_path = if is_panic { "/panic/cb" } else { "/cb" };
+    let segment = if is_panic { "/panic" } else { "" };
+    let callback_url = format!("{base}/lnurlp/{vault_id}{segment}{cb_path}");
+    let body = if is_panic {
+        crate::lnurl::panic_pay_request_json(&callback_url)
+    } else {
+        crate::lnurl::pay_request_json(&callback_url)
+    };
+    lnurl_ok(body)
+}
+
+#[derive(Debug, Deserialize)]
+struct LnurlCallbackParams {
+    amount: Option<u64>,
+}
+
+async fn lnurlp_callback(
+    State(state): State<Arc<AppState>>,
+    Path(vault_id): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<LnurlCallbackParams>,
+) -> axum::response::Response {
+    lnurlp_callback_inner(state, vault_id, params, /*panic=*/ false).await
+}
+
+async fn lnurlp_panic_callback(
+    State(state): State<Arc<AppState>>,
+    Path(vault_id): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<LnurlCallbackParams>,
+) -> axum::response::Response {
+    lnurlp_callback_inner(state, vault_id, params, /*panic=*/ true).await
+}
+
+async fn lnurlp_callback_inner(
+    state: Arc<AppState>,
+    vault_id: String,
+    params: LnurlCallbackParams,
+    is_panic: bool,
+) -> axum::response::Response {
+    if !state.lightning.is_enabled() {
+        return lnurl_error("lightning disabled on this server");
+    }
+
+    // LUD-06: amount is in millisats. Our pay_request pins both
+    // min and max to 1000 msat, so anything else is a wallet bug.
+    match params.amount {
+        Some(1000) => {}
+        Some(other) => return lnurl_error(&format!("amount must be 1000 msat, got {other}")),
+        None => return lnurl_error("amount query parameter required"),
+    }
+
+    let invoice_type = if is_panic {
+        crate::lightning::INVOICE_TYPE_PANIC
+    } else {
+        crate::lightning::INVOICE_TYPE_CHECKIN
+    };
+
+    // Reuse an existing pending invoice of the same type if there is
+    // one. LUD-06 doesn't require this, but mints-per-scan churn is
+    // wasteful and most wallets cache pay_response for a couple of
+    // seconds anyway, so two back-to-back scans should observe the
+    // same bolt11.
+    let existing: Result<Option<(String,)>, sqlx::Error> = sqlx::query_as(
+        r#"SELECT bolt11
+             FROM lightning_invoices
+            WHERE vault_id     = ?
+              AND invoice_type = ?
+              AND status       = 'pending'
+              AND expires_at   > ?
+            ORDER BY created_at DESC
+            LIMIT 1"#,
+    )
+    .bind(&vault_id)
+    .bind(invoice_type)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .fetch_optional(&state.db)
+    .await;
+    match existing {
+        Ok(Some((bolt11,))) => return lnurl_ok(crate::lnurl::pay_response_json(&bolt11)),
+        Ok(None) => {}
+        Err(e) => {
+            tracing::error!(vault_id = %vault_id, error = ?e, "lnurlp_callback existing-invoice lookup failed");
+            return lnurl_error("internal");
+        }
+    }
+
+    let description = format!("ghostkey:{invoice_type}:{vault_id}");
+    let invoice = match state
+        .lightning
+        .create_invoice(crate::lightning::HEARTBEAT_AMOUNT_SAT, &description)
+        .await
+    {
+        Ok(inv) => inv,
+        Err(e) => {
+            tracing::error!(vault_id = %vault_id, error = ?e, "lnurlp_callback mint failed");
+            return lnurl_error("provider failed to mint invoice");
+        }
+    };
+    if let Err(e) =
+        crate::lightning::insert_invoice(&state.db, &vault_id, &invoice, invoice_type).await
+    {
+        tracing::error!(vault_id = %vault_id, error = ?e, "lnurlp_callback insert failed");
+        return lnurl_error("internal");
+    }
+    let _ = record_event(
+        &state.db,
+        &vault_id,
+        "lightning_invoice_issued",
+        Some(serde_json::json!({
+            "payment_hash": invoice.payment_hash,
+            "amount_sat":  invoice.amount_sat,
+            "source":      "lnurl",
+            "invoice_type": invoice_type,
+        })),
+    )
+    .await;
+
+    lnurl_ok(crate::lnurl::pay_response_json(&invoice.bolt11))
+}
+
+/// Build an HTTP 200 with an LNURL JSON body. Wallets reject anything
+/// that isn't `application/json` regardless of the body shape, so the
+/// header is mandatory.
+fn lnurl_ok(json: String) -> axum::response::Response {
+    use axum::http::header::CONTENT_TYPE;
+    axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(json))
+        .expect("constant headers")
+}
+
+fn lnurl_error(reason: &str) -> axum::response::Response {
+    lnurl_ok(crate::lnurl::error_json(reason))
 }
 
 /* -------------------------------------------------------------------------- *
