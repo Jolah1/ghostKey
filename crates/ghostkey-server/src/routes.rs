@@ -41,11 +41,16 @@ pub fn router(state: Arc<AppState>) -> Router {
 
     Router::new()
         .route("/health", get(health))
+        .route("/assist/chat", post(crate::assist::assist_chat))
         .route("/vaults", post(create_vault).get(list_vaults))
         .route("/vaults/from-xpub", post(create_vault_from_xpub))
         .route("/vaults/find", post(find_vaults_by_email))
         .route("/vaults/:id", get(get_vault))
         .route("/vaults/:id/address", get(get_vault_address))
+        .route(
+            "/vaults/:id/balance",
+            get(crate::psbt_routes::get_vault_balance),
+        )
         .route("/vaults/:id/sealed-blobs", get(get_sealed_blobs))
         .route("/vaults/:id/seal-owner-token", post(seal_owner_token))
         .route("/vaults/:id/checkin", post(checkin))
@@ -140,15 +145,23 @@ struct Health {
     /// banner names this network, and the setup wizards POST it as
     /// `network` in the create-vault payload.
     default_network: &'static str,
+    /// Whether the AI onboarding guide is reachable. True iff
+    /// `ANTHROPIC_API_KEY` is configured. Lets the UI hide the chat
+    /// affordance gracefully when the server can't proxy.
+    assist_enabled: bool,
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
+    let assist_enabled = std::env::var("ANTHROPIC_API_KEY")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
     Json(Health {
         ok: true,
         version: env!("CARGO_PKG_VERSION"),
         lightning_enabled: state.lightning.is_enabled(),
         demo_mode: crate::demo::demo_mode(),
         default_network: crate::config::default_network(),
+        assist_enabled,
     })
 }
 
@@ -1035,9 +1048,11 @@ async fn checkin(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<CheckinResponse>, ApiError> {
     let id = auth.vault_id;
-    // Fetch the cadence to recompute the deadline.
-    let row = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT checkin_period_secs, grace_period_secs FROM vaults WHERE id = ?",
+    // Fetch the cadence + last_checkin so we can both recompute the
+    // deadline and enforce once-per-period.
+    let row = sqlx::query_as::<_, (i64, i64, Option<String>)>(
+        "SELECT checkin_period_secs, grace_period_secs, last_checkin_at \
+           FROM vaults WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.db)
@@ -1045,6 +1060,21 @@ async fn checkin(
     .ok_or(ApiError::NotFound)?;
 
     let now = Utc::now();
+    // Once-per-period guard: if the owner already checked in inside
+    // the current cycle, refuse the duplicate so the deadline doesn't
+    // keep getting pushed forward by repeated taps.
+    if let Some(last_s) = row.2.as_deref() {
+        if let Ok(last) = DateTime::parse_from_rfc3339(last_s) {
+            let last_utc = last.with_timezone(&Utc);
+            let next_open = last_utc + Duration::seconds(row.0);
+            if now < next_open {
+                return Err(ApiError::Conflict(format!(
+                    "already checked in this period; next check-in opens at {}",
+                    next_open.to_rfc3339()
+                )));
+            }
+        }
+    }
     let next = now + Duration::seconds(row.0 + row.1);
     // Reset the claim-eligibility gate too. If the owner missed the
     // previous window and was within an inch of having a token issued,
@@ -1128,9 +1158,10 @@ async fn checkin_from_link(
         Option<String>, // checkin_link_token_used_at
         i64,            // checkin_period_secs
         i64,            // grace_period_secs
+        Option<String>, // last_checkin_at
     )> = sqlx::query_as(
         r#"SELECT checkin_link_token_hash, checkin_link_token_used_at,
-                  checkin_period_secs, grace_period_secs
+                  checkin_period_secs, grace_period_secs, last_checkin_at
              FROM vaults
             WHERE id = ?
               AND checkin_link_token_hash = ?"#,
@@ -1140,7 +1171,8 @@ async fn checkin_from_link(
     .fetch_optional(&state.db)
     .await?;
 
-    let (stored_hash, used_at, checkin_secs, grace_secs) = row.ok_or(ApiError::NotFound)?;
+    let (stored_hash, used_at, checkin_secs, grace_secs, last_checkin_at) =
+        row.ok_or(ApiError::NotFound)?;
     let stored_hash = stored_hash.ok_or(ApiError::NotFound)?;
     if !crypto::claim_token_matches(&token, &stored_hash) {
         return Err(ApiError::NotFound);
@@ -1150,6 +1182,19 @@ async fn checkin_from_link(
         // tapped this link. Don't silently re-check-in; tell the caller
         // so they can show "already used" rather than "success".
         return Err(ApiError::Conflict("check-in link already used".into()));
+    }
+    // Once-per-period guard mirrors the button check-in path.
+    if let Some(last_s) = last_checkin_at.as_deref() {
+        if let Ok(last) = DateTime::parse_from_rfc3339(last_s) {
+            let last_utc = last.with_timezone(&Utc);
+            let next_open = last_utc + Duration::seconds(checkin_secs);
+            if Utc::now() < next_open {
+                return Err(ApiError::Conflict(format!(
+                    "already checked in this period; next check-in opens at {}",
+                    next_open.to_rfc3339()
+                )));
+            }
+        }
     }
 
     // Reset the vault state exactly the way `checkin` does, plus
@@ -1823,6 +1868,28 @@ async fn lightning_create_invoice(
         return Err(ApiError::Validation(
             "lightning provider not configured on this server".into(),
         ));
+    }
+
+    // Refuse to mint a duplicate check-in invoice inside the current
+    // period. Spec: at most one successful check-in per period. We
+    // catch it at mint time so the owner doesn't pay sats that won't
+    // count.
+    let cad: Option<(i64, Option<String>)> = sqlx::query_as(
+        "SELECT checkin_period_secs, last_checkin_at FROM vaults WHERE id = ?",
+    )
+    .bind(&auth.vault_id)
+    .fetch_optional(&state.db)
+    .await?;
+    if let Some((period, Some(last_s))) = cad {
+        if let Ok(last) = DateTime::parse_from_rfc3339(&last_s) {
+            let next_open = last.with_timezone(&Utc) + Duration::seconds(period);
+            if Utc::now() < next_open {
+                return Err(ApiError::Conflict(format!(
+                    "already checked in this period; next check-in opens at {}",
+                    next_open.to_rfc3339()
+                )));
+            }
+        }
     }
 
     let description = format!("ghostkey:checkin:{}", auth.vault_id);

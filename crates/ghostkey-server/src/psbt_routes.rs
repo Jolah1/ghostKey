@@ -982,6 +982,99 @@ pub async fn get_heir_derivation_params(
 }
 
 /* -------------------------------------------------------------------------- *
+ *  GET /vaults/:id/balance                                                   *
+ *                                                                            *
+ *  Public (no auth): the vault's descriptors are stored in the watch-only    *
+ *  form already, the address is published unauthenticated via                *
+ *  /vaults/:id/address, and the chain itself is public. We just sync the     *
+ *  watch-only wallet against Esplora and return the aggregate.               *
+ *                                                                            *
+ *  Owners hit this from the dashboard right after funding to confirm the    *
+ *  sats landed. Heirs do NOT need it — they only ever see this number as    *
+ *  `total_input_sats` inside the claim PSBT response.                       *
+ * -------------------------------------------------------------------------- */
+
+#[derive(Debug, Serialize)]
+pub struct VaultBalanceView {
+    pub vault_id: String,
+    pub network: String,
+    pub confirmed_sat: u64,
+    pub unconfirmed_sat: u64,
+    pub total_sat: u64,
+}
+
+pub async fn get_vault_balance(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<VaultBalanceView>, ApiError> {
+    type Row = (String, String, String, i64); // network, ext, int, timelock
+    let row: Option<Row> = sqlx::query_as(
+        r#"SELECT network, descriptor_external, descriptor_internal, timelock_blocks
+             FROM vaults WHERE id = ?"#,
+    )
+    .bind(&id)
+    .fetch_optional(&state.db)
+    .await?;
+    let (network_s, ext, int_, timelock) = row.ok_or(ApiError::NotFound)?;
+
+    let network = match network_s.as_str() {
+        "bitcoin" => Network::Bitcoin,
+        "testnet" => Network::Testnet,
+        "signet" => Network::Signet,
+        "regtest" => Network::Regtest,
+        other => {
+            return Err(ApiError::Validation(format!(
+                "stored vault network {other} is not a known Bitcoin network"
+            )))
+        }
+    };
+
+    let vault_config = VaultConfig {
+        descriptor_external: ext,
+        descriptor_internal: int_,
+        timelock_blocks: timelock as u32,
+        network,
+        role: VaultRole::Watchonly,
+        label: None,
+    };
+    let vault = Vault::from_config(vault_config)
+        .map_err(|e| ApiError::Validation(format!("stored vault descriptors invalid: {e}")))?;
+
+    let url = esplora_url(network)?;
+    let id_for_resp = id.clone();
+    let (confirmed_sat, unconfirmed_sat, total_sat) = tokio::task::spawn_blocking(
+        move || -> Result<(u64, u64, u64), BlockingErr> {
+            let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
+                .map_err(|e| BlockingErr::Vault(e.to_string()))?;
+            let client = esplora_client::Builder::new(&url).build_blocking();
+            let req = wallet.start_full_scan();
+            let update = client
+                .full_scan(req, 5, 1)
+                .map_err(|e| BlockingErr::Esplora(format!("full_scan: {e}")))?;
+            wallet
+                .apply_update(update)
+                .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
+            let bal = wallet.balance();
+            let confirmed = bal.confirmed.to_sat();
+            let unconfirmed =
+                bal.trusted_pending.to_sat() + bal.untrusted_pending.to_sat();
+            let total = bal.total().to_sat();
+            Ok((confirmed, unconfirmed, total))
+        },
+    )
+    .await
+    .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
+
+    Ok(Json(VaultBalanceView {
+        vault_id: id_for_resp,
+        network: network_s,
+        confirmed_sat,
+        unconfirmed_sat,
+        total_sat,
+    }))
+}
+
+/* -------------------------------------------------------------------------- *
  *  Tests                                                                     *
  *  Unit-level only; the blocking-task body that does Esplora I/O is not      *
  *  exercised here.                                                           *

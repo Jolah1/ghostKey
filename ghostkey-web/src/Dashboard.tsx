@@ -29,8 +29,10 @@ import {
   api,
   type VaultView,
   type VaultEvent,
+  type VaultBalanceView,
 } from "./api";
 import { countdown, parseRfc } from "./time";
+import { AssistChat } from "./AssistChat";
 import { statusCopy } from "./vocab";
 import {
   getActiveVaultId,
@@ -172,7 +174,17 @@ export function Dashboard({ onNavigate }: Props) {
       setJustChecked(true);
       window.setTimeout(() => setJustChecked(false), 4000);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : String(e));
+      // 409 = already checked in this period. Treat as a soft "you're
+      // good" rather than a failure: the button's locked anyway, the
+      // user just got their answer.
+      if (e instanceof ApiError && e.status === 409) {
+        setError(
+          "Already checked in this period. Your next check-in opens when the current cycle ends.",
+        );
+        await refresh();
+      } else {
+        setError(e instanceof ApiError ? e.message : String(e));
+      }
     } finally {
       setBusy(false);
     }
@@ -210,6 +222,12 @@ export function Dashboard({ onNavigate }: Props) {
             onLightning={() => setLightningOpen(true)}
           />
         </div>
+
+        {vault ? (
+          <div className="mt-4">
+            <BalanceCard vaultId={vault.id} />
+          </div>
+        ) : null}
 
         {vault?.lnurl_checkin ? (
           <div className="mt-4">
@@ -282,8 +300,85 @@ export function Dashboard({ onNavigate }: Props) {
           onClose={() => setLightningOpen(false)}
         />
       ) : null}
+
+      <AssistChat
+        intro="Questions about check-ins, the waiting period, or what your heir will see? Ask away."
+      />
     </main>
   );
+}
+
+/* ----------------------------- Balance card ------------------------------- */
+
+function BalanceCard({ vaultId }: { vaultId: string }) {
+  const [balance, setBalance] = useState<VaultBalanceView | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const b = await api.getVaultBalance(vaultId);
+      setBalance(b);
+    } catch (e) {
+      setError(
+        e instanceof ApiError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : String(e),
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [vaultId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return (
+    <div className="card-flat p-5">
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="text-[11px] uppercase tracking-wider text-dim">
+          Vault balance
+        </p>
+        <button
+          type="button"
+          onClick={() => void load()}
+          disabled={loading}
+          className="text-[11px] text-muted underline-offset-2 hover:underline disabled:opacity-50"
+          aria-label="Refresh balance"
+        >
+          {loading ? "Refreshing…" : "Refresh"}
+        </button>
+      </div>
+      <div className="mt-2 font-display text-2xl font-bold tracking-tight">
+        {balance ? formatSats(balance.total_sat) : loading ? "…" : "—"}
+      </div>
+      {balance && balance.unconfirmed_sat > 0 ? (
+        <p className="mt-1 text-xs text-muted">
+          {formatSats(balance.confirmed_sat)} confirmed ·{" "}
+          {formatSats(balance.unconfirmed_sat)} pending
+        </p>
+      ) : balance ? (
+        <p className="mt-1 text-xs text-muted">Confirmed on chain.</p>
+      ) : null}
+      {error ? (
+        <p className="mt-2 text-xs text-alarm">{error}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function formatSats(sats: number): string {
+  if (sats === 0) return "0 sat";
+  if (sats >= 100_000_000) {
+    const btc = sats / 100_000_000;
+    return `${btc.toLocaleString(undefined, { maximumFractionDigits: 8 })} BTC`;
+  }
+  return `${sats.toLocaleString()} sat`;
 }
 
 /* ----------------------------- Greeting ----------------------------------- */
@@ -342,44 +437,71 @@ function HeartbeatCard({
     ? countdown(parseRfc(vault.next_deadline_at), now)
     : null;
 
+  // Once-per-period lockout. The server refuses a second check-in
+  // inside the same cycle, so we mirror that here: the next allowable
+  // tap is `last_checkin_at + checkin_period_secs`. While that's in
+  // the future, we lock the buttons and show a countdown to when the
+  // gate reopens. Alarmed vaults are exempt — by definition the
+  // period has already elapsed if status flipped to 'alarmed'.
+  const nextOpen =
+    vault && vault.last_checkin_at && vault.status !== "alarmed"
+      ? new Date(
+          parseRfc(vault.last_checkin_at).getTime() +
+            vault.checkin_period_secs * 1000,
+        )
+      : null;
+  const locked = nextOpen !== null && nextOpen > now;
+  const lockedCd = locked && nextOpen ? countdown(nextOpen, now) : null;
+
   return (
     <section className="card relative overflow-hidden p-5 text-center md:p-8">
       <div className="flex flex-col items-center">
-        <Heartbeat onTap={busy ? undefined : onCheckin} disabled={busy} />
+        <Heartbeat
+          onTap={busy || locked ? undefined : onCheckin}
+          disabled={busy || locked}
+        />
 
         <h2 className="mt-6 font-serif text-2xl">
-          {justChecked ? "Thanks — you're safe" : "Tap to check in"}
+          {justChecked
+            ? "Thanks — you're safe"
+            : locked
+              ? "Already checked in"
+              : "Tap to check in"}
         </h2>
         <p className="mt-1 text-sm text-muted">
           {justChecked
             ? `${meta.heir.name}'s countdown starts again.`
-            : `Let ${meta.heir.name} know the clock is reset.`}
+            : locked
+              ? `One check-in per period. Next opens in ${lockedCd?.friendly ?? "a moment"}.`
+              : `Let ${meta.heir.name} know the clock is reset.`}
         </p>
 
         <div className="mt-6 flex w-full max-w-xs flex-col items-stretch gap-3 md:max-w-none md:flex-row md:flex-wrap md:items-center md:justify-center">
-          {/* Mobile: stacked full-width buttons (fat tap targets on
-              a 360px phone). md+: side-by-side. After a successful
-              check-in we disable the button for the duration of the
-              `justChecked` state so the user can't tap five times in
-              a panic; the server allows repeat check-ins (correct
-              for cross-device safety) but the UI shouldn't invite
-              that confusion. */}
           <Button
             onClick={onCheckin}
             loading={busy}
-            disabled={justChecked}
+            disabled={justChecked || locked}
             size="lg"
           >
-            {justChecked ? "Checked in ✓" : "I'm still here"}
+            {justChecked
+              ? "Checked in ✓"
+              : locked
+                ? "Locked until next period"
+                : "I'm still here"}
           </Button>
           {lightningEnabled ? (
-            <Button variant="ghost" size="lg" onClick={onLightning}>
+            <Button
+              variant="ghost"
+              size="lg"
+              onClick={onLightning}
+              disabled={locked}
+            >
               ⚡ Pay 1 sat
             </Button>
           ) : null}
         </div>
 
-        {lightningEnabled ? (
+        {lightningEnabled && !locked ? (
           <p className="mt-2 text-[11px] text-dim">
             Pay a 1-sat Lightning invoice for cryptographic proof of liveness.
           </p>

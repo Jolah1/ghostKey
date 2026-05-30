@@ -351,8 +351,9 @@ pub async fn mark_paid_and_checkin(
     }
 
     // Look up the vault id and its cadence to recompute the deadline.
-    let row: Option<(String, i64, i64)> = sqlx::query_as(
-        r#"SELECT li.vault_id, v.checkin_period_secs, v.grace_period_secs
+    let row: Option<(String, i64, i64, Option<String>)> = sqlx::query_as(
+        r#"SELECT li.vault_id, v.checkin_period_secs, v.grace_period_secs,
+                  v.last_checkin_at
              FROM lightning_invoices li
              JOIN vaults v ON v.id = li.vault_id
             WHERE li.payment_hash = ?"#,
@@ -361,9 +362,29 @@ pub async fn mark_paid_and_checkin(
     .fetch_optional(&mut *tx)
     .await?;
 
-    let Some((vault_id, checkin_secs, grace_secs)) = row else {
+    let Some((vault_id, checkin_secs, grace_secs, last_checkin_at)) = row else {
         anyhow::bail!("lightning invoice {payment_hash} has no vault row");
     };
+
+    // Once-per-period guard. The invoice is already marked paid (we
+    // can't refund Lightning), but if the owner already checked in
+    // inside this cycle we skip the deadline reset so a second
+    // payment doesn't get a free extension.
+    if let Some(last_s) = last_checkin_at.as_deref() {
+        if let Ok(last) = DateTime::parse_from_rfc3339(last_s) {
+            let next_open = last.with_timezone(&Utc) + chrono::Duration::seconds(checkin_secs);
+            if now < next_open {
+                tx.commit().await?;
+                tracing::info!(
+                    vault_id = %vault_id,
+                    payment_hash = %payment_hash,
+                    "lightning payment landed inside current period; \
+                     deadline not advanced (already checked in)"
+                );
+                return Ok(());
+            }
+        }
+    }
 
     let next = now + chrono::Duration::seconds(checkin_secs + grace_secs);
     let claim_eligible = next + chrono::Duration::seconds(grace_secs);

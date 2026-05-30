@@ -64,8 +64,15 @@ import {
   InlineAlert,
   Disclosure,
 } from "./ui";
-import { ApiError, api, type VaultListItem, type SealedSetup } from "./api";
+import {
+  ApiError,
+  api,
+  type VaultListItem,
+  type SealedSetup,
+  type VaultBalanceView,
+} from "./api";
 import { saveVaultMeta } from "./vaultStore";
+import { AssistChat } from "./AssistChat";
 import {
   generateParty,
   wipe,
@@ -653,6 +660,9 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
           ) : null}
         </div>
       </div>
+      <AssistChat
+        intro="Setting up a vault? Ask anything about who needs what, what your heir will see, or how the waiting period works."
+      />
     </main>
   );
 }
@@ -1151,13 +1161,15 @@ function StepFund({
 
       <div className="mt-8 flex flex-col gap-4">
         {created.vaults.map((v) => (
-          <FundAddressCard
-            key={v.vaultId}
-            heirName={v.heirName}
-            address={v.address}
-            vaultId={v.vaultId}
-            showHeading={isGroup}
-          />
+          <div key={v.vaultId} className="flex flex-col gap-2">
+            <FundAddressCard
+              heirName={v.heirName}
+              address={v.address}
+              vaultId={v.vaultId}
+              showHeading={isGroup}
+            />
+            <FundingBalanceLine vaultId={v.vaultId} />
+          </div>
         ))}
       </div>
 
@@ -1267,4 +1279,65 @@ function FundAddressCard({
 function shortId(id: string): string {
   if (id.length <= 12) return id;
   return `${id.slice(0, 6)}…${id.slice(-4)}`;
+}
+
+/**
+ * Inline balance under the deposit address. Auto-fetches on mount so
+ * the owner sees "0 sat" immediately, and provides a manual refresh
+ * after they send funds so they can confirm the deposit landed.
+ */
+function FundingBalanceLine({ vaultId }: { vaultId: string }) {
+  const [balance, setBalance] = useState<VaultBalanceView | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      const b = await api.getVaultBalance(vaultId);
+      setBalance(b);
+    } catch (e) {
+      setError(
+        e instanceof ApiError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : String(e),
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vaultId]);
+
+  return (
+    <div className="flex items-center justify-between px-1 text-xs">
+      <span className="text-muted">
+        Balance:{" "}
+        <span className="font-mono text-[var(--text)]">
+          {balance ? `${balance.total_sat.toLocaleString()} sat` : loading ? "…" : "—"}
+        </span>
+        {balance && balance.unconfirmed_sat > 0 ? (
+          <span className="ml-1 text-dim">
+            ({balance.unconfirmed_sat.toLocaleString()} pending)
+          </span>
+        ) : null}
+      </span>
+      <button
+        type="button"
+        className="text-dim underline-offset-2 hover:underline disabled:opacity-50"
+        onClick={() => void load()}
+        disabled={loading}
+      >
+        {loading ? "Checking…" : "Refresh"}
+      </button>
+      {error ? (
+        <span className="ml-2 text-alarm">{error}</span>
+      ) : null}
+    </div>
+  );
 }

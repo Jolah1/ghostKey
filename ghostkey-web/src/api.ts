@@ -170,6 +170,19 @@ export interface VaultAddressView {
   address: string;
 }
 
+export interface VaultBalanceView {
+  vault_id: string;
+  network: string;
+  confirmed_sat: number;
+  unconfirmed_sat: number;
+  total_sat: number;
+}
+
+export interface AssistChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface CheckinResponse {
   vault_id: string;
   last_checkin_at: string;
@@ -407,6 +420,9 @@ export const api = {
        *  server side. Falls back to `"testnet"` on older servers
        *  that don't yet emit this field. */
       default_network?: "bitcoin" | "testnet" | "signet" | "regtest";
+      /** Whether the AI onboarding guide is reachable. False on older
+       *  servers that don't yet emit the field; the UI treats it as off. */
+      assist_enabled?: boolean;
     }>("/health"),
   getVault: (id: string, ownerToken: string | null) =>
     request<VaultView>(`/vaults/${id}`, {}, ownerToken),
@@ -437,6 +453,22 @@ export const api = {
    *  Public; used to fund a freshly-created vault. */
   getVaultAddress: (id: string) =>
     request<VaultAddressView>(`/vaults/${id}/address`),
+  /** Watch-only balance of the vault, synced from Esplora. Public:
+   *  the descriptor's addresses are public, and the chain is public.
+   *  Owners use this from the dashboard right after funding to confirm
+   *  sats landed. */
+  getVaultBalance: (id: string) =>
+    request<VaultBalanceView>(`/vaults/${id}/balance`),
+  /** AI onboarding guide. Server proxies to the Anthropic API with a
+   *  pinned system prompt. The handler refuses to forward seed phrases,
+   *  xprvs, or other secret-shaped strings. No vault auth — the chat
+   *  is purely educational. Returns 503-style errors if the server has
+   *  no ANTHROPIC_API_KEY configured. */
+  assistChat: (messages: AssistChatMessage[]) =>
+    request<{ reply: string }>("/assist/chat", {
+      method: "POST",
+      body: JSON.stringify({ messages }),
+    }),
 
   /** Re-seal the owner token after vault creation. Solves the
    *  chicken-and-egg in the password-vault setup flow: the browser
