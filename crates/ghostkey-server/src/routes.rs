@@ -36,7 +36,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .collect();
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
         .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
 
     Router::new()
@@ -45,7 +45,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/vaults", post(create_vault).get(list_vaults))
         .route("/vaults/from-xpub", post(create_vault_from_xpub))
         .route("/vaults/find", post(find_vaults_by_email))
-        .route("/vaults/:id", get(get_vault))
+        .route("/vaults/:id", get(get_vault).delete(delete_vault))
         .route("/vaults/:id/address", get(get_vault_address))
         .route(
             "/vaults/:id/balance",
@@ -1033,6 +1033,27 @@ async fn get_vault(
         lnurl_checkin,
         lnurl_panic,
     }))
+}
+
+/// Owner-initiated vault deletion. Removes the server-side vault row
+/// and its dependents (events, notifications, lightning_invoices) via
+/// `ON DELETE CASCADE`. The owner's on-chain funds are unaffected —
+/// they're spendable from the owner's xpub/seed, which the server
+/// never held. Returns 204 on success; 404 if the vault has already
+/// been removed.
+async fn delete_vault(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+) -> Result<StatusCode, ApiError> {
+    let id = auth.vault_id;
+    let res = sqlx::query("DELETE FROM vaults WHERE id = ?")
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
+    if res.rows_affected() == 0 {
+        return Err(ApiError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, Serialize)]
