@@ -427,11 +427,18 @@ pub async fn broadcast_claim(
 /// client and we don't want to mask the original cause. If this fails
 /// the vault is left in 'claiming' status with `claim_token_used_at`
 /// set — an operator can recover via:
-///     UPDATE vaults SET status='alarmed', claim_token_used_at=NULL WHERE id=...;
+///     UPDATE vaults SET status='timelock_started', claim_token_used_at=NULL WHERE id=...;
+///
+/// We revert to `timelock_started` (not `alarmed`) on purpose: the heir
+/// has the claim link already and can retry it. Going back to `alarmed`
+/// would re-match the scheduler's `transition_alarmed_to_claimable`
+/// filter on every tick — for password-vault rows the second clause
+/// `claim_token_at_rest_b64 IS NOT NULL` keeps re-issuing the same
+/// notification, spamming the heir.
 async fn release_claim_token(state: &AppState, vault_id: &str) {
     let res = sqlx::query(
         r#"UPDATE vaults
-              SET status              = 'alarmed',
+              SET status              = 'timelock_started',
                   claim_token_used_at = NULL
             WHERE id = ?
               AND status = 'claiming'"#,
@@ -951,21 +958,28 @@ pub async fn get_heir_derivation_params(
             "this vault was not created with heir_derivation; the heir has their own xpub".into(),
         ));
     }
-    let ct = row.6.ok_or_else(|| {
-        ApiError::Validation(
-            "heir_derived=1 but no sealed heir contact on file (server inconsistency)".into(),
-        )
-    })?;
-    let nonce = row
-        .7
-        .ok_or_else(|| ApiError::Validation("heir contact ciphertext without nonce".into()))?;
-    let sealed = crate::crypto::SealedContact {
-        ciphertext_b64: ct,
-        nonce_b64: nonce,
-    };
-    let email_bytes = crate::crypto::open_for_vault(&row.0, &sealed)?;
-    let heir_email = String::from_utf8(email_bytes)
-        .map_err(|e| ApiError::Validation(format!("heir contact is not utf8: {e}")))?;
+    // The sealed contact stores a JSON object `{name, contact, channel}`,
+    // not a bare email string. The heir's browser feeds this value
+    // into `deriveHeirKey` as the derivation input, which must be
+    // byte-for-byte identical to whatever `create_vault_from_xpub`
+    // hashed in at vault creation time — and that was `hd.email`,
+    // i.e. just the contact field. Sending the whole JSON blob would
+    // produce a different mnemonic in the browser and a descriptor-
+    // lookup failure later on.
+    let contact = crate::notifier::parse_heir_contact(&row.0, row.6.as_deref(), row.7.as_deref())?
+        .ok_or_else(|| {
+            ApiError::Validation(
+                "heir_derived=1 but no sealed heir contact on file (server inconsistency)".into(),
+            )
+        })?;
+    let heir_email = contact
+        .contact
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            ApiError::Validation(
+                "heir_derived=1 but the sealed heir contact has no email".into(),
+            )
+        })?;
 
     let master = crate::crypto::master_key_bytes()?;
     let vault_secret = ghostkey_core::keys::compute_vault_secret(&row.0, &master)
