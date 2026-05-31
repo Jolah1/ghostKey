@@ -182,6 +182,56 @@ export const DEMO_GRACE_PRESETS: readonly GracePreset[] = [
 export const DEFAULT_DEMO_CADENCE_ID = "demo-30s";
 export const DEFAULT_DEMO_GRACE_ID = "demo-15s";
 
+/* -------------------------------------------------------------------------- *
+ *  Demo waiting period
+ *
+ *  Production "waiting period" = months of on-chain CSV timelock
+ *  (`timelock_blocks`). In demo mode we want the same control to read
+ *  in seconds so the recording can show a real countdown.
+ *
+ *  Implementation: the seconds picked here drive `grace_period_secs`
+ *  (the off-chain alarmed→eligible delay). `timelock_blocks` is forced
+ *  to the minimum (1) because the demo skips the on-chain portion of
+ *  the claim flow. The separate Grace-period picker is hidden in demo
+ *  mode — it's now subsumed by this control.
+ * -------------------------------------------------------------------------- */
+
+export interface WaitingPreset {
+  id: string;
+  label: string;
+  sub: string;
+  seconds: number;
+}
+
+export const DEMO_WAITING_PRESETS: readonly WaitingPreset[] = [
+  {
+    id: "demo-wait-30s",
+    label: "30 seconds",
+    sub: "Fastest — recording-friendly",
+    seconds: 30,
+  },
+  {
+    id: "demo-wait-1m",
+    label: "1 minute",
+    sub: "Recommended for live demos",
+    seconds: 60,
+  },
+  {
+    id: "demo-wait-3m",
+    label: "3 minutes",
+    sub: "Time to narrate",
+    seconds: 180,
+  },
+] as const;
+
+export const DEFAULT_DEMO_WAITING_ID = "demo-wait-1m";
+
+export function demoWaitingById(id: string): WaitingPreset {
+  return (
+    DEMO_WAITING_PRESETS.find((w) => w.id === id) ?? DEMO_WAITING_PRESETS[1]
+  );
+}
+
 /**
  * Pick the right preset list (real or demo) for the current server.
  * Callers should pass the `demo_mode` flag they read from `/health`.

@@ -88,12 +88,15 @@ import { randomBytes } from "@noble/hashes/utils.js";
 import {
   DEFAULT_CADENCE_ID,
   DEFAULT_GRACE_ID,
+  DEFAULT_DEMO_WAITING_ID,
+  DEMO_WAITING_PRESETS,
   cadencePresetsFor,
   gracePresetsFor,
   defaultCadenceIdFor,
   defaultGraceIdFor,
   cadenceByIdAnywhere,
   graceByIdAnywhere,
+  demoWaitingById,
 } from "./timing";
 
 interface Props {
@@ -137,6 +140,12 @@ interface Draft {
   // New: explicit grace period (previously hard-coded to 3 days).
   // Holds the string id of a GRACE_PRESETS entry.
   graceId: string;
+  // Demo-mode-only: seconds-scale "waiting period" picker. Replaces
+  // the months slider when the server reports `demo_mode: true`. The
+  // chosen seconds value drives `grace_period_secs` on submit and the
+  // dashboard's "Waiting period" StatCard. Holds the id of a
+  // DEMO_WAITING_PRESETS entry.
+  demoWaitingId: string;
 
   // Step 2 — owner identity + password
   ownerEmail: string;
@@ -161,6 +170,7 @@ const EMPTY: Draft = {
   waitingMonths: 3,
   cadenceId: DEFAULT_CADENCE_ID,
   graceId: DEFAULT_GRACE_ID,
+  demoWaitingId: DEFAULT_DEMO_WAITING_ID,
   ownerEmail: "",
   password: "",
   passwordConfirm: "",
@@ -385,10 +395,16 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
       // every vault on the same owner key.
       const ownerEmailHash = hashEmailForLookup(draft.ownerEmail);
 
-      // (d) Compute shared timing once.
-      const timelockBlocks = monthsToBlocks(draft.waitingMonths);
+      // (d) Compute shared timing once. In demo mode the user picked
+      // a single seconds-scale "waiting period" that subsumes the
+      // grace-period picker; we map it to `grace_period_secs` and pin
+      // `timelock_blocks` to the minimum (the demo flow only exercises
+      // the off-chain portion of the claim).
       const checkinSecs = cadenceByIdAnywhere(draft.cadenceId).seconds;
-      const graceSecs = graceByIdAnywhere(draft.graceId).seconds;
+      const timelockBlocks = demoMode ? 1 : monthsToBlocks(draft.waitingMonths);
+      const graceSecs = demoMode
+        ? demoWaitingById(draft.demoWaitingId).seconds
+        : graceByIdAnywhere(draft.graceId).seconds;
 
       // (e) Single shared groupId — only meaningful client-side
       // (the Dashboard uses it to render the N vaults as one card).
@@ -779,28 +795,42 @@ function StepHeir({
         )}
 
         <Field label="If you stop checking in, wait this long before they can claim">
-          <div className="flex items-center gap-4">
-            <input
-              type="range"
-              min={1}
-              max={12}
-              value={draft.waitingMonths}
-              onChange={(e) =>
-                patch({ waitingMonths: Number(e.target.value) })
-              }
-              aria-label="Waiting period in months"
-              className="w-full accent-[var(--accent)]"
-              list="month-marks"
-            />
-            <datalist id="month-marks">
-              {MONTH_OPTIONS.map((m) => (
-                <option key={m} value={m} />
+          {demoMode ? (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {DEMO_WAITING_PRESETS.map((w) => (
+                <Tile
+                  key={w.id}
+                  title={w.label}
+                  sub={w.sub}
+                  selected={draft.demoWaitingId === w.id}
+                  onClick={() => patch({ demoWaitingId: w.id })}
+                />
               ))}
-            </datalist>
-            <span className="min-w-[5.5rem] text-right font-display text-3xl font-bold tracking-tight text-accent">
-              {monthsLabel(draft.waitingMonths)}
-            </span>
-          </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-4">
+              <input
+                type="range"
+                min={1}
+                max={12}
+                value={draft.waitingMonths}
+                onChange={(e) =>
+                  patch({ waitingMonths: Number(e.target.value) })
+                }
+                aria-label="Waiting period in months"
+                className="w-full accent-[var(--accent)]"
+                list="month-marks"
+              />
+              <datalist id="month-marks">
+                {MONTH_OPTIONS.map((m) => (
+                  <option key={m} value={m} />
+                ))}
+              </datalist>
+              <span className="min-w-[5.5rem] text-right font-display text-3xl font-bold tracking-tight text-accent">
+                {monthsLabel(draft.waitingMonths)}
+              </span>
+            </div>
+          )}
         </Field>
 
         <Field label="Remind me to check in">
@@ -825,22 +855,24 @@ function StepHeir({
           </div>
         </Field>
 
-        <Field
-          label="Grace period after a missed reminder"
-          hint="Extra slack before the vault enters its alarm state. The heir still cannot claim for the full waiting period above."
-        >
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {graceList.map((g) => (
-              <Tile
-                key={g.id}
-                title={g.label}
-                sub={g.sub}
-                selected={draft.graceId === g.id}
-                onClick={() => patch({ graceId: g.id })}
-              />
-            ))}
-          </div>
-        </Field>
+        {demoMode ? null : (
+          <Field
+            label="Grace period after a missed reminder"
+            hint="Extra slack before the vault enters its alarm state. The heir still cannot claim for the full waiting period above."
+          >
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {graceList.map((g) => (
+                <Tile
+                  key={g.id}
+                  title={g.label}
+                  sub={g.sub}
+                  selected={draft.graceId === g.id}
+                  onClick={() => patch({ graceId: g.id })}
+                />
+              ))}
+            </div>
+          </Field>
+        )}
 
         <p className="mt-6 text-center text-xs text-muted">
           Already have a Bitcoin wallet you'd rather keep?{" "}
