@@ -7,7 +7,6 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bitcoin::bip32::Fingerprint;
-use bitcoin::Network;
 use chrono::{DateTime, Duration, Utc};
 use ghostkey_core::descriptor::{build_descriptor_pair, parse_descriptor};
 use ghostkey_core::keys::{descriptor_key_fragment, parse_xpub, vault_account_path, Chain};
@@ -19,6 +18,7 @@ use tracing::Span;
 use uuid::Uuid;
 
 use crate::auth::{cors_allowed_origins, AdminAuth, OwnerAuth};
+use crate::config::parse_rfc;
 use crate::crypto::{
     self, hash_claim_token, issue_claim_token, issue_owner_token, open_for_vault, seal_for_vault,
     CryptoError, SealedContact,
@@ -39,12 +39,86 @@ pub fn router(state: Arc<AppState>) -> Router {
         .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
         .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
 
-    Router::new()
-        .route("/health", get(health))
+    // ---- Per-route rate-limit budgets ----
+    //
+    // Three budgets, scaled by the cost / abuse profile of the route
+    // each one wraps. All three key on the client IP (see
+    // `rate_limit::client_key`); buckets refill continuously.
+    //
+    //   ASSIST: hits the Anthropic Messages API on every accepted
+    //   request, so each token costs real money. 3-token burst lets
+    //   a user fire off "hi", then a follow-up, then a clarification
+    //   without waiting; steady-state is one request every 5s.
+    //
+    //   CREATE: covers the two unauthenticated vault-creation paths
+    //   and `/vaults/find`. Creating a vault is a couple of disk
+    //   writes plus an HKDF; cheap individually, but a flood would
+    //   balloon SQLite and burn entropy. 10-token burst absorbs
+    //   genuine setup retries; steady-state ~1/6s.
+    //
+    //   CLAIM: covers the heir-claim flow (resolve, build-psbt,
+    //   broadcast, heir-claim, sealed-heir, derivation-params). The
+    //   token is 256 bits so brute force is infeasible — this
+    //   limiter exists to cap the *cost* of an attacker probing
+    //   with a known-good token (Esplora full-scan is expensive).
+    //   20-token burst absorbs the heir's natural reload + sign +
+    //   broadcast trio; steady-state ~1/3s.
+    let assist_limiter = crate::rate_limit::Limiter::new("assist", 3, 0.2);
+    let create_limiter = crate::rate_limit::Limiter::new("create", 10, 1.0 / 6.0);
+    let claim_limiter = crate::rate_limit::Limiter::new("claim", 20, 1.0 / 3.0);
+
+    // The three rate-limited surfaces, each a small sub-router that
+    // we'll merge into the main one. Keeping them separate makes the
+    // policy choice visible at the route definition site.
+    let assist_routes: Router<Arc<AppState>> = Router::new()
         .route("/assist/chat", post(crate::assist::assist_chat))
-        .route("/vaults", post(create_vault).get(list_vaults))
+        .layer(axum::middleware::from_fn_with_state(
+            assist_limiter,
+            crate::rate_limit::enforce,
+        ));
+
+    let create_routes: Router<Arc<AppState>> = Router::new()
+        .route("/vaults", post(create_vault))
         .route("/vaults/from-xpub", post(create_vault_from_xpub))
         .route("/vaults/find", post(find_vaults_by_email))
+        .layer(axum::middleware::from_fn_with_state(
+            create_limiter,
+            crate::rate_limit::enforce,
+        ));
+
+    let claim_routes: Router<Arc<AppState>> = Router::new()
+        .route("/claim/:token", get(resolve_claim))
+        .route(
+            "/claim/:token/sealed-heir",
+            get(crate::psbt_routes::get_sealed_heir_xprv),
+        )
+        .route(
+            "/claim/:token/heir-derivation-params",
+            get(crate::psbt_routes::get_heir_derivation_params),
+        )
+        .route(
+            "/claim/:token/heir-claim",
+            post(crate::psbt_routes::heir_claim),
+        )
+        .route(
+            "/claim/:token/build-psbt",
+            post(crate::psbt_routes::build_claim_psbt),
+        )
+        .route(
+            "/claim/:token/broadcast",
+            post(crate::psbt_routes::broadcast_claim),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            claim_limiter,
+            crate::rate_limit::enforce,
+        ));
+
+    // Routes whose owner-auth or one-tap token already gates abuse,
+    // plus the always-open `/health` and the LNURL endpoints (capped
+    // upstream by the Lightning provider's own minting limits).
+    let open_routes: Router<Arc<AppState>> = Router::new()
+        .route("/health", get(health))
+        .route("/vaults", get(list_vaults))
         .route("/vaults/:id", get(get_vault).delete(delete_vault))
         .route("/vaults/:id/address", get(get_vault_address))
         .route(
@@ -74,29 +148,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/lnurlp/:vault_id/cb", get(lnurlp_callback))
         .route("/lnurlp/:vault_id/panic", get(lnurlp_panic_pay_request))
         .route("/lnurlp/:vault_id/panic/cb", get(lnurlp_panic_callback))
-        .route(
-            "/claim/:token/heir-derivation-params",
-            get(crate::psbt_routes::get_heir_derivation_params),
-        )
         .route("/vaults/:id/events", get(list_events))
-        .route("/vaults/:id/issue-claim", post(issue_claim))
-        .route("/claim/:token", get(resolve_claim))
-        .route(
-            "/claim/:token/sealed-heir",
-            get(crate::psbt_routes::get_sealed_heir_xprv),
-        )
-        .route(
-            "/claim/:token/heir-claim",
-            post(crate::psbt_routes::heir_claim),
-        )
-        .route(
-            "/claim/:token/build-psbt",
-            post(crate::psbt_routes::build_claim_psbt),
-        )
-        .route(
-            "/claim/:token/broadcast",
-            post(crate::psbt_routes::broadcast_claim),
-        )
+        .route("/vaults/:id/issue-claim", post(issue_claim));
+
+    Router::new()
+        .merge(open_routes)
+        .merge(assist_routes)
+        .merge(create_routes)
+        .merge(claim_routes)
         .layer(TraceLayer::new_for_http().make_span_with(make_request_span))
         .layer(cors)
         .with_state(state)
@@ -541,15 +600,8 @@ async fn create_vault_from_xpub(
     )?;
 
     // ---- Resolve network ---------------------------------------------
-    let network = match req.network.as_str() {
-        "bitcoin" => Network::Bitcoin,
-        "testnet" => Network::Testnet,
-        "signet" => Network::Signet,
-        "regtest" => Network::Regtest,
-        other => {
-            return Err(ApiError::Validation(format!("unknown network {other}")));
-        }
-    };
+    let network = crate::config::parse_network(&req.network)
+        .map_err(|name| ApiError::Validation(format!("unknown network {name}")))?;
     crate::demo::ensure_demo_safe_for_network(&req.network).map_err(ApiError::Validation)?;
     let path = vault_account_path(network);
 
@@ -578,15 +630,10 @@ async fn create_vault_from_xpub(
             ));
         }
         let master = crate::crypto::master_key_bytes()?;
-        // network is already resolved above (see Network match below);
-        // re-resolve locally so this block is self-contained.
-        let net = match req.network.as_str() {
-            "bitcoin" => Network::Bitcoin,
-            "testnet" => Network::Testnet,
-            "signet" => Network::Signet,
-            "regtest" => Network::Regtest,
-            other => return Err(ApiError::Validation(format!("unknown network {other}"))),
-        };
+        // `network` is already resolved above; we just rebind here so the
+        // block is self-contained for readers and the call to
+        // `derive_heir_seed` lines up with the local variable name.
+        let net = network;
         let (_entropy, derived_xpub) =
             ghostkey_core::keys::derive_heir_seed(email, &id, &master, net)
                 .map_err(|e| ApiError::Validation(format!("heir_derivation: {e}")))?;
@@ -1559,12 +1606,6 @@ pub(crate) async fn record_event(
     Ok(())
 }
 
-fn parse_rfc(s: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|d| d.with_timezone(&Utc))
-        .unwrap_or_else(|_| Utc::now())
-}
-
 /* -------------------------------------------------------------------------- *
  *  Cross-device owner recovery + funding address.                            *
  *                                                                            *
@@ -1812,17 +1853,8 @@ async fn get_vault_address(
     .await?;
     let (network_str, ext, int_, timelock) = row.ok_or(ApiError::NotFound)?;
 
-    let network = match network_str.as_str() {
-        "bitcoin" => Network::Bitcoin,
-        "testnet" => Network::Testnet,
-        "signet" => Network::Signet,
-        "regtest" => Network::Regtest,
-        other => {
-            return Err(ApiError::Validation(format!(
-                "stored vault has unknown network {other}"
-            )))
-        }
-    };
+    let network = crate::config::parse_network(&network_str)
+        .map_err(|name| ApiError::Validation(format!("stored vault has unknown network {name}")))?;
 
     // Build a watch-only wallet from the stored descriptors and reveal
     // address #0. Idempotent: the same vault always returns the same
@@ -1895,12 +1927,11 @@ async fn lightning_create_invoice(
     // period. Spec: at most one successful check-in per period. We
     // catch it at mint time so the owner doesn't pay sats that won't
     // count.
-    let cad: Option<(i64, Option<String>)> = sqlx::query_as(
-        "SELECT checkin_period_secs, last_checkin_at FROM vaults WHERE id = ?",
-    )
-    .bind(&auth.vault_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let cad: Option<(i64, Option<String>)> =
+        sqlx::query_as("SELECT checkin_period_secs, last_checkin_at FROM vaults WHERE id = ?")
+            .bind(&auth.vault_id)
+            .fetch_optional(&state.db)
+            .await?;
     if let Some((period, Some(last_s))) = cad {
         if let Ok(last) = DateTime::parse_from_rfc3339(&last_s) {
             let next_open = last.with_timezone(&Utc) + Duration::seconds(period);
@@ -2244,6 +2275,7 @@ mod tests {
     use super::*;
     use bitcoin::bip32::Xpriv;
     use bitcoin::secp256k1::Secp256k1;
+    use bitcoin::Network;
 
     /// Build a deterministic (xpub, fingerprint) pair from a 32-byte seed
     /// on regtest. Mirrors the seeds used in

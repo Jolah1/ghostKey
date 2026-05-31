@@ -55,27 +55,33 @@ No one at GhostKey can touch the funds. The rules are enforced by Bitcoin, not b
 
 ## Status
 
-**Alpha — testnet only.** The cryptography is tested end-to-end. Do not use this with mainnet funds yet.
+**Alpha.** The cryptography is tested end-to-end on regtest and signet.
+Mainnet is technically supported (set `GHOSTKEY_DEFAULT_NETWORK=bitcoin`
+on the server) but has not had an external security review yet — treat
+real funds as at risk until that lands. The default network is
+`testnet`; operators have to opt into mainnet explicitly.
 
 What works today:
-- Full vault setup from xpub
-- Monthly check-in with owner authentication
-- Lightning check-ins — pay a 1 sat invoice from any wallet for cryptographic proof of liveness (requires the optional Breez SDK Liquid backend; see DESIGN.md "Lightning check-ins")
+- Full vault setup from xpub (legacy / CLI flow) **and** in-browser password setup (no seed phrase shown to the user; owner xprv sealed with Argon2id-derived KEK)
+- Cross-device sign-in: email + password unlocks any vault on any browser
+- Multi-heir vaults (N parallel single-heir vaults grouped client-side; the dashboard fans out one tap to all of them)
+- Owner check-in via tap-button, one-tap email link, or Lightning (requires the optional Breez SDK Liquid sidecar; see DESIGN.md "Lightning check-ins")
 - Configurable check-in cadence (weekly / 2-weekly / monthly / quarterly) and grace period (3 days / 1 week / 2 weeks / 1 month)
-- Scheduler that tracks deadlines and transitions vault state
-- Pre-deadline owner reminder (24h before) + alarm-fired owner email
-- One-tap check-in link in those emails (no password needed for the owner to keep their vault alive)
-- Encrypted heir and owner contact storage
-- Email notification when the alarm fires (SMTP)
-- SMS + WhatsApp notifications via Twilio (optional, off by default)
-- One-time claim link and PSBT signing flow for heirs
+- Scheduler with pre-deadline reminders, daily alarm escalation, panic-stop freeze, and per-cycle one-tap tokens
+- Encrypted heir / owner / trusted-contact storage; sealed password-vault blobs the server cannot open
+- Email notifications (SMTP via `lettre` + STARTTLS); SMS + WhatsApp via Twilio (optional, off by default)
+- One-time claim link and two heir-claim flows:
+  - **Password-vault flow** (default): heir pastes a receive address, server signs in-memory with the just-unwrapped heir xprv, broadcasts in one call.
+  - **Manual PSBT flow** (legacy): server hands the heir an unsigned PSBT, accepts the signed string back.
+- F2 "heir has no Bitcoin wallet" support: server derives the heir's BIP86 key from `(master_key, heir_email, vault_id)` and the heir's browser recomputes the same xprv at claim time
+- In-app AI guide chat (`/assist/chat`) proxied to Claude; refuses to forward seed-shaped strings
 
 What's still being built:
+- Rate limiting on the unauthenticated endpoints (`/assist/chat`, `/vaults/from-xpub`, `/vaults/find`, `/claim/:token/*`)
+- Hardware wallet PSBT export (`--export-psbt` / `--sign-psbt` on the CLI)
 - Setup from a plain Bitcoin address (without needing an xpub)
-- Multiple heirs
-- Hardware wallet PSBT export
 - Translations — Pidgin first (planned), then Yoruba, Igbo, Hausa
-- Mainnet security review
+- External mainnet security review
 
 ---
 

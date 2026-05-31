@@ -27,6 +27,7 @@ mod lightning;
 mod lnurl;
 mod notifier;
 mod psbt_routes;
+mod rate_limit;
 mod routes;
 mod scheduler;
 
@@ -186,6 +187,14 @@ async fn main() -> Result<()> {
 
     tracing::info!(addr = %args.bind, "ghostkey-server listening");
     let listener = tokio::net::TcpListener::bind(args.bind).await?;
-    axum::serve(listener, app).await?;
+    // `into_make_service_with_connect_info` makes the TCP peer
+    // address available via `ConnectInfo<SocketAddr>` extractors.
+    // The rate-limit middleware uses it as the last-resort key when
+    // neither `Fly-Client-IP` nor `X-Forwarded-For` is set.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }

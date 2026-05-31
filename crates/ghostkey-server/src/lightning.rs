@@ -52,6 +52,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::config::parse_rfc;
 use crate::routes::record_event;
 use crate::AppState;
 
@@ -307,12 +308,6 @@ pub async fn fetch_invoice_by_hash(
         expires_at: parse_rfc(&r.8),
         paid_at: r.9.as_deref().map(parse_rfc),
     }))
-}
-
-fn parse_rfc(s: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|d| d.with_timezone(&Utc))
-        .unwrap_or_else(|_| Utc::now())
 }
 
 /// Mark an invoice paid and reset the vault's check-in deadlines.

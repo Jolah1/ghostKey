@@ -73,10 +73,35 @@ These are documented gaps, not findings:
   per vault, hashed at rest) and on the admin list route. CORS is now
   an allowlist driven by `GHOSTKEY_ALLOWED_ORIGINS`. A dev escape
   hatch (`GHOSTKEY_AUTH_DISABLED=1`) exists and must not be set in
-  production.
-- No notification fan-out yet — alarms write to the events log;
-  operators deliver claim links by hand.
-- No rate limiting.
+  production; the server refuses to boot with it set unless
+  `GHOSTKEY_ALLOW_INSECURE=1` is also set.
+- Notification fan-out is live (SMTP + Twilio SMS/WhatsApp) but has
+  no rate limiting. A burst of vault creations could mint a burst of
+  pending sends; the worker drains them serially with exponential
+  backoff per row.
+- No per-IP rate limiting on `/assist/chat`, `/vaults/from-xpub`,
+  `/vaults/find`, or `/claim/:token/*`. Brute-forcing a 256-bit
+  claim token at network speed is infeasible by construction, but
+  the assist endpoint can burn a configured Anthropic budget if
+  abused.
+- `/vaults/:id/sealed-blobs` is unauthenticated by design (the
+  blobs are useless without the user's password), but does allow
+  an offline Argon2id brute-force against weak passwords once the
+  vault UUID is known. KDF parameters are `m=64MiB, t=2, p=1` —
+  tuned for ~2s on a mid-range phone, deliberately the slowest we
+  could justify without user-visible jank.
+- The F2 server-derived-heir flow ties the heir's mnemonic to
+  `(GHOSTKEY_MASTER_KEY, heir_email, vault_id)`. An attacker who
+  holds all three can reconstruct the heir's key. The on-chain
+  relative timelock is the only check between such an attacker and
+  the heir's funds. See [ARCHITECTURE.md → F2 server-derived
+  heirs](./ARCHITECTURE.md#f2-server-derived-heirs).
+- `POST /claim/:token/heir-claim` briefly holds the heir xprv in
+  process memory to sign the claim transaction. The xprv is never
+  written to disk or logs and is dropped at function exit, but a
+  compromised server during that call could redirect the
+  matured-timelock UTXO. See [ARCHITECTURE.md → Server-side
+  signing exception](./ARCHITECTURE.md#server-side-signing-exception).
 - No on-host backups of the SQLite database beyond what `DEPLOY.md`
   describes.
 

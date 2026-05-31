@@ -15,7 +15,51 @@
 //!   any rebuild — the server tells the browser which network it's
 //!   on via `/health.default_network`.
 
+use bitcoin::Network;
+use chrono::{DateTime, Utc};
 use std::sync::OnceLock;
+
+/// Parse an RFC3339 timestamp string, falling back to `Utc::now()` on
+/// malformed input.
+///
+/// We deliberately don't surface the parse error: every caller is
+/// shaping rows for a JSON response, and the rows in question are
+/// either ones we wrote ourselves (so the value is guaranteed valid),
+/// or they came from a migration whose worst case is a column that's
+/// been blanked. In both cases the right behaviour is "render
+/// something sensible" rather than 500. The downside is that a
+/// systemic write bug would silently turn into a wave of `now()`
+/// timestamps; given the writes are concentrated in a few helpers,
+/// that's a trade we accept.
+pub fn parse_rfc(s: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(s)
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now())
+}
+
+/// Parse one of the four wire-string network names into a `bitcoin::Network`.
+///
+/// The wire vocabulary (`"bitcoin"` / `"testnet"` / `"signet"` / `"regtest"`)
+/// is shared by every request body and every stored row. Callers pick which
+/// error message they want by mapping the `Err(&str)` arm — typically into
+/// `ApiError::Validation` with a context-specific prefix:
+///
+/// ```ignore
+/// let net = parse_network(&req.network)
+///     .map_err(|name| ApiError::Validation(format!("unknown network {name}")))?;
+/// ```
+///
+/// The error carries the offending string back so the caller can include it
+/// verbatim in the user-facing message.
+pub fn parse_network(s: &str) -> Result<Network, &str> {
+    match s {
+        "bitcoin" => Ok(Network::Bitcoin),
+        "testnet" => Ok(Network::Testnet),
+        "signet" => Ok(Network::Signet),
+        "regtest" => Ok(Network::Regtest),
+        other => Err(other),
+    }
+}
 
 /// The Bitcoin network the web UI should pre-select for new-vault
 /// creation. Returned to the browser on `/health.default_network`.
@@ -104,5 +148,21 @@ mod tests {
             matches!(n, "bitcoin" | "testnet" | "signet" | "regtest"),
             "default_network() returned {n:?}, not in the allow-list"
         );
+    }
+
+    #[test]
+    fn parse_network_accepts_all_four() {
+        assert_eq!(parse_network("bitcoin").unwrap(), Network::Bitcoin);
+        assert_eq!(parse_network("testnet").unwrap(), Network::Testnet);
+        assert_eq!(parse_network("signet").unwrap(), Network::Signet);
+        assert_eq!(parse_network("regtest").unwrap(), Network::Regtest);
+    }
+
+    #[test]
+    fn parse_network_rejects_unknown_and_echoes_input() {
+        // The error arm carries the offending string back verbatim so
+        // callers can include it in their context-specific error.
+        let err = parse_network("liquid").unwrap_err();
+        assert_eq!(err, "liquid");
     }
 }

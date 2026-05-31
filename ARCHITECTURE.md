@@ -95,32 +95,61 @@ Chain data via `bdk_bitcoind_rpc::Emitter`.
 
 ### ghostkey-server
 
-Watch-only. No key material. No signing. The worst it can do is miss an alarm or record a spurious heartbeat — it cannot move funds.
+Watch-only **for the vast majority of operations**. The server stores no
+long-term key material and cannot move funds in the steady state. There
+is one narrow exception — the password-vault heir-claim flow — covered
+in detail under [Threat model](#threat-model) below.
 
 SQLite tables:
-- `vaults` — descriptor pair, network, timelock, cadence, deadline, status
-- `events` — append-only: `registered` / `checkin` / `warning` / `alarmed` / `timelock_started` / `claimed`
+- `vaults` — descriptor pair, network, timelock, cadence, deadline, status, sealed contacts, sealed (password-wrapped) owner/heir key material, claim tokens, one-tap check-in tokens, panic-freeze state.
+- `events` — append-only: `registered` / `checkin` / `warning` / `alarmed` / `timelock_started` / `claimed` / `claim_resolved` / `claim_broadcast` / `lightning_invoice_issued` / etc.
+- `notifications` — outbound notification queue (subject/body sealed at rest).
+- `lightning_invoices` — per-vault Lightning invoice records for check-in and panic flows.
 
-Background scheduler (30s tick) advances vault state as deadlines pass. Vault registration is rejected if the descriptor doesn't parse as a valid inheritance policy.
+Background workers:
+- Scheduler (30s default tick) advances vault state, issues claim tokens, mints per-cycle one-tap tokens, enqueues notifications.
+- Notifier (15s default tick) drains the `notifications` queue via SMTP (`lettre` + STARTTLS) or Twilio (SMS / WhatsApp), with exponential backoff and a 6-attempt cap.
+- Lightning poller (3s default tick) reconciles invoice status from the optional Breez sidecar.
 
-Auth: each vault has a random 32-byte `owner_token` issued at creation. SHA-256 hash stored; raw value returned once. Required as a Bearer token on all mutation endpoints.
+Vault registration is rejected if the descriptor doesn't parse as a valid inheritance policy.
 
-Heir contact (name, email/phone) is encrypted at rest with XChaCha20-Poly1305. Per-vault key derived via HKDF-SHA256 from a server master key loaded at startup. Server refuses to boot without `GHOSTKEY_MASTER_KEY`.
+Auth: each vault has a random 32-byte `owner_token` issued at creation. SHA-256 hash stored; raw value returned once. Required as a Bearer token on owner-side mutation endpoints. An optional process-wide admin token (`GHOSTKEY_ADMIN_TOKEN_HASH`) gates `GET /vaults`.
+
+Heir / owner / trusted contacts are encrypted at rest with XChaCha20-Poly1305. Per-vault key derived via HKDF-SHA256 from `GHOSTKEY_MASTER_KEY` (loaded at startup). Server refuses to boot without it.
+
+**Password-vault material** (added 20260525): when a user creates a vault through the in-browser password flow, the server stores three opaque ciphertexts the browser produced — the owner xprv (wrapped under an Argon2id-derived KEK), the owner token (same KEK), and the heir xprv (wrapped under HKDF(claim_token)). The server cannot open any of these blobs.
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/health` | GET | Liveness |
-| `/vaults` | POST | Register vault |
-| `/vaults` | GET | List vaults |
-| `/vaults/:id` | GET | Vault detail |
-| `/vaults/:id/checkin` | POST | Record heartbeat |
-| `/vaults/:id/events` | GET | Event log |
-| `/vaults/from-xpub` | POST | Build descriptor from xpubs server-side |
+| `/health` | GET | Liveness, Lightning / AI / demo flags, default network |
+| `/assist/chat` | POST | Proxied Claude Messages API for the in-app onboarding guide. Strips seed-shaped strings. |
+| `/vaults` | POST | Register vault from pre-rendered descriptors (CLI flow) |
+| `/vaults` | GET | List all vaults (admin only) |
+| `/vaults/from-xpub` | POST | Register vault from xpubs + (optional) sealed password-vault blobs |
+| `/vaults/find` | POST | Locate vaults by SHA-256(owner email) for cross-device sign-in |
+| `/vaults/:id` | GET / DELETE | Vault detail / owner-initiated removal (cascades) |
+| `/vaults/:id/address` | GET | First external receive address |
+| `/vaults/:id/balance` | GET | Confirmed + unconfirmed sats via Esplora scan |
+| `/vaults/:id/sealed-blobs` | GET | Password-wrapped owner xprv + owner-token ciphertexts for recovery |
+| `/vaults/:id/seal-owner-token` | POST | Re-seal owner token after creation (owner-auth) |
+| `/vaults/:id/checkin` | POST | Record heartbeat (owner-auth, once-per-period) |
+| `/vaults/:id/checkin-from-link/:token` | POST | One-tap check-in from email link (token IS the auth) |
+| `/vaults/:id/events` | GET | Event log (owner-auth) |
+| `/vaults/:id/issue-claim` | POST | Manually issue a claim token (owner-auth) |
+| `/vaults/:id/lightning-checkin/invoice` | POST | Mint a 1-sat Lightning check-in invoice (owner-auth) |
+| `/vaults/:id/lightning-checkin/status/:hash` | GET | Poll invoice status (owner-auth) |
+| `/lnurlp/:vault_id`, `/lnurlp/:vault_id/cb` | GET | LNURL-pay endpoints (LUD-06) for static QR check-in |
+| `/lnurlp/:vault_id/panic`, `/lnurlp/:vault_id/panic/cb` | GET | LNURL-pay endpoints for panic-freeze |
 | `/claim/:token` | GET | Resolve claim token → ClaimView |
-| `/claim/:token/build-psbt` | POST | Scan chain, build unsigned claim PSBT |
-| `/claim/:token/broadcast` | POST | Finalise, broadcast, mark claimed |
+| `/claim/:token/sealed-heir` | GET | Heir xprv ciphertext (browser unwraps with HKDF(token)) |
+| `/claim/:token/heir-derivation-params` | GET | F2 server-derived heirs: vault_secret + heir email |
+| `/claim/:token/build-psbt` | POST | Scan chain, build unsigned claim PSBT (legacy heir flow) |
+| `/claim/:token/broadcast` | POST | Finalise + broadcast a signed claim PSBT (legacy heir flow) |
+| `/claim/:token/heir-claim` | POST | One-shot password-vault claim: server signs in-memory with heir xprv |
 
-Claim tokens: 32 random bytes, base64 for transport, SHA-256 hash in DB, consumed on successful broadcast (not on first view).
+Claim tokens: 32 random bytes, base64-url-no-pad for transport, SHA-256 hash in DB, consumed atomically on successful broadcast (not on first view). The `claim_token_used_at IS NULL` predicate is the CAS gate that makes the broadcast race-safe.
+
+Owner / one-tap tokens follow the same shape (random 32 bytes, hash-only at rest, constant-time compare).
 
 Blocking Esplora calls (`full_scan`, `broadcast`) run in `tokio::task::spawn_blocking` to avoid blocking the async runtime.
 
@@ -140,8 +169,10 @@ Heir claim page (`/claim/:token`): five states — loading, not found, already u
 
 | Compromised | Can do | Cannot do |
 |---|---|---|
-| GhostKey server | Record false check-ins, suppress alarms | Spend funds — no keys here |
-| Web dashboard | Send heartbeat requests | Sign transactions, access keys |
+| GhostKey server (steady state) | Record false check-ins, suppress alarms, learn sealed contacts only after master-key compromise | Spend funds — no plaintext keys held; sealed blobs are encrypted to the owner password / heir claim token |
+| GhostKey server (during a password-vault heir claim) | Briefly hold the heir xprv in process memory for the duration of one `POST /claim/:token/heir-claim` call | Persist the xprv — never touches disk or logs; dropped at end of scope. See [Server-side signing exception](#server-side-signing-exception). |
+| GhostKey master key (`GHOSTKEY_MASTER_KEY`) leaks | Decrypt every sealed contact; recompute the heir mnemonic for every F2 server-derived heir vault | Touch funds before the on-chain timelock matures. See [F2 server-derived heirs](#f2-server-derived-heirs). |
+| Web dashboard XSS | Send heartbeat requests; read the owner token from localStorage | Sign transactions client-side, decrypt sealed material without the user's password |
 | Heir's key (timelock active) | Nothing useful | Spend — mempool rejects as non-BIP68-final |
 | Heir's key (timelock expired, owner gone) | Claim — as intended | — |
 | Owner's key | Spend or move funds — as the owner always could | — |
@@ -151,15 +182,65 @@ The guarantee everything else rests on:
 
 > The heir cannot move the UTXO sooner than N blocks after its last confirmation. The owner can move it any time.
 
+### Server-side signing exception
+
+The original spec was "server never signs." The password-vault flow
+relaxes that in exactly one place: `POST /claim/:token/heir-claim`. When
+an heir who never owned Bitcoin opens their claim link, their browser
+unwraps the heir xprv from the sealed blob using the claim-token KEK
+(server cannot reproduce this — it only stores the hash), then ships the
+xprv over TLS to the server, which:
+
+1. Reconstructs the heir-side BDK wallet from the stored descriptor.
+2. Calls `build_heir_claim` (script-path selection, `nSequence = N`).
+3. Signs in memory, broadcasts via Esplora, atomically marks the claim
+   token consumed.
+4. Drops the xprv at function exit. It is never written to disk or
+   tracing output.
+
+This is a real trust transfer — an attacker who compromises the server
+mid-call could redirect funds to an address they control. The on-chain
+trail is public, so the legitimate heir notices immediately, but the
+funds are gone. The exposure window is bounded to the seconds the call
+takes. We chose this trade-off because re-implementing Taproot
+script-path PSBT signing in the browser would add a significant chunk
+of audited Bitcoin code, and at the moment of the call the timelock has
+already matured — only the heir benefits from spending the UTXO.
+
+The legacy two-step heir flow (`build-psbt` + `broadcast`) still exists
+for heirs who own Bitcoin and want to sign with their own wallet. It is
+the default for vaults created via the CLI rather than the password
+wizard.
+
+### F2 server-derived heirs
+
+For heirs who do not own Bitcoin, the wizard offers a flow where the
+server derives the heir's BIP86 account key deterministically from
+`(heir_email, vault_id, master_key)` via HKDF-SHA256 → 16 bytes of BIP39
+entropy → 12-word mnemonic → BIP32 → `m/86'/coin'/0'`. The browser
+recomputes this on the claim side using the same scheme (mirror in
+`ghostkey-web/src/crypto/heirKey.ts`).
+
+Consequence: anyone who simultaneously holds **the server master key,
+the heir's email, and the vault id** can reconstruct the heir's
+mnemonic. The on-chain timelock is the only check between such an
+attacker and the heir's funds. Operationally that means:
+
+- Master-key custody is the load-bearing secret for every F2 vault.
+  Use Fly Secrets (or your platform's KMS equivalent); never bake it
+  into a container image or check-in script.
+- A master-key leak should trigger an immediate owner-side rotation:
+  the owner's funds are safe (they still control their own keys), but
+  they should move the UTXOs to a fresh vault under a rotated master
+  key before the timelock matures.
+
 ---
 
 ## What isn't built yet
 
-**Notification delivery.** The server records `alarmed` events but sends nothing. Email is in progress (`lettre` + STARTTLS). SMS and WhatsApp are next. Until delivery is live, someone needs to watch the events table or poll `/vaults/:id/events`.
+**Rate limiting.** Mutation endpoints have no per-IP throttling yet. `/assist/chat` is unauthenticated and proxies the Anthropic Messages API; `/vaults/from-xpub` and `/vaults/find` are also unauthenticated by design (they support cross-device onboarding and recovery). All three are reasonable rate-limit targets before mainnet.
 
 **PSBT export for hardware wallets.** The CLI signs in-process. Adding `--export-psbt` (write unsigned PSBT to disk) and `--sign-psbt` (import signed PSBT, broadcast) would support air-gapped and hardware signers. The PSBTs are already standard — it's a CLI workflow change, not a cryptography change.
-
-**Multiple heirs.** One-line change to the descriptor builder (`thresh(k, pk(HEIR1), pk(HEIR2), ...)` instead of `and_v`). The rest of the stack handles it already. Good first contribution.
 
 **Setup from a plain address.** The wizard requires an xpub. Supporting a single receive address (watches one address, not the full wallet) would remove a barrier for beginners.
 

@@ -830,17 +830,11 @@ async fn load_vault_for_claim_token(
         return Err(ApiError::Conflict("claim token already used".into()));
     }
 
-    let network = match network_s.as_str() {
-        "bitcoin" => Network::Bitcoin,
-        "testnet" => Network::Testnet,
-        "signet" => Network::Signet,
-        "regtest" => Network::Regtest,
-        other => {
-            return Err(ApiError::Validation(format!(
-                "stored vault network {other} is not a known Bitcoin network"
-            )))
-        }
-    };
+    let network = crate::config::parse_network(&network_s).map_err(|name| {
+        ApiError::Validation(format!(
+            "stored vault network {name} is not a known Bitcoin network"
+        ))
+    })?;
 
     Ok(VaultForClaim {
         id,
@@ -976,9 +970,7 @@ pub async fn get_heir_derivation_params(
         .contact
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| {
-            ApiError::Validation(
-                "heir_derived=1 but the sealed heir contact has no email".into(),
-            )
+            ApiError::Validation("heir_derived=1 but the sealed heir contact has no email".into())
         })?;
 
     let master = crate::crypto::master_key_bytes()?;
@@ -1031,17 +1023,11 @@ pub async fn get_vault_balance(
     .await?;
     let (network_s, ext, int_, timelock) = row.ok_or(ApiError::NotFound)?;
 
-    let network = match network_s.as_str() {
-        "bitcoin" => Network::Bitcoin,
-        "testnet" => Network::Testnet,
-        "signet" => Network::Signet,
-        "regtest" => Network::Regtest,
-        other => {
-            return Err(ApiError::Validation(format!(
-                "stored vault network {other} is not a known Bitcoin network"
-            )))
-        }
-    };
+    let network = crate::config::parse_network(&network_s).map_err(|name| {
+        ApiError::Validation(format!(
+            "stored vault network {name} is not a known Bitcoin network"
+        ))
+    })?;
 
     let vault_config = VaultConfig {
         descriptor_external: ext,
@@ -1056,8 +1042,8 @@ pub async fn get_vault_balance(
 
     let url = esplora_url(network)?;
     let id_for_resp = id.clone();
-    let (confirmed_sat, unconfirmed_sat, total_sat) = tokio::task::spawn_blocking(
-        move || -> Result<(u64, u64, u64), BlockingErr> {
+    let (confirmed_sat, unconfirmed_sat, total_sat) =
+        tokio::task::spawn_blocking(move || -> Result<(u64, u64, u64), BlockingErr> {
             let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
                 .map_err(|e| BlockingErr::Vault(e.to_string()))?;
             let client = esplora_client::Builder::new(&url).build_blocking();
@@ -1070,14 +1056,12 @@ pub async fn get_vault_balance(
                 .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
             let bal = wallet.balance();
             let confirmed = bal.confirmed.to_sat();
-            let unconfirmed =
-                bal.trusted_pending.to_sat() + bal.untrusted_pending.to_sat();
+            let unconfirmed = bal.trusted_pending.to_sat() + bal.untrusted_pending.to_sat();
             let total = bal.total().to_sat();
             Ok((confirmed, unconfirmed, total))
-        },
-    )
-    .await
-    .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
+        })
+        .await
+        .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
 
     Ok(Json(VaultBalanceView {
         vault_id: id_for_resp,
