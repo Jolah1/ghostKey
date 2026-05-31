@@ -39,6 +39,8 @@ import {
   getVaultMeta,
   getVaultOwnerToken,
   getVaultsByGroup,
+  removeVaultMeta,
+  setActiveVaultId,
   type VaultMeta,
 } from "./vaultStore";
 import { LightningCheckin } from "./LightningCheckin";
@@ -87,6 +89,10 @@ export function Dashboard({ onNavigate }: Props) {
   // pick it up on the next page load. Treating it as static-per-load
   // avoids re-rendering the dashboard every poll.
   const [lightningEnabled, setLightningEnabled] = useState(false);
+  // Whether the server is running in seconds-scale demo mode. Drives
+  // the "Waiting period" StatCard's units (seconds vs blocks) so the
+  // dashboard matches what the operator picked at setup time.
+  const [demoMode, setDemoMode] = useState(false);
   // Whether the Lightning check-in modal is open. The modal owns its
   // own invoice + polling state; we just toggle visibility here.
   const [lightningOpen, setLightningOpen] = useState(false);
@@ -111,11 +117,19 @@ export function Dashboard({ onNavigate }: Props) {
         return;
       }
       if (e instanceof ApiError && e.status === 404) {
-        setError("This vault is no longer on the server.");
+        // The server no longer has this vault (e.g. owner deleted it
+        // from another device, or it was an old test row). Drop the
+        // local meta so the dashboard doesn't keep clinging to a row
+        // that's gone — then route to landing rather than auto-
+        // switching to whatever other vault happens to be in
+        // localStorage.
+        removeVaultMeta(activeId);
+        onNavigate("landing");
+        return;
       }
       // Otherwise swallow; the next tick may succeed.
     }
-  }, [activeId, ownerToken]);
+  }, [activeId, ownerToken, onNavigate]);
 
   // Initial load.
   useEffect(() => {
@@ -129,10 +143,14 @@ export function Dashboard({ onNavigate }: Props) {
     api
       .health()
       .then((h) => {
-        if (alive) setLightningEnabled(Boolean(h.lightning_enabled));
+        if (!alive) return;
+        setLightningEnabled(Boolean(h.lightning_enabled));
+        setDemoMode(Boolean(h.demo_mode));
       })
       .catch(() => {
-        if (alive) setLightningEnabled(false);
+        if (!alive) return;
+        setLightningEnabled(false);
+        setDemoMode(false);
       });
     return () => {
       alive = false;
@@ -190,14 +208,85 @@ export function Dashboard({ onNavigate }: Props) {
     }
   }
 
+  // Owner-initiated heir removal. Deletes the server-side vault row
+  // (cascading events/notifications/lightning_invoices) and the local
+  // metadata. For a multi-heir group, picks a remaining sibling as
+  // the next active vault and reloads so the dashboard re-renders
+  // against it. For a single-heir vault, routes back to landing.
+  // On-chain funds are unaffected — the owner still holds the xpub.
+  async function onRemoveHeir(siblingId: string, heirName: string) {
+    const token = getVaultOwnerToken(siblingId);
+    if (!token) {
+      setError(
+        "This browser doesn't have the owner credential for that heir — sign in first.",
+      );
+      return;
+    }
+    const ok = window.confirm(
+      `Remove ${heirName} as an heir?\n\n` +
+        `This revokes the inheritance plan for this heir:\n` +
+        `  • ${heirName} can no longer claim through GhostKey.\n` +
+        `  • Pending alarm notifications are cancelled.\n\n` +
+        `Your Bitcoin stays yours. GhostKey never held your keys — ` +
+        `the funds remain spendable from your own wallet at any time.`,
+    );
+    if (!ok) return;
+    try {
+      await api.deleteVault(siblingId, token);
+    } catch (e) {
+      // 404 means the server row was already gone — fall through and
+      // clean up local state anyway so the UI stops referencing it.
+      if (!(e instanceof ApiError && e.status === 404)) {
+        setError(e instanceof ApiError ? e.message : String(e));
+        return;
+      }
+    }
+    removeVaultMeta(siblingId);
+    const remaining = groupVaults.filter((v) => v.id !== siblingId);
+    if (remaining.length === 0) {
+      onNavigate("landing");
+      return;
+    }
+    // Switch active to the first remaining sibling and reload so all
+    // derived state (groupVaults, vault, events) refreshes.
+    setActiveVaultId(remaining[0].id);
+    if (typeof window !== "undefined") window.location.reload();
+  }
+
   if (!activeId || !meta) {
     return <EmptyState onNavigate={onNavigate} />;
   }
 
+  // Three derived flags shape the dashboard's "past the line" rendering:
+  //   - isClaiming: heir has the claim link or is broadcasting; the
+  //     check-in loop is effectively over (server may still accept a
+  //     check-in but the UX shouldn't suggest it).
+  //   - isClosed: heir's claim transaction was accepted by the server;
+  //     terminal state, dismiss-and-go.
+  //   - isPastDeadline: deadline elapsed but scheduler hasn't ticked
+  //     yet; used by the Greeting to swap copy from "You're still
+  //     here" to "Missed deadline".
+  const isClaiming =
+    vault?.status === "timelock_started" || vault?.status === "claiming";
+  const isClosed = vault?.status === "claimed";
+  const isPastDeadline =
+    vault != null &&
+    (vault.status === "alarmed" ||
+      isClaiming ||
+      isClosed ||
+      parseRfc(vault.next_deadline_at) < now);
+
   return (
     <main className="bg-app fade-in">
       <div className="mx-auto max-w-2xl px-5 py-10 md:py-14">
-        <Greeting meta={meta} vault={vault} now={now} />
+        <Greeting
+          meta={meta}
+          vault={vault}
+          now={now}
+          isClaiming={isClaiming}
+          isClosed={isClosed}
+          isPastDeadline={isPastDeadline}
+        />
 
         {vault?.status === "frozen" ? (
           <div className="mt-4">
@@ -210,17 +299,34 @@ export function Dashboard({ onNavigate }: Props) {
         ) : null}
 
         <div className="mt-8">
-          <HeartbeatCard
-            meta={meta}
-            vault={vault}
-            now={now}
-            busy={busy}
-            justChecked={justChecked}
-            error={error}
-            onCheckin={onCheckin}
-            lightningEnabled={lightningEnabled}
-            onLightning={() => setLightningOpen(true)}
-          />
+          {isClosed ? (
+            <VaultClosedCard
+              meta={meta}
+              onDismiss={() => {
+                // Final close-out: drop the local meta so the next
+                // dashboard visit isn't tied to a terminal vault.
+                // The server-side row stays — claim history is the
+                // owner's record. They can also "Remove heir" before
+                // dismissing if they want it gone server-side too.
+                removeVaultMeta(meta.id);
+                onNavigate("landing");
+              }}
+            />
+          ) : isClaiming ? (
+            <ClaimInProgressCard meta={meta} status={vault!.status} />
+          ) : (
+            <HeartbeatCard
+              meta={meta}
+              vault={vault}
+              now={now}
+              busy={busy}
+              justChecked={justChecked}
+              error={error}
+              onCheckin={onCheckin}
+              lightningEnabled={lightningEnabled}
+              onLightning={() => setLightningOpen(true)}
+            />
+          )}
         </div>
 
         {vault ? (
@@ -229,7 +335,7 @@ export function Dashboard({ onNavigate }: Props) {
           </div>
         ) : null}
 
-        {vault?.lnurl_checkin ? (
+        {vault?.lnurl_checkin && !isClosed && !isClaiming ? (
           <div className="mt-4">
             <LnurlCard lnurl={vault.lnurl_checkin} />
           </div>
@@ -248,7 +354,11 @@ export function Dashboard({ onNavigate }: Props) {
             />
             <StatCard
               label="Waiting period"
-              value={prettyBlocks(vault.timelock_blocks)}
+              value={
+                demoMode
+                  ? prettySeconds(vault.grace_period_secs)
+                  : prettyBlocks(vault.timelock_blocks)
+              }
               sub="After a missed check-in"
             />
           </div>
@@ -270,13 +380,20 @@ export function Dashboard({ onNavigate }: Props) {
                   window.location.reload();
                 }
               }}
+              onRemove={onRemoveHeir}
             />
           ) : (
-            <HeirCard meta={meta} vault={vault} />
+            <HeirCard
+              meta={meta}
+              vault={vault}
+              onRemove={
+                isClosed ? undefined : () => onRemoveHeir(meta.id, meta.heir.name)
+              }
+            />
           )}
         </div>
 
-        {vault?.lnurl_panic && vault.status !== "frozen" ? (
+        {vault?.lnurl_panic && vault.status !== "frozen" && !isClosed && !isClaiming ? (
           <div className="mt-4">
             <PanicCard lnurl={vault.lnurl_panic} />
           </div>
@@ -387,30 +504,132 @@ function Greeting({
   meta,
   vault,
   now,
+  isClaiming,
+  isClosed,
+  isPastDeadline,
 }: {
   meta: VaultMeta;
   vault: VaultView | null;
   now: Date;
+  isClaiming: boolean;
+  isClosed: boolean;
+  isPastDeadline: boolean;
 }) {
   const last = vault?.last_checkin_at
     ? parseRfc(vault.last_checkin_at)
     : null;
-  const ago = last ? humanAgo(last, now) : null;
-  const next = vault?.next_deadline_at
-    ? countdown(parseRfc(vault.next_deadline_at), now).friendly
+  const deadline = vault?.next_deadline_at
+    ? parseRfc(vault.next_deadline_at)
     : null;
+  const ago = last ? humanAgo(last, now) : null;
+
+  // Headline + sub copy switch with the vault's lifecycle. Always
+  // phrased relative to the owner's POV — they're the one reading
+  // this dashboard.
+  let headline: string;
+  let sub: string;
+  if (isClosed) {
+    headline = "Vault closed";
+    sub = `${meta.heir.name || "Your heir"} claimed the funds.`;
+  } else if (isClaiming) {
+    headline = "Your heir is claiming";
+    sub = `${meta.heir.name || "Your heir"} has the claim link. The check-in loop is over for this vault.`;
+  } else if (isPastDeadline) {
+    headline = "Deadline missed";
+    const missedAgo = deadline ? humanAgo(deadline, now) : null;
+    sub = missedAgo
+      ? `Check-in was due ${missedAgo}. Tap below to recover, or your heir will be contacted.`
+      : "Tap below to recover before your heir is contacted.";
+  } else {
+    headline = "You're still here";
+    const next = deadline ? countdown(deadline, now).friendly : null;
+    sub =
+      (last ? `Last checked in ${ago}.` : `Vault for ${meta.heir.name} is active.`) +
+      (next ? ` Next reminder in ${next}.` : "");
+  }
+
   return (
     <div>
-      <h1 className="font-serif text-3xl md:text-4xl">You're still here</h1>
-      <p className="mt-1 text-sm text-muted">
-        {last ? `Last checked in ${ago}.` : `Vault for ${meta.heir.name} is active.`}
-        {next ? ` Next reminder ${next}.` : ""}
-      </p>
+      <h1 className="font-serif text-3xl md:text-4xl">{headline}</h1>
+      <p className="mt-1 text-sm text-muted">{sub}</p>
     </div>
   );
 }
 
 /* --------------------------- Heartbeat card ------------------------------- */
+
+/**
+ * Terminal-state replacement for the HeartbeatCard. Shown when the
+ * vault's status flips to `claimed` — the heir has broadcast the
+ * claim transaction, so the check-in loop is over and there's
+ * nothing for the owner to do here anymore.
+ */
+function VaultClosedCard({
+  meta,
+  onDismiss,
+}: {
+  meta: VaultMeta;
+  onDismiss: () => void;
+}) {
+  return (
+    <section className="card relative overflow-hidden p-5 text-center md:p-8">
+      <div className="flex flex-col items-center">
+        <div
+          aria-hidden="true"
+          className="flex h-16 w-16 items-center justify-center rounded-full bg-[var(--surface-2,var(--surface))] text-3xl"
+        >
+          ✓
+        </div>
+        <h2 className="mt-6 font-serif text-2xl">Vault closed</h2>
+        <p className="mt-2 max-w-md text-sm text-muted">
+          {meta.heir.name || "Your heir"} claimed the funds. Check-ins are
+          no longer required — this vault is now in its terminal state.
+        </p>
+        <Button onClick={onDismiss} className="mt-6">
+          Done
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Heir-is-claiming state. Replaces HeartbeatCard during
+ * `timelock_started` (claim link issued, heir hasn't broadcast yet)
+ * and `claiming` (broadcast in flight). The owner can't meaningfully
+ * "check in to recover" once the heir has the link — the demo
+ * narrative is now about the heir's side of the flow.
+ */
+function ClaimInProgressCard({
+  meta,
+  status,
+}: {
+  meta: VaultMeta;
+  status: string;
+}) {
+  const broadcasting = status === "claiming";
+  const heirName = meta.heir.name || "Your heir";
+  return (
+    <section className="card relative overflow-hidden p-5 text-center md:p-8">
+      <div className="flex flex-col items-center">
+        <div
+          aria-hidden="true"
+          className="flex h-16 w-16 items-center justify-center rounded-full bg-[var(--surface-2,var(--surface))] text-3xl"
+        >
+          ⏳
+        </div>
+        <h2 className="mt-6 font-serif text-2xl">
+          {broadcasting ? "Heir is broadcasting" : "Heir was sent the claim link"}
+        </h2>
+        <p className="mt-2 max-w-md text-sm text-muted">
+          {broadcasting
+            ? `${heirName} is finalising the claim transaction.`
+            : `${heirName} can open the link any time. The check-in loop is over for this vault.`}
+        </p>
+      </div>
+    </section>
+  );
+}
 
 function HeartbeatCard({
   meta,
@@ -559,14 +778,28 @@ function prettyBlocks(blocks: number): string {
   return `${days} day${days === 1 ? "" : "s"}`;
 }
 
+function prettySeconds(secs: number): string {
+  if (secs < 60) return `${secs} second${secs === 1 ? "" : "s"}`;
+  if (secs < 3600) {
+    const m = Math.round(secs / 60);
+    return `${m} minute${m === 1 ? "" : "s"}`;
+  }
+  const h = Math.round(secs / 3600);
+  return `${h} hour${h === 1 ? "" : "s"}`;
+}
+
 /* ------------------------------ Heir card --------------------------------- */
 
 function HeirCard({
   meta,
   vault,
+  onRemove,
 }: {
   meta: VaultMeta;
   vault: VaultView | null;
+  /** When provided, renders a "Remove" button. Omit on terminal
+   *  states (claimed vaults) where removal isn't meaningful. */
+  onRemove?: () => void;
 }) {
   const status = vault?.status ?? "ok";
   const pill =
@@ -587,6 +820,16 @@ function HeirCard({
         </p>
       </div>
       <StatusPill tone={pill.tone} label={pill.label} />
+      {onRemove ? (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="ml-2 rounded-md px-2 py-1 text-xs text-muted hover:bg-[var(--surface-2,var(--surface))] hover:text-alarm"
+          aria-label={`Remove ${meta.heir.name}`}
+        >
+          Remove
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -611,10 +854,12 @@ function HeirGroupList({
   groupVaults,
   activeId,
   onSelect,
+  onRemove,
 }: {
   groupVaults: VaultMeta[];
   activeId: string | null;
   onSelect: (id: string) => void;
+  onRemove: (id: string, heirName: string) => void;
 }) {
   return (
     <div className="flex flex-col gap-2">
@@ -623,13 +868,11 @@ function HeirGroupList({
       </p>
       {groupVaults.map((meta) => {
         const isActive = meta.id === activeId;
+        const heirName = meta.heir.name || "(unnamed)";
         return (
-          <button
+          <div
             key={meta.id}
-            type="button"
-            onClick={() => onSelect(meta.id)}
-            disabled={isActive}
-            className={`card-flat flex items-center gap-4 p-4 text-left transition-colors ${
+            className={`card-flat flex items-center gap-4 p-4 transition-colors ${
               isActive
                 ? "border-accent"
                 : "hover:bg-[var(--surface-2)]"
@@ -637,21 +880,36 @@ function HeirGroupList({
             style={isActive ? { background: "var(--accent-tint)" } : undefined}
             aria-current={isActive ? "true" : undefined}
           >
-            <Avatar name={meta.heir.name} />
-            <div className="min-w-0 flex-1">
-              <p className="truncate font-semibold text-[var(--text)]">
-                {meta.heir.name || "(unnamed)"}
-              </p>
-              <p className="truncate text-xs text-muted">
-                {meta.heir.email || "—"}
-              </p>
-            </div>
-            {isActive ? (
-              <span className="text-xs text-accent font-medium">Active</span>
-            ) : (
-              <span className="text-xs text-muted">Tap to view</span>
-            )}
-          </button>
+            <button
+              type="button"
+              onClick={() => onSelect(meta.id)}
+              disabled={isActive}
+              className="flex min-w-0 flex-1 items-center gap-4 text-left"
+            >
+              <Avatar name={heirName} />
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-semibold text-[var(--text)]">
+                  {heirName}
+                </p>
+                <p className="truncate text-xs text-muted">
+                  {meta.heir.email || "—"}
+                </p>
+              </div>
+              {isActive ? (
+                <span className="text-xs text-accent font-medium">Active</span>
+              ) : (
+                <span className="text-xs text-muted">Tap to view</span>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => onRemove(meta.id, heirName)}
+              className="rounded-md px-2 py-1 text-xs text-muted hover:bg-[var(--surface-2,var(--surface))] hover:text-alarm"
+              aria-label={`Remove ${heirName}`}
+            >
+              Remove
+            </button>
+          </div>
         );
       })}
       <p className="mt-1 text-[11px] text-dim">

@@ -119,6 +119,21 @@ export function getActiveVaultId(): string | null {
 }
 
 /**
+ * Remove a vault's local metadata. If it was the active vault, the
+ * caller is responsible for picking a new active id (e.g. switch to
+ * a sibling in a multi-heir group). Returns `true` if a row was
+ * removed.
+ */
+export function removeVaultMeta(id: string): boolean {
+  const map = readAll();
+  if (!(id in map)) return false;
+  delete map[id];
+  writeAll(map);
+  if (getActiveVaultId() === id) setActiveVaultId(null);
+  return true;
+}
+
+/**
  * Return every vault sharing the given `groupId`, in stable creation
  * order. Used by the Dashboard to render a multi-heir group as one
  * card. A `groupId` of `undefined` (or a group that no longer has

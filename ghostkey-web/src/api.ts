@@ -12,6 +12,7 @@ export type VaultStatus =
   | "warning"
   | "alarmed"
   | "timelock_started"
+  | "claiming"
   | "claimed"
   | "frozen";
 
@@ -426,6 +427,12 @@ export const api = {
     }>("/health"),
   getVault: (id: string, ownerToken: string | null) =>
     request<VaultView>(`/vaults/${id}`, {}, ownerToken),
+  /** Owner-initiated vault deletion. The server clears its metadata
+   *  (vault row + cascaded events/notifications/lightning invoices).
+   *  On-chain funds remain spendable by the owner — GhostKey never
+   *  held the keys. Returns 204; we return null. */
+  deleteVault: (id: string, ownerToken: string) =>
+    request<null>(`/vaults/${id}`, { method: "DELETE" }, ownerToken),
   createVault: (req: CreateVaultRequest) =>
     request<CreatedVault>("/vaults", {
       method: "POST",

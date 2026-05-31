@@ -40,8 +40,14 @@ export function statusCopy(status: VaultStatus): {
       };
     case "timelock_started":
       return {
-        label: "Countdown running",
-        long: "The waiting period has started.",
+        label: "Claim issued",
+        long: "Your heir was sent the claim link.",
+        tone: "alarm",
+      };
+    case "claiming":
+      return {
+        label: "Claiming",
+        long: "Your heir is broadcasting the claim transaction.",
         tone: "alarm",
       };
     case "claimed":

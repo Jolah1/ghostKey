@@ -521,7 +521,7 @@ function PasswordVaultClaim({
           {view.label || "A Bitcoin inheritance"}
         </p>
         <p className="mt-1 text-xs text-muted">
-          On the {sealed.network === "bitcoin" ? "Bitcoin network" : `${sealed.network} network`}.
+          On the {networkLabel(sealed.network)}.
         </p>
       </div>
 
@@ -532,8 +532,8 @@ function PasswordVaultClaim({
         </h2>
         <p className="mt-2 text-sm text-soft">
           A Bitcoin wallet is an app where you can receive Bitcoin. You only
-          need one that can <em>receive</em> — you don't need anything fancy.
-          Wallet of Satoshi, Blink, Cake Wallet all work.
+          need one that can <em>receive</em> on the {networkLabel(sealed.network)}.{" "}
+          {walletExamplesInline(sealed.network)} all work.
         </p>
 
         <div className="mt-4 grid grid-cols-2 gap-2">
@@ -551,7 +551,7 @@ function PasswordVaultClaim({
           />
         </div>
 
-        {hasWallet === false && <WalletGuide />}
+        {hasWallet === false && <WalletGuide network={sealed.network} />}
       </div>
 
       {hasWallet !== null && (
@@ -562,9 +562,9 @@ function PasswordVaultClaim({
           </h2>
           <p className="mt-2 text-sm text-soft">
             Open your wallet. Tap <strong>Receive</strong>. Copy the long
-            address that starts with <code className="font-mono">bc1</code>,{" "}
-            <code className="font-mono">tb1</code>, or{" "}
-            <code className="font-mono">3</code>. Paste it below.
+            address that starts with{" "}
+            <code className="font-mono">{bech32PrefixFor(sealed.network)}</code>.
+            Paste it below.
           </p>
 
           <div className="mt-4">
@@ -580,7 +580,7 @@ function PasswordVaultClaim({
                 rows={3}
                 value={address}
                 onChange={(e) => setAddress(e.target.value)}
-                placeholder="bc1q..."
+                placeholder={`${bech32PrefixFor(sealed.network)}...`}
                 spellCheck={false}
                 autoComplete="off"
                 className="textarea"
@@ -809,12 +809,9 @@ function DerivedHeirClaim({
           Where should the Bitcoin go?
         </h2>
         <p className="mt-2 text-sm text-soft">
-          Paste any Bitcoin address you control. Wallet of Satoshi, Cake
-          Wallet, Blink, Phoenix — anything that can receive on the{" "}
-          {params.network === "bitcoin"
-            ? "Bitcoin network"
-            : `${params.network} network`}
-          .
+          Paste any Bitcoin address you control on the {networkLabel(params.network)}.{" "}
+          {walletExamplesInline(params.network)} — anything that can receive
+          on that network.
         </p>
 
         <div className="mt-4">
@@ -822,7 +819,7 @@ function DerivedHeirClaim({
             type="text"
             value={address}
             onChange={(e) => setAddress(e.target.value)}
-            placeholder="bc1q... / tb1q..."
+            placeholder={`${bech32PrefixFor(params.network)}...`}
             autoComplete="off"
             className="input"
             disabled={submitting}
@@ -979,7 +976,7 @@ function ManualPsbtClaim({
           {view.label || "A Bitcoin inheritance"}
         </p>
         <p className="mt-1 text-xs text-muted">
-          On the {view.network === "bitcoin" ? "Bitcoin network" : `${view.network} network`}.
+          On the {networkLabel(view.network)}.
         </p>
       </div>
 
@@ -990,10 +987,10 @@ function ManualPsbtClaim({
           Do you have a Bitcoin wallet?
         </h2>
         <p className="mt-2 text-sm text-soft">
-          A Bitcoin wallet is an app where you can receive and hold Bitcoin.
-          For this claim you'll need one that can <em>sign a PSBT</em> — most
-          self-custody wallets can (Sparrow on desktop, BlueWallet, Nunchuk,
-          Coldcard). Custodial wallets like Wallet of Satoshi cannot.
+          A Bitcoin wallet is an app where you can receive and hold Bitcoin on
+          the {networkLabel(view.network)}. For this claim you'll need one
+          that can <em>sign a PSBT</em> — most self-custody wallets can.
+          Custodial Lightning apps cannot.
         </p>
 
         <div className="mt-4 grid grid-cols-2 gap-2">
@@ -1011,7 +1008,9 @@ function ManualPsbtClaim({
           />
         </div>
 
-        {hasWallet === false && <WalletGuide requirePsbt />}
+        {hasWallet === false && (
+          <WalletGuide network={view.network} requirePsbt />
+        )}
       </div>
 
       {/* ---- Step 2: paste address + (optional) fee rate ---- */}
@@ -1023,8 +1022,9 @@ function ManualPsbtClaim({
           </h2>
           <p className="mt-2 text-sm text-soft">
             Open your wallet. Tap <strong>Receive</strong>. Copy the long
-            address that starts with <code className="font-mono">bc1</code> or{" "}
-            <code className="font-mono">3</code>. Paste it below.
+            address that starts with{" "}
+            <code className="font-mono">{bech32PrefixFor(view.network)}</code>.
+            Paste it below.
           </p>
 
           <div className="mt-4">
@@ -1040,7 +1040,7 @@ function ManualPsbtClaim({
                 rows={3}
                 value={address}
                 onChange={(e) => setAddress(e.target.value)}
-                placeholder="bc1q..."
+                placeholder={`${bech32PrefixFor(view.network)}...`}
                 spellCheck={false}
                 autoComplete="off"
                 className="textarea"
@@ -1273,7 +1273,7 @@ interface WalletRec {
   canSignPsbt: boolean;
 }
 
-const WALLETS: WalletRec[] = [
+const WALLETS_MAINNET: WalletRec[] = [
   {
     name: "Blink",
     blurb: "Free. Popular in Nigeria. Works without ID.",
@@ -1304,16 +1304,77 @@ const WALLETS: WalletRec[] = [
   },
 ];
 
+// Non-mainnet wallets. Most consumer Lightning wallets (Blink, Wallet
+// of Satoshi, Phoenix) are mainnet-only and would silently reject
+// signet/testnet addresses, so we surface a smaller list of wallets
+// that actually support test networks. Reused for both signet and
+// testnet (same address prefix `tb1`, same wallet behaviour).
+const WALLETS_TEST: WalletRec[] = [
+  {
+    name: "Sparrow",
+    blurb: "Desktop. Switch network to Signet/Testnet at first launch.",
+    url: "https://sparrowwallet.com/",
+    note: "File → New Wallet → set Server type to Signet/Testnet → Receive tab → copy the address.",
+    canSignPsbt: true,
+  },
+  {
+    name: "Mutiny Wallet",
+    blurb: "Web wallet. Built for signet. No install.",
+    url: "https://signet.mutinywallet.com/",
+    note: "Open the link → Receive → copy the tb1q… address.",
+    canSignPsbt: false,
+  },
+  {
+    name: "BlueWallet",
+    blurb: "Mobile. Long-press the + button when adding to pick Testnet.",
+    url: "https://bluewallet.io/",
+    note: "Add wallet → long-press Plus → Testnet → Receive → copy the address.",
+    canSignPsbt: true,
+  },
+];
+
+function walletsFor(network: string): WalletRec[] {
+  return network === "bitcoin" ? WALLETS_MAINNET : WALLETS_TEST;
+}
+
+/** Short human label for the network, used inline in copy. */
+function networkLabel(network: string): string {
+  return network === "bitcoin" ? "Bitcoin network" : `${network} network`;
+}
+
+/** The bech32 address prefix the heir's wallet should produce. Used
+ *  both in copy and as the input placeholder so it matches what
+ *  they're about to paste. */
+function bech32PrefixFor(network: string): string {
+  if (network === "bitcoin") return "bc1q";
+  if (network === "regtest") return "bcrt1q";
+  return "tb1q"; // testnet and signet share the tb1 prefix
+}
+
+/** A handful of wallet names, comma-separated, for inline copy.
+ *  Avoids hard-coding mainnet-only names when the vault is on a
+ *  test network. */
+function walletExamplesInline(network: string): string {
+  return walletsFor(network)
+    .map((w) => w.name)
+    .join(", ");
+}
+
 /**
  * `requirePsbt` filters the wallet list down to ones that can sign
  * PSBTs. Set to `true` on the legacy ManualPsbtClaim flow (where the
  * heir has to sign a base64 PSBT in their wallet), `false` on the
  * password-vault flow (where the heir only needs to receive).
  */
-function WalletGuide({ requirePsbt = false }: { requirePsbt?: boolean } = {}) {
-  const list = requirePsbt
-    ? WALLETS.filter((w) => w.canSignPsbt)
-    : WALLETS;
+function WalletGuide({
+  network,
+  requirePsbt = false,
+}: {
+  network: string;
+  requirePsbt?: boolean;
+}) {
+  const base = walletsFor(network);
+  const list = requirePsbt ? base.filter((w) => w.canSignPsbt) : base;
   return (
     <div className="mt-5 card-flat p-5">
       <p className="text-sm text-body">
