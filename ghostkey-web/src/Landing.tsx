@@ -365,7 +365,6 @@ interface CompRow {
 const COMP: CompRow[] = [
   { name: "Seed phrase in a safe",   selfCustody: "yes",     trustless: "no",      onChain: "no" },
   { name: "Casa inheritance",        selfCustody: "partial", trustless: "no",      onChain: "no" },
-  { name: "Sarcophagus (Ethereum)",  selfCustody: "yes",     trustless: "yes",     onChain: "yes" },
   { name: "Safe Haven",              selfCustody: "partial", trustless: "partial", onChain: "yes" },
   { name: "GhostKey",                selfCustody: "yes",     trustless: "yes",     onChain: "yes", highlight: true },
 ];
