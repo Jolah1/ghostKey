@@ -381,6 +381,51 @@ If `TWILIO_*` is unset, SMS and WhatsApp notifications stay queued
 with Twilio configured picks them up. A future deployment that adds
 Twilio will deliver the backlog automatically on its first tick.
 
+### Rate-limit budgets
+
+The unauthenticated endpoints (`/assist/chat`, `/vaults`,
+`/vaults/from-xpub`, `/vaults/find`, `/claim/:token/*`) are protected
+by an in-process per-IP token-bucket limiter. Buckets refill
+continuously; on exhaustion the server returns `429 Too Many Requests`
+with a `Retry-After` header and a `tracing::info` line tagged
+`limiter=<name>` for monitoring.
+
+Defaults are tuned for the threat model in `crates/ghostkey-server/src/routes.rs`
+(see the comment on `router()`). You almost never need to change
+them, but every budget is overridable per-deploy via two env vars:
+
+| Surface | Routes covered | `BURST` default | `PER_SEC` default | Steady-state |
+|---|---|---|---|---|
+| `GHOSTKEY_RL_ASSIST_*` | `POST /assist/chat` | 3 | 0.2 | ~12/min |
+| `GHOSTKEY_RL_CREATE_*` | `POST /vaults`, `POST /vaults/from-xpub` | 3 | 0.05 | ~3/min |
+| `GHOSTKEY_RL_FIND_*` | `POST /vaults/find` | 30 | 0.5 | ~30/min |
+| `GHOSTKEY_RL_CLAIM_*` | `GET/POST /claim/:token/*` | 20 | 0.333 | ~20/min |
+
+`BURST` is the worst-legitimate-burst size (a u32). `PER_SEC` is the
+steady-state allowance in tokens per second (a float). A value that
+is unparseable or out of range (`BURST < 1` or `PER_SEC <= 0`) logs a
+warning at boot and falls back to the default — a fat-fingered env
+var doesn't take the server offline.
+
+Example: an operator running an open demo where chat traffic is the
+draw might want to loosen `/assist/chat`:
+
+```sh
+fly secrets set GHOSTKEY_RL_ASSIST_BURST=10 GHOSTKEY_RL_ASSIST_PER_SEC=0.5 -a ghostkey-demo
+```
+
+Caveats:
+
+- Per-IP keying uses `Fly-Client-IP` → `X-Forwarded-For` → TCP peer
+  in that order. Behind any other reverse proxy, audit the header
+  semantics before trusting the bucket.
+- The limiter is in-process. Horizontal scale-out across multiple
+  Fly machines means each machine has its own bucket — limits scale
+  with replica count. If you scale past one replica per region,
+  revisit whether shared-state limiting (Redis, CDN-level) is needed.
+- `/health` and the LNURL endpoints are deliberately not rate-limited;
+  see the same code comment for the rationale.
+
 ### Picking which Bitcoin network the UI defaults to
 
 The web UI defaults new vaults to **testnet**. The server-side

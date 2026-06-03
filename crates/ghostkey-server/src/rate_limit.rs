@@ -114,6 +114,41 @@ impl Limiter {
         }
     }
 
+    /// Build a limiter whose `(capacity, refill_per_sec)` come from
+    /// environment variables, falling back to the supplied defaults
+    /// when unset, unparseable, or out of range.
+    ///
+    /// Reads `<env_prefix>_BURST` (parsed as `u32`) and
+    /// `<env_prefix>_PER_SEC` (parsed as `f64`). For example,
+    /// `from_env("assist", "GHOSTKEY_RL_ASSIST", 3, 0.2)` looks at
+    /// `GHOSTKEY_RL_ASSIST_BURST` and `GHOSTKEY_RL_ASSIST_PER_SEC`.
+    ///
+    /// A bad value logs a warning and uses the default rather than
+    /// panicking. A fat-fingered env var should not take the server
+    /// offline; the default is always safe.
+    pub fn from_env(
+        name: &'static str,
+        env_prefix: &str,
+        default_capacity: u32,
+        default_refill_per_sec: f64,
+    ) -> Self {
+        let burst_var = format!("{env_prefix}_BURST");
+        let per_sec_var = format!("{env_prefix}_PER_SEC");
+
+        let capacity = parse_env_or(&burst_var, default_capacity, |v| *v >= 1);
+        let refill_per_sec = parse_env_or(&per_sec_var, default_refill_per_sec, |v| *v > 0.0);
+
+        tracing::info!(
+            limiter = name,
+            capacity,
+            refill_per_sec,
+            burst_env = %burst_var,
+            per_sec_env = %per_sec_var,
+            "rate-limit config"
+        );
+        Self::new(name, capacity, refill_per_sec)
+    }
+
     /// Try to take one token from the bucket keyed on `client`.
     ///
     /// Returns `Ok(())` if a token was available, or
@@ -153,6 +188,40 @@ impl Limiter {
             let need = 1.0 - bucket.tokens;
             let secs = (need / inner.refill_per_sec).ceil().max(1.0) as u64;
             Err(Duration::from_secs(secs))
+        }
+    }
+}
+
+/// Parse `name` from the environment with a default fallback and a
+/// validity predicate. Used by `Limiter::from_env` so a bad
+/// `GHOSTKEY_RL_*` value logs a warning and uses the default rather
+/// than panicking. `T: Display` so the warning prints the bad value.
+fn parse_env_or<T>(name: &str, default: T, valid: impl Fn(&T) -> bool) -> T
+where
+    T: std::str::FromStr + std::fmt::Display + Copy,
+{
+    let Ok(raw) = std::env::var(name) else {
+        return default;
+    };
+    match raw.parse::<T>() {
+        Ok(v) if valid(&v) => v,
+        Ok(v) => {
+            tracing::warn!(
+                env_var = name,
+                value = %v,
+                default = %default,
+                "rate-limit env var out of range; using default"
+            );
+            default
+        }
+        Err(_) => {
+            tracing::warn!(
+                env_var = name,
+                raw = %raw,
+                default = %default,
+                "rate-limit env var unparseable; using default"
+            );
+            default
         }
     }
 }
@@ -294,5 +363,40 @@ mod tests {
         let peer: SocketAddr = "203.0.113.5:51234".parse().unwrap();
         let h = HeaderMap::new();
         assert_eq!(client_key(&h, Some(&peer)), "203.0.113.5");
+    }
+
+    // These tests touch `std::env`, which is process-global. We use
+    // uniquely-named env vars per test so concurrent execution under
+    // `cargo test` doesn't race.
+
+    #[test]
+    fn parse_env_or_uses_default_when_unset() {
+        std::env::remove_var("GK_RL_TEST_UNSET");
+        let v: u32 = parse_env_or("GK_RL_TEST_UNSET", 7, |x| *x >= 1);
+        assert_eq!(v, 7);
+    }
+
+    #[test]
+    fn parse_env_or_parses_valid_value() {
+        std::env::set_var("GK_RL_TEST_VALID", "42");
+        let v: u32 = parse_env_or("GK_RL_TEST_VALID", 7, |x| *x >= 1);
+        std::env::remove_var("GK_RL_TEST_VALID");
+        assert_eq!(v, 42);
+    }
+
+    #[test]
+    fn parse_env_or_rejects_unparseable_value() {
+        std::env::set_var("GK_RL_TEST_BAD", "not-a-number");
+        let v: u32 = parse_env_or("GK_RL_TEST_BAD", 9, |x| *x >= 1);
+        std::env::remove_var("GK_RL_TEST_BAD");
+        assert_eq!(v, 9);
+    }
+
+    #[test]
+    fn parse_env_or_rejects_out_of_range_value() {
+        std::env::set_var("GK_RL_TEST_ZERO", "0");
+        let v: u32 = parse_env_or("GK_RL_TEST_ZERO", 5, |x| *x >= 1);
+        std::env::remove_var("GK_RL_TEST_ZERO");
+        assert_eq!(v, 5);
     }
 }
