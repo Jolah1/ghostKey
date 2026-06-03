@@ -77,12 +77,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # Findings shouldn't block PRs while the ignore list is calibrating;
-    # the job still surfaces a red X on the commit. Tighten to `false`
-    # once we're confident the ignore list is stable.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+
       # We deliberately do NOT use dtolnay/rust-toolchain here, even
       # though the build/test/clippy/fmt jobs do. Two reasons:
       #   (a) The GitHub-hosted ubuntu-latest runner ships with a recent
@@ -93,14 +90,32 @@ jobs:
       #       the past 48 hours. The audit job is the easiest one to
       #       harden against that infrastructure, so it stays online
       #       even when the rest of the workflow can't bootstrap.
-      #
-      # We cache ~/.cargo/bin so the cargo-audit install is a no-op on
-      # warm runs. actions/cache is first-party and uses GitHub's
-      # internal cache service (not codeload), so it doesn't share the
-      # same failure mode.
-      - uses: actions/cache@v4
+
+      # taiki-e/install-action fetches a prebuilt cargo-audit binary
+      # (~5 s) instead of `cargo install`-ing it from source (~90 s on
+      # a cold runner). It's the standard fast path for cargo extensions
+      # in CI.
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
         with:
-          path: ~/.cargo/bin/cargo-audit
-          key: cargo-audit-bin-${{ runner.os }}
-      - run: which cargo-audit || cargo install --locked cargo-audit
-      - run: cargo audit
+          tool: cargo-audit
+
+      # cargo-audit clones rustsec/advisory-db from GitHub on every run
+      # (~50 MB). Cache it so the daily cron + every PR doesn't re-fetch
+      # the whole repo. We bust the cache per run so each saved cache is
+      # fresh; restore-keys falls back to the most recent prior cache,
+      # and cargo-audit will `git pull` the DB to pick up advisories
+      # disclosed since the cache was warmed.
+      - name: Cache advisory database
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/advisory-db
+          key: cargo-advisory-db-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: cargo-advisory-db-${{ runner.os }}-
+
+      # --deny warnings turns "unmaintained" and "yanked" notices into
+      # hard failures, not just visual warnings. Any accepted advisory
+      # belongs in `.cargo/audit.toml` with a documented justification,
+      # not in a looser command flag. See "Triaging a cargo audit
+      # failure" in CONTRIBUTING.md.
+      - run: cargo audit --deny warnings

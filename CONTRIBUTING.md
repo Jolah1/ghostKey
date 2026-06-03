@@ -152,6 +152,37 @@ the server on `127.0.0.1:8787`.
 A change that "works on my machine" is not enough. CI must pass
 before merge.
 
+### Triaging a `cargo audit` failure
+
+CI runs `cargo audit --deny warnings` on every PR, every push to
+`main`, and once a day at 04:17 UTC. The daily run is what catches a
+freshly-disclosed CVE in a transitive dep that hasn't been touched
+in months. When the job goes red, work through the advisory IDs it
+prints in this order:
+
+1. **Is there an upstream fix?** Check the advisory page for the
+   fixed-version range, then `cargo update -p <crate>` (or bump the
+   pin in `Cargo.toml`). Land the bump in its own commit so the
+   audit-fix history is easy to read.
+
+2. **Is it a transitive we can't bump yet?** If pulling the fix in
+   would require a major version bump of a parent crate we control
+   (e.g. a BDK upgrade), add a per-advisory entry to
+   `.cargo/audit.toml`. Each ignore needs:
+   - the dependency chain that drags the vulnerable crate in,
+   - why the vulnerable code path is unreachable or low-impact in
+     GhostKey's threat model,
+   - the upstream condition that would let us drop the ignore.
+
+   Match the level of detail in the existing entries — a bare
+   `ignore` line with no reasoning will be sent back in review.
+
+3. **Is the vulnerable code path actually reachable in our
+   binaries?** If yes, and there's no upstream fix, file a
+   `priority:high` issue under `area:security` and pause the
+   affected feature until it's resolved. Do not ship a release with
+   a known-exploitable advisory.
+
 ## Writing commit messages
 
 We follow the format established in the repo's history. Look at
@@ -249,9 +280,8 @@ of [`README.md`](./README.md) for the full list.
 
 ### Operations
 - **CI improvements.** The current workflow runs tests on every PR.
-  We'd benefit from cross-platform builds (Linux + macOS), a
-  reproducible-Docker check, and automated dependency audit
-  (`cargo audit`).
+  We'd benefit from cross-platform builds (Linux + macOS) and a
+  reproducible-Docker check.
 - **Encrypted off-host backups** for the SQLite file, automated and
   documented in `DEPLOY.md`.
 
