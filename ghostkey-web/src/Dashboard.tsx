@@ -720,10 +720,19 @@ function HeartbeatCard({
           ) : null}
         </div>
 
-        {lightningEnabled && !locked ? (
-          <p className="mt-2 text-[11px] text-dim">
-            Pay a 1-sat Lightning invoice for cryptographic proof of liveness.
-          </p>
+        {!locked ? (
+          lightningEnabled ? (
+            <p className="mt-2 text-[11px] text-dim">
+              Pay a 1-sat Lightning invoice for cryptographic proof of liveness.
+            </p>
+          ) : (
+            <p
+              className="mt-2 text-[11px] text-dim"
+              data-testid="ln-disabled-hint"
+            >
+              ⚡ Lightning check-in isn't enabled on this server yet.
+            </p>
+          )
         ) : null}
 
         {cd ? (
