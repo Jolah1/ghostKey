@@ -65,13 +65,18 @@ import { countdown, parseRfc } from "./time";
 import { b64decode, unsealHeirXprv } from "./crypto/sealing";
 import { deriveHeirKey } from "./crypto/heirKey";
 import type { Network } from "./crypto/keygen";
+import {
+  classifyClaimError,
+  rawErrorMessage,
+  type ClaimContext,
+} from "./claimErrors";
 
 type State =
   | { kind: "loading" }
   | { kind: "ok"; view: ClaimView }
   | { kind: "not-found" }
   | { kind: "used" }
-  | { kind: "error"; message: string };
+  | { kind: "error"; error: unknown };
 
 interface Props {
   token: string;
@@ -95,13 +100,8 @@ export function ClaimPage({ token }: Props) {
           setState({ kind: "used" });
           return;
         }
-        setState({ kind: "error", message: e.message });
-        return;
       }
-      setState({
-        kind: "error",
-        message: e instanceof Error ? e.message : String(e),
-      });
+      setState({ kind: "error", error: e });
     }
   }, [token]);
 
@@ -118,7 +118,7 @@ export function ClaimPage({ token }: Props) {
         {state.kind === "not-found" && <NotFoundState />}
         {state.kind === "used" && <AlreadyUsedState />}
         {state.kind === "error" && (
-          <ErrorState message={state.message} onRetry={load} />
+          <ErrorState error={state.error} onRetry={load} />
         )}
         {state.kind === "ok" && <Resolved view={state.view} token={token} />}
       </main>
@@ -191,24 +191,80 @@ function AlreadyUsedState() {
 }
 
 function ErrorState({
-  message,
+  error,
   onRetry,
 }: {
-  message: string;
+  error: unknown;
   onRetry: () => void;
 }) {
+  const copy = classifyClaimError(error, "resolve");
   return (
     <section className="text-center">
       <Eyebrow>Something went wrong</Eyebrow>
       <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
-        We couldn't open your link
+        {copy.headline}
       </h1>
-      <p className="mt-4 text-muted">Try again in a moment.</p>
-      <p className="mt-1 font-mono text-xs text-dim">{message}</p>
-      <div className="mt-6">
-        <Button onClick={onRetry}>Try again</Button>
-      </div>
+      <p className="mt-4 text-muted">{copy.body}</p>
+      <p className="mt-2 text-sm text-muted">{copy.nextStep}</p>
+      <TechnicalDetails error={error} align="center" />
+      {copy.kind !== "contact" && (
+        <div className="mt-6">
+          <Button onClick={onRetry}>Try again</Button>
+        </div>
+      )}
     </section>
+  );
+}
+
+/**
+ * Collapsed footer block holding the raw server / client error
+ * string. The heir never needs this; a Bitcoin-literate helper they
+ * forward the page to does. Keep it out of the way but reachable.
+ */
+function TechnicalDetails({
+  error,
+  align = "left",
+}: {
+  error: unknown;
+  align?: "left" | "center";
+}) {
+  const raw = rawErrorMessage(error);
+  if (!raw) return null;
+  return (
+    <details
+      className={`mt-4 ${align === "center" ? "mx-auto inline-block text-left" : ""}`}
+    >
+      <summary className="cursor-pointer text-xs text-dim">
+        Show technical details
+      </summary>
+      <p className="mt-1 break-all font-mono text-xs text-dim">{raw}</p>
+    </details>
+  );
+}
+
+/**
+ * Shared error block for the in-flow failure states (probe error,
+ * one-shot send error, build error, broadcast error). Looks up the
+ * friendly copy from `claimErrors.ts` and tucks the raw message away
+ * behind a "Show technical details" toggle.
+ */
+function ClaimErrorBlock({
+  error,
+  context,
+}: {
+  error: unknown;
+  context: ClaimContext;
+}) {
+  const copy = classifyClaimError(error, context);
+  return (
+    <div className="mt-4">
+      <InlineAlert tone="alarm">
+        <p className="font-bold">{copy.headline}</p>
+        <p className="mt-1 text-sm">{copy.body}</p>
+        <p className="mt-2 text-sm">{copy.nextStep}</p>
+        <TechnicalDetails error={error} />
+      </InlineAlert>
+    </div>
   );
 }
 
@@ -309,7 +365,7 @@ function ClaimableState({
     | { kind: "password-vault"; sealed: SealedHeirView }
     | { kind: "derived-heir"; params: HeirDerivationParamsView }
     | { kind: "manual-psbt" }
-    | { kind: "probe-error"; message: string }
+    | { kind: "probe-error"; error: unknown }
   >({ kind: "probing" });
 
   useEffect(() => {
@@ -329,13 +385,10 @@ function ClaimableState({
         if (!(e instanceof ApiError) || e.status !== 422) {
           if (e instanceof ApiError && (e.status === 404 || e.status === 409)) {
             // These are handled by the outer Resolved switch; bubble.
-            setFlow({ kind: "probe-error", message: e.message });
+            setFlow({ kind: "probe-error", error: e });
             return;
           }
-          setFlow({
-            kind: "probe-error",
-            message: e instanceof Error ? e.message : String(e),
-          });
+          setFlow({ kind: "probe-error", error: e });
           return;
         }
         // 422 -> not an F2 vault. Fall through.
@@ -355,13 +408,10 @@ function ClaimableState({
           }
           // 404 / 409 should already have been handled by the outer
           // Resolved switch, but just in case we slip through, bubble.
-          setFlow({ kind: "probe-error", message: e.message });
+          setFlow({ kind: "probe-error", error: e });
           return;
         }
-        setFlow({
-          kind: "probe-error",
-          message: e instanceof Error ? e.message : String(e),
-        });
+        setFlow({ kind: "probe-error", error: e });
       }
     })();
     return () => {
@@ -373,17 +423,16 @@ function ClaimableState({
     return <LoadingState />;
   }
   if (flow.kind === "probe-error") {
+    const copy = classifyClaimError(flow.error, "probe");
     return (
       <section>
         <Eyebrow>Hold on</Eyebrow>
         <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
-          We hit a snag opening your link
+          {copy.headline}
         </h1>
-        <p className="mt-3 text-muted">
-          Try again in a moment. If this keeps happening, contact the person
-          who set this up.
-        </p>
-        <p className="mt-1 font-mono text-xs text-dim">{flow.message}</p>
+        <p className="mt-3 text-muted">{copy.body}</p>
+        <p className="mt-2 text-sm text-muted">{copy.nextStep}</p>
+        <TechnicalDetails error={flow.error} />
       </section>
     );
   }
@@ -436,7 +485,10 @@ function PasswordVaultClaim({
   const [feeRate, setFeeRate] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<BroadcastClaimResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // The unwrapped error object, not just a string — `claimErrors.ts`
+  // needs the HTTP status as well as the message text to classify
+  // correctly.
+  const [error, setError] = useState<unknown>(null);
 
   const heir = view.heir_display_name?.trim() || "you";
   const validAddr = looksLikeBitcoinAddress(address);
@@ -456,6 +508,8 @@ function PasswordVaultClaim({
     let heirXprv: string | null = null;
     try {
       const rawToken = b64decode(token);
+      // unsealHeirXprv throws on a Poly1305 tag mismatch — handled
+      // generically by the Poly1305 entry in `claimErrors.ts`.
       heirXprv = unsealHeirXprv(rawToken, {
         v: 1,
         ct: sealed.heir_xprv_ct_b64,
@@ -468,21 +522,7 @@ function PasswordVaultClaim({
       });
       setResult(resp);
     } catch (e) {
-      // unsealHeirXprv throws on a Poly1305 tag mismatch — that
-      // would mean the URL fragment doesn't decode to the right
-      // 32 bytes (corrupted link).
-      const msg =
-        e instanceof ApiError
-          ? e.message
-          : e instanceof Error
-            ? e.message
-            : String(e);
-      const isAuthTagFail = /poly1305|tag|invalid|decryp/i.test(msg);
-      setError(
-        isAuthTagFail
-          ? "Your link is incomplete or has been altered. Ask the sender to re-share it."
-          : msg,
-      );
+      setError(e);
     } finally {
       heirXprv = null;
       setSubmitting(false);
@@ -625,21 +665,7 @@ function PasswordVaultClaim({
             need to sign anything in another app.
           </p>
 
-          {error && (
-            <div className="mt-4">
-              <InlineAlert tone="alarm">
-                We couldn't complete the transfer. The server said:{" "}
-                <span className="font-mono text-xs">{error}</span>
-                <br />
-                <span className="text-xs text-muted">
-                  Common causes: the timelock hasn't been mined yet, no funds
-                  are visible at the vault addresses, or the chain indexer is
-                  unreachable. Your link is still valid — try again in a few
-                  minutes.
-                </span>
-              </InlineAlert>
-            </div>
-          )}
+          {error ? <ClaimErrorBlock error={error} context="send" /> : null}
         </div>
       )}
     </section>
@@ -700,7 +726,7 @@ function DerivedHeirClaim({
     | { kind: "ok"; resp: BroadcastClaimResponse; mnemonic: string }
     | null
   >(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
 
   const heir = view.heir_display_name?.trim() || "you";
   const validAddr = looksLikeBitcoinAddress(address);
@@ -730,13 +756,7 @@ function DerivedHeirClaim({
       });
       setResult({ kind: "ok", resp, mnemonic });
     } catch (e) {
-      const msg =
-        e instanceof ApiError
-          ? e.message
-          : e instanceof Error
-            ? e.message
-            : String(e);
-      setError(msg);
+      setError(e);
     } finally {
       heirXprv = null;
       // Keep `mnemonic` only inside `result` (state) on the success
@@ -844,11 +864,7 @@ function DerivedHeirClaim({
         </details>
       </div>
 
-      {error ? (
-        <p className="mt-4 text-sm text-alarm" role="alert">
-          {error}
-        </p>
-      ) : null}
+      {error ? <ClaimErrorBlock error={error} context="send" /> : null}
 
       <div className="mt-8">
         <Button
@@ -877,7 +893,7 @@ function ManualPsbtClaim({
   /** PSBT build phase. */
   const [building, setBuilding] = useState(false);
   const [build, setBuild] = useState<BuildClaimPsbtResponse | null>(null);
-  const [buildError, setBuildError] = useState<string | null>(null);
+  const [buildError, setBuildError] = useState<unknown>(null);
 
   /** Broadcast phase. */
   const [signedPsbt, setSignedPsbt] = useState("");
@@ -885,7 +901,7 @@ function ManualPsbtClaim({
   const [broadcast, setBroadcast] = useState<BroadcastClaimResponse | null>(
     null,
   );
-  const [broadcastError, setBroadcastError] = useState<string | null>(null);
+  const [broadcastError, setBroadcastError] = useState<unknown>(null);
 
   /** "Copied!" feedback for the base64 PSBT block. */
   const [copied, setCopied] = useState(false);
@@ -907,13 +923,7 @@ function ManualPsbtClaim({
       });
       setBuild(res);
     } catch (e) {
-      setBuildError(
-        e instanceof ApiError
-          ? e.message
-          : e instanceof Error
-            ? e.message
-            : String(e),
-      );
+      setBuildError(e);
     } finally {
       setBuilding(false);
     }
@@ -943,13 +953,7 @@ function ManualPsbtClaim({
       });
       setBroadcast(res);
     } catch (e) {
-      setBroadcastError(
-        e instanceof ApiError
-          ? e.message
-          : e instanceof Error
-            ? e.message
-            : String(e),
-      );
+      setBroadcastError(e);
     } finally {
       setBroadcasting(false);
     }
@@ -1082,20 +1086,9 @@ function ManualPsbtClaim({
             </Button>
           </div>
 
-          {buildError && (
-            <div className="mt-4">
-              <InlineAlert tone="alarm">
-                We couldn't prepare the transaction. The server said:{" "}
-                <span className="font-mono text-xs">{buildError}</span>
-                <br />
-                <span className="text-xs text-muted">
-                  Common causes: the timelock hasn't been mined yet, no funds
-                  are visible at the vault addresses, or the chain indexer is
-                  unreachable. Show this message to someone who knows Bitcoin.
-                </span>
-              </InlineAlert>
-            </div>
-          )}
+          {buildError ? (
+            <ClaimErrorBlock error={buildError} context="build" />
+          ) : null}
         </div>
       )}
 
@@ -1163,21 +1156,9 @@ function ManualPsbtClaim({
             </Button>
           </div>
 
-          {broadcastError && (
-            <div className="mt-4">
-              <InlineAlert tone="alarm">
-                Broadcast failed. The server said:{" "}
-                <span className="font-mono text-xs">{broadcastError}</span>
-                <br />
-                <span className="text-xs text-muted">
-                  Likely causes: the PSBT wasn't fully signed, the signature
-                  didn't satisfy the timelock branch, or the network rejected
-                  the transaction. Your link is still valid — fix the signed
-                  PSBT and try again.
-                </span>
-              </InlineAlert>
-            </div>
-          )}
+          {broadcastError ? (
+            <ClaimErrorBlock error={broadcastError} context="broadcast" />
+          ) : null}
         </div>
       )}
 
