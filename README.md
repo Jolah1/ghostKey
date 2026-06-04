@@ -143,7 +143,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --locked
 
-# End-to-end on real regtest bitcoind (~5s, not in CI)
+# End-to-end on real regtest bitcoind (~5s; also runs in CI on every PR)
 cargo test -p ghostkey-core --test regtest_e2e -- --ignored
 
 cd ghostkey-web && npm run typecheck && npm run build
