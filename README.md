@@ -61,6 +61,11 @@ on the server) but has not had an external security review yet — treat
 real funds as at risk until that lands. The default network is
 `testnet`; operators have to opt into mainnet explicitly.
 
+The written threat model lives at [`docs/threat-model.md`](./docs/threat-model.md):
+who can attack the system, what the design defends against, which risks
+were accepted eyes-open, and the open questions for an external review.
+It is the input to the mainnet review, not the output of one.
+
 What works today:
 - Full vault setup from xpub (legacy / CLI flow) **and** in-browser password setup (no seed phrase shown to the user; owner xprv sealed with Argon2id-derived KEK)
 - Cross-device sign-in: email + password unlocks any vault on any browser
