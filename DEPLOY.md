@@ -328,8 +328,124 @@ add a custom domain, list both `https://yourdomain.tld` and any
 
 Both are stored encrypted in Fly's secret store and survive restarts,
 deploys, and machine upgrades. You only need to re-run the commands
-above if you deliberately rotate (which currently requires manual
-re-encryption of existing rows — see ARCHITECTURE.md).
+above if you deliberately rotate (see "Rotating the master key" below
+for the design + procedure).
+
+### Rotating the master key
+
+`GHOSTKEY_MASTER_KEY` plays two structurally different roles —
+encrypting heir-contact PII at rest, and deriving F2 server-derived
+heir keys whose xpubs are committed on-chain. The rotation design
+splits those roles so you can rotate the off-chain one without doing
+anything on-chain. Read [`docs/master-key-rotation.md`](./docs/master-key-rotation.md)
+for the full design (key generations, schema columns, what happens
+to existing vaults). What follows is the operator runbook only.
+
+> **Implementation status.** The design has landed; the implementation
+> (the `pii_key_gen` / `f2_key_gen` schema columns, the
+> `GHOSTKEY_PII_KEY_V<N>` / `GHOSTKEY_F2_KEY_V<N>` env vars, the
+> background re-encryption worker, the owner-facing
+> `POST /vaults/:id/rotate-f2` route) is tracked under #27 and will
+> land in a follow-up PR. Until that PR ships, the procedures below
+> tell you what *will* be possible; today, a rotation still requires
+> a manual `sqlite3` re-encryption pass (see §6 of the design doc).
+
+#### Suspected leak: emergency procedure
+
+Within the **first hour:**
+
+```sh
+# 1. Generate fresh keys for BOTH roles. Treat both as compromised
+#    even if you only suspect one — the cost is low.
+PII_NEW=$(openssl rand 32 | base64 | tr -d '=\n')
+F2_NEW=$(openssl rand 32 | base64 | tr -d '=\n')
+
+# 2. Set the new generations and flip the CURRENT pointers.
+fly secrets set GHOSTKEY_PII_KEY_V2="$PII_NEW" GHOSTKEY_PII_KEY_CURRENT=V2 \
+                GHOSTKEY_F2_KEY_V2="$F2_NEW"  GHOSTKEY_F2_KEY_CURRENT=V2 \
+                -a ghostkey
+fly deploy -a ghostkey                           # forces restart
+
+# 3. Watch the boot log for "rotation: re-encrypting <N> vaults still
+#    on V1". The background worker drains the long tail at the rate
+#    set by GHOSTKEY_REKEY_PER_SEC (default 1/sec; raise during an
+#    emergency).
+fly logs -a ghostkey | grep rotation
+```
+
+Within the **first 24 hours:**
+
+- Notify the owners of every vault still tagged `f2_key_gen = 1`
+  (i.e. F2 vaults). Their on-chain commitment is unchanged; tell
+  them to tap **Refresh heir key** on the dashboard within 24
+  hours. The email template is in `templates/leak-notice.txt` (to
+  be added with the implementation PR).
+- Disclose per [`SECURITY.md`](../SECURITY.md). Coordinated
+  disclosure applies to leaks we discover, not only to reports.
+
+Within **one week:**
+
+- Audit `pii_key_gen` distribution — every row should be at `V2`.
+- Remove the compromised generation:
+  ```sh
+  fly secrets unset GHOSTKEY_PII_KEY_V1 GHOSTKEY_F2_KEY_V1 -a ghostkey
+  fly deploy -a ghostkey
+  ```
+  If the server refuses to boot, a row still references V1; fix the
+  row, then retry. **Do not** force-remove the env var while rows
+  reference it — those vaults become permanently un-decryptable.
+- Post-mortem entry in [`JOURNAL.md`](../JOURNAL.md).
+
+#### Routine rotation: quarterly
+
+Same shape as the emergency procedure, but you pace yourself:
+
+```sh
+# Once a quarter, generate a fresh PII key only — F2 rotation is the
+# owner's call, not yours (see the design doc § 1).
+PII_NEW=$(openssl rand 32 | base64 | tr -d '=\n')
+fly secrets set GHOSTKEY_PII_KEY_V<N+1>="$PII_NEW" GHOSTKEY_PII_KEY_CURRENT=V<N+1> -a ghostkey
+fly deploy -a ghostkey
+
+# Let the background worker drain the long tail over a week. Then:
+fly secrets unset GHOSTKEY_PII_KEY_V<N> -a ghostkey
+fly deploy -a ghostkey
+```
+
+There is no outage at any step — the dual-loaded server can decrypt
+both generations during the overlap.
+
+#### Audit checklist (run before declaring rotation complete)
+
+Both flavours of rotation are "done" only when *all four* are true:
+
+- [ ] `fly logs` shows `rotation: all vaults at V<N+1>` (or the
+      pending count is zero).
+- [ ] `fly secrets list` shows no entry for the retired generation.
+- [ ] `sqlite3 ghostkey.sqlite 'SELECT COUNT(*) FROM vaults WHERE
+      pii_key_gen = <N>;'` returns 0.
+- [ ] The server boots cleanly without the retired key (proves no
+      row references it).
+
+#### Why split PII rotation from F2 rotation
+
+The F2 heir's xpub is a function of `(master_key, heir_email,
+vault_id)` and is committed on-chain via the vault's Taproot
+descriptor. Rotating the master key changes the derived xpub —
+which is fine for a *new* vault, but breaks the existing UTXO's
+claimability. You cannot rotate Role B (heir derivation) without
+moving funds on-chain to a fresh vault under the new generation.
+
+That's why the design separates the two env-var prefixes
+(`GHOSTKEY_PII_KEY_V<N>` vs `GHOSTKEY_F2_KEY_V<N>`). An operator
+who simply wants to rotate the PII key for hygiene reasons can do
+so without any on-chain effect.
+
+If both roles still share a single secret (the legacy single-key
+deployment), `GHOSTKEY_MASTER_KEY` continues to act as the V1 key
+for both. The migration from single-key to split-key is documented
+in [`docs/master-key-rotation.md`](./docs/master-key-rotation.md)
+§4.
 
 ### Optional: notification delivery
 

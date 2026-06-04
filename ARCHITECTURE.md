@@ -246,4 +246,4 @@ attacker and the heir's funds. Operationally that means:
 
 **Signet end-to-end test.** The full claim flow is verified on regtest. It has not been smoke-tested on signet with real wallet software signing the heir PSBT. This must happen before any mainnet use. It is the single highest-priority remaining task.
 
-**Key rotation.** No path exists yet to rotate `GHOSTKEY_MASTER_KEY` without decrypting and re-encrypting every vault's contact ciphertext.
+**Key rotation.** Design + operator runbook landed in [`docs/master-key-rotation.md`](./docs/master-key-rotation.md) and [`DEPLOY.md` § "Rotating the master key"](./DEPLOY.md). The implementation (per-row generation tags, dual-loaded keys, background re-encryption worker, owner-facing F2 re-vault) is tracked under #27.
