@@ -75,9 +75,9 @@ What works today:
   - **Manual PSBT flow** (legacy): server hands the heir an unsigned PSBT, accepts the signed string back.
 - F2 "heir has no Bitcoin wallet" support: server derives the heir's BIP86 key from `(master_key, heir_email, vault_id)` and the heir's browser recomputes the same xprv at claim time
 - In-app AI guide chat (`/assist/chat`) proxied to Claude; refuses to forward seed-shaped strings
+- Per-IP rate limiting on the unauthenticated endpoints (`/assist/chat`, `/vaults`, `/vaults/from-xpub`, `/vaults/find`, `/claim/:token/*`), with per-deploy `GHOSTKEY_RL_*` overrides (see DEPLOY.md)
 
 What's still being built:
-- Rate limiting on the unauthenticated endpoints (`/assist/chat`, `/vaults/from-xpub`, `/vaults/find`, `/claim/:token/*`)
 - Hardware wallet PSBT export (`--export-psbt` / `--sign-psbt` on the CLI)
 - Setup from a plain Bitcoin address (without needing an xpub)
 - Translations — Pidgin first (planned), then Yoruba, Igbo, Hausa

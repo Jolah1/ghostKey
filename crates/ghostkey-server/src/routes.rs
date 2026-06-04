@@ -41,9 +41,14 @@ pub fn router(state: Arc<AppState>) -> Router {
 
     // ---- Per-route rate-limit budgets ----
     //
-    // Three budgets, scaled by the cost / abuse profile of the route
-    // each one wraps. All three key on the client IP (see
+    // Four budgets, scaled by the cost / abuse profile of the route
+    // each one wraps. All four key on the client IP (see
     // `rate_limit::client_key`); buckets refill continuously.
+    //
+    // Each budget's `(burst, refill_per_sec)` can be overridden per
+    // deployment via `GHOSTKEY_RL_<NAME>_BURST` and
+    // `GHOSTKEY_RL_<NAME>_PER_SEC` env vars (see DEPLOY.md). A bad
+    // value falls back to the default; we don't refuse to boot.
     //
     //   ASSIST: hits the Anthropic Messages API on every accepted
     //   request, so each token costs real money. 3-token burst lets
@@ -51,10 +56,17 @@ pub fn router(state: Arc<AppState>) -> Router {
     //   without waiting; steady-state is one request every 5s.
     //
     //   CREATE: covers the two unauthenticated vault-creation paths
-    //   and `/vaults/find`. Creating a vault is a couple of disk
-    //   writes plus an HKDF; cheap individually, but a flood would
-    //   balloon SQLite and burn entropy. 10-token burst absorbs
-    //   genuine setup retries; steady-state ~1/6s.
+    //   (`/vaults`, `/vaults/from-xpub`). Vault creation is a couple
+    //   of disk writes plus an HKDF and "should be rare" per the
+    //   threat model in #25. 3-token burst absorbs genuine setup
+    //   retries; steady-state ~3/min.
+    //
+    //   FIND: covers `/vaults/find` — the email→vault registry
+    //   lookup used for cross-device recovery. A different abuse
+    //   profile from creation (enumeration vs. flood) and a
+    //   different legitimate-use shape (an owner searching for
+    //   their vaults will reasonably issue several lookups in a
+    //   row). Own bucket, larger budget: 30 burst, ~30/min.
     //
     //   CLAIM: covers the heir-claim flow (resolve, build-psbt,
     //   broadcast, heir-claim, sealed-heir, derivation-params). The
@@ -63,11 +75,15 @@ pub fn router(state: Arc<AppState>) -> Router {
     //   with a known-good token (Esplora full-scan is expensive).
     //   20-token burst absorbs the heir's natural reload + sign +
     //   broadcast trio; steady-state ~1/3s.
-    let assist_limiter = crate::rate_limit::Limiter::new("assist", 3, 0.2);
-    let create_limiter = crate::rate_limit::Limiter::new("create", 10, 1.0 / 6.0);
-    let claim_limiter = crate::rate_limit::Limiter::new("claim", 20, 1.0 / 3.0);
+    let assist_limiter =
+        crate::rate_limit::Limiter::from_env("assist", "GHOSTKEY_RL_ASSIST", 3, 0.2);
+    let create_limiter =
+        crate::rate_limit::Limiter::from_env("create", "GHOSTKEY_RL_CREATE", 3, 1.0 / 20.0);
+    let find_limiter = crate::rate_limit::Limiter::from_env("find", "GHOSTKEY_RL_FIND", 30, 0.5);
+    let claim_limiter =
+        crate::rate_limit::Limiter::from_env("claim", "GHOSTKEY_RL_CLAIM", 20, 1.0 / 3.0);
 
-    // The three rate-limited surfaces, each a small sub-router that
+    // The four rate-limited surfaces, each a small sub-router that
     // we'll merge into the main one. Keeping them separate makes the
     // policy choice visible at the route definition site.
     let assist_routes: Router<Arc<AppState>> = Router::new()
@@ -80,9 +96,15 @@ pub fn router(state: Arc<AppState>) -> Router {
     let create_routes: Router<Arc<AppState>> = Router::new()
         .route("/vaults", post(create_vault))
         .route("/vaults/from-xpub", post(create_vault_from_xpub))
-        .route("/vaults/find", post(find_vaults_by_email))
         .layer(axum::middleware::from_fn_with_state(
             create_limiter,
+            crate::rate_limit::enforce,
+        ));
+
+    let find_routes: Router<Arc<AppState>> = Router::new()
+        .route("/vaults/find", post(find_vaults_by_email))
+        .layer(axum::middleware::from_fn_with_state(
+            find_limiter,
             crate::rate_limit::enforce,
         ));
 
@@ -155,6 +177,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(open_routes)
         .merge(assist_routes)
         .merge(create_routes)
+        .merge(find_routes)
         .merge(claim_routes)
         .layer(TraceLayer::new_for_http().make_span_with(make_request_span))
         .layer(cors)
