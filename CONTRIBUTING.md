@@ -102,6 +102,50 @@ the server on `127.0.0.1:8787`.
 5. **Expect review.** A maintainer will read the diff. Reviews are not
    personal — they're about the code. Push back if you disagree.
 
+### Issue labels
+
+Every issue carries at least one **area** label and one **priority**
+label. The current taxonomy:
+
+- **`area:*`** — which part of the codebase the work touches:
+  - `area:core` — `crates/ghostkey-core` (pure Bitcoin logic)
+  - `area:cli` — `crates/ghostkey-cli`
+  - `area:server` — `crates/ghostkey-server`
+  - `area:web` — `ghostkey-web/` (React frontend)
+  - `area:lightning` — Lightning sidecars + check-in flow
+  - `area:ci` — GitHub Actions, cargo audit, runners
+  - `area:ops` — runbooks, deploys, infra
+  - `area:docs` — Markdown under `docs/` and at the repo root
+  - `area:ux` — copy, accessibility, conversion
+  - `area:meta` — labels, contributor onboarding, repo housekeeping
+  - `area:security` — non-custody hardening, threat-model work
+
+  Most issues get one `area:*`. An issue that genuinely spans two
+  (a Lightning UI bug is `area:lightning` + `area:web`) gets both;
+  three is usually a sign the issue should be split.
+
+- **`priority:*`** — `priority:high` / `priority:medium` /
+  `priority:low`. **`priority:high` requires a one-line "why it
+  matters now" in the issue summary** — without it, the label is
+  noise. Reach for `priority:low` for docs / meta / "would be nice"
+  work that wouldn't block a release.
+
+- **Scope tags** (apply when relevant, not always):
+  - `good first issue` — bite-sized, well-scoped, includes a
+    "Hints for contributors" section with file entry points.
+  - `help wanted` — extra eyes welcome; the maintainer isn't
+    actively working on it.
+  - `tracking` — parent issue that closes when its sub-issues do.
+  - `epic` — multi-PR effort with its own sub-issues.
+
+- **Type** — `bug`, `enhancement`, `question`, `discussion`. Skip
+  the type label if the area label already implies it (e.g. an
+  `area:docs` issue doesn't need `enhancement`).
+
+Browse the
+[**good-first-issue list**](https://github.com/Jolah1/ghostKey/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+if you want a small, well-scoped first contribution.
+
 ## Code style
 
 ### Rust
@@ -232,7 +276,9 @@ docs.
 
 If you want to contribute but don't know where to start, these are
 the highest-impact open areas. See the "What's not built yet" section
-of [`README.md`](./README.md) for the full list.
+of [`README.md`](./README.md) for the full list. Or browse the
+[**good-first-issue list**](https://github.com/Jolah1/ghostKey/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+on GitHub for bite-sized work that's already scoped out.
 
 ### Engineering
 - **Notification fan-out** (email first via Postmark / Resend / AWS
