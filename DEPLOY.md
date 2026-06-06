@@ -616,6 +616,140 @@ storage; the manual script is the bridge until then.
 
 ---
 
+## Lightning sidecar (two-process deploy)
+
+The Lightning check-in flow is gated on a feature probe: the dashboard
+only renders the "Check in with Lightning" button when the server's
+`/health` returns `lightning_enabled: true`. The server returns `true`
+only when both `GHOSTKEY_LN_BREEZ_URL` and
+`GHOSTKEY_LN_BREEZ_SHARED_SECRET` are configured, pointing at a running
+sidecar. With either missing, the server runs with `NoopProvider` and
+the UI shows the fallback hint instead (see issue #15).
+
+The sidecar lives at `crates/ghostkey-lightning-breez/`. It's a
+**separate Fly app** in the same Fly organisation as the main
+`ghostkey` app — they reach each other over the 6PN private network.
+
+> **Upstream status.** As of 2026-05-26, `breez-sdk-liquid` 0.12.2
+> does not compile from a clean checkout (transitive `boltz-client` /
+> `secp256k1_zkp` skew). Until Breez ships a tag whose `boltz-client`
+> rev compiles against current `secp256k1_zkp`, `fly deploy` for this
+> sidecar will fail during the Rust build. The fly.toml, Dockerfile,
+> and DEPLOY.md plumbing below are committed anyway so the deploy is
+> one command away the moment upstream is green; alternatively, the
+> sidecar's three-route HTTP surface (see
+> `crates/ghostkey-lightning-breez/README.md` "API") is small enough
+> to re-implement against a different backend (LNbits, Phoenixd, LND)
+> as a drop-in.
+
+### 1. Provision the sidecar app
+
+```sh
+fly apps create ghostkey-lightning-breez
+fly volumes create breez_data --region ams --size 1 \
+  -a ghostkey-lightning-breez
+```
+
+Use the **same region** as the main app. The 6PN private network is
+flat across regions, so cross-region works, but co-locating shaves
+~tens of ms off every invoice mint.
+
+### 2. Set the sidecar's secrets
+
+The sidecar refuses to start without `BREEZ_API_KEY`, `BREEZ_MNEMONIC`,
+and `GHOSTKEY_LN_BREEZ_SHARED_SECRET`. The Breez API key is free from
+<https://breez.technology>. The mnemonic is a 12-word BIP39 seed —
+**this is the sidecar's own Lightning wallet**, not anyone's vault
+key. Generate a fresh seed; do not reuse one.
+
+```sh
+fly secrets set \
+  BREEZ_API_KEY="your-breez-api-key" \
+  BREEZ_MNEMONIC="word1 word2 ... word12" \
+  GHOSTKEY_LN_BREEZ_SHARED_SECRET="$(openssl rand -hex 32)" \
+  -a ghostkey-lightning-breez
+```
+
+Copy the shared secret somewhere safe — you need to set the same value
+on the main app in step 4.
+
+### 3. Deploy the sidecar
+
+```sh
+fly deploy --config crates/ghostkey-lightning-breez/fly.toml
+```
+
+This builds `crates/ghostkey-lightning-breez/Dockerfile` and pushes the
+image. The Dockerfile only sees the crate dir (not the workspace), so
+the build is isolated from the main `ghostkey` workspace.
+
+Confirm the sidecar is reachable from inside the Fly network — open an
+SSH session on the **main** app's machine and curl the sidecar's health
+endpoint:
+
+```sh
+fly ssh console -a ghostkey
+# inside the main app's machine:
+apt-get update && apt-get install -y curl
+curl -H "Authorization: Bearer <shared-secret>" \
+  http://ghostkey-lightning-breez.internal:8788/v1/health
+# expect: {"ok":true,"ready":true}
+```
+
+`ready` may be `false` for the first ~30 seconds while the Breez SDK
+warms up. That's expected and the readiness check tolerates it.
+
+### 4. Wire the main app at the sidecar
+
+```sh
+fly secrets set \
+  GHOSTKEY_LN_BREEZ_URL="http://ghostkey-lightning-breez.internal:8788" \
+  GHOSTKEY_LN_BREEZ_SHARED_SECRET="<same hex string as step 2>" \
+  -a ghostkey
+```
+
+Setting either secret triggers a redeploy of the main app. After it
+finishes:
+
+```sh
+curl https://ghostkey.fly.dev/health \
+  | jq '.lightning_enabled'
+# expect: true
+```
+
+If `lightning_enabled` is still `false`, check the main app's logs for
+the line `lightning provider: noop (LN env missing)` vs.
+`lightning provider: HttpProvider` (see
+`crates/ghostkey-server/src/lightning.rs::build_provider`). The Noop
+line means one of the two env vars on the main app is missing or
+empty.
+
+### 5. Rotating the shared secret
+
+The shared secret is a HMAC-of-rest bearer token shipped on every
+sidecar request. Rotate it by setting the **new** value on both apps
+in the order: sidecar first, then main. There is a brief window
+(seconds) during which invoice mints will 401 — that's acceptable;
+the failed POST surfaces in the dashboard as "Lightning check-in
+failed, try again."
+
+```sh
+NEW=$(openssl rand -hex 32)
+fly secrets set GHOSTKEY_LN_BREEZ_SHARED_SECRET="$NEW" \
+  -a ghostkey-lightning-breez
+fly secrets set GHOSTKEY_LN_BREEZ_SHARED_SECRET="$NEW" \
+  -a ghostkey
+```
+
+The Breez wallet seed (`BREEZ_MNEMONIC`) **cannot** be rotated without
+moving the sidecar's on-chain Liquid balance. That balance is only ever
+1-sat-per-heartbeat in normal operation, so the easy path is "drain the
+wallet, regenerate the mnemonic, redeploy." Persist the volume's
+`/data/breez` content if you want to swap mnemonics without losing
+balance.
+
+---
+
 ## Common pitfalls
 
 | Symptom | Cause | Fix |
