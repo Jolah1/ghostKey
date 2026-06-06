@@ -732,6 +732,59 @@ storage; the manual script is the bridge until then.
 
 ---
 
+## Signet nightly smoke
+
+A scheduled GitHub Action (`.github/workflows/signet-nightly.yml`)
+exercises the deployed signet staging app every night at 06:00 UTC.
+It runs `scripts/signet-smoke.sh`, which:
+
+1. Probes `/health` and asserts `default_network == signet`.
+2. Creates a fresh vault via `POST /vaults/from-xpub`.
+3. Posts an owner check-in.
+4. Reads `/vaults/:id/events` and asserts both `registered` and
+   `checkin` rows are present.
+5. Deletes the vault and confirms a follow-up GET returns 404.
+
+What it does **not** do: build, sign, or broadcast an on-chain
+claim transaction. That path needs signet faucet funds and 1-2
+signet blocks (~10-20 minutes) per run, which is too flaky for a
+daily cron. The on-chain side is covered by the weekly manual
+walk of [`SIGNET_E2E_RUNBOOK.md`](./SIGNET_E2E_RUNBOOK.md).
+
+### Required GitHub Actions secrets
+
+| Secret | What it is |
+|---|---|
+| `GHOSTKEY_SIGNET_URL` | Base URL of the signet staging app, e.g. `https://ghostkey-signet.fly.dev` |
+| `SIGNET_OWNER_XPUB` | BIP86 Taproot tpub for the smoke vault's owner |
+| `SIGNET_OWNER_FINGERPRINT` | 8 hex chars (the BIP32 fingerprint) |
+| `SIGNET_HEIR_XPUB` | BIP86 Taproot tpub for the smoke vault's heir |
+| `SIGNET_HEIR_FINGERPRINT` | 8 hex chars |
+| `SIGNET_NIGHTLY_WEBHOOK` (optional) | Discord/Slack webhook for failure notifications |
+
+The xpubs are watch-only — they cannot move funds — but they
+should still come from a fresh, non-production wallet so the
+smoke vault never holds real value.
+
+### Reading a failed run
+
+The script prints `PASS:` / `FAIL:` per step. A failure means:
+
+- **/health failed** — staging signet app is down. Check
+  `fly status -a ghostkey-signet` and recent `fly logs`.
+- **POST /vaults/from-xpub failed** — server is up but rejecting
+  the create. Most likely cause: a recent migration changed the
+  validation surface. The body printed by the script will say
+  which field is wrong.
+- **/checkin failed** — the owner-token bearer header isn't being
+  accepted. Most likely cause: a route auth refactor.
+- **events log missing rows** — the SQLite write path didn't
+  commit. Investigate the scheduler / database tier.
+- **DELETE failed** — cascade delete regression; inspect the
+  cascade trigger in the latest migration.
+
+This job is a **smoke signal, not a merge gate**. It runs on
+schedule only and does not block PRs.
 ## Lightning sidecar — LNbits alternative
 
 If the Breez sidecar build is broken on your toolchain (see the
