@@ -1,0 +1,53 @@
+[package]
+name = "ghostkey-lightning-lnbits"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "LNbits-backed sidecar for the GhostKey Lightning check-in HTTP wire protocol"
+publish = false
+
+# Deliberately NOT a member of the root workspace. The sister crate
+# `ghostkey-lightning-breez` is excluded because of a reqwest pin
+# conflict; this crate is excluded for the same hygiene reason
+# (a new sidecar process should not drag its HTTP-client deps into
+# the main workspace). `[workspace]` with no members makes this a
+# single-crate workspace so cargo does not walk up.
+[workspace]
+
+[[bin]]
+name = "ghostkey-lightning-lnbits"
+path = "src/main.rs"
+
+[dependencies]
+# HTTP server. We use axum 0.7 so the API style matches the main
+# ghostkey-server crate. No CORS layer — the sidecar only ever talks
+# to localhost / Fly 6PN. tower-http only for tracing.
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync"] }
+tower-http = { version = "0.6", features = ["trace"] }
+
+# HTTP client for talking to the LNbits REST API. rustls-tls instead of
+# the openssl default so the runtime image doesn't need libssl3 — keeps
+# the Docker image lean.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Serde for both the inbound wire shape and the LNbits REST shape.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logs + config.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+
+# Errors. Match the main server's pattern (anyhow at the binary
+# boundary, thiserror for the API surface).
+anyhow = "1"
+thiserror = "1"
+
+# Constant-time comparison for the shared-secret bearer check.
+subtle = "2"
+
+# Time. We mint the expires_at from the LNbits invoice timestamp +
+# expiry rather than guessing, so chrono needs serde support.
+chrono = { version = "0.4", features = ["serde"] }

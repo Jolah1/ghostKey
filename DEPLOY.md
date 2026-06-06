@@ -616,6 +616,57 @@ storage; the manual script is the bridge until then.
 
 ---
 
+## Lightning sidecar — LNbits alternative
+
+If the Breez sidecar build is broken on your toolchain (see the
+upstream-status note in `crates/ghostkey-lightning-breez/README.md`),
+the sibling crate `crates/ghostkey-lightning-lnbits/` implements the
+**same three-route HTTP wire protocol** against an LNbits instance.
+The main `ghostkey-server` is provider-agnostic; point its
+`GHOSTKEY_LN_BREEZ_URL` env var at whichever sidecar you deployed and
+the dashboard renders the check-in button either way.
+
+Deploy is the same shape as the Breez sidecar — see the Breez
+section above for the verify/wire/rotate steps — with these
+substitutions:
+
+```sh
+# Provision
+fly apps create ghostkey-lightning-lnbits
+
+# Secrets (no BREEZ_API_KEY or BREEZ_MNEMONIC; the LNbits instance
+# is the actual Lightning node, this sidecar is a thin translator).
+fly secrets set \
+  LNBITS_URL="https://lnbits.example.com" \
+  LNBITS_INVOICE_KEY="..." \
+  GHOSTKEY_LN_BREEZ_SHARED_SECRET="$(openssl rand -hex 32)" \
+  -a ghostkey-lightning-lnbits
+
+# Deploy
+fly deploy --config crates/ghostkey-lightning-lnbits/fly.toml
+
+# Wire the main app
+fly secrets set \
+  GHOSTKEY_LN_BREEZ_URL="http://ghostkey-lightning-lnbits.internal:8788" \
+  GHOSTKEY_LN_BREEZ_SHARED_SECRET="<the same hex>" \
+  -a ghostkey
+```
+
+Use the LNbits wallet's **invoice key** (receive-only), not the
+admin key. This sidecar never sends — it only mints inbound invoices
+for the 1-sat check-in heartbeats and polls their status — so the
+lower-privilege key is the right choice.
+
+The sidecar holds no on-disk state; the LNbits instance owns the
+Lightning wallet. Back up the LNbits instance the way you would
+back up any other Lightning wallet, and treat the LNbits
+`adminkey` as the recovery secret of last resort.
+
+For the LNbits setup itself (self-host vs. managed vs. demo
+instance) see `crates/ghostkey-lightning-lnbits/README.md`.
+
+---
+
 ## Common pitfalls
 
 | Symptom | Cause | Fix |
