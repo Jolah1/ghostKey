@@ -1,0 +1,5 @@
+# Docker context is this crate dir, not the repo root. Keep it lean.
+target/
+**/target/
+*.swp
+.DS_Store
