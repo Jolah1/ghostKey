@@ -359,7 +359,9 @@ intent.
   every F2 vault. Use Fly Secrets (or KMS equivalent); never bake
   it into a container image or check-in script. Rotate immediately
   on suspected leak.
-- Tracked: rotation runbook is GitHub issue #27.
+- Tracked: rotation design + runbook in [`master-key-rotation.md`](./master-key-rotation.md);
+  implementation (per-row generation tags + background re-encryption +
+  owner-facing F2 re-vault) is GitHub issue #27.
 
 ### R2. Server-side signing window in the password-vault claim
 See D2 above. A compromised server during one specific call can
