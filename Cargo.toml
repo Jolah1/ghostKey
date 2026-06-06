@@ -5,18 +5,23 @@ members = [
     "crates/ghostkey-cli",
     "crates/ghostkey-server",
 ]
-# Deliberately excluded from the workspace because its transitive
-# `breez-sdk-liquid` dependency pins `reqwest =0.12.18` exactly,
-# which conflicts with every other crate in this workspace. Building
-# it via `cargo build -p ghostkey-lightning-breez` from inside the
-# `crates/ghostkey-lightning-breez` directory works fine — it gets
-# its own Cargo.lock and its own dep universe.
+# Both sidecars are deliberately excluded from the workspace.
 #
-# See crates/ghostkey-lightning-breez/README.md for the integration
-# story (long form) and DESIGN.md § "Lightning check-ins" for the
+# `ghostkey-lightning-breez` is excluded because its transitive
+# `breez-sdk-liquid` dependency pins `reqwest =0.12.18` exactly,
+# which conflicts with every other crate in this workspace.
+#
+# `ghostkey-lightning-lnbits` is excluded for the same hygiene reason
+# — keep sidecar HTTP-client deps out of the main workspace's lock
+# file — and to mirror the breez sidecar's build shape exactly.
+#
+# Building each works via `cargo build` from inside its own directory,
+# where it gets its own Cargo.lock and its own dep universe. See each
+# crate's README and DESIGN.md § "Lightning check-ins" for the
 # rationale.
 exclude = [
     "crates/ghostkey-lightning-breez",
+    "crates/ghostkey-lightning-lnbits",
 ]
 
 [workspace.package]
