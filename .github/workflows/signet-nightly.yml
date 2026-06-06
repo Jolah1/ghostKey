@@ -1,0 +1,80 @@
+# Nightly smoke against the deployed signet staging app.
+#
+# Runs the achievable parts of SIGNET_E2E_RUNBOOK.md every night:
+# health probe, vault create-from-xpub, owner check-in, events log
+# assertion, vault delete. Does NOT broadcast an on-chain claim
+# transaction; that path needs faucet funds + signet block waits
+# (~10-20 minutes per block) and is too flaky for a daily cron.
+# The weekly manual walk of the runbook covers the on-chain side.
+#
+# Required GitHub Actions secrets (configure on the repo):
+#
+#   GHOSTKEY_SIGNET_URL          base URL of the signet staging app
+#   SIGNET_OWNER_XPUB            BIP86 Taproot tpub for the owner
+#   SIGNET_OWNER_FINGERPRINT     8 hex chars
+#   SIGNET_HEIR_XPUB             BIP86 Taproot tpub for the heir
+#   SIGNET_HEIR_FINGERPRINT      8 hex chars
+#
+# Optional:
+#   SIGNET_NIGHTLY_WEBHOOK       Discord (or compatible) webhook for
+#                                failure notifications. Slack-style
+#                                payloads also work because Discord
+#                                accepts {content: "..."}.
+#
+# This job is a smoke signal, not a merge gate. It runs on cron only
+# (and via workflow_dispatch). It does not block PRs into main.
+
+name: signet-nightly
+
+on:
+  schedule:
+    # 06:00 UTC daily. Far enough from midnight that staging deploys
+    # earlier in the day have settled, late enough that a failure
+    # report lands during European morning standups.
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+# Don't pile up if a run takes longer than a day (it shouldn't, but a
+# hung curl can stall otherwise). Cancel the older run.
+concurrency:
+  group: signet-nightly
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: signet smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # jq is preinstalled on ubuntu-latest; this is belt-and-braces in
+      # case the image image changes underneath us.
+      - name: Ensure jq is available
+        run: jq --version
+
+      - name: Run signet smoke
+        id: smoke
+        env:
+          GHOSTKEY_SIGNET_URL:      ${{ secrets.GHOSTKEY_SIGNET_URL }}
+          SIGNET_OWNER_XPUB:        ${{ secrets.SIGNET_OWNER_XPUB }}
+          SIGNET_OWNER_FINGERPRINT: ${{ secrets.SIGNET_OWNER_FINGERPRINT }}
+          SIGNET_HEIR_XPUB:         ${{ secrets.SIGNET_HEIR_XPUB }}
+          SIGNET_HEIR_FINGERPRINT:  ${{ secrets.SIGNET_HEIR_FINGERPRINT }}
+        run: ./scripts/signet-smoke.sh
+
+      # Failure-only webhook. The step is skipped on green runs so we
+      # don't spam the channel every night. Slack-shaped JSON works
+      # because Discord accepts the {content: "..."} key too — same
+      # payload, both endpoints.
+      - name: Notify on failure
+        if: failure() && env.SIGNET_NIGHTLY_WEBHOOK != ''
+        env:
+          SIGNET_NIGHTLY_WEBHOOK: ${{ secrets.SIGNET_NIGHTLY_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -sS -X POST "$SIGNET_NIGHTLY_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            --data "$(jq -n --arg url "$RUN_URL" \
+              '{content: ("signet-nightly FAILED — " + $url)}')"

@@ -573,6 +573,18 @@ function StepWallet({
                 <code className="font-mono">bip86</code> entry.
               </li>
             </ul>
+            <p className="mt-3 text-xs text-muted">
+              Need step-by-step screenshots? See the{" "}
+              <a
+                href="https://github.com/Jolah1/ghostKey/tree/main/docs/xpub-guides"
+                target="_blank"
+                rel="noreferrer noopener"
+                className="underline"
+              >
+                wallet xpub export guides
+              </a>{" "}
+              (Sparrow, BlueWallet, Cake, Specter, Coldcard).
+            </p>
           </Disclosure>
 
           <Disclosure summary={<span>Advanced (paste a descriptor pair)</span>}>
