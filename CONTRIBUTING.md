@@ -223,6 +223,9 @@ separate file.
   PR that introduces a feature or makes a non-trivial decision.
 - **ARCHITECTURE.md** is the technical reference. Update it when
   protocol-relevant code changes.
+- **docs/walkthrough.md** is the 10-minute on-ramp for new
+  contributors. If a file referenced from it moves or a handler
+  is renamed, please fix the walkthrough too.
 
 If your change makes any of these documents inaccurate, your PR
 fixes the document too. We don't merge code that contradicts the
