@@ -1,0 +1,12 @@
+# Docker context is this crate dir, not the repo root. Keep it lean —
+# the more we ignore, the faster `docker build` and `fly deploy` push
+# their layers.
+target/
+**/target/
+*.swp
+.DS_Store
+
+# Local Breez SDK state (it persists secrets and a wallet). Never bake
+# it into an image.
+breez-data/
+breez-data*/

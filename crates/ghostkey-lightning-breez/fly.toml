@@ -1,0 +1,102 @@
+# fly.toml — ghostkey-lightning-breez sidecar deployment for Fly.io.
+#
+# This is the second of the two-process deploy described in DEPLOY.md
+# under "Lightning sidecar (two-process deploy)". The main app
+# (`ghostkey`) reaches this sidecar over Fly's 6PN private network at
+# `ghostkey-lightning-breez.internal:8788` and authenticates with a
+# shared bearer secret (`GHOSTKEY_LN_BREEZ_SHARED_SECRET`).
+#
+# Provision once, then `fly deploy --config crates/ghostkey-lightning-breez/fly.toml`:
+#
+#   fly apps create ghostkey-lightning-breez
+#   fly volumes create breez_data --region ams --size 1 \
+#     -a ghostkey-lightning-breez
+#   fly secrets set \
+#     BREEZ_API_KEY="..." \
+#     BREEZ_MNEMONIC="word1 word2 ... word12" \
+#     GHOSTKEY_LN_BREEZ_SHARED_SECRET="$(openssl rand -hex 32)" \
+#     -a ghostkey-lightning-breez
+#
+# The shared secret also has to be set on the main `ghostkey` app, plus
+# the URL pointer:
+#
+#   fly secrets set \
+#     GHOSTKEY_LN_BREEZ_URL="http://ghostkey-lightning-breez.internal:8788" \
+#     GHOSTKEY_LN_BREEZ_SHARED_SECRET="<the same value as above>" \
+#     -a ghostkey
+#
+# See DEPLOY.md → "Lightning sidecar (two-process deploy)" for the
+# full step-by-step.
+
+app           = "ghostkey-lightning-breez"
+primary_region = "ams"   # match the main `ghostkey` app's region
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # Bind to all interfaces inside the container so the 6PN private
+  # network can reach us. The defence in depth is the shared bearer
+  # secret enforced in src/main.rs; the sidecar refuses to start
+  # without GHOSTKEY_LN_BREEZ_SHARED_SECRET.
+  GHOSTKEY_LN_BREEZ_BIND = "0.0.0.0:8788"
+
+  # Persistent state for the Breez SDK. Mounted from the breez_data
+  # volume below. Losing this directory means losing the sidecar's
+  # heartbeat wallet — fund-bearing, but only ever 1-sat-per-heartbeat
+  # in normal operation. Provision a volume regardless; the SDK refuses
+  # to start without writable state.
+  BREEZ_WORKING_DIR = "/data/breez"
+
+  # Testnet is the project-wide default until a security review lands.
+  # Override via `fly secrets set BREEZ_NETWORK=mainnet -a ...` once
+  # mainnet is on the table — but read the threat model first.
+  BREEZ_NETWORK = "testnet"
+
+  RUST_LOG = "ghostkey_lightning_breez=info,info"
+
+# Persistent volume. Breez SDK keeps its wallet state on disk; a fresh
+# volume on every deploy would mean re-onboarding the wallet every
+# time, which is both slow and a regression from the documented
+# behaviour. Provision BEFORE the first deploy with:
+#   fly volumes create breez_data --region ams --size 1 \
+#     -a ghostkey-lightning-breez
+[mounts]
+  source      = "breez_data"
+  destination = "/data"
+
+# Internal-only services section.
+#
+# Note the absence of a `[http_service]` block: that is the Fly
+# directive that would attach this app to the public edge proxy and
+# auto-issue a TLS cert. We do NOT want that — the sidecar is reached
+# exclusively from inside the Fly 6PN private network, and the bearer
+# secret is the only authentication. Exposing this app publicly would
+# weaken that posture significantly.
+#
+# The [[services]] block below exposes port 8788 only on the 6PN
+# private addresses (the `internal` handler), so other apps in the
+# same Fly organisation can reach `ghostkey-lightning-breez.internal:8788`
+# but the public internet cannot.
+[[services]]
+  protocol      = "tcp"
+  internal_port = 8788
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # Sidecar health probe. The crate exposes GET /v1/health that returns
+  # {"ok":true,"ready":<bool>}; we accept either because Breez SDK warm-
+  # up can take 30s and we'd rather not flap the machine during boot.
+  [[services.tcp_checks]]
+    interval        = "30s"
+    grace_period    = "60s"
+    timeout         = "5s"
+
+# Small machine. Bump if you start seeing OOM kills under sustained
+# invoice traffic, but for the 1-sat heartbeats this project actually
+# uses, the default should be plenty.
+[[vm]]
+  cpu_kind = "shared"
+  cpus     = 1
+  memory_mb = 512
