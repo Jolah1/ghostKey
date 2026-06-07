@@ -82,6 +82,12 @@ pub fn router(state: Arc<AppState>) -> Router {
     let find_limiter = crate::rate_limit::Limiter::from_env("find", "GHOSTKEY_RL_FIND", 30, 0.5);
     let claim_limiter =
         crate::rate_limit::Limiter::from_env("claim", "GHOSTKEY_RL_CLAIM", 20, 1.0 / 3.0);
+    // /events is hit on every landing-page section view. Generous
+    // budget — 60 burst, 1/s steady — because a single visitor
+    // emits ~7 events per page load and we don't want to lose
+    // signal during a healthy traffic spike.
+    let analytics_limiter =
+        crate::rate_limit::Limiter::from_env("analytics", "GHOSTKEY_RL_ANALYTICS", 60, 1.0);
 
     // The four rate-limited surfaces, each a small sub-router that
     // we'll merge into the main one. Keeping them separate makes the
@@ -105,6 +111,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/vaults/find", post(find_vaults_by_email))
         .layer(axum::middleware::from_fn_with_state(
             find_limiter,
+            crate::rate_limit::enforce,
+        ));
+
+    let analytics_routes: Router<Arc<AppState>> = Router::new()
+        .route("/events", post(crate::analytics::track))
+        .layer(axum::middleware::from_fn_with_state(
+            analytics_limiter,
             crate::rate_limit::enforce,
         ));
 
@@ -179,6 +192,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(create_routes)
         .merge(find_routes)
         .merge(claim_routes)
+        .merge(analytics_routes)
         .layer(TraceLayer::new_for_http().make_span_with(make_request_span))
         .layer(cors)
         .with_state(state)

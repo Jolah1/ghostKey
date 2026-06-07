@@ -570,4 +570,23 @@ export const api = {
       `/claim/${encodeURIComponent(token)}/heir-claim`,
       { method: "POST", body: JSON.stringify(req) },
     ),
+  /**
+   * Privacy-preserving landing-page analytics. Fire-and-forget — never
+   * await this in a render path. The server returns 204 and tolerates
+   * brief DB contention without surfacing an error, so a swallow on the
+   * client side won't mask a real issue. See `analytics.rs` and
+   * `DESIGN.md` § "What we measure and why".
+   */
+  trackEvent: (event: string, label?: string) =>
+    fetch(`${BASE}/events`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(label ? { event, label } : { event }),
+      // Use keepalive so a navigation away from the page doesn't
+      // cancel the beacon. Falls back to a regular fetch on browsers
+      // without keepalive support; the request is still cheap.
+      keepalive: true,
+    }).catch(() => {
+      /* analytics failures are silent on purpose */
+    }),
 };
