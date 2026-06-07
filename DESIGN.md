@@ -19,7 +19,8 @@ If you're contributing and only read one document, read this one.
 5. [The heir's experience](#5-the-heirs-experience)
 6. [Security trade-offs](#6-security-trade-offs)
 7. [Where AI fits and where it doesn't](#7-where-ai-fits-and-where-it-doesnt)
-8. [What we'd build next](#8-what-wed-build-next)
+8. [What we measure and why](#8-what-we-measure-and-why)
+9. [What we'd build next](#9-what-wed-build-next)
 
 ---
 
@@ -304,7 +305,53 @@ Example:
 
 ---
 
-## 8. What we'd build next
+## 8. What we measure and why
+
+GhostKey ships with one analytics surface: the landing page. We need to know which parts of the page actually move people from "what is this?" to "set up a vault" so we can cut what doesn't and double down on what does. We do not need — and refuse to collect — a profile of who visited.
+
+### What we collect
+
+Two event types, both fired from the React landing page to `POST /events` on our own server:
+
+- `landing.section_viewed` with a `label` per section (`hero`, `how_it_works`, `lifecycle`, `why_bitcoin`, `comparison`, `faq`, `final_cta`). Fired once per page load when an `IntersectionObserver` first reports the section ≥25% visible.
+- `landing.cta_clicked` with a `label` per button (`hero_setup`, `hero_inherit`, `how_it_works_setup`, `final_setup`, `final_docs`). Fired on click.
+
+Each event increments a single row in the `analytics_events` table keyed on `(event_name, label, day_UTC)`. The body of that row is a counter — nothing else.
+
+### What we deliberately do not collect
+
+- **No IPs in the analytics table.** The per-IP rate limiter in front of `/events` does see addresses, but those buckets live in memory only and are never joined to a counter row.
+- **No cookies, no localStorage IDs, no fingerprints.** A returning visitor is indistinguishable from a new one. We cannot answer "how many *unique* people viewed the hero." We can answer "how many hero impressions today." That's enough.
+- **No referrers, no user agents, no screen sizes, no country.** If a stakeholder wants those later they have to argue for them in a PR, and we'll write down what the new exposure buys us.
+- **No third-party pixel, no GA, no Plausible/Fathom embed.** Every byte the page sends about itself goes to our own origin. The data lives in the same SQLite file as everything else and is deleted on the same schedule.
+
+### Why this shape
+
+The honest reason is taste: an inheritance product is a place where people have to trust us with the location of money they'll leave their family. A page that loads a Google Analytics beacon while telling you "the server cannot move your funds" is undermining itself.
+
+The structural reason is that the question we actually need answered is "of the people who land on the page, what fraction reach the final CTA?" That's a funnel over impressions, not over identified users. Section-counter + click-counter math gives us the funnel without ever needing to track a person across visits.
+
+### Operator query (until there's an admin UI)
+
+```sql
+-- Last 7 days, per section, sorted by drop-off
+SELECT label, SUM(count) AS impressions
+FROM analytics_events
+WHERE event_name = 'landing.section_viewed'
+  AND day >= date('now', '-7 days')
+GROUP BY label
+ORDER BY impressions DESC;
+```
+
+An admin view that renders this funnel is a clean follow-up — see issue tracker for "landing analytics UI."
+
+### Validation and abuse
+
+`event` and `label` are constrained to `^[a-z][a-z0-9_.]{0,63}$` server-side. The endpoint always returns 204 on shape-valid input (best-effort beacon — we never 500 the visitor's browser if SQLite is briefly contended) and 400 on a malformed name. A per-IP token bucket in `routes.rs` (`analytics_limiter`, configurable via `GHOSTKEY_RL_ANALYTICS`) caps flood damage to "more rows in one table."
+
+---
+
+## 9. What we'd build next
 
 In rough priority order. Some are weeks of work; some are afternoons.
 

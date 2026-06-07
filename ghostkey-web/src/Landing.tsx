@@ -18,6 +18,8 @@
 import { Disclosure, Eyebrow } from "./ui";
 import { brand } from "./vocab";
 import type { Route } from "./App";
+import { api } from "./api";
+import { useTrackInView } from "./useTrackInView";
 
 interface Props {
   onNavigate: (r: Route) => void;
@@ -41,8 +43,9 @@ export function Landing({ onNavigate }: Props) {
 /* --------------------------------- Hero ----------------------------------- */
 
 function Hero({ onNavigate }: Props) {
+  const ref = useTrackInView("landing.section_viewed", "hero");
   return (
-    <section className="relative overflow-hidden hero-glow">
+    <section ref={ref} className="relative overflow-hidden hero-glow">
       {/* Mobile padding was `px-5 py-20` (1.25rem / 5rem). On a 360px
           phone py-20 is 160px of vertical dead space before content.
           Drop to py-12 (3rem = 48px) at base so the hero is visible
@@ -74,7 +77,10 @@ function Hero({ onNavigate }: Props) {
               restores the horizontal pair. */}
           <button
             type="button"
-            onClick={() => onNavigate("setup")}
+            onClick={() => {
+              void api.trackEvent("landing.cta_clicked", "hero_setup");
+              onNavigate("setup");
+            }}
             className="btn btn-primary"
           >
             Set up your vault
@@ -82,7 +88,10 @@ function Hero({ onNavigate }: Props) {
           </button>
           <button
             type="button"
-            onClick={() => onNavigate("inherit")}
+            onClick={() => {
+              void api.trackEvent("landing.cta_clicked", "hero_inherit");
+              onNavigate("inherit");
+            }}
             className="btn btn-ghost"
           >
             I was named to inherit
@@ -145,8 +154,9 @@ const STEPS: Step[] = [
 ];
 
 function HowItWorks({ onNavigate }: Props) {
+  const ref = useTrackInView("landing.section_viewed", "how_it_works");
   return (
-    <section id="how" className="border-t border-app bg-app">
+    <section ref={ref} id="how" className="border-t border-app bg-app">
       <div className="mx-auto max-w-3xl px-5 py-14 md:px-8 md:py-28">
         <Eyebrow dim>How it works</Eyebrow>
 
@@ -182,7 +192,10 @@ function HowItWorks({ onNavigate }: Props) {
         <div className="flex justify-start">
           <button
             type="button"
-            onClick={() => onNavigate("setup")}
+            onClick={() => {
+              void api.trackEvent("landing.cta_clicked", "how_it_works_setup");
+              onNavigate("setup");
+            }}
             className="btn btn-primary"
           >
             Set up your vault
@@ -231,8 +244,9 @@ const STAGES: Stage[] = [
 ];
 
 function Lifecycle() {
+  const ref = useTrackInView("landing.section_viewed", "lifecycle");
   return (
-    <section className="border-t border-app bg-app">
+    <section ref={ref} className="border-t border-app bg-app">
       <div className="mx-auto max-w-5xl px-5 py-14 md:px-8 md:py-28">
         <div className="max-w-2xl">
           <Eyebrow dim>Vault lifecycle</Eyebrow>
@@ -327,8 +341,9 @@ const REASONS: Reason[] = [
 ];
 
 function WhyBitcoin() {
+  const ref = useTrackInView("landing.section_viewed", "why_bitcoin");
   return (
-    <section className="border-t border-app bg-app">
+    <section ref={ref} className="border-t border-app bg-app">
       <div className="mx-auto max-w-5xl px-5 py-14 md:px-8 md:py-28">
         <div className="max-w-2xl">
           <Eyebrow dim>Why Bitcoin</Eyebrow>
@@ -370,8 +385,9 @@ const COMP: CompRow[] = [
 ];
 
 function Comparison() {
+  const ref = useTrackInView("landing.section_viewed", "comparison");
   return (
-    <section className="border-t border-app bg-app">
+    <section ref={ref} className="border-t border-app bg-app">
       <div className="mx-auto max-w-5xl px-5 py-14 md:px-8 md:py-28">
         <div className="max-w-2xl">
           <Eyebrow dim>Comparison</Eyebrow>
@@ -567,8 +583,9 @@ const FAQS = [
 ];
 
 function FAQ() {
+  const ref = useTrackInView("landing.section_viewed", "faq");
   return (
-    <section className="border-t border-app bg-app">
+    <section ref={ref} className="border-t border-app bg-app">
       <div className="mx-auto max-w-3xl px-5 py-14 md:px-8 md:py-28">
         <div className="text-center">
           <Eyebrow dim>FAQ</Eyebrow>
@@ -602,8 +619,9 @@ function FAQ() {
 /* ------------------------------ Final CTA --------------------------------- */
 
 function FinalCTA({ onNavigate }: Props) {
+  const ref = useTrackInView("landing.section_viewed", "final_cta");
   return (
-    <section className="border-t border-app bg-app">
+    <section ref={ref} className="border-t border-app bg-app">
       <div className="mx-auto max-w-3xl px-5 py-14 text-center md:px-8 md:py-28">
         <h2 className="font-display text-3xl font-bold leading-[1.05] tracking-tight md:text-6xl">
           <span className="title-gradient">Don't let your Bitcoin </span>
@@ -616,7 +634,10 @@ function FinalCTA({ onNavigate }: Props) {
         <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
           <button
             type="button"
-            onClick={() => onNavigate("setup")}
+            onClick={() => {
+              void api.trackEvent("landing.cta_clicked", "final_setup");
+              onNavigate("setup");
+            }}
             className="btn btn-primary"
           >
             Set up your vault
@@ -626,6 +647,9 @@ function FinalCTA({ onNavigate }: Props) {
             href="https://github.com/Jolah1/ghostKey"
             target="_blank"
             rel="noreferrer noopener"
+            onClick={() => {
+              void api.trackEvent("landing.cta_clicked", "final_docs");
+            }}
             className="btn btn-ghost"
           >
             Read the docs
