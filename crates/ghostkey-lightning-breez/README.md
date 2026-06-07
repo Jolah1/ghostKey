@@ -58,7 +58,7 @@ Phoenixd, etc. The main `ghostkey-server` does not care which it is.
 ## API
 
 All routes require an `Authorization: Bearer <SHARED_SECRET>` header
-matching the `GHOSTKEY_LN_BREEZ_SHARED_SECRET` env var on both sides.
+matching the `GHOSTKEY_LN_SIDECAR_SHARED_SECRET` env var on both sides.
 The sidecar binds to `127.0.0.1` by default so it isn't reachable
 from outside the host; the bearer is defence in depth.
 
@@ -83,7 +83,7 @@ cd crates/ghostkey-lightning-breez
 # Required env vars (the sidecar refuses to start without these).
 export BREEZ_API_KEY="..."         # free key from breez.technology
 export BREEZ_MNEMONIC="word1 ..."  # 12-word BIP39 seed, this server's wallet
-export GHOSTKEY_LN_BREEZ_SHARED_SECRET=$(openssl rand -hex 32)
+export GHOSTKEY_LN_SIDECAR_SHARED_SECRET=$(openssl rand -hex 32)
 
 # Optional.
 export BREEZ_NETWORK=testnet                  # mainnet | testnet (default testnet)
@@ -96,8 +96,8 @@ cargo run --release
 Then point the main server at it:
 
 ```bash
-GHOSTKEY_LN_BREEZ_URL=http://127.0.0.1:8788 \
-GHOSTKEY_LN_BREEZ_SHARED_SECRET=<same-secret> \
+GHOSTKEY_LN_SIDECAR_URL=http://127.0.0.1:8788 \
+GHOSTKEY_LN_SIDECAR_SHARED_SECRET=<same-secret> \
 cargo run -p ghostkey-server
 ```
 

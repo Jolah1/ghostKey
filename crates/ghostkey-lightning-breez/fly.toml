@@ -4,7 +4,7 @@
 # under "Lightning sidecar (two-process deploy)". The main app
 # (`ghostkey`) reaches this sidecar over Fly's 6PN private network at
 # `ghostkey-lightning-breez.internal:8788` and authenticates with a
-# shared bearer secret (`GHOSTKEY_LN_BREEZ_SHARED_SECRET`).
+# shared bearer secret (`GHOSTKEY_LN_SIDECAR_SHARED_SECRET`).
 #
 # Provision once, then `fly deploy --config crates/ghostkey-lightning-breez/fly.toml`:
 #
@@ -14,15 +14,15 @@
 #   fly secrets set \
 #     BREEZ_API_KEY="..." \
 #     BREEZ_MNEMONIC="word1 word2 ... word12" \
-#     GHOSTKEY_LN_BREEZ_SHARED_SECRET="$(openssl rand -hex 32)" \
+#     GHOSTKEY_LN_SIDECAR_SHARED_SECRET="$(openssl rand -hex 32)" \
 #     -a ghostkey-lightning-breez
 #
 # The shared secret also has to be set on the main `ghostkey` app, plus
 # the URL pointer:
 #
 #   fly secrets set \
-#     GHOSTKEY_LN_BREEZ_URL="http://ghostkey-lightning-breez.internal:8788" \
-#     GHOSTKEY_LN_BREEZ_SHARED_SECRET="<the same value as above>" \
+#     GHOSTKEY_LN_SIDECAR_URL="http://ghostkey-lightning-breez.internal:8788" \
+#     GHOSTKEY_LN_SIDECAR_SHARED_SECRET="<the same value as above>" \
 #     -a ghostkey
 #
 # See DEPLOY.md → "Lightning sidecar (two-process deploy)" for the
@@ -38,7 +38,7 @@ primary_region = "ams"   # match the main `ghostkey` app's region
   # Bind to all interfaces inside the container so the 6PN private
   # network can reach us. The defence in depth is the shared bearer
   # secret enforced in src/main.rs; the sidecar refuses to start
-  # without GHOSTKEY_LN_BREEZ_SHARED_SECRET.
+  # without GHOSTKEY_LN_SIDECAR_SHARED_SECRET.
   GHOSTKEY_LN_BREEZ_BIND = "0.0.0.0:8788"
 
   # Persistent state for the Breez SDK. Mounted from the breez_data

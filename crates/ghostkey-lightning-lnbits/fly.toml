@@ -3,7 +3,7 @@
 # Drop-in alternative to the Breez sidecar (`../ghostkey-lightning-breez/fly.toml`).
 # Both implement the same wire protocol, so swapping which one is deployed
 # is a matter of which fly.toml you `fly deploy` and which URL you set as
-# GHOSTKEY_LN_BREEZ_URL on the main `ghostkey` app.
+# GHOSTKEY_LN_SIDECAR_URL on the main `ghostkey` app.
 #
 # Provision once, then `fly deploy --config crates/ghostkey-lightning-lnbits/fly.toml`:
 #
@@ -11,14 +11,14 @@
 #   fly secrets set \
 #     LNBITS_URL="https://lnbits.example.com" \
 #     LNBITS_INVOICE_KEY="..." \
-#     GHOSTKEY_LN_BREEZ_SHARED_SECRET="$(openssl rand -hex 32)" \
+#     GHOSTKEY_LN_SIDECAR_SHARED_SECRET="$(openssl rand -hex 32)" \
 #     -a ghostkey-lightning-lnbits
 #
 # Then wire the shared secret + URL pointer on the main `ghostkey` app:
 #
 #   fly secrets set \
-#     GHOSTKEY_LN_BREEZ_URL="http://ghostkey-lightning-lnbits.internal:8788" \
-#     GHOSTKEY_LN_BREEZ_SHARED_SECRET="<the same value as above>" \
+#     GHOSTKEY_LN_SIDECAR_URL="http://ghostkey-lightning-lnbits.internal:8788" \
+#     GHOSTKEY_LN_SIDECAR_SHARED_SECRET="<the same value as above>" \
 #     -a ghostkey
 #
 # See DEPLOY.md → "Lightning sidecar (two-process deploy)" for the
@@ -39,7 +39,7 @@ primary_region = "ams"   # match the main `ghostkey` app's region
   # Bind to all interfaces inside the container so the 6PN private
   # network can reach us. The defence in depth is the shared bearer
   # secret enforced in src/main.rs; the sidecar refuses to start
-  # without GHOSTKEY_LN_BREEZ_SHARED_SECRET.
+  # without GHOSTKEY_LN_SIDECAR_SHARED_SECRET.
   GHOSTKEY_LN_LNBITS_BIND = "0.0.0.0:8788"
 
   # Upstream HTTP timeout to the LNbits instance. Default 15s leaves
