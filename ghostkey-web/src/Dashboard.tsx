@@ -722,9 +722,12 @@ function HeartbeatCard({
 
         {!locked ? (
           lightningEnabled ? (
-            <p className="mt-2 text-[11px] text-dim">
-              Pay a 1-sat Lightning invoice for cryptographic proof of liveness.
-            </p>
+            <>
+              <p className="mt-2 text-[11px] text-dim">
+                Pay a 1-sat Lightning invoice for cryptographic proof of liveness.
+              </p>
+              <LightningStatusBadge />
+            </>
           ) : (
             <p
               className="mt-2 text-[11px] text-dim"
@@ -747,6 +750,108 @@ function HeartbeatCard({
         ) : null}
       </div>
     </section>
+  );
+}
+
+/* --------------------------- Lightning status ----------------------------- */
+
+/**
+ * Reachability badge for the Lightning sidecar.
+ *
+ * `/health` only reports "operator wired up env vars." A user
+ * staring at the "⚡ Pay 1 sat" button doesn't yet know whether
+ * the sidecar is actually up. We poll `/health/lightning` (server
+ * caches the underlying probe for 5s, so this is cheap) and surface
+ * the answer as a tiny coloured dot + label inline with the hint.
+ *
+ * Render-skip rules:
+ *   - 404 from older servers → render nothing. Callers shouldn't
+ *     even see this component on those builds, but defence-in-depth.
+ *   - probe returns `enabled: false` → render nothing (the parent
+ *     already gates on `lightningEnabled`; reaching this state means
+ *     the operator flipped env vars between renders, in which case
+ *     hiding the badge until next page load is fine).
+ *   - probe pending on first mount → render nothing rather than a
+ *     flash of "unknown" copy.
+ */
+function LightningStatusBadge() {
+  const [state, setState] = useState<
+    | { kind: "loading" }
+    | { kind: "hidden" }
+    | { kind: "ready" }
+    | { kind: "warming" }
+    | { kind: "error"; message: string }
+  >({ kind: "loading" });
+
+  useEffect(() => {
+    let alive = true;
+    let timer: number | undefined;
+
+    const poll = () => {
+      api
+        .healthLightning()
+        .then((r) => {
+          if (!alive) return;
+          if (!r.enabled) {
+            setState({ kind: "hidden" });
+          } else if (r.error) {
+            setState({ kind: "error", message: r.error });
+          } else if (r.ready) {
+            setState({ kind: "ready" });
+          } else {
+            setState({ kind: "warming" });
+          }
+        })
+        .catch(() => {
+          if (!alive) return;
+          // 404 / network error — older server or offline.
+          // Stay quiet rather than scaring the user.
+          setState({ kind: "hidden" });
+        });
+    };
+
+    poll();
+    // Refresh in the background every 30s so the user sees a
+    // sidecar recovery (or failure) without a page reload. Five-
+    // second server-side cache means this is one downstream
+    // network call per probe regardless of how many tabs are open.
+    timer = window.setInterval(poll, 30_000);
+    return () => {
+      alive = false;
+      if (timer !== undefined) window.clearInterval(timer);
+    };
+  }, []);
+
+  if (state.kind === "loading" || state.kind === "hidden") return null;
+
+  const dotColour =
+    state.kind === "ready"
+      ? "var(--ok)"
+      : state.kind === "warming"
+        ? "var(--warning)"
+        : "var(--alarm)";
+  const label =
+    state.kind === "ready"
+      ? "Sidecar ready"
+      : state.kind === "warming"
+        ? "Sidecar warming up"
+        : "Sidecar unreachable";
+  const title =
+    state.kind === "error" ? state.message : undefined;
+
+  return (
+    <p
+      className="mt-1 text-[11px] text-dim"
+      title={title}
+      data-testid="ln-status-badge"
+    >
+      <span
+        aria-hidden="true"
+        className="mr-1.5 inline-block h-2 w-2 rounded-full align-middle"
+        style={{ background: dotColour }}
+      />
+      {label}
+    </p>
   );
 }
 
