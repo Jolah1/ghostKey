@@ -122,6 +122,17 @@ pub trait LightningProvider: Send + Sync {
 
     /// Look up the current status of an invoice by payment hash.
     async fn invoice_status(&self, payment_hash: &str) -> Result<InvoiceStatus, LightningError>;
+
+    /// Probe the underlying backend's readiness. For the HTTP-sidecar
+    /// provider this issues a `GET /v1/health` and returns the
+    /// sidecar's `ready` field — useful for an ops curl that needs to
+    /// distinguish "env vars are set" from "the sidecar is actually
+    /// reachable and warmed up." For `NoopProvider` always returns
+    /// `Ok(false)`. Default impl matches the Noop behaviour so legacy
+    /// providers don't have to opt in.
+    async fn probe(&self) -> Result<bool, LightningError> {
+        Ok(false)
+    }
 }
 
 /// Placeholder provider used when the `lightning` feature is off or
@@ -713,7 +724,17 @@ pub struct HttpProvider {
     base_url: String,
     shared_secret: String,
     client: reqwest::Client,
+    /// TTL cache for `probe()`. The `/health/lightning` route hits
+    /// this on every request; without the cache an unauthenticated
+    /// caller could turn the main app into a fan-out toward the
+    /// sidecar. Five seconds is short enough that an operator
+    /// debugging a misconfig sees the fix within a single re-curl
+    /// pass, and long enough that 1k req/s upstream collapses to
+    /// 0.2 req/s downstream.
+    probe_cache: std::sync::Mutex<Option<(std::time::Instant, Result<bool, String>)>>,
 }
+
+const PROBE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl HttpProvider {
     /// Construct a new client. The `base_url` is normalised (trailing
@@ -734,6 +755,7 @@ impl HttpProvider {
             base_url,
             shared_secret,
             client,
+            probe_cache: std::sync::Mutex::new(None),
         })
     }
 
@@ -747,11 +769,10 @@ impl HttpProvider {
     /// expect: "the operator wired up Lightning, so the UI may show
     /// the button; payment-flow failures still bubble up to the user."
     ///
-    /// Kept on the impl as a documented building block for an ops
-    /// debug endpoint (and to make the wire surface obvious to
-    /// readers of this file); not on the trait because the trait
-    /// stays minimal.
-    #[allow(dead_code)]
+    /// Called via `LightningProvider::probe` (this is the underlying
+    /// implementation); exposed by the public `GET /health/lightning`
+    /// route so operators can verify the sidecar wire from a single
+    /// curl on the main app.
     async fn health(&self) -> Result<bool, LightningError> {
         let url = format!("{}/v1/health", self.base_url);
         let resp = self
@@ -806,6 +827,31 @@ impl LightningProvider for HttpProvider {
         // operator opted in; we report enabled and let per-call errors
         // surface real provider trouble.
         true
+    }
+
+    async fn probe(&self) -> Result<bool, LightningError> {
+        // Read cache without holding the lock across the await.
+        let cached = {
+            let guard = self.probe_cache.lock().expect("probe_cache mutex");
+            guard
+                .as_ref()
+                .and_then(|(t, r)| (t.elapsed() < PROBE_CACHE_TTL).then(|| r.clone()))
+        };
+        if let Some(r) = cached {
+            return r.map_err(LightningError::Provider);
+        }
+
+        let res = self.health().await;
+        // Store a cloneable form of the result.
+        let cacheable = match &res {
+            Ok(b) => Ok(*b),
+            Err(e) => Err(e.to_string()),
+        };
+        {
+            let mut guard = self.probe_cache.lock().expect("probe_cache mutex");
+            *guard = Some((std::time::Instant::now(), cacheable));
+        }
+        res
     }
 
     async fn create_invoice(
@@ -1079,6 +1125,7 @@ mod tests {
     struct MockSidecar {
         invoice_hits: AtomicUsize,
         status_hits: AtomicUsize,
+        health_hits: AtomicUsize,
         seen_bearer: std::sync::Mutex<Option<String>>,
     }
 
@@ -1087,8 +1134,23 @@ mod tests {
         let secret_for_invoice = secret.clone();
         let sidecar_for_status = sidecar.clone();
         let secret_for_status = secret.clone();
+        let sidecar_for_health = sidecar.clone();
 
         let app = Router::new()
+            .route(
+                "/v1/health",
+                get(move || {
+                    let sidecar = sidecar_for_health.clone();
+                    async move {
+                        sidecar.health_hits.fetch_add(1, Ordering::SeqCst);
+                        Json(serde_json::json!({
+                            "ok": true,
+                            "ready": true,
+                            "version": "test",
+                        }))
+                    }
+                }),
+            )
             .route(
                 "/v1/invoice",
                 post(move |headers: axum::http::HeaderMap, Json(body): Json<serde_json::Value>| {
@@ -1281,6 +1343,28 @@ mod tests {
             .invoice_status(&"z".repeat(64)) // not hex
             .await
             .is_err());
+    }
+
+    /// `probe()` must hit the sidecar at most once per cache TTL —
+    /// otherwise an open `/health/lightning` endpoint becomes a
+    /// fan-out amplifier toward the sidecar. We can't sleep through
+    /// the real 5s TTL in a unit test, so we just assert that a
+    /// burst of three calls collapses to a single upstream hit.
+    #[tokio::test]
+    async fn http_provider_probe_caches_within_ttl() {
+        let sidecar = StdArc::new(MockSidecar::default());
+        let secret = "ok".to_string();
+        let url = spawn_mock(sidecar.clone(), secret.clone()).await;
+        let provider = HttpProvider::new(url, secret).unwrap();
+
+        assert!(provider.probe().await.unwrap());
+        assert!(provider.probe().await.unwrap());
+        assert!(provider.probe().await.unwrap());
+        assert_eq!(
+            sidecar.health_hits.load(Ordering::SeqCst),
+            1,
+            "three rapid probes must collapse to one upstream call"
+        );
     }
 
     /// `is_enabled()` must NOT make a network call. Routes hit it

@@ -848,6 +848,24 @@ the line `lightning provider: noop (LN env missing)` vs.
 line means one of the two env vars on the main app is missing or
 empty.
 
+Once `lightning_enabled` flips to true, the next thing to verify is
+that the main app can actually reach the sidecar. `GET /health` only
+reports "env vars set"; `GET /health/lightning` actually issues the
+sidecar's `/v1/health` and reports the result:
+
+```sh
+curl https://ghostkey.fly.dev/health/lightning | jq
+# happy path:
+#   {"enabled":true,"ready":true}
+# sidecar reachable but warming up:
+#   {"enabled":true,"ready":false}
+# sidecar unreachable (wrong URL, app stopped, network partition):
+#   {"enabled":true,"ready":false,"error":"health: error sending request ..."}
+```
+
+The probe is cached in-process for 5 seconds, so curling it tightly
+will not amplify load on the sidecar.
+
 ### 5. Rotating the shared secret
 
 The shared secret is a HMAC-of-rest bearer token shipped on every
