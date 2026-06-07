@@ -15,7 +15,7 @@ transitive `boltz-client` / `secp256k1_zkp` skew, this sidecar lets
 an operator get Lightning check-ins working in production today.
 
 The main `ghostkey-server` is provider-agnostic: point its
-`GHOSTKEY_LN_BREEZ_URL` env var at either sidecar and the dashboard
+`GHOSTKEY_LN_SIDECAR_URL` env var at either sidecar and the dashboard
 renders the check-in button. The env var name keeps the `BREEZ`
 prefix for backwards compatibility — same wire protocol, same
 shared-secret bearer, swappable backend.
@@ -49,7 +49,7 @@ versions.
 
 All routes (except `/v1/health`) require
 `Authorization: Bearer <SHARED_SECRET>` matching
-`GHOSTKEY_LN_BREEZ_SHARED_SECRET` on both sides. Constant-time
+`GHOSTKEY_LN_SIDECAR_SHARED_SECRET` on both sides. Constant-time
 compare.
 
 ## Running
@@ -62,7 +62,7 @@ cd crates/ghostkey-lightning-lnbits
 # Required env vars (the sidecar refuses to start without these).
 export LNBITS_URL="https://lnbits.example.com"      # your instance
 export LNBITS_INVOICE_KEY="..."                     # invoice key (read+receive)
-export GHOSTKEY_LN_BREEZ_SHARED_SECRET=$(openssl rand -hex 32)
+export GHOSTKEY_LN_SIDECAR_SHARED_SECRET=$(openssl rand -hex 32)
 
 # Optional.
 export GHOSTKEY_LN_LNBITS_BIND=127.0.0.1:8788       # default
@@ -74,8 +74,8 @@ cargo run --release
 Then point the main server at it:
 
 ```bash
-GHOSTKEY_LN_BREEZ_URL=http://127.0.0.1:8788 \
-GHOSTKEY_LN_BREEZ_SHARED_SECRET=<same-secret> \
+GHOSTKEY_LN_SIDECAR_URL=http://127.0.0.1:8788 \
+GHOSTKEY_LN_SIDECAR_SHARED_SECRET=<same-secret> \
 cargo run -p ghostkey-server
 ```
 

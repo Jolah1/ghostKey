@@ -89,11 +89,12 @@ struct Args {
     /// Shared secret the main ghostkey-server presents on every
     /// request. We compare constant-time. Required, non-empty.
     ///
-    /// Named with the BREEZ prefix for backwards compatibility with
-    /// the main server's wiring — the server's env var is
-    /// `GHOSTKEY_LN_BREEZ_SHARED_SECRET` regardless of which sidecar
-    /// is on the other side. Same shared-secret value goes in both.
-    #[arg(long, env = "GHOSTKEY_LN_BREEZ_SHARED_SECRET", hide_env_values = true)]
+    /// Read from `GHOSTKEY_LN_SIDECAR_SHARED_SECRET`. The legacy
+    /// `GHOSTKEY_LN_BREEZ_SHARED_SECRET` name is also honoured for
+    /// operators upgrading from before the rename — see `main()` for
+    /// the fallback. The same value goes on the main app's matching
+    /// secret so the two ends agree.
+    #[arg(long, env = "GHOSTKEY_LN_SIDECAR_SHARED_SECRET", hide_env_values = true)]
     shared_secret: String,
 
     /// HTTP timeout for LNbits requests, seconds.
@@ -441,9 +442,25 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    // Pre-clap shim: if the operator still has the legacy
+    // GHOSTKEY_LN_BREEZ_SHARED_SECRET set but hasn't moved to the new
+    // GHOSTKEY_LN_SIDECAR_SHARED_SECRET name yet, copy it across so
+    // clap's `env =` lookup finds something. This runs before any
+    // threads are spawned, so the unsafe set_var is sound.
+    if std::env::var_os("GHOSTKEY_LN_SIDECAR_SHARED_SECRET").is_none() {
+        if let Some(legacy) = std::env::var_os("GHOSTKEY_LN_BREEZ_SHARED_SECRET") {
+            eprintln!(
+                "warning: GHOSTKEY_LN_BREEZ_SHARED_SECRET is deprecated; \
+                 rename it to GHOSTKEY_LN_SIDECAR_SHARED_SECRET"
+            );
+            // SAFETY: process startup, no other threads exist yet.
+            unsafe { std::env::set_var("GHOSTKEY_LN_SIDECAR_SHARED_SECRET", legacy) };
+        }
+    }
+
     let args = Args::parse();
     if args.shared_secret.is_empty() {
-        anyhow::bail!("GHOSTKEY_LN_BREEZ_SHARED_SECRET must be non-empty");
+        anyhow::bail!("GHOSTKEY_LN_SIDECAR_SHARED_SECRET must be non-empty");
     }
     if args.lnbits_invoice_key.is_empty() {
         anyhow::bail!("LNBITS_INVOICE_KEY must be non-empty");

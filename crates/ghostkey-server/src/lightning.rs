@@ -26,14 +26,19 @@
 //! implementations:
 //!
 //!   * [`NoopProvider`] — always returns "lightning disabled". Used
-//!     when the operator hasn't configured the Breez sidecar.
+//!     when the operator hasn't configured a sidecar.
 //!
-//!   * [`HttpProvider`] — talks over localhost HTTP to the
-//!     `ghostkey-lightning-breez` sidecar binary (a separate crate,
-//!     excluded from the root workspace; see its README for the
-//!     rationale on why Breez SDK Liquid can't live in-process).
-//!     Selected automatically when `GHOSTKEY_LN_BREEZ_URL` and
-//!     `GHOSTKEY_LN_BREEZ_SHARED_SECRET` are both set.
+//!   * [`HttpProvider`] — talks over localhost (or 6PN private
+//!     network) HTTP to a sidecar binary that owns the actual
+//!     Lightning wallet. Two sidecars ship in-tree and speak the same
+//!     three-route wire protocol: `ghostkey-lightning-breez` (Breez
+//!     SDK Liquid) and `ghostkey-lightning-lnbits` (LNbits). Both
+//!     are excluded from the root workspace; see their READMEs for
+//!     why their dependency graphs can't live in-process.
+//!     Selected automatically when `GHOSTKEY_LN_SIDECAR_URL` and
+//!     `GHOSTKEY_LN_SIDECAR_SHARED_SECRET` are both set. The legacy
+//!     `GHOSTKEY_LN_BREEZ_*` names from before LNbits existed still
+//!     work with a deprecation warning.
 //!
 //! ## Why pull-poll instead of webhooks
 //!
@@ -147,11 +152,13 @@ impl LightningProvider for NoopProvider {
 ///
 /// Selection rules (first matching rule wins):
 ///
-///   1. If `GHOSTKEY_LN_BREEZ_URL` AND `GHOSTKEY_LN_BREEZ_SHARED_SECRET`
-///      are both set in the environment, build an [`HttpProvider`]
-///      pointed at the running sidecar. This is the real production
-///      path — the sidecar lives in `crates/ghostkey-lightning-breez`
-///      and wraps the Breez SDK Liquid.
+///   1. If `GHOSTKEY_LN_SIDECAR_URL` AND
+///      `GHOSTKEY_LN_SIDECAR_SHARED_SECRET` are both set in the
+///      environment, build an [`HttpProvider`] pointed at the running
+///      sidecar. The legacy `GHOSTKEY_LN_BREEZ_*` names are still
+///      accepted as a fallback (with a deprecation warning) for
+///      operators who set them before LNbits became a supported
+///      backend.
 ///
 ///   2. If the legacy `BREEZ_API_KEY` / `BREEZ_MNEMONIC` env vars are
 ///      set but the sidecar URL is not, warn loudly: the operator
@@ -163,8 +170,7 @@ impl LightningProvider for NoopProvider {
 /// Never panics. Always returns *some* provider so handlers can call
 /// `is_enabled()` rather than juggling an `Option`.
 pub async fn build_provider() -> Arc<dyn LightningProvider> {
-    let url = std::env::var("GHOSTKEY_LN_BREEZ_URL").ok();
-    let secret = std::env::var("GHOSTKEY_LN_BREEZ_SHARED_SECRET").ok();
+    let (url, secret) = sidecar_env();
 
     match (url, secret) {
         (Some(url), Some(secret)) if !url.is_empty() && !secret.is_empty() => {
@@ -183,8 +189,8 @@ pub async fn build_provider() -> Arc<dyn LightningProvider> {
         _ => {
             if std::env::var("BREEZ_API_KEY").is_ok() || std::env::var("BREEZ_MNEMONIC").is_ok() {
                 tracing::warn!(
-                    "BREEZ_API_KEY/MNEMONIC present but GHOSTKEY_LN_BREEZ_URL / \
-                     GHOSTKEY_LN_BREEZ_SHARED_SECRET are not set. The Breez SDK \
+                    "BREEZ_API_KEY/MNEMONIC present but GHOSTKEY_LN_SIDECAR_URL / \
+                     GHOSTKEY_LN_SIDECAR_SHARED_SECRET are not set. The Breez SDK \
                      lives in the ghostkey-lightning-breez sidecar binary; start \
                      it and point us at it via those two env vars. Lightning \
                      check-ins remain disabled."
@@ -193,6 +199,41 @@ pub async fn build_provider() -> Arc<dyn LightningProvider> {
             Arc::new(NoopProvider)
         }
     }
+}
+
+/// Read the sidecar URL + shared-secret env vars, preferring the
+/// provider-neutral `GHOSTKEY_LN_SIDECAR_*` names. Falls back to the
+/// legacy `GHOSTKEY_LN_BREEZ_*` names (with a one-line warn) so
+/// operators who deployed before the rename keep working without a
+/// secrets edit. Returned strings are `None` when the var is unset
+/// OR empty so the caller can treat both the same.
+fn sidecar_env() -> (Option<String>, Option<String>) {
+    fn first_nonempty(new_name: &str, legacy_name: &str) -> Option<String> {
+        if let Ok(v) = std::env::var(new_name) {
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+        match std::env::var(legacy_name) {
+            Ok(v) if !v.is_empty() => {
+                tracing::warn!(
+                    legacy = legacy_name,
+                    preferred = new_name,
+                    "lightning: legacy env var name is deprecated; rename it"
+                );
+                Some(v)
+            }
+            _ => None,
+        }
+    }
+
+    (
+        first_nonempty("GHOSTKEY_LN_SIDECAR_URL", "GHOSTKEY_LN_BREEZ_URL"),
+        first_nonempty(
+            "GHOSTKEY_LN_SIDECAR_SHARED_SECRET",
+            "GHOSTKEY_LN_BREEZ_SHARED_SECRET",
+        ),
+    )
 }
 
 /// Default amount for a "I'm alive" Lightning check-in. One sat is

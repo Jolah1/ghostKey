@@ -737,10 +737,18 @@ storage; the manual script is the bridge until then.
 The Lightning check-in flow is gated on a feature probe: the dashboard
 only renders the "Check in with Lightning" button when the server's
 `/health` returns `lightning_enabled: true`. The server returns `true`
-only when both `GHOSTKEY_LN_BREEZ_URL` and
-`GHOSTKEY_LN_BREEZ_SHARED_SECRET` are configured, pointing at a running
+only when both `GHOSTKEY_LN_SIDECAR_URL` and
+`GHOSTKEY_LN_SIDECAR_SHARED_SECRET` are configured, pointing at a running
 sidecar. With either missing, the server runs with `NoopProvider` and
 the UI shows the fallback hint instead (see issue #15).
+
+> **Upgrading from `GHOSTKEY_LN_BREEZ_*`.** The env vars used to be
+> `GHOSTKEY_LN_BREEZ_URL` / `GHOSTKEY_LN_BREEZ_SHARED_SECRET` back
+> when Breez was the only backend. Both the main server and both
+> sidecars still honour the legacy names with a deprecation warning;
+> no urgent action needed. To upgrade quietly: read the existing
+> value (`fly secrets list` shows the keys), then re-`fly secrets
+> set` it under the new name and remove the old one.
 
 The sidecar lives at `crates/ghostkey-lightning-breez/`. It's a
 **separate Fly app** in the same Fly organisation as the main
@@ -773,7 +781,7 @@ flat across regions, so cross-region works, but co-locating shaves
 ### 2. Set the sidecar's secrets
 
 The sidecar refuses to start without `BREEZ_API_KEY`, `BREEZ_MNEMONIC`,
-and `GHOSTKEY_LN_BREEZ_SHARED_SECRET`. The Breez API key is free from
+and `GHOSTKEY_LN_SIDECAR_SHARED_SECRET`. The Breez API key is free from
 <https://breez.technology>. The mnemonic is a 12-word BIP39 seed —
 **this is the sidecar's own Lightning wallet**, not anyone's vault
 key. Generate a fresh seed; do not reuse one.
@@ -782,7 +790,7 @@ key. Generate a fresh seed; do not reuse one.
 fly secrets set \
   BREEZ_API_KEY="your-breez-api-key" \
   BREEZ_MNEMONIC="word1 word2 ... word12" \
-  GHOSTKEY_LN_BREEZ_SHARED_SECRET="$(openssl rand -hex 32)" \
+  GHOSTKEY_LN_SIDECAR_SHARED_SECRET="$(openssl rand -hex 32)" \
   -a ghostkey-lightning-breez
 ```
 
@@ -819,8 +827,8 @@ warms up. That's expected and the readiness check tolerates it.
 
 ```sh
 fly secrets set \
-  GHOSTKEY_LN_BREEZ_URL="http://ghostkey-lightning-breez.internal:8788" \
-  GHOSTKEY_LN_BREEZ_SHARED_SECRET="<same hex string as step 2>" \
+  GHOSTKEY_LN_SIDECAR_URL="http://ghostkey-lightning-breez.internal:8788" \
+  GHOSTKEY_LN_SIDECAR_SHARED_SECRET="<same hex string as step 2>" \
   -a ghostkey
 ```
 
@@ -851,9 +859,9 @@ failed, try again."
 
 ```sh
 NEW=$(openssl rand -hex 32)
-fly secrets set GHOSTKEY_LN_BREEZ_SHARED_SECRET="$NEW" \
+fly secrets set GHOSTKEY_LN_SIDECAR_SHARED_SECRET="$NEW" \
   -a ghostkey-lightning-breez
-fly secrets set GHOSTKEY_LN_BREEZ_SHARED_SECRET="$NEW" \
+fly secrets set GHOSTKEY_LN_SIDECAR_SHARED_SECRET="$NEW" \
   -a ghostkey
 ```
 
@@ -923,7 +931,7 @@ upstream-status note in `crates/ghostkey-lightning-breez/README.md`),
 the sibling crate `crates/ghostkey-lightning-lnbits/` implements the
 **same three-route HTTP wire protocol** against an LNbits instance.
 The main `ghostkey-server` is provider-agnostic; point its
-`GHOSTKEY_LN_BREEZ_URL` env var at whichever sidecar you deployed and
+`GHOSTKEY_LN_SIDECAR_URL` env var at whichever sidecar you deployed and
 the dashboard renders the check-in button either way.
 
 Deploy is the same shape as the Breez sidecar — see the Breez
@@ -939,7 +947,7 @@ fly apps create ghostkey-lightning-lnbits
 fly secrets set \
   LNBITS_URL="https://lnbits.example.com" \
   LNBITS_INVOICE_KEY="..." \
-  GHOSTKEY_LN_BREEZ_SHARED_SECRET="$(openssl rand -hex 32)" \
+  GHOSTKEY_LN_SIDECAR_SHARED_SECRET="$(openssl rand -hex 32)" \
   -a ghostkey-lightning-lnbits
 
 # Deploy
@@ -947,8 +955,8 @@ fly deploy --config crates/ghostkey-lightning-lnbits/fly.toml
 
 # Wire the main app
 fly secrets set \
-  GHOSTKEY_LN_BREEZ_URL="http://ghostkey-lightning-lnbits.internal:8788" \
-  GHOSTKEY_LN_BREEZ_SHARED_SECRET="<the same hex>" \
+  GHOSTKEY_LN_SIDECAR_URL="http://ghostkey-lightning-lnbits.internal:8788" \
+  GHOSTKEY_LN_SIDECAR_SHARED_SECRET="<the same hex>" \
   -a ghostkey
 ```
 
