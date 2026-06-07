@@ -254,9 +254,9 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
 /// `GET /health/lightning` actually issues the sidecar's `/v1/health`
 /// and surfaces:
 ///   * `enabled` — the main app has a configured provider at all
-///   * `ready`   — the sidecar replied `ok: true, ready: true`
-///   * `error`   — the sidecar was unreachable or returned non-OK,
-///                 with a one-line excuse you can grep in logs
+///   * `ready` — the sidecar replied `ok: true, ready: true`
+///   * `error` — the sidecar was unreachable or returned non-OK,
+///     with a one-line excuse you can grep in logs
 ///
 /// Cached in-provider for 5 seconds (see `HttpProvider::probe`),
 /// so this endpoint can be curled tightly without DoSing the

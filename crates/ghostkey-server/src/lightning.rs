@@ -833,9 +833,9 @@ impl LightningProvider for HttpProvider {
         // Read cache without holding the lock across the await.
         let cached = {
             let guard = self.probe_cache.lock().expect("probe_cache mutex");
-            guard.as_ref().and_then(|(t, r)| {
-                (t.elapsed() < PROBE_CACHE_TTL).then(|| r.clone())
-            })
+            guard
+                .as_ref()
+                .and_then(|(t, r)| (t.elapsed() < PROBE_CACHE_TTL).then(|| r.clone()))
         };
         if let Some(r) = cached {
             return r.map_err(LightningError::Provider);
