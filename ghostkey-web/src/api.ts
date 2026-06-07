@@ -425,6 +425,18 @@ export const api = {
        *  servers that don't yet emit the field; the UI treats it as off. */
       assist_enabled?: boolean;
     }>("/health"),
+  /** Deep probe of the Lightning sidecar. `/health` only tells us
+   *  whether the operator wired up env vars; this issues the
+   *  sidecar's `/v1/health` and reports the result. Server caches
+   *  the underlying call for 5s so this can be polled cheaply.
+   *  Older servers without this endpoint return 404 — callers must
+   *  treat that as "unknown" and skip the badge. */
+  healthLightning: () =>
+    request<{
+      enabled: boolean;
+      ready: boolean;
+      error?: string;
+    }>("/health/lightning"),
   getVault: (id: string, ownerToken: string | null) =>
     request<VaultView>(`/vaults/${id}`, {}, ownerToken),
   /** Owner-initiated vault deletion. The server clears its metadata
