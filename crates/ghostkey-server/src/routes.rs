@@ -86,12 +86,8 @@ pub fn router(state: Arc<AppState>) -> Router {
     // budget — 60 burst, 1/s steady — because a single visitor
     // emits ~7 events per page load and we don't want to lose
     // signal during a healthy traffic spike.
-    let analytics_limiter = crate::rate_limit::Limiter::from_env(
-        "analytics",
-        "GHOSTKEY_RL_ANALYTICS",
-        60,
-        1.0,
-    );
+    let analytics_limiter =
+        crate::rate_limit::Limiter::from_env("analytics", "GHOSTKEY_RL_ANALYTICS", 60, 1.0);
 
     // The four rate-limited surfaces, each a small sub-router that
     // we'll merge into the main one. Keeping them separate makes the
