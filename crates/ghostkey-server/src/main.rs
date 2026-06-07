@@ -123,8 +123,9 @@ async fn main() -> Result<()> {
 
     let pool = db::connect(&args.database_url).await?;
 
-    // Lightning provider: HttpProvider talking to the Breez sidecar
-    // when GHOSTKEY_LN_BREEZ_URL + GHOSTKEY_LN_BREEZ_SHARED_SECRET
+    // Lightning provider: HttpProvider talking to a sidecar (either
+    // Breez or LNbits — same wire protocol) when
+    // GHOSTKEY_LN_SIDECAR_URL + GHOSTKEY_LN_SIDECAR_SHARED_SECRET
     // are set, otherwise NoopProvider. build_provider() never panics.
     let lightning = lightning::build_provider().await;
     let state = Arc::new(AppState {

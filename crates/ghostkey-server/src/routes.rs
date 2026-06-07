@@ -140,6 +140,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     // upstream by the Lightning provider's own minting limits).
     let open_routes: Router<Arc<AppState>> = Router::new()
         .route("/health", get(health))
+        .route("/health/lightning", get(health_lightning))
         .route("/vaults", get(list_vaults))
         .route("/vaults/:id", get(get_vault).delete(delete_vault))
         .route("/vaults/:id/address", get(get_vault_address))
@@ -245,6 +246,49 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         default_network: crate::config::default_network(),
         assist_enabled,
     })
+}
+
+/// Ops-facing deep probe of the Lightning wire.
+///
+/// `GET /health` only tells you "the operator set the env vars."
+/// `GET /health/lightning` actually issues the sidecar's `/v1/health`
+/// and surfaces:
+///   * `enabled` — the main app has a configured provider at all
+///   * `ready`   — the sidecar replied `ok: true, ready: true`
+///   * `error`   — the sidecar was unreachable or returned non-OK,
+///                 with a one-line excuse you can grep in logs
+///
+/// Cached in-provider for 5 seconds (see `HttpProvider::probe`),
+/// so this endpoint can be curled tightly without DoSing the
+/// sidecar. Always returns 200 — the JSON body is the signal.
+#[derive(Debug, Serialize)]
+struct LightningHealth {
+    enabled: bool,
+    ready: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+async fn health_lightning(State(state): State<Arc<AppState>>) -> Json<LightningHealth> {
+    if !state.lightning.is_enabled() {
+        return Json(LightningHealth {
+            enabled: false,
+            ready: false,
+            error: None,
+        });
+    }
+    match state.lightning.probe().await {
+        Ok(ready) => Json(LightningHealth {
+            enabled: true,
+            ready,
+            error: None,
+        }),
+        Err(e) => Json(LightningHealth {
+            enabled: true,
+            ready: false,
+            error: Some(e.to_string()),
+        }),
+    }
 }
 
 #[derive(Debug, Deserialize)]
