@@ -54,8 +54,35 @@ jobs:
       - name: Ensure jq is available
         run: jq --version
 
+      # Skip cleanly when the repo hasn't configured signet secrets yet
+      # — a missing GHOSTKEY_SIGNET_URL is an operator gap, not a code
+      # regression, and we don't want a red cron run every morning until
+      # the staging app is wired up.
+      - name: Check required secrets are configured
+        id: preflight
+        env:
+          GHOSTKEY_SIGNET_URL:      ${{ secrets.GHOSTKEY_SIGNET_URL }}
+          SIGNET_OWNER_XPUB:        ${{ secrets.SIGNET_OWNER_XPUB }}
+          SIGNET_OWNER_FINGERPRINT: ${{ secrets.SIGNET_OWNER_FINGERPRINT }}
+          SIGNET_HEIR_XPUB:         ${{ secrets.SIGNET_HEIR_XPUB }}
+          SIGNET_HEIR_FINGERPRINT:  ${{ secrets.SIGNET_HEIR_FINGERPRINT }}
+        run: |
+          missing=()
+          for v in GHOSTKEY_SIGNET_URL SIGNET_OWNER_XPUB SIGNET_OWNER_FINGERPRINT SIGNET_HEIR_XPUB SIGNET_HEIR_FINGERPRINT; do
+            if [[ -z "${!v:-}" ]]; then
+              missing+=("$v")
+            fi
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::notice::signet-nightly skipped — required secrets not configured: ${missing[*]}"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run signet smoke
         id: smoke
+        if: steps.preflight.outputs.configured == 'true'
         env:
           GHOSTKEY_SIGNET_URL:      ${{ secrets.GHOSTKEY_SIGNET_URL }}
           SIGNET_OWNER_XPUB:        ${{ secrets.SIGNET_OWNER_XPUB }}
