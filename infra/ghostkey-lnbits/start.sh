@@ -88,7 +88,14 @@ export PHOENIXD_API_ENDPOINT="http://127.0.0.1:9740"
 export PHOENIXD_API_PASSWORD="$PHOENIXD_HTTP_PASSWORD"
 
 export LNBITS_DATA_FOLDER="$LNBITS_DIR"
-export LNBITS_HOST="0.0.0.0"
+# Bind on the IPv6 wildcard — Fly's 6PN private network is IPv6-only,
+# so a plain 0.0.0.0 bind is unreachable from the
+# ghostkey-lightning-lnbits sidecar in a peer app. uvicorn (LNbits's
+# ASGI server) does not enable IPv4-mapped fallback on its `::`
+# socket, so the Fly platform's IPv4 tcp_check on port 5000 also
+# can't reach us — that check has been removed from fly.toml; see
+# the comment there for the reasoning.
+export LNBITS_HOST="::"
 export LNBITS_PORT="5000"
 
 # Keep the LNbits dashboard private — bearer-only auth from the

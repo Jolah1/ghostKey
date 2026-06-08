@@ -58,48 +58,49 @@ Write the 12 words on paper. Store them like any other Bitcoin
 seed. Without them, you cannot recover the channel balance if the
 Fly volume is lost.
 
-### 4. Fund the on-chain wallet (one-time bootstrap)
+### 4. Liquidity (no manual bootstrap required)
 
-Phoenixd uses Acinq's LSP for liquidity. The very first inbound
-payment triggers a "splice-in" where Acinq opens a channel and
-charges a service fee (typically a few thousand sats minimum).
-A 1-sat heartbeat cannot cover that fee — so we bootstrap by
-sending BTC to phoenixd's on-chain deposit address, which phoenixd
-then auto-uses to open the initial channel.
+Phoenixd 0.8+ uses Acinq's LSP with a **fee-credit** model — small
+inbound payments (below the channel-open fee) accumulate as fee
+credit on Acinq's side until they exceed a threshold (default 50k
+sat), at which point Acinq splices in a real channel automatically.
+1-sat heartbeats fit this model directly: no manual on-chain
+funding step is required.
 
-Get the deposit address:
-
-```sh
-fly ssh console -a ghostkey-lnbits -C \
-  "phoenix-cli --http-password \"\$(grep ^http-password= /data/phoenix/phoenix.conf | cut -d= -f2-)\" getnewaddress"
-```
-
-Send ~$15-30 of BTC to that address. The exact amount sets your
-initial inbound + outbound channel capacity; $20 is comfortable
-for the heartbeat workload and absorbs Acinq's channel-open fee.
-
-After ~1 confirmation, phoenixd auto-splices and the channel is
-ready. Verify:
+You can confirm the node is ready to receive:
 
 ```sh
 fly ssh console -a ghostkey-lnbits -C \
-  "phoenix-cli --http-password \"\$(grep ^http-password= /data/phoenix/phoenix.conf | cut -d= -f2-)\" listchannels"
+  "phoenix-cli --http-password \"\$(grep ^http-password= /data/phoenix/phoenix.conf | cut -d= -f2-)\" getinfo"
 ```
 
-Look for a channel in state `Normal`.
+Expect a `nodeId` and current block height. Before the first
+splice, `listchannels` is empty — that is expected; payments still
+land as fee credit.
+
+If you'd rather pre-open a channel (for predictable sweep
+behaviour rather than waiting for the credit threshold), send BTC
+directly to a phoenixd-managed address via the LSP onboarding
+flow documented at <https://phoenix.acinq.co/server>. This is
+optional and unnecessary for the heartbeat workload.
 
 ### 5. Grab the LNbits invoice key
 
-LNbits auto-creates a default admin wallet on first boot. Fetch the
-**invoice key** (NOT the admin key — the sidecar only ever receives):
+LNbits 1.x auto-creates a superuser + default wallet on first boot
+(the superuser ID is written to `/data/lnbits/.super_user`). Fetch
+the wallet **invoice key** (`inkey` — the sidecar only ever
+receives, never sends, so the admin key is intentionally not
+copied off the box):
 
 ```sh
 fly ssh console -a ghostkey-lnbits -C \
-  "sqlite3 /data/lnbits/database.sqlite3 'SELECT inkey FROM accounts LIMIT 1;'"
+  "python3 -c \"import sqlite3; print(sqlite3.connect('/data/lnbits/database.sqlite3').execute('SELECT inkey FROM wallets LIMIT 1').fetchone()[0])\""
 ```
 
-(LNbits also has a web UI on the LNbits port, but it's only
-reachable over Fly 6PN. Easiest path is the SQL query above.)
+(The `sqlite3` CLI binary is not installed in the LNbits image,
+hence the Python one-liner. LNbits also has a web UI but it's only
+reachable over Fly 6PN — the query above is the path of least
+resistance.)
 
 ### 6. Wire the sidecar
 

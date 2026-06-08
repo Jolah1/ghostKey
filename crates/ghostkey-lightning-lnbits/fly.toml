@@ -36,11 +36,14 @@ primary_region = "ams"   # match the main `ghostkey` app's region
   dockerfile = "Dockerfile"
 
 [env]
-  # Bind to all interfaces inside the container so the 6PN private
-  # network can reach us. The defence in depth is the shared bearer
-  # secret enforced in src/main.rs; the sidecar refuses to start
-  # without GHOSTKEY_LN_SIDECAR_SHARED_SECRET.
-  GHOSTKEY_LN_LNBITS_BIND = "0.0.0.0:8788"
+  # Bind dual-stack (`[::]`) so the IPv6-only Fly 6PN private network
+  # can reach us. Binding to `0.0.0.0` here would silently work for
+  # Fly's TCP health check (which uses the IPv4 inside the machine)
+  # but fail every cross-app request from the main `ghostkey` app —
+  # 6PN does not route IPv4 traffic between machines. The defence in
+  # depth is the shared bearer secret enforced in src/main.rs; the
+  # sidecar refuses to start without GHOSTKEY_LN_SIDECAR_SHARED_SECRET.
+  GHOSTKEY_LN_LNBITS_BIND = "[::]:8788"
 
   # Upstream HTTP timeout to the LNbits instance. Default 15s leaves
   # generous headroom for the main server's 30s tick.
