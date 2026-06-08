@@ -29,14 +29,16 @@ mkdir -p "$PHOENIX_DIR" "$LNBITS_DIR"
 
 # ----- phoenixd boot ---------------------------------------------------------
 
-# Bind the HTTP API to localhost only. The shared-secret bearer
-# enforced by the ghostkey-lightning-lnbits sidecar is the public
-# auth layer; phoenixd's own HTTP-basic password is the inner one.
+# phoenixd 0.8.x reads its data directory from the PHOENIX_DATADIR
+# env var (default: $HOME/.phoenix). No CLI flag — the `--datadir`
+# option only existed in older 0.4.x versions. Bind the HTTP API to
+# localhost only; the shared-secret bearer enforced by the
+# ghostkey-lightning-lnbits sidecar is the public auth layer.
+export PHOENIX_DATADIR="$PHOENIX_DIR"
+
 phoenixd \
-  --datadir "$PHOENIX_DIR" \
   --http-bind-ip 127.0.0.1 \
   --http-bind-port 9740 \
-  --agree-to-terms-of-service \
   --chain mainnet \
   &
 PHOENIXD_PID=$!
@@ -96,6 +98,11 @@ export LNBITS_SITE_TITLE="GhostKey LNbits (internal)"
 export LNBITS_SITE_TAGLINE="receives 1-sat heartbeats, custodies no user funds"
 
 echo "[start.sh] starting LNbits with PhoenixdWallet backend on :5000"
-exec /app/.venv/bin/python -m uvicorn lnbits.__main__:app \
+# LNbits 1.x ships its venv via `uv`; the upstream image's CMD is
+# `uv --offline run lnbits ...` and uv lives under /root/.local/bin
+# (already on PATH from the base image). Mirror that invocation so we
+# pick up the right interpreter + dependencies.
+exec uv --offline run lnbits \
+  --port "$LNBITS_PORT" \
   --host "$LNBITS_HOST" \
-  --port "$LNBITS_PORT"
+  --forwarded-allow-ips='*'

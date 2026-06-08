@@ -25,7 +25,7 @@
 
 # Pinned for reproducible builds. Bump deliberately; phoenixd has
 # wire-format compatibility within a minor version.
-ARG PHOENIXD_VERSION=0.5.3
+ARG PHOENIXD_VERSION=0.8.0
 
 FROM debian:bookworm-slim AS phoenixd-fetch
 ARG PHOENIXD_VERSION
@@ -42,9 +42,9 @@ RUN curl -fL -o phoenixd.zip \
 
 # ----- runtime image ----------------------------------------------------------
 
-# LNbits 0.12+ ships with PhoenixdWallet support. Pinned for the same
-# reason as phoenixd. Bump deliberately.
-FROM lnbits/lnbits:0.12.12
+# LNbits 1.x ships with PhoenixdWallet support out of the box.
+# Pinned for the same reason as phoenixd. Bump deliberately.
+FROM lnbits/lnbits:v1.5.4
 
 USER root
 
