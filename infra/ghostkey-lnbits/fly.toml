@@ -1,0 +1,68 @@
+# fly.toml — ghostkey-lnbits (Phoenixd + LNbits)
+#
+# A single Fly app that runs both an embedded Lightning node
+# (phoenixd) and an invoice/API layer (LNbits). The
+# ghostkey-lightning-lnbits sidecar (see crates/ghostkey-lightning-lnbits/)
+# talks to this app over the Fly 6PN private network.
+#
+# Provision once, then deploy from the repo root:
+#
+#   fly apps create ghostkey-lnbits --org personal
+#   fly volumes create lnbits_data --region ams --size 1 -a ghostkey-lnbits
+#   fly deploy --config infra/ghostkey-lnbits/fly.toml \
+#              --dockerfile infra/ghostkey-lnbits/Dockerfile
+#
+# See infra/ghostkey-lnbits/README.md for the full operator runbook,
+# including the on-chain funding step that bootstraps the first
+# channel with Acinq's LSP.
+
+app            = "ghostkey-lnbits"
+primary_region = "ams"  # match the main `ghostkey` app's region
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # Defence in depth: phoenixd binds to localhost only inside the
+  # container, LNbits binds to 0.0.0.0 but only over Fly 6PN.
+  # See start.sh for the inter-process wiring.
+  RUST_LOG = "info"
+
+# Persistent volume for the LN seed, channel state, and LNbits DB.
+# Losing this means losing the Lightning wallet (a.k.a. the
+# heartbeat accumulator). Treat backups the way you would any LN
+# node — phoenixd's seed is the recovery secret of last resort.
+[mounts]
+  source      = "lnbits_data"
+  destination = "/data"
+
+# Internal-only service. No [http_service] block: the LNbits HTTP
+# port is reached only from inside Fly 6PN by the
+# ghostkey-lightning-lnbits sidecar. Exposing it publicly would
+# leak the LNbits dashboard.
+#
+# No `[[services.tcp_checks]]` here: uvicorn binds `[::]:5000`
+# (IPv6 wildcard) but Fly's tcp_check probes IPv4 — uvicorn does
+# not enable IPv4-mapped fallback on its IPv6 socket, so the check
+# returns "gone" even though sidecar probes succeed. Readiness is
+# already verified by:
+#   1. the sidecar's own 30s probe of `/api/v1/wallet` (see
+#      crates/ghostkey-lightning-lnbits/src/main.rs `lnbits_probe`),
+#   2. the main `ghostkey` app's `/health/lightning` poll of the
+#      sidecar, surfaced as the green Lightning badge on the
+#      dashboard. Both flip red if LNbits stops responding.
+[[services]]
+  protocol           = "tcp"
+  internal_port      = 5000
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+
+# Modest box. LNbits is Python; phoenixd is a JVM-style binary with
+# moderate memory needs. 512 MB is comfortable for both at our
+# heartbeat-only workload. Bump if the JVM OOMs under sustained
+# channel activity.
+[[vm]]
+  cpu_kind  = "shared"
+  cpus      = 1
+  memory_mb = 512
