@@ -679,40 +679,100 @@ fly deploy
 The image rebuilds, the volume reattaches with the existing SQLite
 file, no manual migration step.
 
-### Backups (mandatory)
+### Backups & disaster recovery (mandatory)
 
 The Fly volume is single-host. A corrupted block, an accidental
 `fly volumes destroy`, or a long region outage takes the only copy
-of the database with it. Bitcoin custody software cannot live on a
-single-copy database.
+of the database with it. For password vaults the sealed **heir xprv
+exists only in this database** — lose it and the inheritance promise
+breaks even though the owner can still move their funds. Bitcoin
+custody-adjacent software cannot live on a single-copy database.
 
-A small helper script lives at `scripts/backup-fly-db.sh`. It pulls
-`/data/ghostkey.sqlite` off the volume, verifies the file is actually
-a SQLite database (and not e.g. an HTML error page), and keeps the
-12 most recent backups in a cloud-synced folder of your choice.
+#### Continuous replication (Litestream — the real backup)
 
-One-time setup:
+The container ships with [Litestream](https://litestream.io) baked in.
+When the four `LITESTREAM_*` secrets are present, the entrypoint
+(`scripts/server-entrypoint.sh`) runs the server under
+`litestream replicate -exec`, streaming every WAL segment to an
+S3-compatible bucket within ~1 s of commit. Snapshots every 6 h,
+30 days of point-in-time history (see `infra/litestream.yml`).
 
-```sh
-# Point BACKUP_DIR at a folder that's synced to a second physical
-# location: Google Drive, OneDrive, Dropbox, iCloud Drive, etc.
-# A backup that only lives on the same laptop as the laptop you
-# might lose tomorrow is not a backup.
-echo 'export BACKUP_DIR="/mnt/c/Users/you/OneDrive/ghostkey-backups"' \
-  >> ~/.bashrc
-source ~/.bashrc
-```
-
-Routine:
+One-time setup with Cloudflare R2 (free tier covers this many times
+over):
 
 ```sh
-./scripts/backup-fly-db.sh
+# 1. Cloudflare dashboard → R2 → create bucket "ghostkey-backups"
+#    (location hint: Europe, to sit near the ams machine).
+# 2. R2 → Manage API tokens → Create token, permission
+#    "Object Read & Write", scoped to that bucket only.
+# 3. Wire the secrets (endpoint is shown on the token page):
+fly secrets set \
+  LITESTREAM_ENDPOINT=https://<ACCOUNT_ID>.r2.cloudflarestorage.com \
+  LITESTREAM_BUCKET=ghostkey-backups \
+  LITESTREAM_ACCESS_KEY_ID=<access-key-id> \
+  LITESTREAM_SECRET_ACCESS_KEY=<secret-access-key> \
+  -a ghostkey
+
+# 4. Deploy, then confirm in the logs:
+fly logs -a ghostkey | grep -i litestream
+# expect: "[entrypoint] litestream replication enabled (bucket: ghostkey-backups)"
 ```
 
-Frequency: monthly while traffic is low (set a calendar reminder —
-don't trust your memory). Bump to weekly once you have real users.
-For mainnet you'll want a server-side cron pushing to S3-class
-storage; the manual script is the bridge until then.
+Without the secrets the server still boots (local dev, CI), but logs
+a loud warning on every start. Production must never run in that
+state.
+
+**Recovery is automatic**: if the machine boots with a fresh, empty
+volume (the disaster case), the entrypoint runs
+`litestream restore -if-db-not-exists` and pulls the newest replica
+from the bucket before the server starts. Recreate the volume, deploy,
+done.
+
+#### Restore fire drill (run once now, then quarterly)
+
+A backup you've never restored is a hope, not a backup. From any
+machine with the R2 credentials:
+
+```sh
+export LITESTREAM_ACCESS_KEY_ID=<access-key-id>
+export LITESTREAM_SECRET_ACCESS_KEY=<secret-access-key>
+litestream restore \
+  -o /tmp/ghostkey-restored.sqlite \
+  "s3://ghostkey-backups/ghostkey?endpoint=https://<ACCOUNT_ID>.r2.cloudflarestorage.com"
+
+# Verify it's a real, current database:
+sqlite3 /tmp/ghostkey-restored.sqlite \
+  'SELECT COUNT(*), MAX(created_at) FROM vaults;'
+rm /tmp/ghostkey-restored.sqlite
+```
+
+If the count and latest timestamp look right, the pipeline works.
+Put the quarterly re-run on a calendar.
+
+#### Manual pull (belt and braces)
+
+`scripts/backup-fly-db.sh` still exists: it pulls
+`/data/ghostkey.sqlite` over `fly ssh sftp`, verifies the SQLite
+magic bytes, and keeps the 12 most recent copies in a cloud-synced
+folder (`BACKUP_DIR`). Run it monthly as an independent second
+channel — it doesn't share failure modes with Litestream/R2.
+
+#### Secret escrow (the backup the backup needs)
+
+The database replica is ciphertext without the keys. If
+`GHOSTKEY_MASTER_KEY` is lost, every sealed heir contact and F2
+derivation becomes permanently unreadable — no backup can fix that.
+Escrow these, today:
+
+- `GHOSTKEY_MASTER_KEY` (print from the machine:
+  `fly ssh console -a ghostkey -C "printenv GHOSTKEY_MASTER_KEY"`)
+- the LNbits admin password (`LNBITS_ADMIN_PASSWORD` on
+  `ghostkey-lnbits`)
+- the R2 credentials above
+
+Store each in **two places**: a password manager, and a written copy
+kept physically separate from your laptop. Never paste them into
+chats, issues, or commit messages.
 
 ### Things to know
 
@@ -722,13 +782,13 @@ storage; the manual script is the bridge until then.
 - **No horizontal scale**. The volume is local NVMe; you can't run more
   than one machine against the same SQLite file. The server is small
   enough that one machine handles thousands of vaults easily.
-- **Auto-stop is on**. `fly.toml` sets `auto_stop_machines = "stop"`,
-  which spins the machine down when idle and brings it back on the
-  first request (~500 ms cold start). Turn it off (`"off"`) if you want
-  a faster first byte.
-- **Backups**. Add a cron via `fly machine exec` or a tiny sidecar that
-  uploads `/data/ghostkey.sqlite` to S3/B2 nightly. The Fly volume
-  itself is single-host SSD with no built-in backups.
+- **Auto-stop must stay OFF**. `fly.toml` sets
+  `auto_stop_machines = "off"` on purpose: the scheduler that fires
+  alarms runs in-process, and a machine that sleeps when idle stops
+  ticking — the dead-man switch dies with it. Don't "optimize" this.
+- **Backups**. Litestream replication is built into the image — see
+  "Backups & disaster recovery" above. The Fly volume itself is
+  single-host SSD with no built-in redundancy.
 
 ---
 

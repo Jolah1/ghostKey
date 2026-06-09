@@ -1,0 +1,51 @@
+# Litestream configuration — continuous SQLite replication to
+# S3-compatible object storage (Cloudflare R2, Backblaze B2, AWS S3).
+#
+# Why this exists:
+#   Fly volumes are single-host NVMe. For password vaults, the sealed
+#   heir xprv exists ONLY in /data/ghostkey.sqlite — if that volume
+#   dies, inheritance is unrecoverable even though the owner can still
+#   move funds. Litestream streams every WAL segment to a bucket
+#   within ~1s of commit, so the worst case after a total volume loss
+#   is losing the last second of writes.
+#
+# This file holds no secrets. All values are expanded from the
+# environment at runtime:
+#
+#   LITESTREAM_ENDPOINT          e.g. https://<account-id>.r2.cloudflarestorage.com
+#   LITESTREAM_BUCKET            e.g. ghostkey-backups
+#   LITESTREAM_ACCESS_KEY_ID     R2/B2 access key id
+#   LITESTREAM_SECRET_ACCESS_KEY R2/B2 secret key
+#
+# Set them on Fly with:
+#   fly secrets set LITESTREAM_ENDPOINT=... LITESTREAM_BUCKET=... \
+#     LITESTREAM_ACCESS_KEY_ID=... LITESTREAM_SECRET_ACCESS_KEY=... -a ghostkey
+#
+# See DEPLOY.md § "Backups & disaster recovery" for the full setup and
+# the restore fire drill.
+dbs:
+  - path: /data/ghostkey.sqlite
+    replicas:
+      - type: s3
+        endpoint: ${LITESTREAM_ENDPOINT}
+        bucket: ${LITESTREAM_BUCKET}
+        # Key prefix inside the bucket. Keeping it explicit means the
+        # same bucket can later hold the signet app's replica under a
+        # different prefix without collisions.
+        path: ghostkey
+        # R2 uses "auto"; AWS S3 users should override via the
+        # endpoint-appropriate region, but we deploy on R2.
+        region: auto
+        access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+        # Stream WAL pages within a second of commit. The DB sees a
+        # handful of writes per minute at most, so this costs nearly
+        # nothing in PUTs.
+        sync-interval: 1s
+        # Full snapshot every 6h bounds restore time (restore = last
+        # snapshot + WAL replay since).
+        snapshot-interval: 6h
+        # Keep 30 days of point-in-time history. Protects against
+        # "bad write replicated faithfully" — we can restore to any
+        # moment in the window, not just the latest state.
+        retention: 720h

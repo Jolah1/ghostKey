@@ -51,6 +51,17 @@ COPY crates ./crates
 RUN touch crates/*/src/*.rs
 RUN cargo build --release -p ghostkey-server --locked
 
+# ---- litestream ------------------------------------------------------
+# Continuous SQLite replication to object storage. Fetched in its own
+# stage so the runtime image doesn't need curl/wget. Version pinned;
+# bump deliberately and re-run the restore fire drill in DEPLOY.md
+# after upgrading.
+
+FROM debian:bookworm-slim AS litestream
+
+ADD https://github.com/benbjohnson/litestream/releases/download/v0.3.13/litestream-v0.3.13-linux-amd64.tar.gz /tmp/litestream.tar.gz
+RUN tar -xzf /tmp/litestream.tar.gz -C /usr/local/bin && /usr/local/bin/litestream version
+
 # ---- runtime ---------------------------------------------------------
 
 FROM debian:bookworm-slim AS runtime
@@ -65,6 +76,11 @@ RUN apt-get update \
     && chown ghostkey:ghostkey /data
 
 COPY --from=builder /build/target/release/ghostkey-server /usr/local/bin/ghostkey-server
+COPY --from=litestream /usr/local/bin/litestream /usr/local/bin/litestream
+# Litestream reads /etc/litestream.yml by default; the file holds no
+# secrets (everything is ${ENV}-expanded at runtime).
+COPY infra/litestream.yml /etc/litestream.yml
+COPY --chmod=755 scripts/server-entrypoint.sh /usr/local/bin/server-entrypoint.sh
 
 USER ghostkey
 WORKDIR /data
@@ -80,4 +96,7 @@ ENV DATABASE_URL=sqlite:///data/ghostkey.sqlite?mode=rwc
 ENV GHOSTKEY_TICK_SECS=30
 ENV RUST_LOG=ghostkey_server=info,info
 
-ENTRYPOINT ["/usr/local/bin/ghostkey-server"]
+# The entrypoint wraps the server in `litestream replicate -exec`
+# when LITESTREAM_* credentials are present, and falls back to the
+# bare server (with a loud warning) when they're not.
+ENTRYPOINT ["/usr/local/bin/server-entrypoint.sh"]
