@@ -57,9 +57,10 @@ primary_region = "ams"
     protocol      = "http"
     timeout       = "5s"
 
-# Small machine. Bump to "performance-1x" / 512 MB if you ever see OOM
-# kills under traffic.
+# 512 MB: the server itself is light, but litestream (replication
+# sidecar inside the same container) and BDK full-scans during heir
+# claims both want headroom. 256 MB ran close to the line.
 [[vm]]
   cpu_kind = "shared"
   cpus     = 1
-  memory_mb = 256
+  memory_mb = 512
