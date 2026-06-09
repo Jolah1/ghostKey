@@ -50,9 +50,13 @@ USER root
 
 # phoenixd has only a stdlib dep on jvm-style glibc; the LNbits image
 # is debian-based so we drop the binary in directly. netcat is for
-# the start.sh readiness probe of phoenixd's HTTP socket.
+# the start.sh readiness probe of phoenixd's HTTP socket; curl + a
+# vendored python3 are used by the LNbits first-install bootstrap
+# block in start.sh (PUT /api/v1/auth/first_install with admin
+# credentials so fresh deploys don't park on the install wizard).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends netcat-openbsd ca-certificates \
+ && apt-get install -y --no-install-recommends \
+      netcat-openbsd ca-certificates curl python3 \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=phoenixd-fetch /phoenixd     /usr/local/bin/phoenixd

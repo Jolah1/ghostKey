@@ -104,6 +104,81 @@ export LNBITS_PORT="5000"
 export LNBITS_SITE_TITLE="GhostKey LNbits (internal)"
 export LNBITS_SITE_TAGLINE="receives 1-sat heartbeats, custodies no user funds"
 
+# ----- LNbits first-install bootstrap (idempotent) ---------------------------
+#
+# Background subshell that waits for LNbits to come up, then PUTs
+# admin credentials at /api/v1/auth/first_install if (and only if)
+# the install wizard is still pending. Without this, a fresh deploy
+# or volume-wipe lands every API call on the first-install page and
+# `POST /api/v1/payments` returns 405. The sidecar's GET probe used
+# to call this "ready" because the redirect chain ended on a 200
+# install page — a separate fix in the sidecar surfaces the install
+# state explicitly, but this block makes the failure mode unreachable
+# in the first place.
+#
+# Requires LNBITS_ADMIN_PASSWORD to be set as a Fly secret on this
+# app. If missing, we log a warning and continue; the sidecar's probe
+# will then refuse to flip ready=true until an operator finishes the
+# wizard manually.
+#
+# Safe on every boot: the PUT returns 403 "This is not your first
+# install" once init is done, which we treat as a no-op.
+{
+  for _ in $(seq 1 60); do
+    # LNbits binds IPv6-only (see LNBITS_HOST above); curl with the
+    # bracketed literal forces a v6 connect regardless of resolver.
+    if curl -fsS -o /dev/null "http://[::1]:${LNBITS_PORT}/first_install"; then
+      break
+    fi
+    sleep 1
+  done
+
+  # Detect first-install state by checking whether an API path
+  # redirects to /first_install. A plain `curl -I` is enough: the
+  # location header is the signal, no body needed.
+  redirect_to="$(curl -sI "http://[::1]:${LNBITS_PORT}/api/v1/wallet" \
+    | tr -d '\r' | awk 'tolower($1)=="location:" {print $2}')"
+  case "$redirect_to" in
+    */first_install*|/first_install*)
+      if [[ -z "${LNBITS_ADMIN_PASSWORD:-}" ]]; then
+        echo "[start.sh] WARNING: first_install pending but LNBITS_ADMIN_PASSWORD" \
+          "is not set on the ghostkey-lnbits Fly app; LNbits will redirect every" \
+          "API call to /first_install until someone completes the wizard." >&2
+        exit 0
+      fi
+      echo "[start.sh] first_install pending; PUTting admin credentials..."
+      # Build the JSON body with python to dodge shell-quote issues
+      # in passwords containing $, ", or \.
+      body="$(python3 - <<'PYEOF'
+import json, os, sys
+pw = os.environ["LNBITS_ADMIN_PASSWORD"]
+sys.stdout.write(json.dumps({
+    "username": "admin",
+    "password": pw,
+    "password_repeat": pw,
+}))
+PYEOF
+)"
+      status="$(printf '%s' "$body" | curl -sS -o /tmp/first_install.out \
+        -w '%{http_code}' \
+        -X PUT \
+        -H 'Content-Type: application/json' \
+        --data-binary @- \
+        "http://[::1]:${LNBITS_PORT}/api/v1/auth/first_install" || true)"
+      if [[ "$status" == "200" || "$status" == "201" ]]; then
+        echo "[start.sh] first_install complete; LNbits admin user 'admin' is set."
+      else
+        echo "[start.sh] ERROR: first_install PUT returned HTTP $status:" >&2
+        cat /tmp/first_install.out >&2 || true
+        echo >&2
+      fi
+      ;;
+    *)
+      echo "[start.sh] first_install already completed; skipping bootstrap."
+      ;;
+  esac
+} &
+
 echo "[start.sh] starting LNbits with PhoenixdWallet backend on :5000"
 # LNbits 1.x ships its venv via `uv`; the upstream image's CMD is
 # `uv --offline run lnbits ...` and uv lives under /root/.local/bin

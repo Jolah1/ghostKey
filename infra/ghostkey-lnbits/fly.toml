@@ -59,10 +59,14 @@ primary_region = "ams"  # match the main `ghostkey` app's region
   min_machines_running = 1
 
 # Modest box. LNbits is Python; phoenixd is a JVM-style binary with
-# moderate memory needs. 512 MB is comfortable for both at our
-# heartbeat-only workload. Bump if the JVM OOMs under sustained
-# channel activity.
+# moderate memory needs. 512 MB was the original sizing, but in
+# practice LNbits (~150-200 MB resident) plus phoenixd (~250 MB JVM
+# heap) plus the start.sh bootstrap (curl + a one-shot python3 for
+# JSON encoding) crowded the OOM killer enough to take the LNbits
+# process down on first install. 1 GB leaves comfortable headroom
+# for sustained channel activity. Watch `fly metrics`; bump further
+# if anon-rss approaches the limit.
 [[vm]]
   cpu_kind  = "shared"
   cpus      = 1
-  memory_mb = 512
+  memory_mb = 1024
