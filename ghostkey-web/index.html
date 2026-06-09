@@ -2,9 +2,29 @@
 <html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
+    <!-- Modern browsers prefer the SVG; older clients pick favicon.ico.
+         apple-touch-icon is what iOS draws on the Home Screen when the
+         user installs the PWA via Safari's Share menu. -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon-180x180.png" />
+    <!-- viewport-fit=cover lets the dashboard render under iOS's safe
+         areas (status bar, home-indicator) when launched standalone,
+         instead of being letterboxed. CSS env(safe-area-inset-*) on
+         the chrome handles the actual layout. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
     <meta name="theme-color" content="#F7931B" />
+    <!-- iOS-specific PWA hints. `apple-mobile-web-app-capable=yes`
+         tells Safari to launch in standalone (no browser chrome) when
+         the user opens from the Home Screen. The status-bar style
+         picks the bar tint to harmonize with our dark theme. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="GhostKey" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta
       name="description"
       content="GhostKey lets your Bitcoin live on after you. Tap once a month. If you ever stop, the people you chose can claim what's theirs."
