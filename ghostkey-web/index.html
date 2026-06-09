@@ -36,21 +36,10 @@
       rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Inter+Tight:wght@400;500;600;700;800&display=swap"
     />
-    <script>
-      // Resolve theme before paint to avoid flash-of-wrong-theme.
-      (function () {
-        try {
-          var stored = localStorage.getItem("gk:theme");
-          var sysDark =
-            window.matchMedia &&
-            window.matchMedia("(prefers-color-scheme: dark)").matches;
-          var theme = stored || (sysDark ? "dark" : "dark"); // dark default per spec
-          document.documentElement.setAttribute("data-theme", theme);
-        } catch (e) {
-          document.documentElement.setAttribute("data-theme", "dark");
-        }
-      })();
-    </script>
+    <!-- Theme is resolved before paint by an external (parser-blocking)
+         script instead of an inline one, so the CSP can keep
+         script-src down to 'self'. See public/theme-init.js. -->
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div id="root"></div>
