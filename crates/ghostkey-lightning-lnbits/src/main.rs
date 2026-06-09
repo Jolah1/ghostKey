@@ -40,6 +40,7 @@
 //!   - POST /api/v1/payments    (mint invoice)
 //!   - GET  /api/v1/payments/:hash  (query status)
 //!   - GET  /api/v1/wallet      (readiness probe)
+//!
 //! and only with the LNbits *invoice key* (read+receive scoped),
 //! never the admin key.
 
@@ -69,7 +70,11 @@ struct Args {
     /// Bind address. Default 127.0.0.1:8788 — localhost only. Keep
     /// the sidecar unreachable from the public internet; the bearer
     /// auth is defence in depth.
-    #[arg(long, env = "GHOSTKEY_LN_LNBITS_BIND", default_value = "127.0.0.1:8788")]
+    #[arg(
+        long,
+        env = "GHOSTKEY_LN_LNBITS_BIND",
+        default_value = "127.0.0.1:8788"
+    )]
     bind: SocketAddr,
 
     /// Base URL of the LNbits instance, e.g.
@@ -94,7 +99,11 @@ struct Args {
     /// operators upgrading from before the rename — see `main()` for
     /// the fallback. The same value goes on the main app's matching
     /// secret so the two ends agree.
-    #[arg(long, env = "GHOSTKEY_LN_SIDECAR_SHARED_SECRET", hide_env_values = true)]
+    #[arg(
+        long,
+        env = "GHOSTKEY_LN_SIDECAR_SHARED_SECRET",
+        hide_env_values = true
+    )]
     shared_secret: String,
 
     /// HTTP timeout for LNbits requests, seconds.
@@ -179,11 +188,7 @@ fn check_auth(headers: &HeaderMap, shared_secret: &str) -> Result<(), ApiError> 
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or(ApiError::Unauthorized)?;
-    if presented
-        .as_bytes()
-        .ct_eq(shared_secret.as_bytes())
-        .into()
-    {
+    if presented.as_bytes().ct_eq(shared_secret.as_bytes()).into() {
         Ok(())
     } else {
         Err(ApiError::Unauthorized)
@@ -252,6 +257,7 @@ struct LnbitsCreateInvoiceResp {
 /// and decide `paid` by precedence:
 ///   1. `status == "success"` (newest)
 ///   2. `paid == true`        (legacy boolean fallback)
+///
 /// Anything else is `pending` (or `failed` on explicit failure).
 #[derive(Debug, Deserialize)]
 struct LnbitsStatusResp {
@@ -265,16 +271,39 @@ struct LnbitsStatusResp {
     time: Option<i64>,
 }
 
-async fn lnbits_probe(state: &AppState) -> Result<(), reqwest::Error> {
+async fn lnbits_probe(state: &AppState) -> anyhow::Result<()> {
     let url = format!("{}/api/v1/wallet", state.lnbits_url);
-    state
+    let resp = state
         .http
         .get(&url)
         .header("X-Api-Key", &state.invoice_key)
         .send()
         .await?
-        .error_for_status()
-        .map(|_| ())
+        .error_for_status()?;
+
+    // LNbits's first-install wizard 307-redirects every API path to
+    // GET /first_install (an HTML page that returns 200) until an
+    // admin user has been created. reqwest follows the redirect by
+    // default, so plain status-code checking would happily report
+    // ready — a false positive that lets `POST /api/v1/payments`
+    // through to the same redirect chain, which then 405s because
+    // /first_install accepts only PUT. Detect the install page by
+    // its content type or its final URL so we surface this case
+    // instead of pretending the sidecar is healthy.
+    let final_path = resp.url().path().to_string();
+    let ct = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if final_path.contains("/first_install") || ct.starts_with("text/html") {
+        anyhow::bail!(
+            "lnbits is stuck on the first-install wizard; complete /first_install \
+             (or set LNBITS_ADMIN_PASSWORD on the lnbits app so start.sh can do it) \
+             before invoices will mint"
+        );
+    }
+    Ok(())
 }
 
 async fn lnbits_create_invoice(
@@ -334,8 +363,7 @@ async fn lnbits_get_status(
 /// version; we treat anything above ~year-2200-in-seconds as already-ms
 /// and divide. Anything below stays as seconds.
 fn interpret(r: &LnbitsStatusResp) -> StatusResponse {
-    let paid = matches!(r.status.as_deref(), Some("success"))
-        || matches!(r.paid, Some(true));
+    let paid = matches!(r.status.as_deref(), Some("success")) || matches!(r.paid, Some(true));
     let failed = matches!(r.status.as_deref(), Some("failed"));
 
     let status = if paid {

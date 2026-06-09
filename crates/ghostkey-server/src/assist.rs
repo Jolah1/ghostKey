@@ -169,9 +169,7 @@ pub async fn assist_chat(
             body = %raw.chars().take(400).collect::<String>(),
             "anthropic returned non-success"
         );
-        return Err(ApiError::Validation(format!(
-            "AI service returned {status}"
-        )));
+        return Err(ApiError::Validation(map_anthropic_error(status, &raw)));
     }
 
     let reply = parse_reply(&raw).ok_or_else(|| {
@@ -180,6 +178,51 @@ pub async fn assist_chat(
     })?;
 
     Ok(Json(AssistChatResponse { reply }))
+}
+
+/// Translate an upstream Anthropic error response into a message the
+/// dashboard can show end-users. The raw `body` is the response text
+/// from the Messages API; on non-2xx it conventionally looks like
+/// `{"type":"error","error":{"type":"...","message":"..."}}`. We map
+/// the few cases an owner can actually act on (top up, retry, contact
+/// support) and fall back to a generic message otherwise so noisy
+/// upstream changes never bleed raw error strings into the UI.
+fn map_anthropic_error(status: reqwest::StatusCode, body: &str) -> String {
+    let parsed: Option<(String, String)> = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            let err = v.get("error")?;
+            let ty = err.get("type")?.as_str()?.to_string();
+            let msg = err.get("message")?.as_str()?.to_string();
+            Some((ty, msg))
+        });
+    let (err_type, err_msg) = parsed.unwrap_or_default();
+
+    // Low-credit is the one Anthropic returns under invalid_request_error
+    // rather than its own status code. Substring-match the message text;
+    // wording has been stable across the last few API revisions but we
+    // don't want to depend on an exact string either.
+    if err_msg.to_lowercase().contains("credit balance is too low")
+        || err_msg.to_lowercase().contains("billing")
+    {
+        return "AI guide is temporarily offline (the owner needs to top up their AI account). \
+                You can still use the rest of the dashboard normally."
+            .into();
+    }
+
+    match (status.as_u16(), err_type.as_str()) {
+        (401, _) | (403, _) | (_, "authentication_error") => {
+            "AI guide is misconfigured on this server. The owner needs to set a valid API key."
+                .into()
+        }
+        (429, _) | (_, "rate_limit_error") => {
+            "AI guide is busy right now — please try again in a minute.".into()
+        }
+        (529, _) | (_, "overloaded_error") => {
+            "AI guide is overloaded right now — please try again in a minute.".into()
+        }
+        _ => "AI guide is temporarily unavailable — please try again shortly.".into(),
+    }
 }
 
 /// Extract the first text block from a Messages-API response.
@@ -263,5 +306,33 @@ mod tests {
             "what does my heir need to do once the timelock matures?"
         ));
         assert!(!looks_like_secret("can I check in from a phone?"));
+    }
+
+    #[test]
+    fn map_anthropic_error_handles_low_credit() {
+        let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}}"#;
+        let msg = map_anthropic_error(reqwest::StatusCode::BAD_REQUEST, body);
+        assert!(msg.contains("top up"), "got: {msg}");
+        assert!(!msg.contains("400"), "must not leak raw status: {msg}");
+    }
+
+    #[test]
+    fn map_anthropic_error_handles_rate_limit() {
+        let body = r#"{"type":"error","error":{"type":"rate_limit_error","message":"too many"}}"#;
+        let msg = map_anthropic_error(reqwest::StatusCode::TOO_MANY_REQUESTS, body);
+        assert!(msg.contains("busy"));
+    }
+
+    #[test]
+    fn map_anthropic_error_handles_auth() {
+        let body = r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#;
+        let msg = map_anthropic_error(reqwest::StatusCode::UNAUTHORIZED, body);
+        assert!(msg.contains("misconfigured"));
+    }
+
+    #[test]
+    fn map_anthropic_error_falls_back_on_unknown() {
+        let msg = map_anthropic_error(reqwest::StatusCode::IM_A_TEAPOT, "not json at all");
+        assert!(msg.contains("temporarily unavailable"));
     }
 }
