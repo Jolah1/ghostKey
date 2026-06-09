@@ -209,7 +209,7 @@ pub async fn build_claim_psbt(
             let req = wallet.start_full_scan();
             let update = client
                 .full_scan(req, 5, 1)
-                .map_err(|e| BlockingErr::Esplora(format!("full_scan: {e}")))?;
+                .map_err(|e| clean_esplora_err("full_scan", &e))?;
             wallet
                 .apply_update(update)
                 .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
@@ -377,7 +377,7 @@ pub async fn broadcast_claim(
         let client = esplora_client::Builder::new(&url).build_blocking();
         client
             .broadcast(&tx)
-            .map_err(|e| BlockingErr::Esplora(format!("broadcast: {e}")))?;
+            .map_err(|e| clean_esplora_err("broadcast", &e))?;
         Ok(tx.compute_txid())
     })
     .await;
@@ -681,7 +681,7 @@ pub async fn heir_claim(
             let req = wallet.start_full_scan();
             let update = client
                 .full_scan(req, 5, 1)
-                .map_err(|e| BlockingErr::Esplora(format!("full_scan: {e}")))?;
+                .map_err(|e| clean_esplora_err("full_scan", &e))?;
             wallet
                 .apply_update(update)
                 .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
@@ -717,7 +717,7 @@ pub async fn heir_claim(
                 .map_err(|e| BlockingErr::Build(format!("extract_tx: {e}")))?;
             client
                 .broadcast(&tx)
-                .map_err(|e| BlockingErr::Esplora(format!("broadcast: {e}")))?;
+                .map_err(|e| clean_esplora_err("broadcast", &e))?;
             let txid = tx.compute_txid();
             let out_sats: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
             let fee = total.saturating_sub(out_sats);
@@ -880,6 +880,45 @@ impl From<BlockingErr> for ApiError {
                 ApiError::Validation("no UTXOs found at vault addresses".into())
             }
         }
+    }
+}
+
+// `esplora_client::Error::Display` is `{:?}` (debug-formatted), which for
+// `HttpResponse { status, message }` dumps the entire upstream body —
+// including the openresty 504 HTML the dashboard's balance card was
+// rendering verbatim. Map gateway-class statuses to a short, plain-text
+// hint and crush whitespace / clip length on the rest so we never echo
+// a multi-kilobyte HTML page back to the browser.
+fn clean_esplora_err(op: &str, e: &esplora_client::Error) -> BlockingErr {
+    use esplora_client::Error as E;
+    let msg = match e {
+        // 5xx + 429 (rate-limit) are upstream-load problems on the
+        // public explorer, not anything the caller can fix by editing
+        // the request. The dashboard has a Refresh button — point them at it.
+        E::HttpResponse { status, .. } if (500..=599).contains(status) || *status == 429 => {
+            format!(
+                "block explorer is temporarily unavailable (HTTP {status}); please try {op} again in a moment"
+            )
+        }
+        E::HttpResponse { status, message } => {
+            format!(
+                "block explorer returned HTTP {status} for {op}: {}",
+                truncate_explorer_msg(message, 200)
+            )
+        }
+        other => format!("{op}: {other:?}"),
+    };
+    BlockingErr::Esplora(msg)
+}
+
+fn truncate_explorer_msg(s: &str, max_chars: usize) -> String {
+    let cleaned: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if cleaned.chars().count() <= max_chars {
+        cleaned
+    } else {
+        let mut out: String = cleaned.chars().take(max_chars).collect();
+        out.push('…');
+        out
     }
 }
 
@@ -1050,7 +1089,7 @@ pub async fn get_vault_balance(
             let req = wallet.start_full_scan();
             let update = client
                 .full_scan(req, 5, 1)
-                .map_err(|e| BlockingErr::Esplora(format!("full_scan: {e}")))?;
+                .map_err(|e| clean_esplora_err("full_scan", &e))?;
             wallet
                 .apply_update(update)
                 .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
@@ -1139,5 +1178,39 @@ mod tests {
             std::env::remove_var("GHOSTKEY_ESPLORA_URL");
         }
         assert!(result.is_err(), "plain http must be refused for mainnet");
+    }
+
+    #[test]
+    fn clean_esplora_err_504_does_not_echo_html_body() {
+        // The exact shape the dashboard was rendering verbatim: an
+        // openresty 504 page from the public explorer.
+        let html = "<html>\r\n<head><title>504 Gateway Time-out</title></head>\r\n<body>\r\n<center><h1>504 Gateway Time-out</h1></center>\r\n<hr><center>openresty</center>\r\n</body>\r\n</html>".to_string();
+        let err = esplora_client::Error::HttpResponse {
+            status: 504,
+            message: html,
+        };
+        let BlockingErr::Esplora(msg) = clean_esplora_err("full_scan", &err) else {
+            panic!("expected Esplora variant");
+        };
+        assert!(msg.contains("504"), "should mention the status: {msg}");
+        assert!(
+            msg.contains("temporarily unavailable"),
+            "should be friendly: {msg}"
+        );
+        assert!(!msg.contains("<html"), "must not echo HTML body: {msg}");
+        assert!(!msg.contains("openresty"), "must not leak upstream: {msg}");
+    }
+
+    #[test]
+    fn clean_esplora_err_4xx_includes_short_message() {
+        let err = esplora_client::Error::HttpResponse {
+            status: 400,
+            message: "bad address format".to_string(),
+        };
+        let BlockingErr::Esplora(msg) = clean_esplora_err("broadcast", &err) else {
+            panic!("expected Esplora variant");
+        };
+        assert!(msg.contains("400"));
+        assert!(msg.contains("bad address format"));
     }
 }
