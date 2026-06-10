@@ -44,6 +44,11 @@ import {
   type VaultMeta,
 } from "./vaultStore";
 import { LightningCheckin } from "./LightningCheckin";
+import {
+  getPushSubscription,
+  isPushSupported,
+  subscribeToPush,
+} from "./push";
 import type { Route } from "./App";
 
 interface Props {
@@ -96,6 +101,9 @@ export function Dashboard({ onNavigate }: Props) {
   // Whether the Lightning check-in modal is open. The modal owns its
   // own invoice + polling state; we just toggle visibility here.
   const [lightningOpen, setLightningOpen] = useState(false);
+  // VAPID public key from /health, or null when the server has no
+  // push keypair configured. Gates the reminder opt-in card.
+  const [pushKey, setPushKey] = useState<string | null>(null);
 
   const now = useTicker(1000);
 
@@ -146,11 +154,13 @@ export function Dashboard({ onNavigate }: Props) {
         if (!alive) return;
         setLightningEnabled(Boolean(h.lightning_enabled));
         setDemoMode(Boolean(h.demo_mode));
+        setPushKey(h.push_public_key ?? null);
       })
       .catch(() => {
         if (!alive) return;
         setLightningEnabled(false);
         setDemoMode(false);
+        setPushKey(null);
       });
     return () => {
       alive = false;
@@ -338,6 +348,16 @@ export function Dashboard({ onNavigate }: Props) {
         {vault?.lnurl_checkin && !isClosed && !isClaiming ? (
           <div className="mt-4">
             <LnurlCard lnurl={vault.lnurl_checkin} />
+          </div>
+        ) : null}
+
+        {vault && !isClosed && !isClaiming && pushKey && ownerToken ? (
+          <div className="mt-4">
+            <PushOptInCard
+              vaultId={vault.id}
+              ownerToken={ownerToken}
+              vapidPublicKey={pushKey}
+            />
           </div>
         ) : null}
 
@@ -852,6 +872,141 @@ function LightningStatusBadge() {
       />
       {label}
     </p>
+  );
+}
+
+/* --------------------------- Push opt-in card ----------------------------- */
+
+/** localStorage key for "Not now". Per-vault so a new vault on the
+ *  same device gets a fresh ask. */
+const pushDismissKey = (vaultId: string) => `gk:pushDismissed:${vaultId}`;
+
+/**
+ * One-time offer to turn on check-in reminders via web push.
+ *
+ * Renders nothing unless every precondition holds: the browser
+ * supports push, permission isn't already denied, the user hasn't
+ * subscribed yet, and they haven't dismissed the card for this
+ * vault. After a successful subscribe it shows a brief "Reminders
+ * are on" confirmation, then disappears for good (the subscription
+ * check hides it on subsequent visits).
+ */
+function PushOptInCard({
+  vaultId,
+  ownerToken,
+  vapidPublicKey,
+}: {
+  vaultId: string;
+  ownerToken: string;
+  vapidPublicKey: string;
+}) {
+  type CardState =
+    | { kind: "checking" }
+    | { kind: "hidden" }
+    | { kind: "offer" }
+    | { kind: "busy" }
+    | { kind: "done" }
+    | { kind: "error"; message: string };
+  const [state, setState] = useState<CardState>({ kind: "checking" });
+
+  useEffect(() => {
+    let alive = true;
+    if (
+      !isPushSupported() ||
+      Notification.permission === "denied" ||
+      window.localStorage.getItem(pushDismissKey(vaultId)) === "1"
+    ) {
+      setState({ kind: "hidden" });
+      return;
+    }
+    getPushSubscription()
+      .then((sub) => {
+        if (!alive) return;
+        setState(sub ? { kind: "hidden" } : { kind: "offer" });
+      })
+      .catch(() => {
+        if (!alive) return;
+        setState({ kind: "hidden" });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [vaultId]);
+
+  async function onTurnOn() {
+    setState({ kind: "busy" });
+    try {
+      await subscribeToPush(vaultId, ownerToken, vapidPublicKey);
+      setState({ kind: "done" });
+    } catch (e) {
+      // Permission denied is a decision, not a failure — put the
+      // card away rather than nag. Anything else gets a retryable
+      // plain-words error line.
+      if (Notification.permission === "denied") {
+        setState({ kind: "hidden" });
+        return;
+      }
+      setState({
+        kind: "error",
+        message:
+          e instanceof ApiError
+            ? e.message
+            : "That didn't work. You can try again any time.",
+      });
+    }
+  }
+
+  function onNotNow() {
+    window.localStorage.setItem(pushDismissKey(vaultId), "1");
+    setState({ kind: "hidden" });
+  }
+
+  if (state.kind === "checking" || state.kind === "hidden") return null;
+
+  if (state.kind === "done") {
+    return (
+      <section className="card-flat p-5" data-testid="push-optin-card">
+        <p className="text-[11px] uppercase tracking-wider text-dim">
+          Reminders
+        </p>
+        <p className="mt-1 text-xs text-muted">
+          <span className="text-ok">✓</span> Reminders are on. We'll give
+          you a nudge before each check-in is due.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="card-flat p-5" data-testid="push-optin-card">
+      <p className="text-[11px] uppercase tracking-wider text-dim">
+        Reminders
+      </p>
+      <p className="mt-1 text-xs text-muted">
+        Want a nudge before your next check-in is due? We'll send a
+        notification to this device — one tap and you're done.
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          onClick={() => void onTurnOn()}
+          loading={state.kind === "busy"}
+        >
+          Turn on reminders
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onNotNow}
+          disabled={state.kind === "busy"}
+        >
+          Not now
+        </Button>
+      </div>
+      {state.kind === "error" ? (
+        <p className="mt-2 text-xs text-alarm">{state.message}</p>
+      ) : null}
+    </section>
   );
 }
 

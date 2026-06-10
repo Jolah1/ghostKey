@@ -85,6 +85,11 @@ export default defineConfig({
         // The Anthropic / LNbits sidecars are not same-origin and
         // shouldn't be intercepted; the SW only handles requests
         // to our own origin by default.
+        //
+        // Web push lives in its own classic script so the handlers
+        // survive Workbox regenerating the SW body on every build.
+        // (push-sw.js sits in public/ and is served at the root.)
+        importScripts: ["push-sw.js"],
       },
     }),
   ],

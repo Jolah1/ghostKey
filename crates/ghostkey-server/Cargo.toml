@@ -43,6 +43,14 @@ hex    = { workspace = true }
 bech32 = { workspace = true }
 lettre = { workspace = true }
 
+# Web push (RFC 8291/8292): P-256 ECDH + ES256 VAPID signing, and
+# AES-128-GCM content encryption. Same RustCrypto family as the
+# chacha20poly1305/hkdf deps above; see src/push.rs for why we
+# implement the (small, test-vectored) protocol ourselves instead of
+# pulling the legacy-hyper `web-push` crate.
+p256    = { version = "0.13", features = ["ecdh", "ecdsa"] }
+aes-gcm = "0.10"
+
 # NOTE on Lightning support:
 #
 # The Breez SDK Liquid crate (breez-sdk-liquid) is the production

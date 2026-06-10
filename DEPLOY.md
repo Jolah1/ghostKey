@@ -497,6 +497,43 @@ If `TWILIO_*` is unset, SMS and WhatsApp notifications stay queued
 with Twilio configured picks them up. A future deployment that adds
 Twilio will deliver the backlog automatically on its first tick.
 
+#### Web push (browser reminders)
+
+Check-in reminders can also arrive as browser notifications — no
+email or phone number required. The server signs push messages with
+a VAPID keypair (RFC 8292); only the private key is configured, the
+public key is derived from it and exposed via `/health` so the web
+app can subscribe browsers against it.
+
+Generate a keypair once (any machine, no install needed):
+
+```sh
+npx web-push generate-vapid-keys
+```
+
+Then set the **private** key and a contact `mailto:` URI (push
+services use it to reach you if your sender misbehaves):
+
+```sh
+fly secrets set \
+  GHOSTKEY_VAPID_PRIVATE_KEY="<private key from the command above>" \
+  GHOSTKEY_VAPID_SUBJECT="mailto:you@yourdomain.tld" \
+  -a ghostkey
+```
+
+The private key is a 32-byte P-256 scalar in base64url — exactly what
+`web-push generate-vapid-keys` prints. Discard the public key it
+prints; the server re-derives it. Don't paste the private key into
+chats or issue trackers — treat it like any other signing key.
+
+Rotating the keypair invalidates every existing browser subscription:
+deliveries to old subscriptions fail permanently until each user
+re-subscribes from their dashboard (turn reminders off and on again).
+Treat rotation as a last resort, not hygiene. If `GHOSTKEY_VAPID_PRIVATE_KEY` is unset, web push
+is disabled: `/health` reports no `push_public_key`, the web app
+never shows the opt-in card, and any queued `webpush` notifications
+stay pending until a keyed deployment comes up.
+
 ### Rate-limit budgets
 
 The unauthenticated endpoints (`/assist/chat`, `/vaults`,
