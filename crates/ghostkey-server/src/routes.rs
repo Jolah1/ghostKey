@@ -376,6 +376,15 @@ pub struct VaultView {
     /// reminders to unverified addresses regardless.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_contact_verified: Option<bool>,
+    /// The vault's descriptor pair (receive + change). Only populated
+    /// on the owner-authenticated `GET /vaults/:id` — list/create
+    /// responses leave them `None`. The dashboard embeds these in the
+    /// downloadable independence proof so the owner can reconstruct
+    /// the wallet without this server.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub descriptor_external: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub descriptor_internal: Option<String>,
 }
 
 /// Response shape from a successful vault creation.
@@ -549,6 +558,8 @@ async fn create_vault(
                 // Legacy CLI route stores the plaintext contact and
                 // doesn't participate in email verification.
                 owner_contact_verified: None,
+                descriptor_external: None,
+                descriptor_internal: None,
             },
             owner_token: issued_owner.token,
         }),
@@ -1056,6 +1067,8 @@ async fn create_vault_from_xpub(
                 lnurl_checkin: None,
                 lnurl_panic: None,
                 owner_contact_verified: if has_owner_email { Some(false) } else { None },
+                descriptor_external: None,
+                descriptor_internal: None,
             },
             owner_token: issued_owner.token,
         }),
@@ -1195,33 +1208,39 @@ async fn get_vault(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<VaultView>, ApiError> {
     let id = auth.vault_id;
-    let row = sqlx::query_as::<
-        _,
-        (
-            String,         // id
-            Option<String>, // label
-            String,         // network
-            i64,            // timelock_blocks
-            i64,            // checkin_period_secs
-            i64,            // grace_period_secs
-            String,         // status
-            String,         // created_at
-            Option<String>, // last_checkin_at
-            String,         // next_deadline_at
-            Option<String>, // claim_eligible_at
-            Option<String>, // panic_frozen_until
-            Option<String>, // owner_contact_channel (sealed rows only)
-            i64,            // has sealed owner contact (0/1)
-            Option<String>, // owner_contact_verified_at
-        ),
-    >(
+    // Named row struct rather than a tuple: sqlx only implements
+    // FromRow for tuples up to 16 columns and this query carries 17.
+    #[derive(sqlx::FromRow)]
+    struct VaultRow {
+        id: String,
+        label: Option<String>,
+        network: String,
+        timelock_blocks: i64,
+        checkin_period_secs: i64,
+        grace_period_secs: i64,
+        status: String,
+        created_at: String,
+        last_checkin_at: Option<String>,
+        next_deadline_at: String,
+        claim_eligible_at: Option<String>,
+        panic_frozen_until: Option<String>,
+        /// Sealed rows only.
+        owner_contact_channel: Option<String>,
+        /// Has a sealed owner contact (0/1).
+        has_owner_contact: i64,
+        owner_contact_verified_at: Option<String>,
+        descriptor_external: String,
+        descriptor_internal: String,
+    }
+    let row = sqlx::query_as::<_, VaultRow>(
         r#"SELECT id, label, network, timelock_blocks,
                   checkin_period_secs, grace_period_secs,
                   status, created_at, last_checkin_at, next_deadline_at,
                   claim_eligible_at, panic_frozen_until,
                   owner_contact_channel,
-                  owner_contact_ciphertext IS NOT NULL,
-                  owner_contact_verified_at
+                  owner_contact_ciphertext IS NOT NULL AS has_owner_contact,
+                  owner_contact_verified_at,
+                  descriptor_external, descriptor_internal
            FROM vaults WHERE id = ?"#,
     )
     .bind(&id)
@@ -1246,28 +1265,32 @@ async fn get_vault(
     };
 
     Ok(Json(VaultView {
-        id: row.0,
-        label: row.1,
-        network: row.2,
-        timelock_blocks: row.3,
-        checkin_period_secs: row.4,
-        grace_period_secs: row.5,
-        status: row.6,
-        created_at: parse_rfc(&row.7),
-        last_checkin_at: row.8.as_deref().map(parse_rfc),
-        next_deadline_at: parse_rfc(&row.9),
-        claim_eligible_at: row.10.as_deref().map(parse_rfc),
-        panic_frozen_until: row.11.as_deref().map(parse_rfc),
+        id: row.id,
+        label: row.label,
+        network: row.network,
+        timelock_blocks: row.timelock_blocks,
+        checkin_period_secs: row.checkin_period_secs,
+        grace_period_secs: row.grace_period_secs,
+        status: row.status,
+        created_at: parse_rfc(&row.created_at),
+        last_checkin_at: row.last_checkin_at.as_deref().map(parse_rfc),
+        next_deadline_at: parse_rfc(&row.next_deadline_at),
+        claim_eligible_at: row.claim_eligible_at.as_deref().map(parse_rfc),
+        panic_frozen_until: row.panic_frozen_until.as_deref().map(parse_rfc),
         lnurl_checkin,
         lnurl_panic,
         // Some(bool) only when there's a sealed email contact to
         // verify; legacy plaintext rows and SMS/WhatsApp channels
         // report None so the dashboard never nags about them.
-        owner_contact_verified: if row.13 == 1 && row.12.as_deref() == Some("email") {
-            Some(row.14.is_some())
+        owner_contact_verified: if row.has_owner_contact == 1
+            && row.owner_contact_channel.as_deref() == Some("email")
+        {
+            Some(row.owner_contact_verified_at.is_some())
         } else {
             None
         },
+        descriptor_external: Some(row.descriptor_external),
+        descriptor_internal: Some(row.descriptor_internal),
     }))
 }
 

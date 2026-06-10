@@ -1,0 +1,22 @@
+<!doctype html>
+<!--
+  GhostKey independence proof — template.
+
+  This file is built into a single self-contained HTML page (see
+  vite.kit.config.ts). The dashboard downloads it with the vault's
+  data spliced into the JSON placeholder below. The resulting file
+  works completely offline, from a USB stick, with GhostKey gone.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Your Bitcoin — Independence Proof</title>
+  </head>
+  <body>
+    <script type="application/json" id="ghostkey-kit-data">__GHOSTKEY_KIT_DATA__</script>
+    <div id="app"></div>
+    <script type="module" src="/src/kit/main.ts"></script>
+  </body>
+</html>
