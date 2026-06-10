@@ -351,6 +351,12 @@ export function Dashboard({ onNavigate }: Props) {
           </div>
         ) : null}
 
+        {vault && !isClosed && !isClaiming && vault.owner_contact_verified === false ? (
+          <div className="mt-4">
+            <ConfirmEmailCard vaultId={vault.id} ownerToken={ownerToken} />
+          </div>
+        ) : null}
+
         {vault && !isClosed && !isClaiming && pushKey && ownerToken ? (
           <div className="mt-4">
             <PushOptInCard
@@ -891,6 +897,86 @@ const pushDismissKey = (vaultId: string) => `gk:pushDismissed:${vaultId}`;
  * are on" confirmation, then disappears for good (the subscription
  * check hides it on subsequent visits).
  */
+/* ------------------------- Confirm-email card ------------------------------ */
+
+/**
+ * Shown while `vault.owner_contact_verified === false`: the owner
+ * gave us a reminder email at setup but hasn't tapped the
+ * confirmation link yet. Until they do, we can't be sure reminders
+ * actually reach them — and a typo'd address fails silently, which
+ * for this product means the heir gets contacted without the owner
+ * ever seeing a nudge. The card disappears on the poll after they
+ * tap the link.
+ */
+function ConfirmEmailCard({
+  vaultId,
+  ownerToken,
+}: {
+  vaultId: string;
+  ownerToken: string | null;
+}) {
+  const [state, setState] = useState<
+    | { kind: "idle" }
+    | { kind: "sending" }
+    | { kind: "sent" }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
+
+  async function onResend() {
+    setState({ kind: "sending" });
+    try {
+      await api.resendVerification(vaultId, ownerToken);
+      setState({ kind: "sent" });
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        // Cooldown: one was sent moments ago. From the owner's seat
+        // that's the same outcome as a successful resend.
+        setState({ kind: "sent" });
+        return;
+      }
+      setState({
+        kind: "error",
+        message:
+          e instanceof ApiError
+            ? e.message
+            : "That didn't work. Try again in a moment.",
+      });
+    }
+  }
+
+  return (
+    <section className="card-flat p-5" data-testid="confirm-email-card">
+      <p className="text-[11px] uppercase tracking-wider text-dim">
+        One thing left
+      </p>
+      <p className="mt-1 text-xs text-muted">
+        We sent a confirmation link to your email. Tap it so we know
+        your check-in reminders will reach you. No link in your inbox?
+        Check spam, or send a fresh one.
+      </p>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => void onResend()}
+          loading={state.kind === "sending"}
+          disabled={state.kind === "sent"}
+        >
+          {state.kind === "sent" ? "Email sent ✓" : "Send it again"}
+        </Button>
+      </div>
+      {state.kind === "sent" ? (
+        <p className="mt-2 text-xs text-muted">
+          On its way — give it a minute, and peek in spam if it hides.
+        </p>
+      ) : null}
+      {state.kind === "error" ? (
+        <p className="mt-2 text-xs text-alarm">{state.message}</p>
+      ) : null}
+    </section>
+  );
+}
+
 function PushOptInCard({
   vaultId,
   ownerToken,
