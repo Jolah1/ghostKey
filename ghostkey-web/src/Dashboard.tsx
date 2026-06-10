@@ -425,6 +425,12 @@ export function Dashboard({ onNavigate }: Props) {
           </div>
         ) : null}
 
+        {vault?.descriptor_external && !isClosed ? (
+          <div className="mt-4">
+            <IndependenceProofCard vault={vault} />
+          </div>
+        ) : null}
+
         <div className="mt-6">
           <ActivityList events={events} />
         </div>
@@ -1466,6 +1472,80 @@ function LnurlCard({ lnurl }: { lnurl: string }) {
           </Button>
         </a>
       </div>
+    </section>
+  );
+}
+
+/* ----------------------- Independence proof card -------------------------- */
+
+/**
+ * Lets the owner download the self-contained proof file (descriptors
+ * + password-sealed key). Assembly happens in independenceProof.ts;
+ * this card is just the affordance + the three UI states. Hidden for
+ * legacy vaults (no descriptors on the VaultView) by the caller; the
+ * sealed-blobs fetch inside can still 400 for non-password vaults, so
+ * errors render inline instead of assuming success.
+ */
+function IndependenceProofCard({ vault }: { vault: VaultView }) {
+  const [state, setState] = useState<
+    { kind: "idle" } | { kind: "busy" } | { kind: "done" } | { kind: "error"; message: string }
+  >({ kind: "idle" });
+
+  async function onDownload() {
+    setState({ kind: "busy" });
+    try {
+      const { downloadIndependenceProof } = await import("./independenceProof");
+      await downloadIndependenceProof(vault);
+      setState({ kind: "done" });
+    } catch (e) {
+      setState({
+        kind: "error",
+        message:
+          e instanceof ApiError && e.status === 400
+            ? "This vault was made before proof files existed, so one can't be created for it."
+            : e instanceof Error
+              ? e.message
+              : String(e),
+      });
+    }
+  }
+
+  return (
+    <section className="card-flat p-5">
+      <p className="text-[11px] uppercase tracking-wider text-dim">
+        Your independence proof
+      </p>
+      <p className="mt-1 text-xs text-muted">
+        Your Bitcoin lives on the Bitcoin network — not on GhostKey.
+        Download this file and keep it anywhere (email it to yourself,
+        a USB stick). If GhostKey ever disappeared, opening it and
+        typing your password gets you to your money. No internet
+        needed, nothing to install.
+      </p>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => void onDownload()}
+          disabled={state.kind === "busy"}
+        >
+          {state.kind === "busy"
+            ? "Preparing…"
+            : state.kind === "done"
+              ? "Saved ✓ — download again"
+              : "Download proof file"}
+        </Button>
+      </div>
+      {state.kind === "done" ? (
+        <p className="mt-2 text-[11px] text-dim">
+          Without your password the file reveals no secrets — but treat
+          it like a bank statement: it does show your balance to anyone
+          who opens it.
+        </p>
+      ) : null}
+      {state.kind === "error" ? (
+        <p className="mt-2 text-[11px] text-amber-200">{state.message}</p>
+      ) : null}
     </section>
   );
 }

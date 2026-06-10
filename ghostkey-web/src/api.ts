@@ -49,6 +49,11 @@ export interface VaultView {
    *  verification link. Absent/null when the vault has no email on
    *  file; `false` drives the dashboard's "confirm your email" card. */
   owner_contact_verified?: boolean | null;
+  /** Descriptor pair. Present only on the owner-authenticated
+   *  `GET /vaults/:id`; embedded into the downloadable independence
+   *  proof so the owner can reconstruct the wallet without GhostKey. */
+  descriptor_external?: string | null;
+  descriptor_internal?: string | null;
 }
 
 export interface CreateVaultRequest {

@@ -36,7 +36,7 @@ export type Network = "bitcoin" | "testnet" | "signet" | "regtest";
  * descriptor parser (`miniscript::DescriptorPublicKey`) accepts the
  * fragment without per-network special casing.
  */
-function bip32Versions(network: Network) {
+export function bip32Versions(network: Network) {
   // Mainnet xprv/xpub vs testnet (also used for signet+regtest).
   if (network === "bitcoin") {
     return { private: 0x0488ade4, public: 0x0488b21e };
