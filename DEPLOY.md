@@ -331,6 +331,27 @@ deploys, and machine upgrades. You only need to re-run the commands
 above if you deliberately rotate (see "Rotating the master key" below
 for the design + procedure).
 
+### Block explorer endpoints (Esplora)
+
+Claims, broadcasts, and the balance card talk to a Bitcoin block
+explorer (Esplora API). `GHOSTKEY_ESPLORA_URL` accepts a single URL or
+an **ordered, comma-separated fallback list** — each request tries the
+entries left to right and fails over when an explorer is down:
+
+```sh
+fly secrets set GHOSTKEY_ESPLORA_URL="https://your.indexer/api,https://backup.indexer/api" -a ghostkey
+```
+
+- **Test networks** (signet/testnet) work with no configuration: the
+  server falls back to two independent public explorers
+  (mempool.space + blockstream.info).
+- **Mainnet refuses to start a claim without this var set**, and every
+  entry must be HTTPS. There is deliberately no public default: a
+  public explorer sees every address it is asked about, which would
+  leak your vault's descriptor graph. Run your own indexer first in
+  the list; you may append public ones as fallbacks if you accept that
+  trade-off for availability.
+
 ### Rotating the master key
 
 `GHOSTKEY_MASTER_KEY` plays two structurally different roles —
