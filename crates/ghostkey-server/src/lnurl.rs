@@ -2,8 +2,9 @@
 //!
 //! Each vault gets two static LNURL-pay endpoints — one for check-in, one
 //! for panic-stop. The owner's wallet hits `/lnurlp/:id` to fetch the
-//! `payRequest` metadata, then hits the returned `callback` URL with a
-//! 1-sat amount; we mint a BOLT11 and return it as `payResponse`. Once the
+//! `payRequest` metadata, then hits the returned `callback` URL with the
+//! pinned amount (see `lightning::heartbeat_amount_sat`); we mint a BOLT11
+//! and return it as `payResponse`. Once the
 //! invoice settles, the Lightning poller dispatches on `invoice_type` to
 //! either reset the check-in deadline or freeze the vault.
 //!
@@ -23,26 +24,29 @@ pub fn encode(url: &str) -> String {
     encoded.to_uppercase()
 }
 
-/// LNURL-pay `payRequest` JSON for a check-in invoice (1 sat = 1000 msat).
-pub fn pay_request_json(callback_url: &str) -> String {
-    pay_request_json_with_metadata(callback_url, "GhostKey vault check-in")
+/// LNURL-pay `payRequest` JSON for a check-in invoice. The amount is
+/// pinned: min == max == `amount_sat`.
+pub fn pay_request_json(callback_url: &str, amount_sat: u64) -> String {
+    pay_request_json_with_metadata(callback_url, amount_sat, "GhostKey vault check-in")
 }
 
-/// LNURL-pay `payRequest` JSON for a panic-stop invoice (1 sat = 1000 msat).
-pub fn panic_pay_request_json(callback_url: &str) -> String {
-    pay_request_json_with_metadata(callback_url, "GhostKey panic stop")
+/// LNURL-pay `payRequest` JSON for a panic-stop invoice. The amount is
+/// pinned: min == max == `amount_sat`.
+pub fn panic_pay_request_json(callback_url: &str, amount_sat: u64) -> String {
+    pay_request_json_with_metadata(callback_url, amount_sat, "GhostKey panic stop")
 }
 
-fn pay_request_json_with_metadata(callback_url: &str, label: &str) -> String {
+fn pay_request_json_with_metadata(callback_url: &str, amount_sat: u64, label: &str) -> String {
     // LUD-06 metadata is a JSON-encoded array of [mime, content] pairs,
     // itself embedded as a JSON string.
     let metadata = serde_json::to_string(&serde_json::json!([["text/plain", label],]))
         .expect("metadata array always serializes");
+    let msat = amount_sat * 1000;
     serde_json::json!({
         "tag": "payRequest",
         "callback": callback_url,
-        "minSendable": 1000_u64,
-        "maxSendable": 1000_u64,
+        "minSendable": msat,
+        "maxSendable": msat,
         "metadata": metadata,
         "commentAllowed": 0,
     })
@@ -79,11 +83,11 @@ mod tests {
     }
 
     #[test]
-    fn pay_request_pins_amount_to_1_sat() {
-        let j = pay_request_json("https://example.com/cb");
+    fn pay_request_pins_amount() {
+        let j = pay_request_json("https://example.com/cb", 21);
         let v: serde_json::Value = serde_json::from_str(&j).unwrap();
-        assert_eq!(v["minSendable"], 1000);
-        assert_eq!(v["maxSendable"], 1000);
+        assert_eq!(v["minSendable"], 21_000);
+        assert_eq!(v["maxSendable"], 21_000);
         assert_eq!(v["tag"], "payRequest");
     }
 

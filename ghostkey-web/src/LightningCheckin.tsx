@@ -2,7 +2,7 @@
  * Lightning check-in modal.
  *
  * The owner-facing alternative to tapping the heartbeat button: pay
- * a 1-sat BOLT11 invoice from any Lightning wallet (Phoenix, Blue,
+ * a small BOLT11 invoice from any Lightning wallet (Phoenix, Blue,
  * Cash App, Wallet of Satoshi, Lexe, Breez, etc.) to prove liveness
  * cryptographically. Server-side this resets the same fields the
  * regular `POST /checkin` does — see `mark_paid_and_checkin` in
@@ -173,7 +173,7 @@ export function LightningCheckin({
           Check in with Lightning
         </h2>
         <p className="mt-2 text-sm text-muted">
-          Pay this 1-sat invoice from any Lightning wallet. The vault
+          Pay this tiny invoice from any Lightning wallet. The vault
           accepts the payment as proof you're still here and resets the
           countdown.
         </p>
