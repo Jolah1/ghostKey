@@ -242,14 +242,30 @@ struct LnbitsCreateInvoiceReq<'a> {
     expiry: u32,
 }
 
-/// LNbits `POST /api/v1/payments` response. Older LNbits names
-/// `payment_request`; newer instances ship `bolt11` alongside. We
-/// accept both via `serde(alias)`.
+/// LNbits `POST /api/v1/payments` response. Older LNbits names the
+/// invoice `payment_request`; v1.x serialises the full Payment model,
+/// which carries `bolt11` AND a `payment_request: null` side by side.
+/// That dual presence is why this must be two independent optional
+/// fields: the previous `#[serde(alias = "bolt11")]` approach made
+/// serde treat them as the same field, and v1.5.4's `payment_request:
+/// null` next to `bolt11: "lnbc…"` blew up as a duplicate — every
+/// invoice failed to decode even though LNbits returned 201.
 #[derive(Debug, Deserialize)]
 struct LnbitsCreateInvoiceResp {
     payment_hash: String,
-    #[serde(alias = "bolt11")]
-    payment_request: String,
+    #[serde(default)]
+    bolt11: Option<String>,
+    #[serde(default)]
+    payment_request: Option<String>,
+}
+
+impl LnbitsCreateInvoiceResp {
+    /// The BOLT11 invoice, wherever this LNbits version put it.
+    fn invoice(self) -> Option<String> {
+        self.bolt11
+            .filter(|s| !s.is_empty())
+            .or(self.payment_request.filter(|s| !s.is_empty()))
+    }
 }
 
 /// LNbits `GET /api/v1/payments/:hash` is shaped slightly differently
@@ -265,10 +281,21 @@ struct LnbitsStatusResp {
     paid: Option<bool>,
     #[serde(default)]
     status: Option<String>,
-    /// Time the invoice was paid, in *seconds* (some versions) or
-    /// *milliseconds* (newer). We coerce defensively in `interpret`.
+    /// Time the invoice was paid. Depending on the LNbits version
+    /// this arrives as epoch *seconds*, epoch *milliseconds*, or
+    /// (v1.x Payment model) an ISO-8601 datetime string. We coerce
+    /// defensively in `interpret`.
     #[serde(default)]
-    time: Option<i64>,
+    time: Option<LnbitsTime>,
+}
+
+/// The three shapes LNbits has used for `Payment.time` across
+/// versions. `untagged` tries each in order against the raw JSON.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum LnbitsTime {
+    Epoch(i64),
+    Iso(String),
 }
 
 async fn lnbits_probe(state: &AppState) -> anyhow::Result<()> {
@@ -359,9 +386,9 @@ async fn lnbits_get_status(
 }
 
 /// Coerce LNbits' multi-version response into the wire status. LNbits
-/// returns timestamps as seconds *or* milliseconds depending on the
-/// version; we treat anything above ~year-2200-in-seconds as already-ms
-/// and divide. Anything below stays as seconds.
+/// returns timestamps as seconds, milliseconds, or an ISO-8601 string
+/// depending on the version; for the numeric forms we treat anything
+/// above ~year-2200-in-seconds as already-ms and divide.
 fn interpret(r: &LnbitsStatusResp) -> StatusResponse {
     let paid = matches!(r.status.as_deref(), Some("success")) || matches!(r.paid, Some(true));
     let failed = matches!(r.status.as_deref(), Some("failed"));
@@ -375,9 +402,18 @@ fn interpret(r: &LnbitsStatusResp) -> StatusResponse {
     };
 
     let paid_at = if paid {
-        r.time.map(|t| {
-            let secs = if t > 7_258_118_400 { t / 1000 } else { t };
-            DateTime::from_timestamp(secs, 0).unwrap_or_else(Utc::now)
+        r.time.as_ref().map(|t| match t {
+            LnbitsTime::Epoch(raw) => {
+                let secs = if *raw > 7_258_118_400 {
+                    raw / 1000
+                } else {
+                    *raw
+                };
+                DateTime::from_timestamp(secs, 0).unwrap_or_else(Utc::now)
+            }
+            LnbitsTime::Iso(s) => DateTime::parse_from_rfc3339(s)
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
         })
     } else {
         None
@@ -429,9 +465,16 @@ async fn create_invoice(
     // fine.
     let expires_at = Utc::now() + chrono::Duration::hours(1);
 
+    let payment_hash = resp.payment_hash.clone();
+    let bolt11 = resp.invoice().ok_or_else(|| {
+        ApiError::Provider(
+            "lnbits create-invoice response carried neither bolt11 nor payment_request".into(),
+        )
+    })?;
+
     Ok(Json(InvoiceResponse {
-        bolt11: resp.payment_request,
-        payment_hash: resp.payment_hash,
+        bolt11,
+        payment_hash,
         amount_sat: req.amount_sat,
         expires_at,
     }))
@@ -575,7 +618,7 @@ mod tests {
         LnbitsStatusResp {
             paid,
             status: status.map(|s| s.into()),
-            time,
+            time: time.map(LnbitsTime::Epoch),
         }
     }
 
@@ -620,6 +663,67 @@ mod tests {
         let ts = s.paid_at.unwrap().timestamp();
         // 1.7e12 ms == 1.7e9 s, give or take.
         assert_eq!(ts, 1_700_000_000);
+    }
+
+    /// LNbits v1.5.4 serialises the whole Payment model: `bolt11`
+    /// holds the invoice while `payment_request` rides along as
+    /// null. This exact shape is what broke production on
+    /// 2026-06-09 — keep it byte-shaped like the real response.
+    #[test]
+    fn create_invoice_decodes_v1_payment_model() {
+        let json = r#"{
+            "checking_id": "abc",
+            "payment_hash": "deadbeef",
+            "wallet_id": "w1",
+            "amount": 1000,
+            "fee": 0,
+            "bolt11": "lnbc10n1realinvoice",
+            "payment_request": null,
+            "status": "pending",
+            "memo": "GhostKey check-in",
+            "expiry": "2026-06-10T10:42:39.000000+00:00",
+            "time": "2026-06-10T09:42:39.000000+00:00",
+            "created_at": "2026-06-10T09:42:39.000000+00:00",
+            "updated_at": "2026-06-10T09:42:39.000000+00:00",
+            "extra": {}
+        }"#;
+        let resp: LnbitsCreateInvoiceResp = serde_json::from_str(json).expect("v1.5.4 decodes");
+        assert_eq!(resp.payment_hash, "deadbeef");
+        assert_eq!(resp.invoice().as_deref(), Some("lnbc10n1realinvoice"));
+    }
+
+    /// Pre-1.0 LNbits: `payment_request` only, no `bolt11` key.
+    #[test]
+    fn create_invoice_decodes_legacy_shape() {
+        let json = r#"{
+            "payment_hash": "deadbeef",
+            "payment_request": "lnbc10n1legacyinvoice",
+            "checking_id": "abc"
+        }"#;
+        let resp: LnbitsCreateInvoiceResp = serde_json::from_str(json).expect("legacy decodes");
+        assert_eq!(resp.invoice().as_deref(), Some("lnbc10n1legacyinvoice"));
+    }
+
+    /// Neither field present (or both empty) must surface as None so
+    /// the handler can 502 with a useful message instead of shipping
+    /// an empty bolt11 to the wallet.
+    #[test]
+    fn create_invoice_without_any_invoice_is_none() {
+        let json = r#"{"payment_hash": "deadbeef", "payment_request": ""}"#;
+        let resp: LnbitsCreateInvoiceResp = serde_json::from_str(json).expect("shape decodes");
+        assert!(resp.invoice().is_none());
+    }
+
+    /// v1.x status responses carry `time` as an ISO-8601 string; the
+    /// paid timestamp must parse rather than fall back to now().
+    #[test]
+    fn interpret_iso_time() {
+        let json = r#"{"status": "success", "time": "2026-06-10T09:42:39.000000+00:00"}"#;
+        let r: LnbitsStatusResp = serde_json::from_str(json).expect("iso time decodes");
+        let s = interpret(&r);
+        assert_eq!(s.status, "paid");
+        let ts = s.paid_at.expect("paid_at set").timestamp();
+        assert_eq!(ts, 1_781_084_559);
     }
 
     #[test]
