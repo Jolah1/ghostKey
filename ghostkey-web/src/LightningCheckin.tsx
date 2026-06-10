@@ -25,7 +25,8 @@
  *      up to 90s and then offer "Still waiting?  Refresh status"
  *      manually rather than spin forever.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import qrcode from "qrcode-generator";
 import { Button } from "./ui";
 import { ApiError, api, type LightningInvoiceView } from "./api";
 
@@ -231,9 +232,17 @@ function InvoicePanel({
   copied: boolean;
   onCopy: (s: string) => void;
 }) {
-  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(
-    invoice.bolt11.toUpperCase(),
-  )}`;
+  // Rendered locally to a data: URL — the CSP only allows
+  // `img-src 'self' data: blob:`, so an external QR service would be
+  // blocked, and this way the BOLT11 never round-trips through a
+  // third party. Type 0 = auto-size; uppercase bech32 keeps the QR
+  // in the denser alphanumeric-friendly form wallets expect.
+  const qrUrl = useMemo(() => {
+    const qr = qrcode(0, "M");
+    qr.addData(invoice.bolt11.toUpperCase());
+    qr.make();
+    return qr.createDataURL(6, 8);
+  }, [invoice.bolt11]);
 
   return (
     <div className="text-center">
@@ -256,12 +265,6 @@ function InvoicePanel({
         </div>
       ) : (
         <>
-          {/* External QR rendering is a pragmatic dependency-free
-              choice for the alpha. A future contribution can swap to
-              a local qrcode lib so the BOLT11 never round-trips
-              through a third party. The string is public anyway —
-              anyone who intercepts can only PAY the owner's vault
-              one sat, never deduct from it. */}
           <img
             src={qrUrl}
             alt="Lightning invoice QR code"
