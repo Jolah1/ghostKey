@@ -387,12 +387,14 @@ async fn issue_pre_deadline_reminders(state: &AppState, now_iso: &str) -> anyhow
         r#"SELECT id, label,
                   owner_contact_ciphertext, owner_contact_nonce, owner_contact_channel,
                   next_deadline_at
-             FROM vaults
+             FROM vaults v
             WHERE status = 'ok'
               AND next_deadline_at > ?
               AND next_deadline_at <= ?
               AND pre_deadline_reminder_sent_at IS NULL
-              AND owner_contact_ciphertext IS NOT NULL"#,
+              AND (owner_contact_ciphertext IS NOT NULL
+                   OR EXISTS (SELECT 1 FROM push_subscriptions ps
+                               WHERE ps.vault_id = v.id))"#,
     )
     .bind(now_iso)
     .bind(&window_end)
@@ -440,22 +442,28 @@ async fn enqueue_pre_deadline_reminder(
     next_deadline_at_iso: &str,
     now_iso: &str,
 ) -> anyhow::Result<()> {
-    let Some(contact) = parse_owner_contact(
+    // The reminder can go out over two independent channels: the
+    // sealed owner email and/or web push to every browser that opted
+    // in. Resolve both up front; if neither is deliverable, leave the
+    // marker unset so a future code change that adds the owner's
+    // channel can still ship the reminder.
+    let email_contact = parse_owner_contact(
         vault_id,
         owner.ciphertext_b64,
         owner.nonce_b64,
         owner.channel,
     )?
-    else {
-        // Defensive: SQL already filtered on
-        // `owner_contact_ciphertext IS NOT NULL`, but the contact
-        // could still parse to None if the channel column holds a
-        // value we don't know how to deliver to. Don't set the marker
-        // in that case — leave the row eligible so a future code
-        // change that adds the channel can still ship the reminder.
-        return Ok(());
-    };
-    if !matches!(contact.channel, Channel::Email) {
+    .filter(|c| matches!(c.channel, Channel::Email));
+
+    let has_push =
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM push_subscriptions WHERE vault_id = ?")
+            .bind(vault_id)
+            .fetch_one(&state.db)
+            .await?
+            .0
+            > 0;
+
+    if email_contact.is_none() && !has_push {
         return Ok(());
     }
 
@@ -477,33 +485,58 @@ async fn enqueue_pre_deadline_reminder(
     let one_tap_url = format!("{base}/#/checkin-link/{vault_id}/{token}");
     let display_label = label.unwrap_or("your GhostKey vault");
 
-    let subject = format!("Reminder: {display_label} check-in due {deadline_friendly}");
-    let body = format!(
-        "Hello,\n\n\
-         A quick reminder that {display_label} needs a check-in by \
-         {deadline_friendly}. That's about 24 hours from now.\n\n\
-         Tap this link to check in. One tap. Nothing else.\n\n\
-         {one_tap_url}\n\n\
-         If you can't tap from this email, open the dashboard on any \
-         device and tap \"I'm still here\":\n\n\
-         {base}/#/checkin\n\n\
-         If we don't hear from you by the deadline, you'll get one more \
-         email — and then your heir will be contacted after the \
-         grace period.\n\n\
-         If this email reached you by mistake, you can ignore it.\n\n\
-         — GhostKey\n"
-    );
+    if let Some(contact) = &email_contact {
+        let subject = format!("Reminder: {display_label} check-in due {deadline_friendly}");
+        let body = format!(
+            "Hello,\n\n\
+             A quick reminder that {display_label} needs a check-in by \
+             {deadline_friendly}. That's about 24 hours from now.\n\n\
+             Tap this link to check in. One tap. Nothing else.\n\n\
+             {one_tap_url}\n\n\
+             If you can't tap from this email, open the dashboard on any \
+             device and tap \"I'm still here\":\n\n\
+             {base}/#/checkin\n\n\
+             If we don't hear from you by the deadline, you'll get one more \
+             email — and then your heir will be contacted after the \
+             grace period.\n\n\
+             If this email reached you by mistake, you can ignore it.\n\n\
+             — GhostKey\n"
+        );
 
-    notifier::enqueue(
-        &state.db,
-        vault_id,
-        NotificationKind::PreDeadlineReminder,
-        Channel::Email,
-        &contact.address,
-        &subject,
-        &body,
-    )
-    .await?;
+        notifier::enqueue(
+            &state.db,
+            vault_id,
+            NotificationKind::PreDeadlineReminder,
+            Channel::Email,
+            &contact.address,
+            &subject,
+            &body,
+        )
+        .await?;
+    }
+
+    if has_push {
+        let title = "Time to check in".to_string();
+        let push_body = serde_json::json!({
+            "title": title,
+            "body": format!(
+                "{display_label} needs a check-in by {deadline_friendly}. \
+                 One tap and you're done."
+            ),
+            "url": one_tap_url,
+        })
+        .to_string();
+        notifier::enqueue(
+            &state.db,
+            vault_id,
+            NotificationKind::PreDeadlineReminder,
+            Channel::WebPush,
+            "webpush",
+            &title,
+            &push_body,
+        )
+        .await?;
+    }
 
     // Set the per-cycle marker so we don't re-send on the next tick.
     // Cleared on every successful check-in (see routes::checkin,
@@ -622,27 +655,29 @@ async fn enqueue_alarm_owner(
     claim_eligible_at_iso: &str,
     now_iso: &str,
 ) -> anyhow::Result<()> {
-    let Some(contact) = parse_owner_contact(
+    // Same two-channel fan-out as the pre-deadline reminder: sealed
+    // owner email and/or web push subscriptions, independently
+    // optional.
+    let email_contact = parse_owner_contact(
         vault_id,
         owner.ciphertext_b64,
         owner.nonce_b64,
         owner.channel,
     )?
-    else {
-        tracing::info!(vault_id = %vault_id, "no sealed owner contact; skipping owner alarm notification");
-        return Ok(());
-    };
+    .filter(|c| matches!(c.channel, Channel::Email));
 
-    // The notifier only delivers Channel::Email today. parse_owner_contact
-    // already returns None for unsupported channels (with a log), so by
-    // the time we get here we know we can deliver — but match
-    // explicitly so the warning is unambiguous if a new channel is
-    // added to the enum and not to the worker.
-    if !matches!(contact.channel, Channel::Email) {
+    let has_push =
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM push_subscriptions WHERE vault_id = ?")
+            .bind(vault_id)
+            .fetch_one(&state.db)
+            .await?
+            .0
+            > 0;
+
+    if email_contact.is_none() && !has_push {
         tracing::info!(
             vault_id = %vault_id,
-            channel = ?contact.channel,
-            "owner channel known but not yet supported by worker; skipping"
+            "no deliverable owner contact (email or push); skipping owner alarm notification"
         );
         return Ok(());
     }
@@ -665,45 +700,78 @@ async fn enqueue_alarm_owner(
     let display_label = label.unwrap_or("your GhostKey vault");
 
     // Reuse the pre-deadline reminder's token when it's still live,
-    // otherwise mint a fresh one. Either way `Some(token)` means the
-    // alarm email carries a working one-tap URL; `None` means we lost
-    // a race or the row vanished — skip silently.
-    let one_tap_block = match mint_or_reuse_one_tap_token(state, vault_id, now_iso).await? {
-        Some(token) => format!(
-            "Tap this link to check in. One tap. Nothing else.\n\n\
-             {base}/#/checkin-link/{vault_id}/{token}\n\n"
-        ),
-        None => String::new(),
-    };
+    // otherwise mint a fresh one. `Some(token)` means both channels
+    // carry a working one-tap URL; `None` means we lost a race or the
+    // row vanished — the email goes out without the one-tap block and
+    // the push falls back to the dashboard check-in page.
+    let one_tap_url = mint_or_reuse_one_tap_token(state, vault_id, now_iso)
+        .await?
+        .map(|token| format!("{base}/#/checkin-link/{vault_id}/{token}"));
 
-    let subject = "You missed your GhostKey check-in".to_string();
-    let body = format!(
-        "Hello,\n\n\
-         {display_label} just missed its check-in deadline. We'd usually \
-         remind you sooner — this is the last reminder before the \
-         next step.\n\n\
-         {one_tap_block}\
-         You can also open the dashboard on any device and tap \
-         \"I'm still here\" to reset the clock:\n\n\
-         {base}/#/checkin\n\n\
-         If we don't hear from you by {claim_friendly}, your heir will \
-         receive their claim link automatically. You can stop that at \
-         any moment up to then by checking in.\n\n\
-         If this email reached you by mistake, you can ignore it. \
-         Nothing happens until the deadline above.\n\n\
-         — GhostKey\n"
-    );
+    if let Some(contact) = &email_contact {
+        let one_tap_block = match &one_tap_url {
+            Some(url) => format!(
+                "Tap this link to check in. One tap. Nothing else.\n\n\
+                 {url}\n\n"
+            ),
+            None => String::new(),
+        };
 
-    notifier::enqueue(
-        &state.db,
-        vault_id,
-        NotificationKind::AlarmOwner,
-        Channel::Email,
-        &contact.address,
-        &subject,
-        &body,
-    )
-    .await?;
+        let subject = "You missed your GhostKey check-in".to_string();
+        let body = format!(
+            "Hello,\n\n\
+             {display_label} just missed its check-in deadline. We'd usually \
+             remind you sooner — this is the last reminder before the \
+             next step.\n\n\
+             {one_tap_block}\
+             You can also open the dashboard on any device and tap \
+             \"I'm still here\" to reset the clock:\n\n\
+             {base}/#/checkin\n\n\
+             If we don't hear from you by {claim_friendly}, your heir will \
+             receive their claim link automatically. You can stop that at \
+             any moment up to then by checking in.\n\n\
+             If this email reached you by mistake, you can ignore it. \
+             Nothing happens until the deadline above.\n\n\
+             — GhostKey\n"
+        );
+
+        notifier::enqueue(
+            &state.db,
+            vault_id,
+            NotificationKind::AlarmOwner,
+            Channel::Email,
+            &contact.address,
+            &subject,
+            &body,
+        )
+        .await?;
+    }
+
+    if has_push {
+        let title = "You missed your check-in".to_string();
+        let push_body = serde_json::json!({
+            "title": title,
+            "body": format!(
+                "{display_label} missed its deadline. Check in by \
+                 {claim_friendly} or your heir will be contacted."
+            ),
+            "url": one_tap_url
+                .clone()
+                .unwrap_or_else(|| format!("{base}/#/checkin")),
+        })
+        .to_string();
+        notifier::enqueue(
+            &state.db,
+            vault_id,
+            NotificationKind::AlarmOwner,
+            Channel::WebPush,
+            "webpush",
+            &title,
+            &push_body,
+        )
+        .await?;
+    }
+
     tracing::info!(vault_id = %vault_id, "owner alarm notification enqueued");
     Ok(())
 }

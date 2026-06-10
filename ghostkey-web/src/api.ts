@@ -424,6 +424,10 @@ export const api = {
       /** Whether the AI onboarding guide is reachable. False on older
        *  servers that don't yet emit the field; the UI treats it as off. */
       assist_enabled?: boolean;
+      /** VAPID public key for web push, or null/absent when the
+       *  server has no push keypair configured. Presence gates the
+       *  reminder opt-in card on the dashboard. */
+      push_public_key?: string | null;
     }>("/health"),
   /** Deep probe of the Lightning sidecar. `/health` only tells us
    *  whether the operator wired up env vars; this issues the
@@ -445,6 +449,27 @@ export const api = {
    *  held the keys. Returns 204; we return null. */
   deleteVault: (id: string, ownerToken: string) =>
     request<null>(`/vaults/${id}`, { method: "DELETE" }, ownerToken),
+  /** Register (or refresh — the server upserts on endpoint) this
+   *  browser's push subscription so check-in reminders reach the
+   *  device even when the tab is closed. Returns 204; we return null. */
+  pushSubscribe: (
+    id: string,
+    sub: { endpoint: string; p256dh: string; auth: string },
+    ownerToken: string,
+  ) =>
+    request<null>(
+      `/vaults/${id}/push-subscriptions`,
+      { method: "POST", body: JSON.stringify(sub) },
+      ownerToken,
+    ),
+  /** Remove one device's subscription (keyed by endpoint). Other
+   *  devices the owner subscribed stay registered. Idempotent. */
+  pushUnsubscribe: (id: string, endpoint: string, ownerToken: string) =>
+    request<null>(
+      `/vaults/${id}/push-subscriptions`,
+      { method: "DELETE", body: JSON.stringify({ endpoint }) },
+      ownerToken,
+    ),
   createVault: (req: CreateVaultRequest) =>
     request<CreatedVault>("/vaults", {
       method: "POST",

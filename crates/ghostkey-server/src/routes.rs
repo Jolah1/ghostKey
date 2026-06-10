@@ -185,7 +185,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/lnurlp/:vault_id/panic", get(lnurlp_panic_pay_request))
         .route("/lnurlp/:vault_id/panic/cb", get(lnurlp_panic_callback))
         .route("/vaults/:id/events", get(list_events))
-        .route("/vaults/:id/issue-claim", post(issue_claim));
+        .route("/vaults/:id/issue-claim", post(issue_claim))
+        .route(
+            "/vaults/:id/push-subscriptions",
+            post(push_subscribe).delete(push_unsubscribe),
+        );
 
     Router::new()
         .merge(open_routes)
@@ -246,6 +250,11 @@ struct Health {
     /// `ANTHROPIC_API_KEY` is configured. Lets the UI hide the chat
     /// affordance gracefully when the server can't proxy.
     assist_enabled: bool,
+    /// VAPID public key (base64url, uncompressed SEC1 point) when web
+    /// push is configured, else null. The web client passes this as
+    /// `applicationServerKey` to `pushManager.subscribe()` and hides
+    /// the reminder opt-in entirely when null.
+    push_public_key: Option<String>,
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
@@ -259,6 +268,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         demo_mode: crate::demo::demo_mode(),
         default_network: crate::config::default_network(),
         assist_enabled,
+        push_public_key: crate::push::VapidConfig::public_key_from_env(),
     })
 }
 
@@ -1181,6 +1191,103 @@ async fn delete_vault(
     if res.rows_affected() == 0 {
         return Err(ApiError::NotFound);
     }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Body of `POST /vaults/:id/push-subscriptions` — the three fields
+/// of `PushSubscription.toJSON()`, flattened. The browser mints all
+/// three; we validate shape server-side so a corrupt row can never
+/// reach the send path (push::send re-validates, but failing at
+/// subscribe time gives the user an error they can act on).
+#[derive(Debug, Deserialize)]
+struct PushSubscribeRequest {
+    endpoint: String,
+    /// Browser ECDH public key, base64url (65-byte uncompressed SEC1).
+    p256dh: String,
+    /// 16-byte shared auth secret, base64url.
+    auth: String,
+}
+
+/// Decode a base64url field the browser produced. Browsers emit
+/// unpadded base64url from `PushSubscription.toJSON()`, but some
+/// client-side re-encodes add padding — strip it rather than reject.
+fn b64url_field(name: &str, value: &str) -> Result<Vec<u8>, ApiError> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value.trim_end_matches('='))
+        .map_err(|_| ApiError::Validation(format!("{name} must be base64url")))
+}
+
+async fn push_subscribe(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<PushSubscribeRequest>,
+) -> Result<StatusCode, ApiError> {
+    let vault_id = auth.vault_id;
+
+    // The endpoint is an attacker-controlled URL we will later POST
+    // encrypted payloads to. Require https so a malicious subscribe
+    // can't point the worker at plaintext infrastructure.
+    let parsed = reqwest::Url::parse(&req.endpoint)
+        .map_err(|_| ApiError::Validation("endpoint must be a URL".into()))?;
+    if parsed.scheme() != "https" {
+        return Err(ApiError::Validation("endpoint must be https".into()));
+    }
+
+    let p256dh_bytes = b64url_field("p256dh", &req.p256dh)?;
+    if p256::PublicKey::from_sec1_bytes(&p256dh_bytes).is_err() {
+        return Err(ApiError::Validation(
+            "p256dh must be a valid P-256 public key".into(),
+        ));
+    }
+    let auth_bytes = b64url_field("auth", &req.auth)?;
+    if auth_bytes.len() != 16 {
+        return Err(ApiError::Validation("auth must be 16 bytes".into()));
+    }
+
+    // Upsert keyed on (vault_id, endpoint): a browser re-subscribing
+    // after a push-service key rotation reuses the endpoint with new
+    // encryption params, and re-running the opt-in flow must not
+    // produce duplicate sends.
+    sqlx::query(
+        r#"INSERT INTO push_subscriptions (vault_id, endpoint, p256dh, auth, created_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT (vault_id, endpoint)
+           DO UPDATE SET p256dh = excluded.p256dh,
+                         auth = excluded.auth,
+                         created_at = excluded.created_at"#,
+    )
+    .bind(&vault_id)
+    .bind(&req.endpoint)
+    .bind(&req.p256dh)
+    .bind(&req.auth)
+    .bind(Utc::now().to_rfc3339())
+    .execute(&state.db)
+    .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Body of `DELETE /vaults/:id/push-subscriptions`. Deletes by
+/// endpoint rather than clearing the whole vault so unsubscribing on
+/// one device leaves the owner's other devices subscribed.
+#[derive(Debug, Deserialize)]
+struct PushUnsubscribeRequest {
+    endpoint: String,
+}
+
+async fn push_unsubscribe(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<PushUnsubscribeRequest>,
+) -> Result<StatusCode, ApiError> {
+    // Idempotent: deleting an endpoint that was already pruned (or
+    // never registered) is still a 204 — the end state is identical.
+    sqlx::query("DELETE FROM push_subscriptions WHERE vault_id = ? AND endpoint = ?")
+        .bind(&auth.vault_id)
+        .bind(&req.endpoint)
+        .execute(&state.db)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

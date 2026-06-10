@@ -28,6 +28,7 @@ mod lightning;
 mod lnurl;
 mod notifier;
 mod psbt_routes;
+mod push;
 mod rate_limit;
 mod routes;
 mod scheduler;
