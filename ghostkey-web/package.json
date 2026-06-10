@@ -16,6 +16,9 @@
     "@noble/hashes": "^2.2.0",
     "@scure/bip32": "^2.2.0",
     "@scure/bip39": "^2.2.0",
+    "@zxcvbn-ts/core": "^3.0.4",
+    "@zxcvbn-ts/language-common": "^3.0.4",
+    "@zxcvbn-ts/language-en": "^3.0.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

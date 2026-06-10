@@ -86,6 +86,12 @@ export default defineConfig({
         // shouldn't be intercepted; the SW only handles requests
         // to our own origin by default.
         //
+        // The zxcvbn dictionaries (~2 MB raw) are only needed on
+        // the create-a-vault password step — precaching them would
+        // quintuple every PWA install/update for a screen most
+        // sessions never visit. They stay lazy-loaded over the
+        // network instead.
+        globIgnores: ["**/zxcvbn-*.js"],
         // Web push lives in its own classic script so the handlers
         // survive Workbox regenerating the SW body on every build.
         // (push-sw.js sits in public/ and is served at the root.)
@@ -93,6 +99,18 @@ export default defineConfig({
       },
     }),
   ],
+  build: {
+    rollupOptions: {
+      output: {
+        // Give the zxcvbn dictionary chunks a stable name so the
+        // workbox globIgnores above can exclude them from the SW
+        // precache.
+        manualChunks(id) {
+          if (id.includes("@zxcvbn-ts")) return "zxcvbn";
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     proxy: {
