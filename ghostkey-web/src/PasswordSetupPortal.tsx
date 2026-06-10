@@ -55,7 +55,7 @@
  *     the check-in cadence; no further action is needed before
  *     funding.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Button,
   Field,
@@ -73,6 +73,12 @@ import {
 } from "./api";
 import { saveVaultMeta } from "./vaultStore";
 import { AssistChat } from "./AssistChat";
+import {
+  MIN_LENGTH,
+  checkPassword,
+  preloadStrengthChecker,
+  type StrengthResult,
+} from "./passwordStrength";
 import {
   generateParty,
   wipe,
@@ -274,6 +280,45 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
     setError(null);
   }
 
+  // Live zxcvbn verdict for the current password draft. Owned here
+  // (not in StepPassword) because `validate(1)` gates the wizard on
+  // it. Null = empty password or check still in flight.
+  const [strength, setStrength] = useState<StrengthResult | null>(null);
+
+  // Start downloading the zxcvbn dictionaries as soon as the user
+  // reaches the password step, so the meter responds instantly by
+  // the time they finish typing.
+  useEffect(() => {
+    if (step === 1) preloadStrengthChecker();
+  }, [step]);
+
+  useEffect(() => {
+    if (!draft.password) {
+      setStrength(null);
+      return;
+    }
+    let alive = true;
+    // Small debounce: zxcvbn is fast but there's no point scoring
+    // every intermediate keystroke of a 20-character passphrase.
+    const timer = window.setTimeout(() => {
+      // Feed zxcvbn the words an attacker targeting THIS user would
+      // try first: their own email and the heir names/contacts they
+      // typed one step ago. "Margaret2024" is a fine password for
+      // strangers and a terrible one when your heir is Margaret.
+      const personal = [
+        draft.ownerEmail,
+        ...draft.heirs.flatMap((h) => [h.name, h.contact]),
+      ].filter(Boolean);
+      void checkPassword(draft.password, personal).then((r) => {
+        if (alive) setStrength(r);
+      });
+    }, 150);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [draft.password, draft.ownerEmail, draft.heirs]);
+
   function validate(s: number): string | null {
     if (s === 0) {
       // Validate every heir in turn. Empty array would be a UX bug
@@ -314,8 +359,21 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
       if (!/^.+@.+\..+$/.test(draft.ownerEmail.trim())) {
         return "That email looks off. Double-check it.";
       }
-      if (draft.password.length < 10) {
-        return "Pick a password that's at least 10 characters. Longer is better.";
+      if (draft.password.length < MIN_LENGTH) {
+        return `Pick a password that's at least ${MIN_LENGTH} characters. Longer is better.`;
+      }
+      // Gate on the live zxcvbn verdict. `strength` can lag the
+      // keystroke by ~150 ms; if the user outraces it to the Next
+      // button, hold them for a beat rather than let an unchecked
+      // password through.
+      if (strength === null) {
+        return "One moment — still checking that password.";
+      }
+      if (!strength.acceptable) {
+        return (
+          strength.advice ??
+          "That password would be too easy to guess. Try three or four unrelated words."
+        );
       }
       if (draft.password !== draft.passwordConfirm) {
         return "The two passwords don't match.";
@@ -634,6 +692,7 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
               patch={patch}
               busy={busy}
               kdfProgress={kdfProgress}
+              strength={strength}
             />
           )}
           {step === 2 && created && <StepFund created={created} />}
@@ -997,29 +1056,52 @@ function HeirCard({
 /* Step 2: password                                               */
 /* ============================================================ */
 
+/** Four-segment meter. Fills left to right with the zxcvbn score;
+ *  colour follows the verdict tone so "2 of 4 but red" reads as
+ *  "not there yet", not "halfway to fine". */
+function StrengthBar({
+  score,
+  tone,
+}: {
+  score: 0 | 1 | 2 | 3 | 4;
+  tone: "bad" | "ok" | "good";
+}) {
+  const fill =
+    tone === "good"
+      ? "var(--accent-text)"
+      : tone === "ok"
+        ? "var(--text)"
+        : "var(--alarm)";
+  return (
+    <div className="flex gap-1" aria-hidden="true">
+      {[1, 2, 3, 4].map((seg) => (
+        <span
+          key={seg}
+          className="inline-block h-1 w-6 rounded-full"
+          style={{
+            background: seg <= score ? fill : "var(--border)",
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
 function StepPassword({
   draft,
   patch,
   busy,
   kdfProgress,
+  strength,
 }: {
   draft: Draft;
   patch: (p: Partial<Draft>) => void;
   busy: boolean;
   kdfProgress: number;
+  /** Live zxcvbn verdict, owned by the wizard (it also gates Next).
+   *  Null while the password is empty or the check is in flight. */
+  strength: StrengthResult | null;
 }) {
-  // Very rough strength meter — entropy-by-character with a cap.
-  // We deliberately don't try to be clever about pattern detection;
-  // the goal is to nudge users toward "longer" without lying about
-  // what we can actually measure on a single string.
-  const strength = useMemo(() => {
-    const len = draft.password.length;
-    if (len === 0) return null;
-    if (len < 10) return { label: "Too short", tone: "bad" as const };
-    if (len < 14) return { label: "Okay", tone: "ok" as const };
-    if (len < 20) return { label: "Strong", tone: "good" as const };
-    return { label: "Excellent", tone: "good" as const };
-  }, [draft.password]);
 
   return (
     <div>
@@ -1050,7 +1132,7 @@ function StepPassword({
 
         <Field
           label="Password"
-          hint="Longer is better. Aim for 14 characters or more."
+          hint="Three or four unrelated words make a password that's easy to remember and hard to guess."
         >
           <input
             type="password"
@@ -1060,20 +1142,28 @@ function StepPassword({
             className="input"
             disabled={busy}
           />
-          {strength ? (
-            <p
-              className="mt-2 text-xs"
-              style={{
-                color:
-                  strength.tone === "good"
-                    ? "var(--accent-text)"
-                    : strength.tone === "ok"
-                      ? "var(--text)"
-                      : "var(--alarm)",
-              }}
-            >
-              {strength.label}
-            </p>
+          {draft.password && strength ? (
+            <div className="mt-2" aria-live="polite">
+              <div className="flex items-center gap-2">
+                <StrengthBar score={strength.score} tone={strength.tone} />
+                <p
+                  className="text-xs"
+                  style={{
+                    color:
+                      strength.tone === "good"
+                        ? "var(--accent-text)"
+                        : strength.tone === "ok"
+                          ? "var(--text)"
+                          : "var(--alarm)",
+                  }}
+                >
+                  {strength.label}
+                </p>
+              </div>
+              {strength.advice ? (
+                <p className="mt-1 text-xs text-muted">{strength.advice}</p>
+              ) : null}
+            </div>
           ) : null}
         </Field>
 

@@ -85,9 +85,28 @@ export default defineConfig({
         // The Anthropic / LNbits sidecars are not same-origin and
         // shouldn't be intercepted; the SW only handles requests
         // to our own origin by default.
+        //
+        // The zxcvbn dictionaries (~2 MB raw) are only needed on
+        // the create-a-vault password step — precaching them would
+        // quintuple every PWA install/update for a screen most
+        // sessions never visit. They stay lazy-loaded over the
+        // network instead.
+        globIgnores: ["**/zxcvbn-*.js"],
       },
     }),
   ],
+  build: {
+    rollupOptions: {
+      output: {
+        // Give the zxcvbn dictionary chunks a stable name so the
+        // workbox globIgnores above can exclude them from the SW
+        // precache.
+        manualChunks(id) {
+          if (id.includes("@zxcvbn-ts")) return "zxcvbn";
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     proxy: {
