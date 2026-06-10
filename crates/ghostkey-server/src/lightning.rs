@@ -247,11 +247,25 @@ fn sidecar_env() -> (Option<String>, Option<String>) {
     )
 }
 
-/// Default amount for a "I'm alive" Lightning check-in. One sat is
-/// the smallest amount Boltz / most LSPs will route. We expose it as
-/// a constant so the routes and tests agree on a value without
-/// re-asserting it at every call site.
-pub const HEARTBEAT_AMOUNT_SAT: u64 = 1;
+/// Default amount for a "I'm alive" Lightning check-in, overridable
+/// via `GHOSTKEY_LN_CHECKIN_SAT`. The protocol minimum is 1 sat, but
+/// many custodial wallets (Bitnob, some exchange wallets) refuse to
+/// send less than ~20 sats, which made a 1-sat invoice unpayable for
+/// their users. 21 clears every minimum we know of while staying
+/// symbolic. The panic-stop invoice uses the same amount.
+pub const DEFAULT_HEARTBEAT_AMOUNT_SAT: u64 = 21;
+
+/// Resolve the heartbeat invoice amount: `GHOSTKEY_LN_CHECKIN_SAT`
+/// when set to a positive integer, otherwise the default. Garbage or
+/// zero falls back to the default rather than erroring — a typo'd env
+/// var must not take the check-in path down.
+pub fn heartbeat_amount_sat() -> u64 {
+    std::env::var("GHOSTKEY_LN_CHECKIN_SAT")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_HEARTBEAT_AMOUNT_SAT)
+}
 
 /* -------------------------------------------------------------------------- *
  *  Database glue                                                             *
@@ -953,6 +967,32 @@ mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
     use sqlx::SqlitePool;
+
+    #[test]
+    fn heartbeat_amount_env_override() {
+        // SAFETY: process-wide env mutation, same caveat as the
+        // GHOSTKEY_ESPLORA_URL tests in psbt_routes — the key is owned
+        // by this test alone, so the worst interleave is a transient
+        // read of our value elsewhere, which is harmless.
+        unsafe {
+            std::env::set_var("GHOSTKEY_LN_CHECKIN_SAT", "100");
+        }
+        assert_eq!(heartbeat_amount_sat(), 100);
+        // Garbage and zero fall back to the default instead of
+        // breaking check-ins.
+        unsafe {
+            std::env::set_var("GHOSTKEY_LN_CHECKIN_SAT", "lots");
+        }
+        assert_eq!(heartbeat_amount_sat(), DEFAULT_HEARTBEAT_AMOUNT_SAT);
+        unsafe {
+            std::env::set_var("GHOSTKEY_LN_CHECKIN_SAT", "0");
+        }
+        assert_eq!(heartbeat_amount_sat(), DEFAULT_HEARTBEAT_AMOUNT_SAT);
+        unsafe {
+            std::env::remove_var("GHOSTKEY_LN_CHECKIN_SAT");
+        }
+        assert_eq!(heartbeat_amount_sat(), DEFAULT_HEARTBEAT_AMOUNT_SAT);
+    }
 
     #[tokio::test]
     async fn noop_provider_reports_disabled() {

@@ -1180,7 +1180,7 @@ function StepPassword({
 
         <Field
           label="Trusted contact (optional, for panic-stop)"
-          hint="If your wallet is ever stolen, you can pay a 1-sat 'panic stop' invoice from any wallet to freeze this vault for 90 days. This person is then alerted that you triggered it. Leave blank to skip."
+          hint="If your wallet is ever stolen, you can pay a tiny 'panic stop' invoice from any wallet to freeze this vault for 90 days. This person is then alerted that you triggered it. Leave blank to skip."
         >
           <input
             type="email"

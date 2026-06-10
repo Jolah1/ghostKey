@@ -2351,7 +2351,7 @@ async fn lightning_create_invoice(
     let description = format!("ghostkey:checkin:{}", auth.vault_id);
     let invoice = state
         .lightning
-        .create_invoice(crate::lightning::HEARTBEAT_AMOUNT_SAT, &description)
+        .create_invoice(crate::lightning::heartbeat_amount_sat(), &description)
         .await
         .map_err(|e| match e {
             crate::lightning::LightningError::NotConfigured => {
@@ -2535,10 +2535,11 @@ async fn lnurlp_pay_request_inner(
     let cb_path = if is_panic { "/panic/cb" } else { "/cb" };
     let segment = if is_panic { "/panic" } else { "" };
     let callback_url = format!("{base}/lnurlp/{vault_id}{segment}{cb_path}");
+    let amount_sat = crate::lightning::heartbeat_amount_sat();
     let body = if is_panic {
-        crate::lnurl::panic_pay_request_json(&callback_url)
+        crate::lnurl::panic_pay_request_json(&callback_url, amount_sat)
     } else {
-        crate::lnurl::pay_request_json(&callback_url)
+        crate::lnurl::pay_request_json(&callback_url, amount_sat)
     };
     lnurl_ok(body)
 }
@@ -2620,7 +2621,7 @@ async fn lnurlp_callback_inner(
     let description = format!("ghostkey:{invoice_type}:{vault_id}");
     let invoice = match state
         .lightning
-        .create_invoice(crate::lightning::HEARTBEAT_AMOUNT_SAT, &description)
+        .create_invoice(crate::lightning::heartbeat_amount_sat(), &description)
         .await
     {
         Ok(inv) => inv,

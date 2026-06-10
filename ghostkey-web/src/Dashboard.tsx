@@ -741,7 +741,7 @@ function HeartbeatCard({
               onClick={onLightning}
               disabled={locked}
             >
-              ⚡ Pay 1 sat
+              ⚡ Pay a few sats
             </Button>
           ) : null}
         </div>
@@ -750,7 +750,7 @@ function HeartbeatCard({
           lightningEnabled ? (
             <>
               <p className="mt-2 text-[11px] text-dim">
-                Pay a 1-sat Lightning invoice for cryptographic proof of liveness.
+                Pay a tiny Lightning invoice for cryptographic proof of liveness.
               </p>
               <LightningStatusBadge />
             </>
@@ -785,7 +785,7 @@ function HeartbeatCard({
  * Reachability badge for the Lightning sidecar.
  *
  * `/health` only reports "operator wired up env vars." A user
- * staring at the "⚡ Pay 1 sat" button doesn't yet know whether
+ * staring at the "⚡ Pay a few sats" button doesn't yet know whether
  * the sidecar is actually up. We poll `/health/lightning` (server
  * caches the underlying probe for 5s, so this is cheap) and surface
  * the answer as a tiny coloured dot + label inline with the hint.
@@ -1447,7 +1447,7 @@ function LnurlCard({ lnurl }: { lnurl: string }) {
   return (
     <section className="card-flat p-5">
       <p className="text-[11px] uppercase tracking-wider text-dim">
-        Check in by paying 1 sat
+        Check in with a tiny Lightning payment
       </p>
       <p className="mt-1 text-xs text-muted">
         Scan this with any Lightning wallet. The same code works every
@@ -1524,7 +1524,7 @@ function PanicCard({ lnurl }: { lnurl: string }) {
   return (
     <section className="rounded-md border border-amber-500/40 bg-amber-500/5 p-5">
       <p className="text-sm font-semibold text-amber-200">
-        Panic stop — pay 1 sat to freeze
+        Panic stop — pay to freeze
       </p>
       <p className="mt-1 text-xs text-amber-100/80">
         Pay this from any Lightning wallet. The freeze takes effect the
