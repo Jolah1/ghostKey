@@ -18,10 +18,13 @@
 //!
 //! ## Environmental config
 //!
-//! The Esplora endpoint comes from `GHOSTKEY_ESPLORA_URL`. If unset we
-//! fall back to per-network public Blockstream endpoints. The fallback
-//! is fine for testing and small loads; production deployments should
-//! point at their own indexer.
+//! The Esplora endpoints come from `GHOSTKEY_ESPLORA_URL` — a single
+//! URL or an ordered, comma-separated fallback list; each request tries
+//! the entries in turn and fails over on explorer-side errors. If unset
+//! we fall back to per-network public endpoints. The defaults are fine
+//! for testing and small loads; production deployments should point at
+//! their own indexer (and may list public ones after it as fallbacks,
+//! accepting the descriptor-privacy trade-off).
 //!
 //! ## What is and isn't verified end-to-end
 //!
@@ -56,47 +59,106 @@ use crate::routes::{record_event, ApiError};
 use crate::AppState;
 
 /// Default Esplora endpoints for use when `GHOSTKEY_ESPLORA_URL` is
-/// unset. These public hosts are convenient for testing but they see
-/// every script pubkey we ask about — fine for testnet, signet, and
-/// regtest, never appropriate for mainnet.
-fn default_esplora_url(network: Network) -> Option<&'static str> {
+/// unset, in fallback order. These public hosts are convenient for
+/// testing but they see every script pubkey we ask about — fine for
+/// testnet, signet, and regtest, never appropriate for mainnet.
+fn default_esplora_urls(network: Network) -> &'static [&'static str] {
     match network {
         // No default for mainnet: we refuse to leak real vault
         // descriptors to a public indexer. Operators must point
         // `GHOSTKEY_ESPLORA_URL` at an Esplora they control.
-        Network::Bitcoin => None,
-        Network::Testnet => Some("https://blockstream.info/testnet/api"),
-        Network::Signet => Some("https://mempool.space/signet/api"),
+        Network::Bitcoin => &[],
+        Network::Testnet => &[
+            "https://blockstream.info/testnet/api",
+            "https://mempool.space/testnet/api",
+        ],
+        Network::Signet => &[
+            "https://mempool.space/signet/api",
+            "https://blockstream.info/signet/api",
+        ],
         // No public regtest indexer; the operator must set the env var.
-        _ => Some("http://127.0.0.1:3002"),
+        _ => &["http://127.0.0.1:3002"],
     }
 }
 
-/// Resolve the Esplora URL for a network, refusing to start a request
-/// we can't service. Mainnet requires `GHOSTKEY_ESPLORA_URL` to be set
-/// and to be HTTPS — anything else would leak descriptors or expose
-/// requests to a passive attacker.
-fn esplora_url(network: Network) -> Result<String, ApiError> {
-    if let Ok(url) = std::env::var("GHOSTKEY_ESPLORA_URL") {
-        let trimmed = url.trim().to_string();
-        if trimmed.is_empty() {
-            return Err(ApiError::Validation(
-                "GHOSTKEY_ESPLORA_URL is set but empty".into(),
-            ));
+/// Resolve the ordered Esplora endpoint list for a network, refusing to
+/// start a request we can't service. `GHOSTKEY_ESPLORA_URL` accepts a
+/// single URL or a comma-separated fallback list, tried left to right.
+/// Mainnet requires the env var to be set and every entry to be HTTPS —
+/// anything else would leak descriptors or expose requests to a passive
+/// attacker.
+fn esplora_urls(network: Network) -> Result<Vec<String>, ApiError> {
+    match std::env::var("GHOSTKEY_ESPLORA_URL") {
+        Ok(raw) => parse_esplora_urls(&raw, network),
+        Err(_) => {
+            let defaults = default_esplora_urls(network);
+            if defaults.is_empty() {
+                return Err(ApiError::Validation(
+                    "mainnet requires GHOSTKEY_ESPLORA_URL to be set explicitly".into(),
+                ));
+            }
+            Ok(defaults.iter().map(|s| s.to_string()).collect())
         }
-        if network == Network::Bitcoin && !trimmed.starts_with("https://") {
-            return Err(ApiError::Validation(
-                "GHOSTKEY_ESPLORA_URL must be HTTPS for mainnet".into(),
-            ));
+    }
+}
+
+/// Env-independent core of [`esplora_urls`], split out so tests don't
+/// have to mutate process-wide state.
+fn parse_esplora_urls(raw: &str, network: Network) -> Result<Vec<String>, ApiError> {
+    let urls: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    if urls.is_empty() {
+        return Err(ApiError::Validation(
+            "GHOSTKEY_ESPLORA_URL is set but empty".into(),
+        ));
+    }
+    if network == Network::Bitcoin {
+        if let Some(bad) = urls.iter().find(|u| !u.starts_with("https://")) {
+            return Err(ApiError::Validation(format!(
+                "GHOSTKEY_ESPLORA_URL entries must be HTTPS for mainnet; got {bad}"
+            )));
         }
-        return Ok(trimmed);
     }
-    match default_esplora_url(network) {
-        Some(url) => Ok(url.to_string()),
-        None => Err(ApiError::Validation(
-            "mainnet requires GHOSTKEY_ESPLORA_URL to be set explicitly".into(),
-        )),
+    Ok(urls)
+}
+
+/// Run an Esplora operation against each endpoint in order, returning
+/// the first success. Only explorer-side failures (`BlockingErr::Esplora`)
+/// trigger failover — wallet/build errors would fail identically against
+/// every endpoint, so they abort immediately. Returns the last endpoint's
+/// error when all of them fail.
+///
+/// The closure is handed a freshly built client per attempt; anything it
+/// needs mutable access to (the BDK wallet, the PSBT) is captured by the
+/// `FnMut`.
+fn try_each_esplora<T, F>(urls: &[String], mut op: F) -> Result<T, BlockingErr>
+where
+    F: FnMut(&esplora_client::BlockingClient) -> Result<T, BlockingErr>,
+{
+    let mut last_err = BlockingErr::Esplora("no esplora endpoints configured".into());
+    for (i, url) in urls.iter().enumerate() {
+        let client = esplora_client::Builder::new(url).build_blocking();
+        match op(&client) {
+            Ok(v) => return Ok(v),
+            Err(e @ BlockingErr::Esplora(_)) => {
+                if i + 1 < urls.len() {
+                    tracing::warn!(
+                        endpoint = %url,
+                        error = %e,
+                        "esplora endpoint failed; trying next fallback"
+                    );
+                }
+                last_err = e;
+            }
+            // Not an explorer problem — retrying elsewhere can't help.
+            Err(e) => return Err(e),
+        }
     }
+    Err(last_err)
 }
 
 /// `mempool.space` explorer URL for a given txid + network.
@@ -188,7 +250,7 @@ pub async fn build_claim_psbt(
     // `esplora_client` blocking API performs synchronous HTTP. We move
     // it (plus the BDK wallet ops) onto a blocking thread so the axum
     // executor isn't held up.
-    let url = esplora_url(row.network)?;
+    let urls = esplora_urls(row.network)?;
     let network = row.network;
     let total_input_sats;
     let fee_sats;
@@ -200,16 +262,14 @@ pub async fn build_claim_psbt(
             let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
                 .map_err(|e| BlockingErr::Vault(e.to_string()))?;
 
-            // Esplora client. Blockstream's public endpoints serve over
-            // HTTPS; the env-var override may be plain HTTP for local
-            // testing.
-            let client = esplora_client::Builder::new(&url).build_blocking();
-
             // Full scan: walk both keychains, stop after 5 unused gap.
-            let req = wallet.start_full_scan();
-            let update = client
-                .full_scan(req, 5, 1)
-                .map_err(|e| clean_esplora_err("full_scan", &e))?;
+            // Failover walks the endpoint list; the scan request is
+            // rebuilt per attempt because `full_scan` consumes it.
+            let update = try_each_esplora(&urls, |client| {
+                client
+                    .full_scan(wallet.start_full_scan(), 5, 1)
+                    .map_err(|e| clean_esplora_err("full_scan", &e))
+            })?;
             wallet
                 .apply_update(update)
                 .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
@@ -347,7 +407,7 @@ pub async fn broadcast_claim(
         }
     };
 
-    let url = match esplora_url(row.network) {
+    let urls = match esplora_urls(row.network) {
         Ok(u) => u,
         Err(e) => {
             release_claim_token(&state, &row.id).await;
@@ -374,10 +434,14 @@ pub async fn broadcast_claim(
             .extract_tx()
             .map_err(|e| BlockingErr::Build(format!("extract_tx: {e}")))?;
 
-        let client = esplora_client::Builder::new(&url).build_blocking();
-        client
-            .broadcast(&tx)
-            .map_err(|e| clean_esplora_err("broadcast", &e))?;
+        // Broadcasting the same tx twice is idempotent, so failing over
+        // mid-broadcast (first endpoint accepted it but errored on the
+        // response) is harmless.
+        try_each_esplora(&urls, |client| {
+            client
+                .broadcast(&tx)
+                .map_err(|e| clean_esplora_err("broadcast", &e))
+        })?;
         Ok(tx.compute_txid())
     })
     .await;
@@ -662,7 +726,7 @@ pub async fn heir_claim(
         }
     };
 
-    let url = match esplora_url(row.network) {
+    let urls = match esplora_urls(row.network) {
         Ok(u) => u,
         Err(e) => {
             release_claim_token(&state, &row.id).await;
@@ -677,11 +741,11 @@ pub async fn heir_claim(
             let mut wallet = ghostkey_core::wallet::build_signing_from_account(&vault, &heir_xprv)
                 .map_err(|e| BlockingErr::Vault(e.to_string()))?;
 
-            let client = esplora_client::Builder::new(&url).build_blocking();
-            let req = wallet.start_full_scan();
-            let update = client
-                .full_scan(req, 5, 1)
-                .map_err(|e| clean_esplora_err("full_scan", &e))?;
+            let update = try_each_esplora(&urls, |client| {
+                client
+                    .full_scan(wallet.start_full_scan(), 5, 1)
+                    .map_err(|e| clean_esplora_err("full_scan", &e))
+            })?;
             wallet
                 .apply_update(update)
                 .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
@@ -715,9 +779,11 @@ pub async fn heir_claim(
                 .psbt
                 .extract_tx()
                 .map_err(|e| BlockingErr::Build(format!("extract_tx: {e}")))?;
-            client
-                .broadcast(&tx)
-                .map_err(|e| clean_esplora_err("broadcast", &e))?;
+            try_each_esplora(&urls, |client| {
+                client
+                    .broadcast(&tx)
+                    .map_err(|e| clean_esplora_err("broadcast", &e))
+            })?;
             let txid = tx.compute_txid();
             let out_sats: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
             let fee = total.saturating_sub(out_sats);
@@ -1079,17 +1145,17 @@ pub async fn get_vault_balance(
     let vault = Vault::from_config(vault_config)
         .map_err(|e| ApiError::Validation(format!("stored vault descriptors invalid: {e}")))?;
 
-    let url = esplora_url(network)?;
+    let urls = esplora_urls(network)?;
     let id_for_resp = id.clone();
     let (confirmed_sat, unconfirmed_sat, total_sat) =
         tokio::task::spawn_blocking(move || -> Result<(u64, u64, u64), BlockingErr> {
             let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
                 .map_err(|e| BlockingErr::Vault(e.to_string()))?;
-            let client = esplora_client::Builder::new(&url).build_blocking();
-            let req = wallet.start_full_scan();
-            let update = client
-                .full_scan(req, 5, 1)
-                .map_err(|e| clean_esplora_err("full_scan", &e))?;
+            let update = try_each_esplora(&urls, |client| {
+                client
+                    .full_scan(wallet.start_full_scan(), 5, 1)
+                    .map_err(|e| clean_esplora_err("full_scan", &e))
+            })?;
             wallet
                 .apply_update(update)
                 .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
@@ -1125,13 +1191,15 @@ mod tests {
     fn default_esplora_urls_per_network() {
         // Mainnet deliberately has no default: we refuse to leak the
         // descriptor graph to a third-party indexer.
-        assert!(default_esplora_url(Network::Bitcoin).is_none());
-        assert!(default_esplora_url(Network::Testnet)
-            .unwrap()
-            .contains("testnet"));
-        assert!(default_esplora_url(Network::Signet)
-            .unwrap()
-            .contains("signet"));
+        assert!(default_esplora_urls(Network::Bitcoin).is_empty());
+        // The test networks each get at least two independent public
+        // explorers so one being down doesn't strand a claim.
+        let testnet = default_esplora_urls(Network::Testnet);
+        assert!(testnet.len() >= 2);
+        assert!(testnet.iter().all(|u| u.contains("testnet")));
+        let signet = default_esplora_urls(Network::Signet);
+        assert!(signet.len() >= 2);
+        assert!(signet.iter().all(|u| u.contains("signet")));
     }
 
     #[test]
@@ -1146,7 +1214,7 @@ mod tests {
     }
 
     #[test]
-    fn esplora_url_respects_env() {
+    fn esplora_urls_respects_env() {
         // SAFETY: this test mutates a process-wide env var. We don't
         // share state with the crypto tests (different module), and
         // both keys are independent — the worst case is an interleave
@@ -1155,29 +1223,102 @@ mod tests {
             std::env::set_var("GHOSTKEY_ESPLORA_URL", "https://my.indexer/api");
         }
         assert_eq!(
-            esplora_url(Network::Bitcoin).unwrap(),
-            "https://my.indexer/api"
+            esplora_urls(Network::Bitcoin).unwrap(),
+            vec!["https://my.indexer/api".to_string()]
         );
         unsafe {
             std::env::remove_var("GHOSTKEY_ESPLORA_URL");
         }
         // With the env var cleared, mainnet must refuse rather than
         // fall back to a public indexer.
-        assert!(esplora_url(Network::Bitcoin).is_err());
-        // Testnet still gets a working default.
-        assert!(esplora_url(Network::Testnet).is_ok());
+        assert!(esplora_urls(Network::Bitcoin).is_err());
+        // Testnet still gets working defaults.
+        assert!(esplora_urls(Network::Testnet).is_ok());
     }
 
     #[test]
-    fn esplora_url_rejects_plain_http_for_mainnet() {
-        unsafe {
-            std::env::set_var("GHOSTKEY_ESPLORA_URL", "http://my.indexer/api");
-        }
-        let result = esplora_url(Network::Bitcoin);
-        unsafe {
-            std::env::remove_var("GHOSTKEY_ESPLORA_URL");
-        }
+    fn parse_esplora_urls_splits_fallback_list() {
+        let urls = parse_esplora_urls(
+            " https://primary.indexer/api , https://secondary.indexer/api,",
+            Network::Bitcoin,
+        )
+        .unwrap();
+        assert_eq!(
+            urls,
+            vec![
+                "https://primary.indexer/api".to_string(),
+                "https://secondary.indexer/api".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_esplora_urls_rejects_plain_http_for_mainnet() {
+        // A single plain-http entry poisons the whole list: silently
+        // dropping it would hide a misconfiguration until the https
+        // entries were all down.
+        let result = parse_esplora_urls(
+            "https://primary.indexer/api,http://sneaky.indexer/api",
+            Network::Bitcoin,
+        );
         assert!(result.is_err(), "plain http must be refused for mainnet");
+        // The same list is fine on signet, where http is allowed for
+        // local indexers.
+        assert!(parse_esplora_urls(
+            "https://primary.indexer/api,http://sneaky.indexer/api",
+            Network::Signet
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn parse_esplora_urls_rejects_empty() {
+        assert!(parse_esplora_urls("", Network::Signet).is_err());
+        assert!(parse_esplora_urls(" , ,", Network::Signet).is_err());
+    }
+
+    #[test]
+    fn try_each_esplora_fails_over_only_on_esplora_errors() {
+        let urls = vec![
+            "http://127.0.0.1:1/api".to_string(),
+            "http://127.0.0.1:2/api".to_string(),
+        ];
+
+        // Esplora errors fall through to the next endpoint; the helper
+        // returns the last one when every endpoint fails.
+        let mut attempts = 0;
+        let result: Result<(), _> = try_each_esplora(&urls, |_client| {
+            attempts += 1;
+            Err(BlockingErr::Esplora(format!("down #{attempts}")))
+        });
+        assert_eq!(attempts, 2, "both endpoints should be tried");
+        match result {
+            Err(BlockingErr::Esplora(msg)) => assert_eq!(msg, "down #2"),
+            other => panic!("expected last esplora error, got {other:?}"),
+        }
+
+        // The second endpoint succeeding rescues the call.
+        let mut attempts = 0;
+        let result = try_each_esplora(&urls, |_client| {
+            attempts += 1;
+            if attempts == 1 {
+                Err(BlockingErr::Esplora("down".into()))
+            } else {
+                Ok(42)
+            }
+        });
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts, 2);
+
+        // Non-esplora errors abort immediately — no point retrying a
+        // wallet/build failure against a different explorer.
+        let mut attempts = 0;
+        let result: Result<(), _> = try_each_esplora(&urls, |_client| {
+            attempts += 1;
+            Err(BlockingErr::NoUtxos)
+        });
+        assert_eq!(attempts, 1, "must not fail over on non-esplora errors");
+        assert!(matches!(result, Err(BlockingErr::NoUtxos)));
     }
 
     #[test]
