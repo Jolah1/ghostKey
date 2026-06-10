@@ -92,6 +92,10 @@ export default defineConfig({
         // sessions never visit. They stay lazy-loaded over the
         // network instead.
         globIgnores: ["**/zxcvbn-*.js"],
+        // Web push lives in its own classic script so the handlers
+        // survive Workbox regenerating the SW body on every build.
+        // (push-sw.js sits in public/ and is served at the root.)
+        importScripts: ["push-sw.js"],
       },
     }),
   ],

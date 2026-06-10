@@ -122,6 +122,13 @@ pub enum Channel {
     /// `whatsapp:+...` prefix on the wire). Same auth, same
     /// endpoint, different `From` shape; see `send_twilio`.
     Whatsapp,
+    /// Browser web push (RFC 8030/8291/8292) via `crate::push`.
+    /// Unlike the other channels the `recipient` column is not an
+    /// address — delivery fans out to every row in
+    /// `push_subscriptions` for the vault, so the enqueuer stores
+    /// the literal string "webpush" there. The `body` is a JSON
+    /// `{title, body, url}` blob the service worker renders.
+    WebPush,
 }
 
 impl Channel {
@@ -130,6 +137,7 @@ impl Channel {
             Channel::Email => "email",
             Channel::Sms => "sms",
             Channel::Whatsapp => "whatsapp",
+            Channel::WebPush => "webpush",
         }
     }
     fn from_str(s: &str) -> Option<Self> {
@@ -137,6 +145,7 @@ impl Channel {
             "email" => Some(Channel::Email),
             "sms" => Some(Channel::Sms),
             "whatsapp" => Some(Channel::Whatsapp),
+            "webpush" => Some(Channel::WebPush),
             _ => None,
         }
     }
@@ -378,12 +387,23 @@ enum WorkerOutcome {
 struct Backends {
     smtp: Option<SmtpConfig>,
     twilio: Option<TwilioConfig>,
+    vapid: Option<crate::push::VapidConfig>,
+    /// Shared HTTP client for web push. Unlike Twilio (one POST per
+    /// rare notification, client built per send), a single webpush
+    /// row can fan out to several push-service POSTs, so connection
+    /// reuse pays for the lifecycle here.
+    http: reqwest::Client,
 }
 
 pub async fn run(pool: SqlitePool, tick: Duration) {
     let backends = Backends {
         smtp: SmtpConfig::from_env(),
         twilio: TwilioConfig::from_env(),
+        vapid: crate::push::VapidConfig::from_env(),
+        http: reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .expect("reqwest client construction only fails on broken TLS backends"),
     };
     match &backends.smtp {
         None => tracing::warn!(
@@ -410,6 +430,19 @@ pub async fn run(pool: SqlitePool, tick: Duration) {
             sms_from = %cfg.sms_from,
             wa_from = %cfg.whatsapp_from,
             "notification worker: Twilio configured"
+        ),
+    }
+    match &backends.vapid {
+        None => tracing::info!(
+            "GHOSTKEY_VAPID_PRIVATE_KEY unset; webpush channel will be \
+             Skipped (row stays pending). Generate a keypair with \
+             `npx web-push generate-vapid-keys` and set \
+             GHOSTKEY_VAPID_PRIVATE_KEY + GHOSTKEY_VAPID_SUBJECT to \
+             enable delivery."
+        ),
+        Some(cfg) => tracing::info!(
+            subject = %cfg.subject,
+            "notification worker: web push (VAPID) configured"
         ),
     }
     let backends = Arc::new(backends);
@@ -516,7 +549,7 @@ async fn tick_once(pool: &SqlitePool, backends: Arc<Backends>) -> anyhow::Result
         // configured for this channel" — leave the row pending so a
         // future deployment with the backend wired can pick it up;
         // do NOT count it as an attempt.
-        let dispatch = dispatch_send(&backends, channel, &draft).await;
+        let dispatch = dispatch_send(pool, &backends, channel, &vault_id, &draft).await;
         let outcome = match dispatch {
             None => {
                 sqlx::query("UPDATE notifications SET status = 'pending' WHERE id = ?")
@@ -571,8 +604,10 @@ async fn tick_once(pool: &SqlitePool, backends: Arc<Backends>) -> anyhow::Result
 /// This split keeps the worker loop's success/skip/retry bookkeeping
 /// in one place and the per-channel transport details out of it.
 async fn dispatch_send(
+    pool: &SqlitePool,
     backends: &Backends,
     channel: Channel,
+    vault_id: &str,
     draft: &DraftPayload,
 ) -> Option<Result<(), SendError>> {
     // Each arm awaits a different `async fn`, which produces a
@@ -588,6 +623,87 @@ async fn dispatch_send(
             let cfg = backends.twilio.as_ref()?;
             Some(send_twilio(cfg, channel, draft).await)
         }
+        Channel::WebPush => {
+            let cfg = backends.vapid.as_ref()?;
+            Some(send_webpush(pool, &backends.http, cfg, vault_id, draft).await)
+        }
+    }
+}
+
+/// Deliver one webpush notification row by fanning out to every
+/// subscription stored for the vault.
+///
+/// Per-subscription outcomes are folded into ONE worker outcome:
+///
+///   - `Gone` (push service says 404/410): the browser revoked the
+///     subscription. Delete the row and treat that endpoint as
+///     settled — pruning IS the correct delivery outcome for it.
+///   - zero subscriptions, or every endpoint delivered-or-pruned:
+///     `Ok`. A user who turned reminders off after the enqueue
+///     shouldn't produce a permanently-failed row.
+///   - otherwise (at least one endpoint failed and none delivered):
+///     `Err`, so the worker's backoff retries the whole row. Already
+///     -delivered endpoints would get a duplicate on retry, but the
+///     service worker dedupes via the notification `tag`, so we
+///     prefer retrying over silently dropping the failed endpoint.
+async fn send_webpush(
+    pool: &SqlitePool,
+    http: &reqwest::Client,
+    cfg: &crate::push::VapidConfig,
+    vault_id: &str,
+    draft: &DraftPayload,
+) -> Result<(), SendError> {
+    let subs = sqlx::query_as::<_, (i64, String, String, String)>(
+        "SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE vault_id = ?",
+    )
+    .bind(vault_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| SendError::WebPush(format!("load subscriptions: {e}")))?;
+
+    if subs.is_empty() {
+        return Ok(());
+    }
+
+    let mut delivered = 0usize;
+    let mut last_err: Option<String> = None;
+    for (sub_id, endpoint, p256dh, auth) in &subs {
+        let sub = crate::push::Subscription {
+            endpoint,
+            p256dh_b64: p256dh,
+            auth_b64: auth,
+        };
+        match crate::push::send(http, cfg, &sub, draft.body.as_bytes()).await {
+            Ok(()) => delivered += 1,
+            Err(crate::push::PushError::Gone) => {
+                tracing::info!(
+                    vault_id = %vault_id,
+                    sub_id,
+                    "push subscription gone; pruning"
+                );
+                if let Err(e) = sqlx::query("DELETE FROM push_subscriptions WHERE id = ?")
+                    .bind(sub_id)
+                    .execute(pool)
+                    .await
+                {
+                    tracing::warn!(sub_id, error = %e, "failed to prune dead push subscription");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    vault_id = %vault_id,
+                    sub_id,
+                    error = %e,
+                    "web push send failed"
+                );
+                last_err = Some(e.to_string());
+            }
+        }
+    }
+
+    match (delivered, last_err) {
+        (0, Some(err)) => Err(SendError::WebPush(err)),
+        _ => Ok(()),
     }
 }
 
@@ -734,6 +850,10 @@ enum SendError {
     /// snippet so the operator can read the API's complaint.
     #[error("twilio: {0}")]
     Twilio(String),
+    /// Web push fan-out failed for every (non-pruned) subscription.
+    /// Carries the last per-endpoint error.
+    #[error("webpush: {0}")]
+    WebPush(String),
 }
 
 /// Deliver a Draft via Twilio's Programmable Messaging API.
@@ -777,15 +897,15 @@ async fn send_twilio(
             format!("whatsapp:{}", cfg.whatsapp_from),
             format!("whatsapp:{}", draft.recipient),
         ),
-        Channel::Email => {
+        Channel::Email | Channel::WebPush => {
             // Defensive: send_twilio should only ever be called for
-            // sms/whatsapp. If a caller routes Email here it's a bug;
-            // surface it loudly rather than silently sending the
-            // email body over SMS to a phone number that doesn't
-            // exist.
-            return Err(SendError::Twilio(
-                "send_twilio called with Channel::Email; this is a bug".into(),
-            ));
+            // sms/whatsapp. If a caller routes Email or WebPush here
+            // it's a bug; surface it loudly rather than silently
+            // sending the body over SMS to a recipient that isn't a
+            // phone number.
+            return Err(SendError::Twilio(format!(
+                "send_twilio called with {channel:?}; this is a bug"
+            )));
         }
     };
 
@@ -953,10 +1073,12 @@ mod tests {
         assert_eq!(Channel::from_str("email"), Some(Channel::Email));
         assert_eq!(Channel::from_str("sms"), Some(Channel::Sms));
         assert_eq!(Channel::from_str("whatsapp"), Some(Channel::Whatsapp));
+        assert_eq!(Channel::from_str("webpush"), Some(Channel::WebPush));
         assert_eq!(Channel::from_str("telegram"), None);
         assert_eq!(Channel::Email.as_str(), "email");
         assert_eq!(Channel::Sms.as_str(), "sms");
         assert_eq!(Channel::Whatsapp.as_str(), "whatsapp");
+        assert_eq!(Channel::WebPush.as_str(), "webpush");
     }
 
     #[test]
