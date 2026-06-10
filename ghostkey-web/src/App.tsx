@@ -33,6 +33,7 @@ import { InheritPortal } from "./InheritPortal";
 import { Dashboard } from "./Dashboard";
 import { ClaimPage } from "./ClaimPage";
 import { OneTapCheckinPage } from "./OneTapCheckinPage";
+import { VerifyEmailPage } from "./VerifyEmailPage";
 import { ServerOfflineBanner } from "./ServerOfflineBanner";
 import { Button } from "./ui";
 import { api } from "./api";
@@ -84,7 +85,8 @@ const VALID: Route[] = [
 type Location =
   | { kind: "route"; route: Route }
   | { kind: "claim"; token: string }
-  | { kind: "one-tap-checkin"; vaultId: string; token: string };
+  | { kind: "one-tap-checkin"; vaultId: string; token: string }
+  | { kind: "verify-email"; vaultId: string; token: string };
 
 function locationFromHash(): Location {
   if (typeof window === "undefined") return { kind: "route", route: "landing" };
@@ -107,6 +109,21 @@ function locationFromHash(): Location {
       const token = rest.slice(slash + 1).trim();
       if (vaultId && token) {
         return { kind: "one-tap-checkin", vaultId, token };
+      }
+    }
+  }
+  // verify-email/<vaultId>/<token>
+  // Emitted by the owner-email confirmation mail sent at vault
+  // creation (and on dashboard resend). Same parse shape as the
+  // one-tap check-in link above.
+  if (raw.startsWith("verify-email/")) {
+    const rest = raw.slice("verify-email/".length);
+    const slash = rest.indexOf("/");
+    if (slash > 0) {
+      const vaultId = rest.slice(0, slash).trim();
+      const token = rest.slice(slash + 1).trim();
+      if (vaultId && token) {
+        return { kind: "verify-email", vaultId, token };
       }
     }
   }
@@ -181,11 +198,13 @@ export default function App() {
 
   const setRoute = (r: Route) => setLocation({ kind: "route", route: r });
   const isClaim = location.kind === "claim";
-  // Nav is also hidden for the one-tap check-in page. The owner
-  // arrived from an email link; "Set up" / "Dashboard" / "Sign in"
-  // in the top bar would just be noise for the one thing they came
-  // here to do. Same rationale as the claim page.
-  const isOneTap = location.kind === "one-tap-checkin";
+  // Nav is also hidden for the one-tap check-in and email-confirm
+  // pages. The owner arrived from an email link; "Set up" /
+  // "Dashboard" / "Sign in" in the top bar would just be noise for
+  // the one thing they came here to do. Same rationale as the claim
+  // page.
+  const isOneTap =
+    location.kind === "one-tap-checkin" || location.kind === "verify-email";
 
   return (
     <div className="min-h-screen bg-app">
@@ -232,6 +251,13 @@ export default function App() {
       {location.kind === "claim" && <ClaimPage token={location.token} />}
       {location.kind === "one-tap-checkin" && (
         <OneTapCheckinPage
+          vaultId={location.vaultId}
+          token={location.token}
+          onNavigate={setRoute}
+        />
+      )}
+      {location.kind === "verify-email" && (
+        <VerifyEmailPage
           vaultId={location.vaultId}
           token={location.token}
           onNavigate={setRoute}

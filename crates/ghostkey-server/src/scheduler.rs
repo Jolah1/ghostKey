@@ -1011,7 +1011,7 @@ async fn enqueue_claim_link(
 /// keep this configurable so a deployment serving the dashboard at
 /// e.g. `ghostkeyapp.vercel.app` can produce links that go there
 /// rather than to the API host.
-fn public_base_url() -> String {
+pub(crate) fn public_base_url() -> String {
     std::env::var("GHOSTKEY_PUBLIC_BASE_URL")
         .unwrap_or_else(|_| "https://ghostkeyapp.vercel.app".to_string())
 }

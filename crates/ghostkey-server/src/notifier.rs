@@ -99,6 +99,11 @@ pub enum NotificationKind {
     /// `last_alarm_reminder_sent_at` column gates re-fire and is
     /// cleared on every successful check-in.
     AlarmEscalation,
+    /// Owner-side, once at vault creation (and on owner-requested
+    /// resend): "tap to confirm this address receives our mail."
+    /// Closing the loop sets `vaults.owner_contact_verified_at`;
+    /// see the 20260610000002 migration for why this matters.
+    ContactVerification,
 }
 
 impl NotificationKind {
@@ -108,6 +113,7 @@ impl NotificationKind {
             NotificationKind::AlarmOwner => "alarm_owner",
             NotificationKind::PreDeadlineReminder => "pre_deadline_reminder",
             NotificationKind::AlarmEscalation => "alarm_escalation",
+            NotificationKind::ContactVerification => "contact_verification",
         }
     }
 }

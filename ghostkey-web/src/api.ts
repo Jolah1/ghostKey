@@ -45,6 +45,10 @@ export interface VaultView {
   lnurl_checkin?: string | null;
   /** Bech32 `lnurl1...` for the panic-stop QR code. */
   lnurl_panic?: string | null;
+  /** Whether the owner's reminder email has been confirmed via the
+   *  verification link. Absent/null when the vault has no email on
+   *  file; `false` drives the dashboard's "confirm your email" card. */
+  owner_contact_verified?: boolean | null;
 }
 
 export interface CreateVaultRequest {
@@ -546,6 +550,25 @@ export const api = {
       `/vaults/${id}/checkin-from-link/${encodeURIComponent(token)}`,
       { method: "POST" },
       null,
+    ),
+  /** Confirm the owner's reminder email from the link we sent. Same
+   *  token-IS-the-auth model as `checkinFromLink`: works on a device
+   *  that has never seen this vault. 204 on success (idempotent —
+   *  tapping the link twice is still a success), 404 on a stale or
+   *  wrong token. */
+  verifyContact: (id: string, token: string) =>
+    request<null>(
+      `/vaults/${id}/verify-contact/${encodeURIComponent(token)}`,
+      { method: "POST" },
+      null,
+    ),
+  /** Re-send the confirmation email (OwnerAuth). 204 on success or
+   *  when already verified; 409 if one was sent in the last minute. */
+  resendVerification: (id: string, ownerToken: string | null) =>
+    request<null>(
+      `/vaults/${id}/resend-verification`,
+      { method: "POST" },
+      ownerToken,
     ),
   /** Lightning check-in: mint a 1-sat BOLT11 invoice. Paying it from
    *  any Lightning wallet resets the vault's check-in deadline,

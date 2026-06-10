@@ -189,7 +189,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/vaults/:id/push-subscriptions",
             post(push_subscribe).delete(push_unsubscribe),
-        );
+        )
+        // Token-gated like checkin-from-link: the emailed token IS
+        // the credential, so the owner can confirm from any device.
+        .route("/vaults/:id/verify-contact/:token", post(verify_contact))
+        .route("/vaults/:id/resend-verification", post(resend_verification));
 
     Router::new()
         .merge(open_routes)
@@ -364,6 +368,14 @@ pub struct VaultView {
     /// as `lnurl_checkin`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lnurl_panic: Option<String>,
+    /// Whether the owner's reminder email has been confirmed by
+    /// tapping the verification link we sent at setup. `None` when
+    /// the vault has no sealed owner email on file (legacy CLI rows,
+    /// or non-email channels); the dashboard nags while this is
+    /// `Some(false)`. Informational only — the scheduler delivers
+    /// reminders to unverified addresses regardless.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_contact_verified: Option<bool>,
 }
 
 /// Response shape from a successful vault creation.
@@ -534,6 +546,9 @@ async fn create_vault(
                 panic_frozen_until: None,
                 lnurl_checkin: None,
                 lnurl_panic: None,
+                // Legacy CLI route stores the plaintext contact and
+                // doesn't participate in email verification.
+                owner_contact_verified: None,
             },
             owner_token: issued_owner.token,
         }),
@@ -1005,6 +1020,23 @@ async fn create_vault_from_xpub(
     )
     .await?;
 
+    // Kick off owner email verification: mint a token, store its
+    // hash, and enqueue the confirmation email. Failure here must
+    // not fail the creation — the vault is already live and the
+    // dashboard's "send it again" button covers a lost first email.
+    let has_owner_email = owner_sealed.is_some() && owner_channel.as_deref() == Some("email");
+    if has_owner_email {
+        if let Some(email) = req.owner_contact.as_deref() {
+            if let Err(e) = send_contact_verification(&state, &id, email).await {
+                tracing::warn!(
+                    vault_id = %id,
+                    error = ?e,
+                    "could not enqueue owner contact verification email"
+                );
+            }
+        }
+    }
+
     Ok((
         StatusCode::CREATED,
         Json(CreatedVault {
@@ -1023,10 +1055,62 @@ async fn create_vault_from_xpub(
                 panic_frozen_until: None,
                 lnurl_checkin: None,
                 lnurl_panic: None,
+                owner_contact_verified: if has_owner_email { Some(false) } else { None },
             },
             owner_token: issued_owner.token,
         }),
     ))
+}
+
+/// Mint a fresh verification token for `vault_id`, persist its hash,
+/// and enqueue the confirmation email to `email`. Shared between
+/// vault creation and the owner-requested resend route. Each call
+/// invalidates any previously emailed link — last writer wins, which
+/// is what "send it again" should mean.
+async fn send_contact_verification(
+    state: &AppState,
+    vault_id: &str,
+    email: &str,
+) -> Result<(), ApiError> {
+    let issued = issue_claim_token();
+    let now_s = Utc::now().to_rfc3339();
+    sqlx::query(
+        r#"UPDATE vaults
+              SET owner_contact_verify_token_hash = ?,
+                  owner_contact_verify_sent_at    = ?
+            WHERE id = ?"#,
+    )
+    .bind(&issued.hash_hex)
+    .bind(&now_s)
+    .bind(vault_id)
+    .execute(&state.db)
+    .await?;
+
+    let base = crate::scheduler::public_base_url();
+    let link = format!("{base}/#/verify-email/{vault_id}/{}", issued.token);
+    let body = format!(
+        "Hi,\n\n\
+         This address was entered as the reminder email for a GhostKey \
+         vault. GhostKey will nudge you here before every check-in is \
+         due.\n\n\
+         Tap once to confirm reminders can reach you:\n\n\
+         {link}\n\n\
+         If you didn't set up a GhostKey vault, you can ignore this \
+         email — nothing is linked to your address until you tap.\n\n\
+         — GhostKey"
+    );
+    crate::notifier::enqueue(
+        &state.db,
+        vault_id,
+        crate::notifier::NotificationKind::ContactVerification,
+        crate::notifier::Channel::Email,
+        email,
+        "Confirm your reminder email",
+        &body,
+    )
+    .await
+    .map_err(|e| ApiError::Validation(format!("could not enqueue verification email: {e}")))?;
+    Ok(())
 }
 
 /// Pull `(fingerprint, xpub)` out of a `PartyXpub`, supporting both bare
@@ -1126,12 +1210,18 @@ async fn get_vault(
             String,         // next_deadline_at
             Option<String>, // claim_eligible_at
             Option<String>, // panic_frozen_until
+            Option<String>, // owner_contact_channel (sealed rows only)
+            i64,            // has sealed owner contact (0/1)
+            Option<String>, // owner_contact_verified_at
         ),
     >(
         r#"SELECT id, label, network, timelock_blocks,
                   checkin_period_secs, grace_period_secs,
                   status, created_at, last_checkin_at, next_deadline_at,
-                  claim_eligible_at, panic_frozen_until
+                  claim_eligible_at, panic_frozen_until,
+                  owner_contact_channel,
+                  owner_contact_ciphertext IS NOT NULL,
+                  owner_contact_verified_at
            FROM vaults WHERE id = ?"#,
     )
     .bind(&id)
@@ -1170,6 +1260,14 @@ async fn get_vault(
         panic_frozen_until: row.11.as_deref().map(parse_rfc),
         lnurl_checkin,
         lnurl_panic,
+        // Some(bool) only when there's a sealed email contact to
+        // verify; legacy plaintext rows and SMS/WhatsApp channels
+        // report None so the dashboard never nags about them.
+        owner_contact_verified: if row.13 == 1 && row.12.as_deref() == Some("email") {
+            Some(row.14.is_some())
+        } else {
+            None
+        },
     }))
 }
 
@@ -1288,6 +1386,124 @@ async fn push_unsubscribe(
         .bind(&req.endpoint)
         .execute(&state.db)
         .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/* -------------------------------------------------------------------------- *
+ *  Owner email verification                                                  *
+ *                                                                            *
+ *  POST /vaults/:id/verify-contact/:token — the owner tapped the link we     *
+ *  emailed at setup. The token is the credential (same hash-and-compare      *
+ *  scheme as the one-tap check-in link); no OwnerAuth, because the owner     *
+ *  may open the email on a device that has never seen the vault.            *
+ *                                                                            *
+ *  POST /vaults/:id/resend-verification — OwnerAuth; re-mints the token      *
+ *  and re-enqueues the email. Throttled so a tap-happy owner can't turn      *
+ *  the notifier into an email cannon.                                        *
+ * -------------------------------------------------------------------------- */
+
+async fn verify_contact(
+    State(state): State<Arc<AppState>>,
+    Path((id, token)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT owner_contact_verify_token_hash, owner_contact_verified_at \
+           FROM vaults WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.db)
+    .await?;
+    let (stored_hash, verified_at) = row.ok_or(ApiError::NotFound)?;
+
+    // Already confirmed: report success whatever token was presented.
+    // The common path here is the owner tapping the same email link
+    // twice; a 404 on the second tap would read as "something broke".
+    if verified_at.is_some() {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+
+    let stored_hash = stored_hash.ok_or(ApiError::NotFound)?;
+    if !crypto::claim_token_matches(&token, &stored_hash) {
+        return Err(ApiError::NotFound);
+    }
+
+    sqlx::query(
+        r#"UPDATE vaults
+              SET owner_contact_verified_at       = ?,
+                  owner_contact_verify_token_hash = NULL
+            WHERE id = ?
+              AND owner_contact_verify_token_hash = ?"#,
+    )
+    .bind(Utc::now().to_rfc3339())
+    .bind(&id)
+    .bind(&stored_hash)
+    .execute(&state.db)
+    .await?;
+
+    record_event(&state.db, &id, "owner_contact_verified", None).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Minimum gap between verification emails. Generous enough for "it
+/// never arrived, send another", tight enough that the button can't
+/// be used to spam the owner's own inbox (or burn SMTP quota).
+const VERIFY_RESEND_COOLDOWN_SECS: i64 = 60;
+
+async fn resend_verification(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+) -> Result<StatusCode, ApiError> {
+    let id = auth.vault_id;
+    #[allow(clippy::type_complexity)]
+    let row: Option<(
+        Option<String>, // owner_contact_ciphertext
+        Option<String>, // owner_contact_nonce
+        Option<String>, // owner_contact_channel
+        Option<String>, // owner_contact_verified_at
+        Option<String>, // owner_contact_verify_sent_at
+    )> = sqlx::query_as(
+        "SELECT owner_contact_ciphertext, owner_contact_nonce, owner_contact_channel, \
+                owner_contact_verified_at, owner_contact_verify_sent_at \
+           FROM vaults WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.db)
+    .await?;
+    let (ct, nonce, channel, verified_at, sent_at) = row.ok_or(ApiError::NotFound)?;
+
+    // Nothing to verify: no sealed email contact on file.
+    let (Some(ct), Some(nonce)) = (ct, nonce) else {
+        return Err(ApiError::Validation(
+            "this vault has no reminder email on file".into(),
+        ));
+    };
+    if channel.as_deref() != Some("email") {
+        return Err(ApiError::Validation(
+            "verification is only available for email contacts".into(),
+        ));
+    }
+    // Already verified: idempotent success, no email.
+    if verified_at.is_some() {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    if let Some(sent_s) = sent_at.as_deref() {
+        if let Ok(sent) = DateTime::parse_from_rfc3339(sent_s) {
+            let elapsed = Utc::now() - sent.with_timezone(&Utc);
+            if elapsed.num_seconds() < VERIFY_RESEND_COOLDOWN_SECS {
+                return Err(ApiError::Conflict(
+                    "a confirmation email was just sent — give it a minute, then check spam".into(),
+                ));
+            }
+        }
+    }
+
+    let sealed = SealedContact {
+        ciphertext_b64: ct,
+        nonce_b64: nonce,
+    };
+    let email = String::from_utf8(open_for_vault(&id, &sealed)?)
+        .map_err(|_| ApiError::Validation("stored contact is not valid UTF-8".into()))?;
+    send_contact_verification(&state, &id, &email).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2556,5 +2772,174 @@ mod tests {
         assert!(!pair.internal.contains("/0/*"));
         parse_descriptor(&pair.external).unwrap();
         parse_descriptor(&pair.internal).unwrap();
+    }
+
+    /* ---------------- owner email verification ---------------- */
+
+    async fn fresh_state() -> Arc<AppState> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect sqlite::memory");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+        Arc::new(AppState {
+            db: pool,
+            lightning: Arc::new(crate::lightning::NoopProvider),
+        })
+    }
+
+    async fn insert_vault_with_email(state: &AppState, id: &str, email: &str) {
+        let sealed = seal_for_vault(id, email.as_bytes()).expect("seal contact");
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network,
+                descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status,
+                owner_contact_ciphertext, owner_contact_nonce, owner_contact_channel
+            ) VALUES (?, 'regtest', ?, ?, 144, 86400, 3600,
+                      '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', 'ok',
+                      ?, ?, 'email')"#,
+        )
+        .bind(id)
+        .bind(format!("tr(fake/{id}/0/*)"))
+        .bind(format!("tr(fake/{id}/1/*)"))
+        .bind(&sealed.ciphertext_b64)
+        .bind(&sealed.nonce_b64)
+        .execute(&state.db)
+        .await
+        .expect("insert vault");
+    }
+
+    async fn verified_at(state: &AppState, id: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT owner_contact_verified_at FROM vaults WHERE id = ?")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await
+            .expect("read verified_at")
+    }
+
+    #[tokio::test]
+    async fn verify_contact_happy_path_sets_verified_and_clears_hash() {
+        let state = fresh_state().await;
+        insert_vault_with_email(&state, "v-verify-1", "owner@example.com").await;
+        send_contact_verification(&state, "v-verify-1", "owner@example.com")
+            .await
+            .expect("enqueue verification");
+
+        // The raw token only lives in the email body; fish it out of
+        // the sealed notification the way the owner's inbox would.
+        let (body_ct, body_nonce): (String, String) = sqlx::query_as(
+            "SELECT body_ciphertext, body_nonce FROM notifications WHERE vault_id = ?",
+        )
+        .bind("v-verify-1")
+        .fetch_one(&state.db)
+        .await
+        .expect("one notification row");
+        let body = String::from_utf8(
+            open_for_vault(
+                "v-verify-1",
+                &SealedContact {
+                    ciphertext_b64: body_ct,
+                    nonce_b64: body_nonce,
+                },
+            )
+            .expect("open body"),
+        )
+        .expect("utf8 body");
+        let token = body
+            .split("/#/verify-email/v-verify-1/")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .expect("link with token in body")
+            .to_string();
+
+        let status = verify_contact(
+            State(state.clone()),
+            Path(("v-verify-1".to_string(), token.clone())),
+        )
+        .await
+        .expect("verify ok");
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(verified_at(&state, "v-verify-1").await.is_some());
+
+        // Second tap of the same link: still 204, not an error.
+        let again = verify_contact(
+            State(state.clone()),
+            Path(("v-verify-1".to_string(), token)),
+        )
+        .await
+        .expect("idempotent re-verify");
+        assert_eq!(again, StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn verify_contact_rejects_wrong_token() {
+        let state = fresh_state().await;
+        insert_vault_with_email(&state, "v-verify-2", "owner@example.com").await;
+        send_contact_verification(&state, "v-verify-2", "owner@example.com")
+            .await
+            .expect("enqueue verification");
+
+        let err = verify_contact(
+            State(state.clone()),
+            Path(("v-verify-2".to_string(), "not-the-token".to_string())),
+        )
+        .await
+        .expect_err("wrong token must 404");
+        assert!(matches!(err, ApiError::NotFound));
+        assert!(verified_at(&state, "v-verify-2").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn verify_contact_rejects_unknown_vault() {
+        let state = fresh_state().await;
+        let err = verify_contact(
+            State(state.clone()),
+            Path(("no-such-vault".to_string(), "whatever".to_string())),
+        )
+        .await
+        .expect_err("unknown vault must 404");
+        assert!(matches!(err, ApiError::NotFound));
+    }
+
+    #[tokio::test]
+    async fn resend_overwrites_token_and_old_link_dies() {
+        let state = fresh_state().await;
+        insert_vault_with_email(&state, "v-verify-3", "owner@example.com").await;
+        send_contact_verification(&state, "v-verify-3", "owner@example.com")
+            .await
+            .expect("first send");
+        let first_hash: Option<String> =
+            sqlx::query_scalar("SELECT owner_contact_verify_token_hash FROM vaults WHERE id = ?")
+                .bind("v-verify-3")
+                .fetch_one(&state.db)
+                .await
+                .expect("read hash");
+
+        send_contact_verification(&state, "v-verify-3", "owner@example.com")
+            .await
+            .expect("second send");
+        let second_hash: Option<String> =
+            sqlx::query_scalar("SELECT owner_contact_verify_token_hash FROM vaults WHERE id = ?")
+                .bind("v-verify-3")
+                .fetch_one(&state.db)
+                .await
+                .expect("read hash");
+
+        assert!(first_hash.is_some() && second_hash.is_some());
+        assert_ne!(first_hash, second_hash, "resend must mint a fresh token");
+
+        // Two notification rows queued (one per send).
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE vault_id = ?")
+            .bind("v-verify-3")
+            .fetch_one(&state.db)
+            .await
+            .expect("count");
+        assert_eq!(n, 2);
     }
 }
