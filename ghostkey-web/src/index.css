@@ -29,9 +29,11 @@
   --warning-tint: rgba(247, 147, 27, 0.14);
   --alarm-tint:   rgba(212, 69, 59, 0.14);
 
-  /* Typography — Tando uses Inter for body and Inter Tight for display. */
-  --font-display: "Inter Tight", Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-sans:    Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Typography — Tando uses Inter for body and Inter Tight for display.
+     Self-hosted via @fontsource-variable (imported in main.tsx); the
+     variable families carry a "Variable" suffix in their names. */
+  --font-display: "Inter Tight Variable", "Inter Tight", "Inter Variable", Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-sans:    "Inter Variable", Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono:    ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   /* Weight scale. Tando uses 300 body / 700 display heavily. */
@@ -51,6 +53,24 @@
     linear-gradient(135deg, rgba(255,255,255,0.55) 0%, #BBBBBB 50%, rgba(255,255,255,0.55) 100%);
   --title-gradient-light:
     linear-gradient(135deg, rgba(20,20,20,0.85) 0%, #555555 50%, rgba(20,20,20,0.85) 100%);
+}
+
+/* Keyboard-only "skip to content" link: parked off-screen until it
+   receives focus, then drops in over the banners. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  z-index: 100;
+}
+.skip-link:focus {
+  left: 16px;
+  top: 12px;
+  padding: 8px 16px;
+  border-radius: 9999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 /* ---- Dark theme (default) — pure black, Tando style ---- */

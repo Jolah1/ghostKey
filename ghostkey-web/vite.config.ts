@@ -91,7 +91,16 @@ export default defineConfig({
         // quintuple every PWA install/update for a screen most
         // sessions never visit. They stay lazy-loaded over the
         // network instead.
-        globIgnores: ["**/zxcvbn-*.js"],
+        // Same idea for the non-Latin font subsets: @fontsource emits
+        // one woff2 per unicode-range (cyrillic, greek, vietnamese…)
+        // and the browser only ever downloads the ranges a page uses.
+        // Precaching all of them would push ~250 KB of fonts the UI
+        // never renders into every install. Latin + latin-ext stay.
+        globIgnores: [
+          "**/zxcvbn-*.js",
+          "**/inter-{cyrillic,greek,vietnamese}*.woff2",
+          "**/inter-tight-{cyrillic,greek,vietnamese}*.woff2",
+        ],
         // Web push lives in its own classic script so the handlers
         // survive Workbox regenerating the SW body on every build.
         // (push-sw.js sits in public/ and is served at the root.)
