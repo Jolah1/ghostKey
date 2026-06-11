@@ -488,7 +488,8 @@ fly secrets set \
   -a ghostkey
 ```
 
-`SMTP_USER` and `SMTP_PASS` are optional. `SMTP_FROM` defaults to
+`SMTP_USER` and `SMTP_PASS` are optional (`SMTP_USERNAME` /
+`SMTP_PASSWORD` work as aliases). `SMTP_FROM` defaults to
 `noreply@localhost` with a startup warning if you don't set it; that's
 fine for local testing and wrong for production.
 

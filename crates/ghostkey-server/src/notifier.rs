@@ -162,7 +162,8 @@ impl Channel {
 /// We accept a few common shapes:
 /// - `SMTP_HOST` + `SMTP_PORT` (e.g. localhost:1025 for MailHog,
 ///   smtp.postmarkapp.com:587 in production).
-/// - `SMTP_USER` + `SMTP_PASS` for STARTTLS auth.
+/// - `SMTP_USER` + `SMTP_PASS` for auth (`SMTP_USERNAME` /
+///   `SMTP_PASSWORD` are accepted as aliases).
 /// - `SMTP_FROM` is the visible `From:` header (and the envelope
 ///   sender). Required; we refuse to send without one.
 #[derive(Debug, Clone)]
@@ -195,8 +196,17 @@ impl SmtpConfig {
             );
             "noreply@localhost".to_string()
         });
-        let user = std::env::var("SMTP_USER").ok().filter(|s| !s.is_empty());
-        let pass = std::env::var("SMTP_PASS").ok().filter(|s| !s.is_empty());
+        // Both naming conventions are widespread (SMTP_USER/SMTP_PASS
+        // and SMTP_USERNAME/SMTP_PASSWORD); silently ignoring the
+        // longer pair cost a production debugging session — creds were
+        // set, mail still bounced 530 unauthenticated. Accept either.
+        let env_first = |names: [&str; 2]| {
+            names
+                .iter()
+                .find_map(|n| std::env::var(n).ok().filter(|s| !s.is_empty()))
+        };
+        let user = env_first(["SMTP_USER", "SMTP_USERNAME"]);
+        let pass = env_first(["SMTP_PASS", "SMTP_PASSWORD"]);
         // 465 conventionally = implicit TLS; everything else uses
         // STARTTLS where available, plaintext otherwise.
         let starttls = port != 465;
