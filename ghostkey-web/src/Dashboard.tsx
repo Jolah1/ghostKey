@@ -24,12 +24,14 @@ import {
   useTicker,
   usePolling,
 } from "./ui";
+import qrcode from "qrcode-generator";
 import {
   ApiError,
   api,
   type VaultView,
   type VaultEvent,
   type VaultBalanceView,
+  type VaultAddressView,
 } from "./api";
 import { countdown, parseRfc } from "./time";
 import { AssistChat } from "./AssistChat";
@@ -351,6 +353,12 @@ export function Dashboard({ onNavigate }: Props) {
               </div>
             ) : null}
 
+            {vault && !isClosed && !isClaiming ? (
+              <div className="mt-4">
+                <ReceiveCard vaultId={vault.id} />
+              </div>
+            ) : null}
+
             {vault?.lnurl_checkin && !isClosed && !isClaiming ? (
               <div className="mt-4">
                 <LnurlCard lnurl={vault.lnurl_checkin} />
@@ -538,6 +546,108 @@ function formatSats(sats: number): string {
     return `${btc.toLocaleString(undefined, { maximumFractionDigits: 8 })} BTC`;
   }
   return `${sats.toLocaleString()} sat`;
+}
+
+/* ----------------------------- Receive card ------------------------------- */
+
+/**
+ * Lets the owner add funds after setup. The address comes from the
+ * public address endpoint (the same first address every time — see
+ * get_vault_address server-side), so no owner token is needed. The
+ * address is fetched lazily on first expand, and the QR renders
+ * locally as a data: URL — the CSP blocks external image hosts.
+ */
+function ReceiveCard({ vaultId }: { vaultId: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [view, setView] = useState<VaultAddressView | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  async function onExpand() {
+    setExpanded(true);
+    if (view) return;
+    setLoading(true);
+    setError(null);
+    try {
+      setView(await api.getVaultAddress(vaultId));
+    } catch (e) {
+      setError(
+        e instanceof ApiError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : String(e),
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Uppercase bech32 packs into the QR's alphanumeric mode, giving a
+  // sparser, easier-to-scan code. Wallets accept either case.
+  const qrUrl = useMemo(() => {
+    if (!view) return null;
+    const qr = qrcode(0, "M");
+    qr.addData(view.address.toUpperCase());
+    qr.make();
+    return qr.createDataURL(5, 8);
+  }, [view]);
+
+  function onCopy() {
+    if (!view) return;
+    void navigator.clipboard.writeText(view.address).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    });
+  }
+
+  return (
+    <section className="card-flat p-5">
+      <p className="text-[11px] uppercase tracking-wider text-dim">
+        Add Bitcoin
+      </p>
+      <p className="mt-1 text-xs text-muted">
+        Send any amount from any wallet or exchange, as often as you
+        like. New funds are covered by the same inheritance plan
+        automatically.
+      </p>
+      {!expanded ? (
+        <div className="mt-3">
+          <Button size="sm" variant="ghost" onClick={() => void onExpand()}>
+            Show vault address
+          </Button>
+        </div>
+      ) : loading ? (
+        <p className="mt-3 text-xs text-muted">Loading address…</p>
+      ) : view ? (
+        <div className="mt-3 flex flex-col items-start gap-3 sm:flex-row sm:items-center">
+          {qrUrl ? (
+            <img
+              src={qrUrl}
+              alt={`QR code for vault address ${view.address}`}
+              className="h-36 w-36 rounded-lg bg-white p-1"
+            />
+          ) : null}
+          <div className="min-w-0">
+            <p className="break-all font-mono text-xs">{view.address}</p>
+            <div className="mt-2 flex items-center gap-2">
+              <Button size="sm" variant="ghost" onClick={onCopy}>
+                {copied ? "Copied ✓" : "Copy address"}
+              </Button>
+            </div>
+            {view.network !== "bitcoin" ? (
+              <p className="mt-2 text-[11px] text-dim">
+                This vault is on {view.network} — only send {view.network}{" "}
+                coins here.
+              </p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+      {error ? <p className="mt-2 text-xs text-alarm">{error}</p> : null}
+    </section>
+  );
 }
 
 /* ----------------------------- Greeting ----------------------------------- */
