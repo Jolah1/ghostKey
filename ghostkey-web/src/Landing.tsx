@@ -179,7 +179,7 @@ function HowItWorks({ onNavigate }: Props) {
                   {i + 1}
                 </span>
                 <div className="pb-12 pt-2">
-                  <h3 className="font-display text-2xl font-bold tracking-tight md:text-3xl">{s.title}</h3>
+                  <h2 className="font-display text-2xl font-bold tracking-tight md:text-3xl">{s.title}</h2>
                   <p className="mt-2 max-w-prose text-base text-soft md:text-lg">
                     {s.body}
                   </p>

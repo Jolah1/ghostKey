@@ -100,7 +100,9 @@
   --text-body:    #EBEBEB;
   --text-muted:   #AFAFAF;
   --text-soft:    #ADB0B9;
-  --text-dim:     #646464;
+  /* 4.5:1+ against --bg/--surface — micro-labels must stay readable
+     (and pass WCAG AA / Lighthouse). */
+  --text-dim:     #7E8894;
   --text-on-accent: #070709;
 
   --accent-text:  var(--accent);
@@ -142,7 +144,8 @@
   --text-body:    #1A1A1A;
   --text-muted:   #525252;
   --text-soft:    #6B6B6B;
-  --text-dim:     #8A8A8A;
+  /* 4.5:1+ on white, same reason as the dark-theme value. */
+  --text-dim:     #6E6E6E;
   --text-on-accent: #070709;
 
   --accent-text:  var(--accent-deep);
