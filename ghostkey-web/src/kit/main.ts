@@ -133,7 +133,7 @@ function render() {
     main.appendChild(
       el(`
       <div>
-        <h1>Independence proof — template</h1>
+        <h1>Recovery file — template</h1>
         <p>This is the unfilled template. Download your personal copy from
         your GhostKey dashboard — it will contain your vault's details.</p>
       </div>
@@ -146,17 +146,18 @@ function render() {
   main.appendChild(
     el(`
     <div>
-      <h1>Your Bitcoin — Independence Proof</h1>
+      <h1>Your Bitcoin — Emergency Recovery File</h1>
       <p class="muted">Vault${data.label ? ` “${esc(data.label)}”` : ""} ·
         ${esc(data.network)} · saved ${created.toLocaleDateString()}</p>
 
       <div class="box">
         <p style="margin-top:0"><strong>What this file is.</strong>
-        Your Bitcoin lives on the Bitcoin network, not on GhostKey.
-        This file proves it: everything needed to reach your money is
-        right here, locked with the same password you sign in with.
-        GhostKey could disappear tomorrow and this file would still
-        work.</p>
+        The emergency spare key for your GhostKey vault. Everything
+        needed to reach your money is locked inside it with the same
+        password you sign in with. Day to day you won't need it —
+        your GhostKey dashboard is the place to check in and manage
+        your vault. Use this file only in a true emergency, like
+        losing access to your account.</p>
         <p style="margin-bottom:0"><strong>Where to keep it.</strong>
         Anywhere you like — email it to yourself, put it on a USB
         stick, keep copies in several places. Without your password
@@ -325,8 +326,8 @@ function render() {
         pass without the money moving, your heir's key can also spend it.
         Moving the funds with your key restarts that clock.</li>
         <li>If you're stuck, any Bitcoin-savvy person can help using just
-        this file — show them this page. They do not need GhostKey and
-        they do not need your password to verify the funds exist.</li>
+        this file — show them this page. They do not need your password
+        to verify the funds exist.</li>
       </ol>
       <p class="muted">Vault reference: <span class="mono">${esc(data.vault_id)}</span></p>
     </div>

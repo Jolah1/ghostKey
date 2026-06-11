@@ -288,7 +288,7 @@ export function Dashboard({ onNavigate }: Props) {
 
   return (
     <main className="bg-app fade-in">
-      <div className="mx-auto max-w-2xl px-5 py-10 md:py-14">
+      <div className="mx-auto max-w-2xl px-5 py-10 md:py-14 lg:max-w-5xl">
         <Greeting
           meta={meta}
           vault={vault}
@@ -308,128 +308,138 @@ export function Dashboard({ onNavigate }: Props) {
           </div>
         ) : null}
 
-        <div className="mt-8">
-          {isClosed ? (
-            <VaultClosedCard
-              meta={meta}
-              onDismiss={() => {
-                // Final close-out: drop the local meta so the next
-                // dashboard visit isn't tied to a terminal vault.
-                // The server-side row stays — claim history is the
-                // owner's record. They can also "Remove heir" before
-                // dismissing if they want it gone server-side too.
-                removeVaultMeta(meta.id);
-                onNavigate("landing");
-              }}
-            />
-          ) : isClaiming ? (
-            <ClaimInProgressCard meta={meta} status={vault!.status} />
-          ) : (
-            <HeartbeatCard
-              meta={meta}
-              vault={vault}
-              now={now}
-              busy={busy}
-              justChecked={justChecked}
-              error={error}
-              onCheckin={onCheckin}
-              lightningEnabled={lightningEnabled}
-              onLightning={() => setLightningOpen(true)}
-            />
-          )}
+        {/* Single column on mobile; on desktop the cards split into a
+            wide "act" column (check-in, balance) and a narrower
+            "facts" column (status, heir, emergency tools). The mobile
+            source order is unchanged — the grid only kicks in at lg. */}
+        <div className="mt-8 lg:grid lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start lg:gap-6">
+          <div className="min-w-0">
+            <div>
+              {isClosed ? (
+                <VaultClosedCard
+                  meta={meta}
+                  onDismiss={() => {
+                    // Final close-out: drop the local meta so the next
+                    // dashboard visit isn't tied to a terminal vault.
+                    // The server-side row stays — claim history is the
+                    // owner's record. They can also "Remove heir" before
+                    // dismissing if they want it gone server-side too.
+                    removeVaultMeta(meta.id);
+                    onNavigate("landing");
+                  }}
+                />
+              ) : isClaiming ? (
+                <ClaimInProgressCard meta={meta} status={vault!.status} />
+              ) : (
+                <HeartbeatCard
+                  meta={meta}
+                  vault={vault}
+                  now={now}
+                  busy={busy}
+                  justChecked={justChecked}
+                  error={error}
+                  onCheckin={onCheckin}
+                  lightningEnabled={lightningEnabled}
+                  onLightning={() => setLightningOpen(true)}
+                />
+              )}
+            </div>
+
+            {vault ? (
+              <div className="mt-4">
+                <BalanceCard vaultId={vault.id} />
+              </div>
+            ) : null}
+
+            {vault?.lnurl_checkin && !isClosed && !isClaiming ? (
+              <div className="mt-4">
+                <LnurlCard lnurl={vault.lnurl_checkin} />
+              </div>
+            ) : null}
+
+            {vault && !isClosed && !isClaiming && vault.owner_contact_verified === false ? (
+              <div className="mt-4">
+                <ConfirmEmailCard vaultId={vault.id} ownerToken={ownerToken} />
+              </div>
+            ) : null}
+
+            {vault && !isClosed && !isClaiming && pushKey && ownerToken ? (
+              <div className="mt-4">
+                <PushOptInCard
+                  vaultId={vault.id}
+                  ownerToken={ownerToken}
+                  vapidPublicKey={pushKey}
+                />
+              </div>
+            ) : null}
+          </div>
+
+          <div className="min-w-0">
+            {vault ? (
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:mt-0 lg:grid-cols-1">
+                <StatCard
+                  label="Vault status"
+                  value={
+                    <span className={statusValueColor(vault)}>
+                      {statusCopy(vault.status).label}
+                    </span>
+                  }
+                  sub={statusCopy(vault.status).long}
+                />
+                <StatCard
+                  label="Waiting period"
+                  value={
+                    demoMode
+                      ? prettySeconds(vault.grace_period_secs)
+                      : prettyBlocks(vault.timelock_blocks)
+                  }
+                  sub="After a missed check-in"
+                />
+              </div>
+            ) : null}
+
+            <div className="mt-4">
+              {groupVaults.length > 1 ? (
+                <HeirGroupList
+                  groupVaults={groupVaults}
+                  activeId={activeId}
+                  onSelect={(id) => {
+                    // Switch active vault. Reload so the dashboard
+                    // re-runs against the new active id. We could do
+                    // this purely via state instead but a reload also
+                    // refreshes the server state, which is what the
+                    // user wants ("show me Bob now").
+                    if (typeof window !== "undefined") {
+                      window.localStorage.setItem("gk:activeVaultId", id);
+                      window.location.reload();
+                    }
+                  }}
+                  onRemove={onRemoveHeir}
+                />
+              ) : (
+                <HeirCard
+                  meta={meta}
+                  vault={vault}
+                  onRemove={
+                    isClosed ? undefined : () => onRemoveHeir(meta.id, meta.heir.name)
+                  }
+                />
+              )}
+            </div>
+
+            {vault?.lnurl_panic && vault.status !== "frozen" && !isClosed && !isClaiming ? (
+              <div className="mt-4">
+                <PanicCard lnurl={vault.lnurl_panic} />
+              </div>
+            ) : null}
+
+            {vault?.descriptor_external && !isClosed ? (
+              <div className="mt-4">
+                <IndependenceProofCard vault={vault} />
+              </div>
+            ) : null}
+          </div>
         </div>
-
-        {vault ? (
-          <div className="mt-4">
-            <BalanceCard vaultId={vault.id} />
-          </div>
-        ) : null}
-
-        {vault?.lnurl_checkin && !isClosed && !isClaiming ? (
-          <div className="mt-4">
-            <LnurlCard lnurl={vault.lnurl_checkin} />
-          </div>
-        ) : null}
-
-        {vault && !isClosed && !isClaiming && vault.owner_contact_verified === false ? (
-          <div className="mt-4">
-            <ConfirmEmailCard vaultId={vault.id} ownerToken={ownerToken} />
-          </div>
-        ) : null}
-
-        {vault && !isClosed && !isClaiming && pushKey && ownerToken ? (
-          <div className="mt-4">
-            <PushOptInCard
-              vaultId={vault.id}
-              ownerToken={ownerToken}
-              vapidPublicKey={pushKey}
-            />
-          </div>
-        ) : null}
-
-        {vault ? (
-          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <StatCard
-              label="Vault status"
-              value={
-                <span className={statusValueColor(vault)}>
-                  {statusCopy(vault.status).label}
-                </span>
-              }
-              sub={statusCopy(vault.status).long}
-            />
-            <StatCard
-              label="Waiting period"
-              value={
-                demoMode
-                  ? prettySeconds(vault.grace_period_secs)
-                  : prettyBlocks(vault.timelock_blocks)
-              }
-              sub="After a missed check-in"
-            />
-          </div>
-        ) : null}
-
-        <div className="mt-4">
-          {groupVaults.length > 1 ? (
-            <HeirGroupList
-              groupVaults={groupVaults}
-              activeId={activeId}
-              onSelect={(id) => {
-                // Switch active vault. Reload so the dashboard
-                // re-runs against the new active id. We could do
-                // this purely via state instead but a reload also
-                // refreshes the server state, which is what the
-                // user wants ("show me Bob now").
-                if (typeof window !== "undefined") {
-                  window.localStorage.setItem("gk:activeVaultId", id);
-                  window.location.reload();
-                }
-              }}
-              onRemove={onRemoveHeir}
-            />
-          ) : (
-            <HeirCard
-              meta={meta}
-              vault={vault}
-              onRemove={
-                isClosed ? undefined : () => onRemoveHeir(meta.id, meta.heir.name)
-              }
-            />
-          )}
-        </div>
-
-        {vault?.lnurl_panic && vault.status !== "frozen" && !isClosed && !isClaiming ? (
-          <div className="mt-4">
-            <PanicCard lnurl={vault.lnurl_panic} />
-          </div>
-        ) : null}
-
-        {vault?.descriptor_external && !isClosed ? (
-          <div className="mt-4">
-            <IndependenceProofCard vault={vault} />
-          </div>
-        ) : null}
 
         <div className="mt-6">
           <ActivityList events={events} />
@@ -1502,7 +1512,7 @@ function IndependenceProofCard({ vault }: { vault: VaultView }) {
         kind: "error",
         message:
           e instanceof ApiError && e.status === 400
-            ? "This vault was made before proof files existed, so one can't be created for it."
+            ? "This vault was made before recovery files existed, so one can't be created for it."
             : e instanceof Error
               ? e.message
               : String(e),
@@ -1513,14 +1523,14 @@ function IndependenceProofCard({ vault }: { vault: VaultView }) {
   return (
     <section className="card-flat p-5">
       <p className="text-[11px] uppercase tracking-wider text-dim">
-        Your independence proof
+        Emergency recovery file
       </p>
       <p className="mt-1 text-xs text-muted">
-        Your Bitcoin lives on the Bitcoin network — not on GhostKey.
-        Download this file and keep it anywhere (email it to yourself,
-        a USB stick). If GhostKey ever disappeared, opening it and
-        typing your password gets you to your money. No internet
-        needed, nothing to install.
+        Your spare key, for emergencies only. Download it and keep a
+        copy somewhere safe (email it to yourself, a USB stick). If
+        you ever can't get into your GhostKey account, opening it and
+        typing your password gets you to your money. Day to day, this
+        dashboard is the place to manage your vault.
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button
@@ -1533,7 +1543,7 @@ function IndependenceProofCard({ vault }: { vault: VaultView }) {
             ? "Preparing…"
             : state.kind === "done"
               ? "Saved ✓ — download again"
-              : "Download proof file"}
+              : "Download recovery file"}
         </Button>
       </div>
       {state.kind === "done" ? (

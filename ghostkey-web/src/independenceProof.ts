@@ -92,7 +92,7 @@ export async function downloadIndependenceProof(vault: VaultView): Promise<void>
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `bitcoin-independence-proof-${slug || "vault"}.html`;
+  a.download = `ghostkey-recovery-${slug || "vault"}.html`;
   document.body.appendChild(a);
   a.click();
   a.remove();
