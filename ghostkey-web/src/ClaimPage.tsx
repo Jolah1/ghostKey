@@ -555,7 +555,7 @@ function PasswordVaultClaim({
       </p>
 
       <div className="mt-8 card-flat p-5">
-        <p className="text-[11px] uppercase tracking-wider text-dim">
+        <p className="text-xs uppercase tracking-wider text-dim">
           What's being passed on
         </p>
         <p className="mt-2 font-display text-xl font-bold tracking-tight">
@@ -567,7 +567,7 @@ function PasswordVaultClaim({
       </div>
 
       <div className="mt-10">
-        <p className="text-[11px] uppercase tracking-wider text-dim">Step 1</p>
+        <p className="text-xs uppercase tracking-wider text-dim">Step 1</p>
         <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
           Do you have a Bitcoin wallet?
         </h2>
@@ -597,7 +597,7 @@ function PasswordVaultClaim({
 
       {hasWallet !== null && (
         <div className="mt-10">
-          <p className="text-[11px] uppercase tracking-wider text-dim">Step 2</p>
+          <p className="text-xs uppercase tracking-wider text-dim">Step 2</p>
           <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
             Where should the Bitcoin go?
           </h2>
@@ -777,7 +777,7 @@ function DerivedHeirClaim({
         <BroadcastSuccess result={result.resp} />
 
         <div className="mt-10 card-flat p-5">
-          <p className="text-[11px] uppercase tracking-wider text-dim">
+          <p className="text-xs uppercase tracking-wider text-dim">
             Your backup phrase
           </p>
           <p className="mt-2 text-sm text-soft">
@@ -814,7 +814,7 @@ function DerivedHeirClaim({
       </p>
 
       <div className="mt-8 card-flat p-5">
-        <p className="text-[11px] uppercase tracking-wider text-dim">
+        <p className="text-xs uppercase tracking-wider text-dim">
           Confirm this is you
         </p>
         <p className="mt-2 text-sm">
@@ -825,7 +825,7 @@ function DerivedHeirClaim({
       </div>
 
       <div className="mt-10">
-        <p className="text-[11px] uppercase tracking-wider text-dim">Step 1</p>
+        <p className="text-xs uppercase tracking-wider text-dim">Step 1</p>
         <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
           Where should the Bitcoin go?
         </h2>
@@ -974,7 +974,7 @@ function ManualPsbtClaim({
 
       {/* ---- What you're inheriting ---- */}
       <div className="mt-8 card-flat p-5">
-        <p className="text-[11px] uppercase tracking-wider text-dim">
+        <p className="text-xs uppercase tracking-wider text-dim">
           What's being passed on
         </p>
         <p className="mt-2 font-display text-xl font-bold tracking-tight">
@@ -987,7 +987,7 @@ function ManualPsbtClaim({
 
       {/* ---- Step 1: do you have a Bitcoin wallet? ---- */}
       <div className="mt-10">
-        <p className="text-[11px] uppercase tracking-wider text-dim">Step 1</p>
+        <p className="text-xs uppercase tracking-wider text-dim">Step 1</p>
         <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
           Do you have a Bitcoin wallet?
         </h2>
@@ -1021,7 +1021,7 @@ function ManualPsbtClaim({
       {/* ---- Step 2: paste address + (optional) fee rate ---- */}
       {hasWallet !== null && (
         <div className="mt-10">
-          <p className="text-[11px] uppercase tracking-wider text-dim">Step 2</p>
+          <p className="text-xs uppercase tracking-wider text-dim">Step 2</p>
           <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
             Where should the Bitcoin go?
           </h2>
@@ -1096,7 +1096,7 @@ function ManualPsbtClaim({
       {/* ---- Step 3: sign the PSBT ---- */}
       {build && !broadcast && (
         <div className="mt-10">
-          <p className="text-[11px] uppercase tracking-wider text-dim">Step 3</p>
+          <p className="text-xs uppercase tracking-wider text-dim">Step 3</p>
           <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
             Sign it in your wallet
           </h2>
@@ -1109,7 +1109,7 @@ function ManualPsbtClaim({
           <PsbtSummary build={build} />
 
           <div className="mt-5">
-            <p className="text-[11px] uppercase tracking-wider text-dim">
+            <p className="text-xs uppercase tracking-wider text-dim">
               Unsigned PSBT (base64)
             </p>
             <textarea
@@ -1172,7 +1172,7 @@ function ManualPsbtClaim({
 function PsbtSummary({ build }: { build: BuildClaimPsbtResponse }) {
   return (
     <div className="mt-5 card-flat p-4">
-      <p className="text-[11px] uppercase tracking-wider text-dim">
+      <p className="text-xs uppercase tracking-wider text-dim">
         Transaction summary
       </p>
       <dl className="mt-2 grid grid-cols-1 gap-1 text-sm">
@@ -1202,7 +1202,7 @@ function Row({ k, v }: { k: string; v: string }) {
 function BroadcastSuccess({ result }: { result: BroadcastClaimResponse }) {
   return (
     <div className="mt-10">
-      <p className="text-[11px] uppercase tracking-wider text-dim">Done</p>
+      <p className="text-xs uppercase tracking-wider text-dim">Done</p>
       <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
         It's on the network
       </h2>
@@ -1213,7 +1213,7 @@ function BroadcastSuccess({ result }: { result: BroadcastClaimResponse }) {
       </p>
 
       <div className="mt-5 card-flat p-4">
-        <p className="text-[11px] uppercase tracking-wider text-dim">
+        <p className="text-xs uppercase tracking-wider text-dim">
           Transaction ID
         </p>
         <p className="mt-2 break-all font-mono text-xs text-[var(--text)]">

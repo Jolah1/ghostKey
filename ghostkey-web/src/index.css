@@ -367,7 +367,7 @@
   /* Inputs — pill-leaning, generous padding, heavy focus ring. */
   .field-label {
     display: block;
-    font-size: 11px;
+    font-size: 12px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--text-muted);
@@ -479,7 +479,7 @@
   .eyebrow-tag {
     display: inline-block;
     font-family: var(--font-sans);
-    font-size: 11px;
+    font-size: 12px;
     letter-spacing: 0.16em;
     text-transform: uppercase;
     color: var(--accent);
@@ -488,7 +488,7 @@
   .eyebrow-dim {
     display: inline-block;
     font-family: var(--font-sans);
-    font-size: 11px;
+    font-size: 12px;
     letter-spacing: 0.16em;
     text-transform: uppercase;
     color: var(--text-muted);
@@ -509,7 +509,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font-size: 11px;
+    font-size: 12px;
     padding: 4px 12px;
     border-radius: 999px;
     font-weight: var(--w-bold);

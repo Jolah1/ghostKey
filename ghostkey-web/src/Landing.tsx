@@ -719,7 +719,7 @@ function Footer() {
           </div>
           {FOOTER_COLS.map((col) => (
             <div key={col.title} className="md:col-span-2 lg:col-span-2">
-              <p className="text-[11px] uppercase tracking-wider text-dim">
+              <p className="text-xs uppercase tracking-wider text-dim">
                 {col.title}
               </p>
               <ul role="list" className="mt-4 space-y-2.5">

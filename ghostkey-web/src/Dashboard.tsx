@@ -316,7 +316,7 @@ export function Dashboard({ onNavigate }: Props) {
             wide "act" column (check-in, balance) and a narrower
             "facts" column (status, heir, emergency tools). The mobile
             source order is unchanged — the grid only kicks in at lg. */}
-        <div className="mt-8 lg:grid lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start lg:gap-6">
+        <div className="mt-10 lg:grid lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start lg:gap-8">
           <div className="min-w-0">
             <div>
               {isClosed ? (
@@ -350,37 +350,37 @@ export function Dashboard({ onNavigate }: Props) {
             </div>
 
             {vault ? (
-              <div className="mt-4">
+              <div className="mt-5">
                 <BalanceCard vaultId={vault.id} />
               </div>
             ) : null}
 
             {vault && !isClosed && !isClaiming ? (
-              <div className="mt-4">
+              <div className="mt-5">
                 <ReceiveCard vaultId={vault.id} />
               </div>
             ) : null}
 
             {vault && !isClosed && !isClaiming && ownerToken ? (
-              <div className="mt-4">
+              <div className="mt-5">
                 <SendCard vaultId={vault.id} ownerToken={ownerToken} />
               </div>
             ) : null}
 
             {vault?.lnurl_checkin && !isClosed && !isClaiming ? (
-              <div className="mt-4">
+              <div className="mt-5">
                 <LnurlCard lnurl={vault.lnurl_checkin} />
               </div>
             ) : null}
 
             {vault && !isClosed && !isClaiming && vault.owner_contact_verified === false ? (
-              <div className="mt-4">
+              <div className="mt-5">
                 <ConfirmEmailCard vaultId={vault.id} ownerToken={ownerToken} />
               </div>
             ) : null}
 
             {vault && !isClosed && !isClaiming && pushKey && ownerToken ? (
-              <div className="mt-4">
+              <div className="mt-5">
                 <PushOptInCard
                   vaultId={vault.id}
                   ownerToken={ownerToken}
@@ -392,7 +392,7 @@ export function Dashboard({ onNavigate }: Props) {
 
           <div className="min-w-0">
             {vault ? (
-              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:mt-0 lg:grid-cols-1">
+              <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:mt-0 lg:grid-cols-1">
                 <StatCard
                   label="Vault status"
                   value={
@@ -414,7 +414,7 @@ export function Dashboard({ onNavigate }: Props) {
               </div>
             ) : null}
 
-            <div className="mt-4">
+            <div className="mt-5">
               {groupVaults.length > 1 ? (
                 <HeirGroupList
                   groupVaults={groupVaults}
@@ -444,20 +444,20 @@ export function Dashboard({ onNavigate }: Props) {
             </div>
 
             {vault?.lnurl_panic && vault.status !== "frozen" && !isClosed && !isClaiming ? (
-              <div className="mt-4">
+              <div className="mt-5">
                 <PanicCard lnurl={vault.lnurl_panic} />
               </div>
             ) : null}
 
             {vault?.descriptor_external && !isClosed ? (
-              <div className="mt-4">
+              <div className="mt-5">
                 <IndependenceProofCard vault={vault} />
               </div>
             ) : null}
           </div>
         </div>
 
-        <div className="mt-6">
+        <div className="mt-12">
           <ActivityList events={events} />
         </div>
       </div>
@@ -516,14 +516,14 @@ function BalanceCard({ vaultId }: { vaultId: string }) {
   return (
     <div className="card-flat p-5">
       <div className="flex items-baseline justify-between gap-3">
-        <p className="text-[11px] uppercase tracking-wider text-dim">
+        <p className="text-xs uppercase tracking-wider text-dim">
           Vault balance
         </p>
         <button
           type="button"
           onClick={() => void load()}
           disabled={loading}
-          className="text-[11px] text-muted underline-offset-2 hover:underline disabled:opacity-50"
+          className="text-xs text-muted underline-offset-2 hover:underline disabled:opacity-50"
           aria-label="Refresh balance"
         >
           {loading ? "Refreshing…" : "Refresh"}
@@ -533,15 +533,15 @@ function BalanceCard({ vaultId }: { vaultId: string }) {
         {balance ? formatSats(balance.total_sat) : loading ? "…" : "—"}
       </div>
       {balance && balance.unconfirmed_sat > 0 ? (
-        <p className="mt-1 text-xs text-muted">
+        <p className="mt-1.5 text-sm text-muted">
           {formatSats(balance.confirmed_sat)} confirmed ·{" "}
           {formatSats(balance.unconfirmed_sat)} pending
         </p>
       ) : balance ? (
-        <p className="mt-1 text-xs text-muted">Confirmed on chain.</p>
+        <p className="mt-1.5 text-sm text-muted">Confirmed on chain.</p>
       ) : null}
       {error ? (
-        <p className="mt-2 text-xs text-alarm">{error}</p>
+        <p className="mt-2 text-sm text-alarm">{error}</p>
       ) : null}
     </div>
   );
@@ -612,10 +612,10 @@ function ReceiveCard({ vaultId }: { vaultId: string }) {
 
   return (
     <section className="card-flat p-5">
-      <p className="text-[11px] uppercase tracking-wider text-dim">
+      <p className="text-xs uppercase tracking-wider text-dim">
         Add Bitcoin
       </p>
-      <p className="mt-1 text-xs text-muted">
+      <p className="mt-1.5 text-sm text-muted">
         Send any amount from any wallet or exchange, as often as you
         like. New funds are covered by the same inheritance plan
         automatically.
@@ -645,7 +645,7 @@ function ReceiveCard({ vaultId }: { vaultId: string }) {
               </Button>
             </div>
             {view.network !== "bitcoin" ? (
-              <p className="mt-2 text-[11px] text-dim">
+              <p className="mt-2 text-xs text-dim">
                 This vault is on {view.network} — only send {view.network}{" "}
                 coins here.
               </p>
@@ -653,7 +653,7 @@ function ReceiveCard({ vaultId }: { vaultId: string }) {
           </div>
         </div>
       ) : null}
-      {error ? <p className="mt-2 text-xs text-alarm">{error}</p> : null}
+      {error ? <p className="mt-2 text-sm text-alarm">{error}</p> : null}
     </section>
   );
 }
@@ -756,13 +756,13 @@ function SendCard({
   if (result) {
     return (
       <section className="card-flat p-5">
-        <p className="text-[11px] uppercase tracking-wider text-dim">
+        <p className="text-xs uppercase tracking-wider text-dim">
           Send Bitcoin
         </p>
         <p className="mt-2 text-sm font-semibold text-ok">
           Sent ✓ {formatSats(result.sent_sat)} is on its way.
         </p>
-        <p className="mt-1 text-xs text-muted">
+        <p className="mt-1.5 text-sm text-muted">
           Network fee: {formatSats(result.fee_sat)}.{" "}
           {result.remaining_sat > 0
             ? `The remaining ${formatSats(result.remaining_sat)} stays in your vault, still covered by your inheritance plan — your heir's waiting clock starts fresh from this move.`
@@ -796,10 +796,10 @@ function SendCard({
 
   return (
     <section className="card-flat p-5">
-      <p className="text-[11px] uppercase tracking-wider text-dim">
+      <p className="text-xs uppercase tracking-wider text-dim">
         Send Bitcoin
       </p>
-      <p className="mt-1 text-xs text-muted">
+      <p className="mt-1.5 text-sm text-muted">
         Your money is never locked up. Pay anyone from your vault — whatever
         you leave behind stays covered by the same inheritance plan.
       </p>
@@ -864,7 +864,7 @@ function SendCard({
               disabled={busy}
               className="input mt-1 w-full"
             />
-            <span className="mt-1 block text-[11px] text-dim">
+            <span className="mt-1 block text-xs text-dim">
               Your password unlocks the vault key right here in your browser.
             </span>
           </label>
@@ -1109,14 +1109,14 @@ function HeartbeatCard({
         {!locked ? (
           lightningEnabled ? (
             <>
-              <p className="mt-2 text-[11px] text-dim">
+              <p className="mt-2 text-xs text-dim">
                 Pay a tiny Lightning invoice for cryptographic proof of liveness.
               </p>
               <LightningStatusBadge />
             </>
           ) : (
             <p
-              className="mt-2 text-[11px] text-dim"
+              className="mt-2 text-xs text-dim"
               data-testid="ln-disabled-hint"
             >
               ⚡ Lightning check-in isn't enabled on this server yet.
@@ -1227,7 +1227,7 @@ function LightningStatusBadge() {
 
   return (
     <p
-      className="mt-1 text-[11px] text-dim"
+      className="mt-1.5 text-xs text-dim"
       title={title}
       data-testid="ln-status-badge"
     >
@@ -1306,10 +1306,10 @@ function ConfirmEmailCard({
 
   return (
     <section className="card-flat p-5" data-testid="confirm-email-card">
-      <p className="text-[11px] uppercase tracking-wider text-dim">
+      <p className="text-xs uppercase tracking-wider text-dim">
         One thing left
       </p>
-      <p className="mt-1 text-xs text-muted">
+      <p className="mt-1.5 text-sm text-muted">
         We sent a confirmation link to your email. Tap it so we know
         your check-in reminders will reach you. No link in your inbox?
         Check spam, or send a fresh one.
@@ -1331,7 +1331,7 @@ function ConfirmEmailCard({
         </p>
       ) : null}
       {state.kind === "error" ? (
-        <p className="mt-2 text-xs text-alarm">{state.message}</p>
+        <p className="mt-2 text-sm text-alarm">{state.message}</p>
       ) : null}
     </section>
   );
@@ -1412,10 +1412,10 @@ function PushOptInCard({
   if (state.kind === "done") {
     return (
       <section className="card-flat p-5" data-testid="push-optin-card">
-        <p className="text-[11px] uppercase tracking-wider text-dim">
+        <p className="text-xs uppercase tracking-wider text-dim">
           Reminders
         </p>
-        <p className="mt-1 text-xs text-muted">
+        <p className="mt-1.5 text-sm text-muted">
           <span className="text-ok">✓</span> Reminders are on. We'll give
           you a nudge before each check-in is due.
         </p>
@@ -1425,10 +1425,10 @@ function PushOptInCard({
 
   return (
     <section className="card-flat p-5" data-testid="push-optin-card">
-      <p className="text-[11px] uppercase tracking-wider text-dim">
+      <p className="text-xs uppercase tracking-wider text-dim">
         Reminders
       </p>
-      <p className="mt-1 text-xs text-muted">
+      <p className="mt-1.5 text-sm text-muted">
         Want a nudge before your next check-in is due? We'll send a
         notification to this device — one tap and you're done.
       </p>
@@ -1450,7 +1450,7 @@ function PushOptInCard({
         </Button>
       </div>
       {state.kind === "error" ? (
-        <p className="mt-2 text-xs text-alarm">{state.message}</p>
+        <p className="mt-2 text-sm text-alarm">{state.message}</p>
       ) : null}
     </section>
   );
@@ -1469,9 +1469,9 @@ function StatCard({
 }) {
   return (
     <div className="card-flat p-5">
-      <p className="text-[11px] uppercase tracking-wider text-dim">{label}</p>
+      <p className="text-xs uppercase tracking-wider text-dim">{label}</p>
       <div className="mt-2 font-display text-2xl font-bold tracking-tight">{value}</div>
-      {sub ? <p className="mt-1 text-xs text-muted">{sub}</p> : null}
+      {sub ? <p className="mt-1.5 text-sm text-muted">{sub}</p> : null}
     </div>
   );
 }
@@ -1627,7 +1627,7 @@ function HeirGroupList({
           </div>
         );
       })}
-      <p className="mt-1 text-[11px] text-dim">
+      <p className="mt-1.5 text-xs text-dim">
         One tap on "I'm still here" checks in for all {groupVaults.length}{" "}
         heirs at once.
       </p>
@@ -1645,7 +1645,7 @@ function ActivityList({ events }: { events: VaultEvent[] }) {
   );
   return (
     <section aria-label="Recent activity">
-      <p className="text-[11px] uppercase tracking-wider text-dim">
+      <p className="text-xs uppercase tracking-wider text-dim">
         Recent activity
       </p>
       {items.length === 0 ? (
@@ -1669,7 +1669,7 @@ function ActivityList({ events }: { events: VaultEvent[] }) {
                   {friendlyEventKind(e.kind)}
                 </strong>
               </span>
-              <span className="font-mono text-[11px] text-dim">
+              <span className="font-mono text-xs text-dim">
                 {formatWhen(e.created_at)}
               </span>
             </li>
@@ -1791,6 +1791,10 @@ function FrozenBanner({ vault, now }: { vault: VaultView; now: Date }) {
 /* ----------------------------- LNURL card --------------------------------- */
 
 function LnurlCard({ lnurl }: { lnurl: string }) {
+  // Collapsed by default — the raw LNURL string is a wall of
+  // monospace most visits never need (the big check-in button above
+  // covers the common path). Expanding mirrors ReceiveCard.
+  const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   function copy() {
     void navigator.clipboard.writeText(lnurl).then(() => {
@@ -1806,26 +1810,38 @@ function LnurlCard({ lnurl }: { lnurl: string }) {
   const deepLink = `lightning:${lnurl}`;
   return (
     <section className="card-flat p-5">
-      <p className="text-[11px] uppercase tracking-wider text-dim">
+      <p className="text-xs uppercase tracking-wider text-dim">
         Check in with a tiny Lightning payment
       </p>
-      <p className="mt-1 text-xs text-muted">
-        Scan this with any Lightning wallet. The same code works every
-        time — no setup, no expiry.
+      <p className="mt-1.5 text-sm text-muted">
+        The same code works every time — no setup, no expiry.
       </p>
-      <div className="mt-3 break-all rounded bg-[var(--bg-elev)] p-3 font-mono text-[11px]">
-        {lnurl}
-      </div>
-      <div className="mt-3 flex flex-wrap gap-2">
-        <Button size="sm" variant="ghost" onClick={copy}>
-          {copied ? "Copied ✓" : "Copy LNURL"}
-        </Button>
-        <a href={deepLink} className="inline-block">
-          <Button size="sm" variant="ghost">
-            Open in wallet
+      {!expanded ? (
+        <div className="mt-3">
+          <Button size="sm" variant="ghost" onClick={() => setExpanded(true)}>
+            Show Lightning code
           </Button>
-        </a>
-      </div>
+        </div>
+      ) : (
+        <>
+          <div className="mt-3 break-all rounded bg-[var(--bg-elev)] p-3 font-mono text-xs">
+            {lnurl}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button size="sm" variant="ghost" onClick={copy}>
+              {copied ? "Copied ✓" : "Copy LNURL"}
+            </Button>
+            <a href={deepLink} className="inline-block">
+              <Button size="sm" variant="ghost">
+                Open in wallet
+              </Button>
+            </a>
+            <Button size="sm" variant="ghost" onClick={() => setExpanded(false)}>
+              Hide
+            </Button>
+          </div>
+        </>
+      )}
     </section>
   );
 }
@@ -1866,15 +1882,14 @@ function IndependenceProofCard({ vault }: { vault: VaultView }) {
 
   return (
     <section className="card-flat p-5">
-      <p className="text-[11px] uppercase tracking-wider text-dim">
+      <p className="text-xs uppercase tracking-wider text-dim">
         Emergency recovery file
       </p>
-      <p className="mt-1 text-xs text-muted">
-        Your spare key, for emergencies only. Download it and keep a
-        copy somewhere safe (email it to yourself, a USB stick). If
-        you ever can't get into your GhostKey account, opening it and
-        typing your password gets you to your money. Day to day, this
-        dashboard is the place to manage your vault.
+      <p className="mt-1.5 text-sm text-muted">
+        Your spare key, for emergencies only. Keep a copy somewhere
+        safe (email it to yourself, a USB stick) — if you ever can't
+        get into GhostKey, opening it and typing your password gets
+        you to your money.
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button
@@ -1891,14 +1906,14 @@ function IndependenceProofCard({ vault }: { vault: VaultView }) {
         </Button>
       </div>
       {state.kind === "done" ? (
-        <p className="mt-2 text-[11px] text-dim">
+        <p className="mt-2 text-xs text-dim">
           Without your password the file reveals no secrets — but treat
           it like a bank statement: it does show your balance to anyone
           who opens it.
         </p>
       ) : null}
       {state.kind === "error" ? (
-        <p className="mt-2 text-[11px] text-amber-200">{state.message}</p>
+        <p className="mt-2 text-xs text-amber-200">{state.message}</p>
       ) : null}
     </section>
   );
@@ -1913,10 +1928,10 @@ function PanicCard({ lnurl }: { lnurl: string }) {
   if (!expanded) {
     return (
       <section className="card-flat p-5">
-        <p className="text-[11px] uppercase tracking-wider text-dim">
+        <p className="text-xs uppercase tracking-wider text-dim">
           Emergency stop
         </p>
-        <p className="mt-1 text-xs text-muted">
+        <p className="mt-1.5 text-sm text-muted">
           If your wallet is compromised, freeze this vault for 90 days
           and alert your trusted contact.
         </p>
@@ -1964,7 +1979,7 @@ function PanicCard({ lnurl }: { lnurl: string }) {
         Pay this from any Lightning wallet. The freeze takes effect the
         moment the invoice settles.
       </p>
-      <div className="mt-3 break-all rounded bg-[var(--bg-elev)] p-3 font-mono text-[11px]">
+      <div className="mt-3 break-all rounded bg-[var(--bg-elev)] p-3 font-mono text-xs">
         {lnurl}
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
