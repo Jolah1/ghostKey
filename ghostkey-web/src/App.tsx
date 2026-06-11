@@ -22,22 +22,46 @@
  * heir metadata) via vaultStore.ts. There is no global store beyond
  * route + health.
  */
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { NavBar } from "./NavBar";
 import { Landing } from "./Landing";
-import { SetupPortal } from "./SetupPortal";
-import { PasswordSetupPortal } from "./PasswordSetupPortal";
-import { CheckinPortal } from "./CheckinPortal";
-import { SignInPortal } from "./SignInPortal";
-import { InheritPortal } from "./InheritPortal";
-import { Dashboard } from "./Dashboard";
-import { ClaimPage } from "./ClaimPage";
-import { OneTapCheckinPage } from "./OneTapCheckinPage";
-import { VerifyEmailPage } from "./VerifyEmailPage";
 import { ServerOfflineBanner } from "./ServerOfflineBanner";
 import { Button } from "./ui";
 import { api } from "./api";
 import { getActiveVaultId } from "./vaultStore";
+
+// Every route except the landing page is code-split. A visitor's
+// first paint only pays for the marketing page + shell; the heavier
+// flows (setup with its crypto stack, the dashboard, the claim page)
+// download when — and only when — they're navigated to. AssistChat is
+// shared by two lazy routes, so Vite hoists it into its own chunk.
+const SetupPortal = lazy(() =>
+  import("./SetupPortal").then((m) => ({ default: m.SetupPortal })),
+);
+const PasswordSetupPortal = lazy(() =>
+  import("./PasswordSetupPortal").then((m) => ({ default: m.PasswordSetupPortal })),
+);
+const CheckinPortal = lazy(() =>
+  import("./CheckinPortal").then((m) => ({ default: m.CheckinPortal })),
+);
+const SignInPortal = lazy(() =>
+  import("./SignInPortal").then((m) => ({ default: m.SignInPortal })),
+);
+const InheritPortal = lazy(() =>
+  import("./InheritPortal").then((m) => ({ default: m.InheritPortal })),
+);
+const Dashboard = lazy(() =>
+  import("./Dashboard").then((m) => ({ default: m.Dashboard })),
+);
+const ClaimPage = lazy(() =>
+  import("./ClaimPage").then((m) => ({ default: m.ClaimPage })),
+);
+const OneTapCheckinPage = lazy(() =>
+  import("./OneTapCheckinPage").then((m) => ({ default: m.OneTapCheckinPage })),
+);
+const VerifyEmailPage = lazy(() =>
+  import("./VerifyEmailPage").then((m) => ({ default: m.VerifyEmailPage })),
+);
 
 /**
  * Route slugs the app understands. Two routes are "legacy" — they
@@ -208,6 +232,9 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-app">
+      <a href="#main" className="skip-link">
+        Skip to content
+      </a>
       <AlphaBanner network={network} />
       {demoMode && <DemoBanner />}
       {health === "offline" && <ServerOfflineBanner />}
@@ -223,6 +250,10 @@ export default function App() {
         />
       )}
 
+      {/* Routes render their own <main>; this anchor is the skip-link
+          target so keyboard users can jump past the nav/banners. */}
+      <div id="main">
+      <Suspense fallback={<RouteLoading />}>
       {location.kind === "route" && location.route === "landing"   && <Landing  onNavigate={setRoute} />}
       {location.kind === "route" && (location.route === "setup" || location.route === "setup-password") && (
         <PasswordSetupPortal
@@ -263,7 +294,26 @@ export default function App() {
           onNavigate={setRoute}
         />
       )}
+      </Suspense>
+      </div>
     </div>
+  );
+}
+
+/** Minimal centered placeholder while a lazy route chunk downloads.
+ *  Kept text-only: the chunks are tens of KB on a CDN, so this is
+ *  visible for a blink on most connections — a spinner would flash. */
+function RouteLoading() {
+  return (
+    <main className="bg-app">
+      <div
+        className="mx-auto max-w-xl px-5 py-24 text-center text-sm text-muted"
+        role="status"
+        aria-live="polite"
+      >
+        Loading…
+      </div>
+    </main>
   );
 }
 

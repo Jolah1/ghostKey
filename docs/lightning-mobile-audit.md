@@ -8,7 +8,8 @@ wallets** — this document doesn't replace that, it makes the
 testing reproducible.
 
 For context on why the QR / deep-link surfaces look the way they do,
-see [issue #23] and the comments in `LightningCheckin.tsx:259-264`.
+see [issue #23] and the QR-rendering comment in
+`ghostkey-web/src/LightningCheckin.tsx`.
 
 [issue #23]: https://github.com/Jolah1/ghostKey/issues/23
 
@@ -28,8 +29,9 @@ Before you start, you need:
    audit isn't time-sensitive.
 3. **Two phones if possible** — one iOS, one Android — and at least
    five wallets installed across them (see matrix below).
-4. **Testnet sats** on the wallets you're paying *from*. 1 sat per
-   invoice; a few hundred sats is plenty for the whole audit.
+4. **Testnet sats** on the wallets you're paying *from*. Invoices
+   default to 21 sats (`GHOSTKEY_LN_CHECKIN_SAT`); a few thousand
+   sats is plenty for the whole audit.
 5. **Permission to take screenshots** of the wallets you test.
    Blur preimages, balances, and addresses before attaching them
    to follow-up issues — see [SECURITY.md](../SECURITY.md) on
@@ -89,7 +91,7 @@ For each cell, run both of these:
    laptop, or the staging URL on a second phone).
 2. Open the wallet's "scan" / "send" flow on the test phone.
 3. Point the camera at the QR.
-4. **Expected:** wallet decodes a 1-sat BOLT11 (or an LNURL on
+4. **Expected:** wallet decodes a 21-sat BOLT11 (or an LNURL on
    surfaces 2 / 3) and offers a confirm step.
 5. Confirm → pay.
 6. **Expected:** within ~3 seconds the dashboard updates
@@ -171,9 +173,14 @@ Example:
 That comment is the durable artefact. The matrix in this doc is
 the procedure to produce it.
 
-## Out of scope (per the issue)
+## Changes since the issue was filed
 
-- Swapping the public QR service (`api.qrserver.com`) for a
-  local renderer. Useful but a separate change — see the
-  `LightningCheckin.tsx:259-264` comment for context. File a new
-  issue if you want to do it.
+- The public QR service (`api.qrserver.com`) the issue's
+  "Background" quotes is gone: QRs now render locally via
+  `qrcode-generator` into a `data:` URL (shipped with the CSP
+  work — external image hosts are blocked). The QR *content*
+  is unchanged, so the matrix above still applies as written.
+- The check-in amount was raised from 1 sat to a 21-sat default
+  because several wallets (Bitnob-class) refuse sub-20-sat
+  invoices. If a wallet still rejects the invoice on amount,
+  note the wallet's minimum in the cell.
