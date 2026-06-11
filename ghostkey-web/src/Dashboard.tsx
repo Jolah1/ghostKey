@@ -1171,7 +1171,6 @@ function LightningStatusBadge() {
 
   useEffect(() => {
     let alive = true;
-    let timer: number | undefined;
 
     const poll = () => {
       api
@@ -1201,10 +1200,10 @@ function LightningStatusBadge() {
     // sidecar recovery (or failure) without a page reload. Five-
     // second server-side cache means this is one downstream
     // network call per probe regardless of how many tabs are open.
-    timer = window.setInterval(poll, 30_000);
+    const timer = window.setInterval(poll, 30_000);
     return () => {
       alive = false;
-      if (timer !== undefined) window.clearInterval(timer);
+      window.clearInterval(timer);
     };
   }, []);
 
