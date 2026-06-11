@@ -64,13 +64,16 @@ export function LightningCheckin({
   const [state, setState] = useState<State>({ kind: "minting" });
   const [copied, setCopied] = useState(false);
 
-  const startedAt = useRef<number>(Date.now());
+  // Set when the mint effect runs (a Date.now() initializer would be
+  // an impure call during render).
+  const startedAt = useRef<number>(0);
   const cancelled = useRef(false);
 
   // Mint the invoice on mount. We deliberately do NOT auto-retry on
   // failure here — the user should see what went wrong and decide.
   useEffect(() => {
     cancelled.current = false;
+    startedAt.current = Date.now();
     let alive = true;
     (async () => {
       try {

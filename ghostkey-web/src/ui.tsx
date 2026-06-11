@@ -373,7 +373,13 @@ export function usePolling(
   deps: unknown[] = [],
 ) {
   const ref = useRef(fn);
-  ref.current = fn;
+  // Keep the ref pointing at the latest fn without retriggering the
+  // interval effect below. Assigned in an effect (not during render)
+  // so renders stay pure; commit order guarantees it runs before any
+  // tick can observe it.
+  useEffect(() => {
+    ref.current = fn;
+  });
   useEffect(() => {
     let alive = true;
     let id: number | null = null;
