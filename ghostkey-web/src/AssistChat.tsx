@@ -203,7 +203,7 @@ export function AssistChat({ label = "Ask the guide", intro }: Props) {
           <button
             type="submit"
             disabled={busy || draft.trim().length === 0}
-            className="rounded-md bg-[var(--accent,#7c3aed)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+            className="rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-[var(--text-on-accent)] disabled:opacity-50"
           >
             Send
           </button>

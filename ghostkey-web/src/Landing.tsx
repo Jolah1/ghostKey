@@ -708,8 +708,9 @@ function Footer() {
       <div className="mx-auto max-w-6xl px-5 py-14 md:px-8">
         <div className="grid grid-cols-1 gap-10 md:grid-cols-12">
           <div className="md:col-span-5">
-            <p className="font-display text-2xl font-bold tracking-tight">
-              Ghost<span className="text-accent">Key</span>
+            <p className="flex items-center gap-2.5 font-display text-2xl font-bold tracking-tight">
+              <img src="/brand-mark.png" alt="" className="h-9 w-9 rounded-lg" />
+              <span>ghost<span className="text-accent">Key</span></span>
             </p>
             <p className="mt-3 max-w-sm text-sm text-muted">
               Heartbeat-based Bitcoin inheritance. Your Bitcoin doesn't die with

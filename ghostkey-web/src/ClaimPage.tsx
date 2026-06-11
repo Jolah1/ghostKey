@@ -134,8 +134,9 @@ function ClaimHeader() {
   return (
     <header className="border-b border-app">
       <div className="mx-auto flex h-[60px] max-w-xl items-center justify-between px-5 md:px-8">
-        <span className="font-display text-lg font-bold tracking-tight">
-          Ghost<span className="text-accent">Key</span>
+        <span className="flex items-center gap-2.5 font-display text-lg font-bold tracking-tight">
+          <img src="/brand-mark.png" alt="" className="h-7 w-7 rounded-lg" />
+          <span>ghost<span className="text-accent">Key</span></span>
         </span>
         <span className="text-xs text-muted">A message for you</span>
       </div>

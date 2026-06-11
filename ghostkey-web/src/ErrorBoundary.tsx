@@ -50,7 +50,7 @@ export class ErrorBoundary extends Component<Props, State> {
           <button
             type="button"
             onClick={() => window.location.reload()}
-            className="mt-8 rounded-full bg-[var(--accent)] px-6 py-2.5 text-sm font-semibold text-white"
+            className="mt-8 rounded-full bg-[var(--accent)] px-6 py-2.5 text-sm font-semibold text-[var(--text-on-accent)]"
           >
             Reload the page
           </button>

@@ -9,24 +9,28 @@
 /* ------------------------------------------------------------------ */
 
 :root {
-  /* Brand accent — Tando's bitcoin orange. Honest, instantly recognisable. */
-  --accent:        #F7931B;
-  --accent-strong: #FFA73F;
-  --accent-deep:   #B8651A;
-  --accent-glow:   rgba(247, 147, 27, 0.30);
-  --accent-ring:   rgba(247, 147, 27, 0.55);
-  --accent-tint:   rgba(247, 147, 27, 0.12);
-  --accent-tint-2: rgba(247, 147, 27, 0.22);
+  /* Brand accent — the logo's bright teal (sampled from the key in
+     brand/logo-source.png). Deep variant is for text on white. */
+  --accent:        #2EE6D2;
+  --accent-strong: #5CF2E2;
+  --accent-deep:   #0B7568;
+  --accent-glow:   rgba(46, 230, 210, 0.28);
+  --accent-ring:   rgba(46, 230, 210, 0.55);
+  --accent-tint:   rgba(46, 230, 210, 0.10);
+  --accent-tint-2: rgba(46, 230, 210, 0.20);
 
-  /* Secondary brand — Tando green. Sparingly used for success states. */
-  --brand-green:   #349934;
+  /* Secondary brand — the logo's deep indigo end of the gradient. */
+  --brand-blue:      #2B59C8;
+  --brand-blue-deep: #1D3571;
+  --brand-gradient:  linear-gradient(120deg, #41F5DC 0%, #2B59C8 100%);
 
-  /* Semantic status colors. */
-  --ok:      #349934;
-  --warning: #F7931B;
+  /* Semantic status colors. Warning is amber on purpose — it must
+     read as caution, independent of the brand accent. */
+  --ok:      #2FBF71;
+  --warning: #F0A33D;
   --alarm:   #D4453B;
-  --ok-tint:      rgba(52, 153, 52, 0.14);
-  --warning-tint: rgba(247, 147, 27, 0.14);
+  --ok-tint:      rgba(47, 191, 113, 0.14);
+  --warning-tint: rgba(240, 163, 61, 0.14);
   --alarm-tint:   rgba(212, 69, 59, 0.14);
 
   /* Typography — Tando uses Inter for body and Inter Tight for display.
@@ -68,28 +72,28 @@
   padding: 8px 16px;
   border-radius: 9999px;
   background: var(--accent);
-  color: #fff;
+  color: var(--text-on-accent);
   font-size: 13px;
   font-weight: 600;
 }
 
-/* ---- Dark theme (default) — pure black, Tando style ---- */
+/* ---- Dark theme (default) — deep navy, matching the logo ground ---- */
 [data-theme="dark"] {
   color-scheme: dark;
 
-  --bg:           #000000;
-  --bg-elev:      #0D0D0D;
-  --surface:      #131313;
-  --surface-2:    #1A1A1A;
-  --surface-hi:   #262626;
+  --bg:           #090D12;
+  --bg-elev:      #0E1319;
+  --surface:      #121821;
+  --surface-2:    #18202A;
+  --surface-hi:   #232D3A;
 
-  --border:       #1F1F1F;
-  --border-hi:    #2E2E2E;
-  --border-focus: rgba(247, 147, 27, 0.65);
+  --border:       #1D2630;
+  --border-hi:    #2A3644;
+  --border-focus: rgba(46, 230, 210, 0.60);
 
-  /* Tando card outline — a deep amber that catches the orange accent. */
-  --card-outline: #533517;
-  --card-grad:    linear-gradient(345deg, #141414, rgba(255,255,255,0.02));
+  /* Card outline — a deep teal that catches the accent. */
+  --card-outline: #15473F;
+  --card-grad:    linear-gradient(345deg, #121821, rgba(255,255,255,0.02));
 
   --text:         #FFFFFF;
   --text-strong:  #FFFFFF;
@@ -112,8 +116,8 @@
     0 6px 16px rgba(255, 255, 255, 0.20);
 
   --hero-glow:
-    radial-gradient(ellipse 70% 50% at 50% 30%, rgba(247, 147, 27, 0.18), transparent 70%),
-    radial-gradient(ellipse 50% 40% at 10% 100%, rgba(247, 147, 27, 0.10), transparent 70%);
+    radial-gradient(ellipse 70% 50% at 50% 30%, rgba(46, 230, 210, 0.14), transparent 70%),
+    radial-gradient(ellipse 50% 40% at 10% 100%, rgba(43, 89, 200, 0.14), transparent 70%);
 }
 
 /* ---- Light theme — clean white, Tando palette translated ---- */
@@ -126,9 +130,9 @@
   --surface-2:    #F2F2F2;
   --surface-hi:   #E8E8E8;
 
-  --border:       #E5E5E5;
-  --border-hi:    #D4D4D4;
-  --border-focus: rgba(247, 147, 27, 0.55);
+  --border:       #E4E7EA;
+  --border-hi:    #D2D7DC;
+  --border-focus: rgba(11, 117, 104, 0.50);
 
   --card-outline: #E5E5E5;
   --card-grad:    linear-gradient(345deg, #FAFAFA, #FFFFFF);
@@ -154,7 +158,8 @@
     0 6px 16px rgba(0, 0, 0, 0.10);
 
   --hero-glow:
-    radial-gradient(ellipse 70% 50% at 50% 30%, rgba(247, 147, 27, 0.10), transparent 70%);
+    radial-gradient(ellipse 70% 50% at 50% 30%, rgba(46, 230, 210, 0.10), transparent 70%),
+    radial-gradient(ellipse 50% 40% at 10% 100%, rgba(43, 89, 200, 0.07), transparent 70%);
 }
 
 /* ------------------------------------------------------------------ */
@@ -232,8 +237,10 @@
   p { color: var(--text-body); }
 
   strong, b { font-weight: var(--w-bold); color: var(--text-strong); }
-  em { font-style: italic; color: var(--accent); }
-  a  { color: var(--accent); text-decoration: none; }
+  /* accent-text flips to the deep variant on light theme — the bright
+     teal fails contrast on white. */
+  em { font-style: italic; color: var(--accent-text); }
+  a  { color: var(--accent-text); text-decoration: none; }
 
   ::selection { background-color: var(--accent); color: var(--text-on-accent); }
   ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -509,8 +516,8 @@
     letter-spacing: 0.02em;
     border: 1px solid var(--border-hi);
   }
-  .pill-ok      { background: var(--ok-tint);      color: var(--ok);      border-color: rgba(52,153,52,0.35); }
-  .pill-warning { background: var(--warning-tint); color: var(--accent);  border-color: rgba(247,147,27,0.35); }
+  .pill-ok      { background: var(--ok-tint);      color: var(--ok);      border-color: rgba(47,191,113,0.35); }
+  .pill-warning { background: var(--warning-tint); color: var(--warning); border-color: rgba(240,163,61,0.35); }
   .pill-alarm   { background: var(--alarm-tint);   color: var(--alarm);   border-color: rgba(212,69,59,0.35); }
   .pill-neutral { background: var(--surface-2);    color: var(--text-muted); }
 
@@ -557,7 +564,7 @@
   .nav-link.mobile[data-active="true"] {
     background: var(--surface);
     border-bottom-color: transparent;
-    color: var(--accent);
+    color: var(--accent-text);
   }
 }
 
@@ -582,7 +589,7 @@
   .w-bold      { font-weight: var(--w-bold); }
 
   /* Colour aliases. */
-  .text-accent  { color: var(--accent); }
+  .text-accent  { color: var(--accent-text); }
   .text-body    { color: var(--text-body); }
   .text-muted   { color: var(--text-muted); }
   .text-soft    { color: var(--text-soft); }
