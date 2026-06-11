@@ -188,6 +188,15 @@ export interface VaultBalanceView {
   total_sat: number;
 }
 
+/** Response from `POST /vaults/:id/send` — the owner spend flow. */
+export interface OwnerSendResponse {
+  txid: string;
+  explorer_url: string;
+  sent_sat: number;
+  fee_sat: number;
+  remaining_sat: number;
+}
+
 export interface AssistChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -506,6 +515,26 @@ export const api = {
    *  Public; used to fund a freshly-created vault. */
   getVaultAddress: (id: string) =>
     request<VaultAddressView>(`/vaults/${id}/address`),
+  /** Owner spend: server signs with the transiently-POSTed account
+   *  xprv (unsealed in this browser by the password — see
+   *  crypto/sealing.ts) and broadcasts. Omit amount_sat to send the
+   *  whole balance. The xprv is held in server memory only for the
+   *  duration of the call; same contract as the heir claim. */
+  ownerSend: (
+    id: string,
+    ownerToken: string,
+    body: {
+      destination: string;
+      amount_sat?: number;
+      fee_rate_sat_per_vb?: number;
+      owner_xprv: string;
+    },
+  ) =>
+    request<OwnerSendResponse>(
+      `/vaults/${id}/send`,
+      { method: "POST", body: JSON.stringify(body) },
+      ownerToken,
+    ),
   /** Watch-only balance of the vault, synced from Esplora. Public:
    *  the descriptor's addresses are public, and the chain is public.
    *  Owners use this from the dashboard right after funding to confirm

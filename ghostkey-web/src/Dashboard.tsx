@@ -32,6 +32,7 @@ import {
   type VaultEvent,
   type VaultBalanceView,
   type VaultAddressView,
+  type OwnerSendResponse,
 } from "./api";
 import { countdown, parseRfc } from "./time";
 import { AssistChat } from "./AssistChat";
@@ -51,6 +52,7 @@ import {
   isPushSupported,
   subscribeToPush,
 } from "./push";
+import { unsealOwner } from "./crypto/sealing";
 import type { Route } from "./App";
 
 interface Props {
@@ -359,6 +361,12 @@ export function Dashboard({ onNavigate }: Props) {
               </div>
             ) : null}
 
+            {vault && !isClosed && !isClaiming && ownerToken ? (
+              <div className="mt-4">
+                <SendCard vaultId={vault.id} ownerToken={ownerToken} />
+              </div>
+            ) : null}
+
             {vault?.lnurl_checkin && !isClosed && !isClaiming ? (
               <div className="mt-4">
                 <LnurlCard lnurl={vault.lnurl_checkin} />
@@ -646,6 +654,232 @@ function ReceiveCard({ vaultId }: { vaultId: string }) {
         </div>
       ) : null}
       {error ? <p className="mt-2 text-xs text-alarm">{error}</p> : null}
+    </section>
+  );
+}
+
+/* ------------------------------ Send card --------------------------------- */
+
+/**
+ * Owner spend. The password unlocks the sealed owner key right here in
+ * the browser (same Argon2id + XChaCha20 unseal as cross-device sign-in);
+ * the key then rides one TLS request to the server, which signs in
+ * memory, broadcasts, and discards it — the exact contract the heir
+ * claim flow documents in psbt_routes.rs. Change from a partial send
+ * returns to the vault's internal keychain, so the remainder stays
+ * covered by the inheritance plan (with a fresh heir countdown).
+ */
+function SendCard({
+  vaultId,
+  ownerToken,
+}: {
+  vaultId: string;
+  ownerToken: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [destination, setDestination] = useState("");
+  const [amountStr, setAmountStr] = useState("");
+  const [sendAll, setSendAll] = useState(false);
+  const [password, setPassword] = useState("");
+  const [phase, setPhase] = useState<"idle" | "unlocking" | "sending">("idle");
+  const [unlockPct, setUnlockPct] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<OwnerSendResponse | null>(null);
+
+  const busy = phase !== "idle";
+  const amountSat = sendAll ? null : Number.parseInt(amountStr, 10);
+  const canSubmit =
+    !busy &&
+    destination.trim().length > 0 &&
+    password.length > 0 &&
+    (sendAll || (Number.isFinite(amountSat) && (amountSat as number) > 0));
+
+  async function onSend() {
+    setError(null);
+    setPhase("unlocking");
+    setUnlockPct(0);
+    let ownerXprv: string;
+    try {
+      // Legacy (non-password) vaults have no sealed blobs; the server
+      // 400s with a self-explanatory message.
+      const blobs = await api.getSealedBlobs(vaultId);
+      const unsealed = await unsealOwner({
+        password,
+        passwordSalt: blobs.password_salt_b64,
+        memKiB: blobs.password_kdf_mem_kib,
+        iters: blobs.password_kdf_iters,
+        ownerXprvBlob: {
+          v: 1,
+          ct: blobs.owner_xprv_ct_b64,
+          nonce: blobs.owner_xprv_nonce_b64,
+        },
+        ownerTokenBlob: {
+          v: 1,
+          ct: blobs.owner_token_ct_b64,
+          nonce: blobs.owner_token_nonce_b64,
+        },
+        onProgress: (pct) => setUnlockPct(Math.round(pct * 100)),
+      });
+      ownerXprv = unsealed.ownerXprv;
+    } catch (e) {
+      setPhase("idle");
+      setError(
+        e instanceof ApiError
+          ? e.message
+          : "That password didn't unlock the vault. Check it and try again.",
+      );
+      return;
+    }
+
+    setPhase("sending");
+    try {
+      const res = await api.ownerSend(vaultId, ownerToken, {
+        destination: destination.trim(),
+        ...(sendAll ? {} : { amount_sat: amountSat as number }),
+        owner_xprv: ownerXprv,
+      });
+      setResult(res);
+      setPassword("");
+    } catch (e) {
+      setError(
+        e instanceof ApiError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : String(e),
+      );
+    } finally {
+      setPhase("idle");
+    }
+  }
+
+  if (result) {
+    return (
+      <section className="card-flat p-5">
+        <p className="text-[11px] uppercase tracking-wider text-dim">
+          Send Bitcoin
+        </p>
+        <p className="mt-2 text-sm font-semibold text-ok">
+          Sent ✓ {formatSats(result.sent_sat)} is on its way.
+        </p>
+        <p className="mt-1 text-xs text-muted">
+          Network fee: {formatSats(result.fee_sat)}.{" "}
+          {result.remaining_sat > 0
+            ? `The remaining ${formatSats(result.remaining_sat)} stays in your vault, still covered by your inheritance plan — your heir's waiting clock starts fresh from this move.`
+            : "The vault is now empty; add Bitcoin any time to keep the plan going."}
+        </p>
+        <div className="mt-3 flex items-center gap-3">
+          <a
+            href={result.explorer_url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs text-muted underline underline-offset-2"
+          >
+            View on mempool.space
+          </a>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setResult(null);
+              setDestination("");
+              setAmountStr("");
+              setSendAll(false);
+            }}
+          >
+            Send again
+          </Button>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="card-flat p-5">
+      <p className="text-[11px] uppercase tracking-wider text-dim">
+        Send Bitcoin
+      </p>
+      <p className="mt-1 text-xs text-muted">
+        Your money is never locked up. Pay anyone from your vault — whatever
+        you leave behind stays covered by the same inheritance plan.
+      </p>
+      {!expanded ? (
+        <div className="mt-3">
+          <Button size="sm" variant="ghost" onClick={() => setExpanded(true)}>
+            Send from this vault
+          </Button>
+        </div>
+      ) : (
+        <form
+          className="mt-3 flex flex-col gap-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (canSubmit) void onSend();
+          }}
+        >
+          <label className="block">
+            <span className="text-xs text-muted">Send to (Bitcoin address)</span>
+            <input
+              type="text"
+              value={destination}
+              onChange={(e) => setDestination(e.target.value)}
+              placeholder="bc1q…"
+              autoComplete="off"
+              spellCheck={false}
+              disabled={busy}
+              className="input mt-1 w-full font-mono text-xs"
+            />
+          </label>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+            <label className="block flex-1">
+              <span className="text-xs text-muted">Amount (sats)</span>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                value={sendAll ? "" : amountStr}
+                onChange={(e) => setAmountStr(e.target.value)}
+                placeholder={sendAll ? "everything" : "e.g. 50000"}
+                disabled={busy || sendAll}
+                className="input mt-1 w-full"
+              />
+            </label>
+            <label className="flex items-center gap-2 pb-2 text-xs text-muted">
+              <input
+                type="checkbox"
+                checked={sendAll}
+                onChange={(e) => setSendAll(e.target.checked)}
+                disabled={busy}
+              />
+              Send everything
+            </label>
+          </div>
+          <label className="block">
+            <span className="text-xs text-muted">Your password</span>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+              disabled={busy}
+              className="input mt-1 w-full"
+            />
+            <span className="mt-1 block text-[11px] text-dim">
+              Your password unlocks the vault key right here in your browser.
+            </span>
+          </label>
+          {error ? <p className="text-xs text-alarm">{error}</p> : null}
+          <div>
+            <Button size="sm" disabled={!canSubmit} type="submit">
+              {phase === "unlocking"
+                ? `Unlocking… ${unlockPct}%`
+                : phase === "sending"
+                  ? "Sending…"
+                  : "Send"}
+            </Button>
+          </div>
+        </form>
+      )}
     </section>
   );
 }

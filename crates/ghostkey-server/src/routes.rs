@@ -161,6 +161,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/vaults/:id/balance",
             get(crate::psbt_routes::get_vault_balance),
         )
+        .route("/vaults/:id/send", post(crate::psbt_routes::owner_send))
         .route("/vaults/:id/sealed-blobs", get(get_sealed_blobs))
         .route("/vaults/:id/seal-owner-token", post(seal_owner_token))
         .route("/vaults/:id/checkin", post(checkin))
