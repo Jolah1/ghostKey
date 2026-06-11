@@ -832,6 +832,217 @@ pub async fn heir_claim(
 }
 
 /* -------------------------------------------------------------------------- *
+ *  POST /vaults/:id/send — owner spends from the vault                       *
+ *                                                                            *
+ *  The owner-side counterpart to the one-shot heir claim above, with the     *
+ *  same key-handling contract: the browser unseals the owner's account       *
+ *  xprv locally (password → Argon2id KEK → XChaCha20 open), ships it over    *
+ *  TLS in the request body, and the server signs in memory, broadcasts,      *
+ *  and discards. Nothing is persisted; the xprv never reaches disk or        *
+ *  logs. See the heir-claim block comment for why this transit is the       *
+ *  pragmatic choice over browser-side Taproot script-path signing.          *
+ *                                                                            *
+ *  Unlike the heir flow there is no timelock to lean on — the owner          *
+ *  branch is spendable immediately — but the request is OwnerAuth-gated      *
+ *  AND requires the password (to unseal the xprv client-side), so a          *
+ *  stolen bearer token alone cannot move funds.                              *
+ *                                                                            *
+ *  Partial sends route change back to the vault's internal keychain:        *
+ *  the remainder stays under the same inheritance descriptor and its        *
+ *  heir countdown restarts at the new confirmation, like a check-in.        *
+ * -------------------------------------------------------------------------- */
+
+#[derive(Debug, Deserialize)]
+pub struct OwnerSendRequest {
+    /// Bitcoin address to pay. Must match the vault's network.
+    pub destination: String,
+    /// Amount in sats. Absent/null = send everything (drain).
+    #[serde(default)]
+    pub amount_sat: Option<u64>,
+    /// Optional fee rate in sat/vB. Defaults to 2 sat/vB.
+    #[serde(default)]
+    pub fee_rate_sat_per_vb: Option<u64>,
+    /// Owner account xprv, unsealed by the browser. Memory-only.
+    pub owner_xprv: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OwnerSendResponse {
+    pub txid: String,
+    pub explorer_url: String,
+    /// Sats that landed at the destination.
+    pub sent_sat: u64,
+    pub fee_sat: u64,
+    /// Sats returned to the vault as change (0 on a full drain).
+    pub remaining_sat: u64,
+}
+
+pub async fn owner_send(
+    auth: crate::auth::OwnerAuth,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<OwnerSendRequest>,
+) -> Result<(StatusCode, Json<OwnerSendResponse>), ApiError> {
+    let id = auth.vault_id;
+
+    type Row = (Option<String>, String, i64, String, String); // label, network, timelock, ext, int
+    let row: Option<Row> = sqlx::query_as(
+        r#"SELECT label, network, timelock_blocks,
+                  descriptor_external, descriptor_internal
+             FROM vaults WHERE id = ?"#,
+    )
+    .bind(&id)
+    .fetch_optional(&state.db)
+    .await?;
+    let (label, network_s, timelock_blocks, descriptor_external, descriptor_internal) =
+        row.ok_or(ApiError::NotFound)?;
+    let network = crate::config::parse_network(&network_s).map_err(|name| {
+        ApiError::Validation(format!(
+            "stored vault network {name} is not a known Bitcoin network"
+        ))
+    })?;
+
+    let dest = req
+        .destination
+        .trim()
+        .parse::<Address<bitcoin::address::NetworkUnchecked>>()
+        .map_err(|e| ApiError::Validation(format!("destination: {e}")))?;
+    if !dest.is_valid_for_network(network) {
+        return Err(ApiError::Validation(format!(
+            "destination is not valid for {network:?}"
+        )));
+    }
+    let dest = dest.assume_checked();
+    let dest_str = dest.to_string();
+
+    if req.amount_sat == Some(0) {
+        return Err(ApiError::Validation("amount_sat must be at least 1".into()));
+    }
+    let amount_sat = req.amount_sat;
+
+    let fee_rate_sat_per_kwu = req.fee_rate_sat_per_vb.unwrap_or(2).max(1) * 250;
+    let fee_rate = FeeRate::from_sat_per_kwu(fee_rate_sat_per_kwu);
+
+    let owner_xprv = bitcoin::bip32::Xpriv::from_str(req.owner_xprv.trim())
+        .map_err(|e| ApiError::Validation(format!("owner_xprv: {e}")))?;
+    if owner_xprv.network != network.into() {
+        return Err(ApiError::Validation(format!(
+            "owner_xprv is for network {:?}, vault is for {network:?}",
+            owner_xprv.network
+        )));
+    }
+
+    let vault_config = VaultConfig {
+        descriptor_external,
+        descriptor_internal,
+        timelock_blocks: timelock_blocks as u32,
+        network,
+        role: VaultRole::Owner,
+        label,
+    };
+    let vault = Vault::from_config(vault_config)
+        .map_err(|e| ApiError::Validation(format!("stored vault: {e}")))?;
+
+    let urls = esplora_urls(network)?;
+    let dest_spk = dest.script_pubkey();
+
+    let (txid, total_in, sent_sat, fee_sat, remaining_sat) = tokio::task::spawn_blocking(
+        move || -> Result<(bitcoin::Txid, u64, u64, u64, u64), BlockingErr> {
+            let mut wallet =
+                ghostkey_core::wallet::build_signing_from_account(&vault, &owner_xprv)
+                    .map_err(|e| BlockingErr::Vault(e.to_string()))?;
+
+            let update = try_each_esplora(&urls, |client| {
+                client
+                    .full_scan(wallet.start_full_scan(), 5, 1)
+                    .map_err(|e| clean_esplora_err("full_scan", &e))
+            })?;
+            wallet
+                .apply_update(update)
+                .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
+
+            let total = wallet.balance().total().to_sat();
+            if total == 0 {
+                return Err(BlockingErr::NoUtxos);
+            }
+
+            let mut built = ghostkey_core::psbt::build_owner_send(
+                &mut wallet,
+                &vault,
+                &dest,
+                amount_sat,
+                fee_rate,
+            )
+            .map_err(|e| BlockingErr::Build(e.to_string()))?;
+            if !built.finalized {
+                // Same belt-and-braces pass as the heir claim: BDK can
+                // report finalized=false on the first sign call for
+                // Taproot script-path spends.
+                let _ = wallet
+                    .sign(&mut built.psbt, SignOptions::default())
+                    .map_err(|e| BlockingErr::Build(format!("re-sign: {e}")))?;
+                let fin = wallet
+                    .finalize_psbt(&mut built.psbt, SignOptions::default())
+                    .map_err(|e| BlockingErr::Build(format!("finalize: {e}")))?;
+                if !fin {
+                    return Err(BlockingErr::Build(
+                        "PSBT could not be finalised; the supplied key may not match this vault"
+                            .into(),
+                    ));
+                }
+            }
+            let tx = built
+                .psbt
+                .extract_tx()
+                .map_err(|e| BlockingErr::Build(format!("extract_tx: {e}")))?;
+            try_each_esplora(&urls, |client| {
+                client
+                    .broadcast(&tx)
+                    .map_err(|e| clean_esplora_err("broadcast", &e))
+            })?;
+            let txid = tx.compute_txid();
+            let sent: u64 = tx
+                .output
+                .iter()
+                .filter(|o| o.script_pubkey == dest_spk)
+                .map(|o| o.value.to_sat())
+                .sum();
+            let out_sum: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
+            let fee = total.saturating_sub(out_sum);
+            let remaining = out_sum.saturating_sub(sent);
+            Ok((txid, total, sent, fee, remaining))
+        },
+    )
+    .await
+    .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
+
+    record_event(
+        &state.db,
+        &id,
+        "owner_send",
+        Some(serde_json::json!({
+            "txid": txid.to_string(),
+            "destination": dest_str,
+            "total_input_sats": total_in,
+            "sent_sat": sent_sat,
+            "fee_sats": fee_sat,
+            "remaining_sat": remaining_sat,
+        })),
+    )
+    .await?;
+
+    Ok((
+        StatusCode::OK,
+        Json(OwnerSendResponse {
+            txid: txid.to_string(),
+            explorer_url: explorer_url(network, &txid),
+            sent_sat,
+            fee_sat,
+            remaining_sat,
+        }),
+    ))
+}
+
+/* -------------------------------------------------------------------------- *
  *  Helpers                                                                   *
  * -------------------------------------------------------------------------- */
 

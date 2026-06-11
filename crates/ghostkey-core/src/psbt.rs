@@ -71,6 +71,61 @@ pub fn build_check_in(wallet: &mut Wallet, fee_rate: FeeRate) -> Result<BuiltPsb
     Ok(BuiltPsbt { psbt, finalized })
 }
 
+/// Build (and optionally sign) an owner spend to an external address.
+///
+/// Unlike [`build_check_in`] (which always drains back into the vault),
+/// this pays `recipient` either a specific `amount_sat` or — when
+/// `amount_sat` is `None` — the entire balance. For partial sends BDK
+/// routes change to the vault's internal keychain, so the leftover
+/// coins stay under the same inheritance descriptor; their CSV
+/// countdown restarts at the new confirmation height, exactly like a
+/// check-in.
+///
+/// Uses the owner (signature-only, no CSV) tapscript branch on both
+/// keychains, so the transaction is spendable immediately.
+pub fn build_owner_send(
+    wallet: &mut Wallet,
+    vault: &Vault,
+    recipient: &Address,
+    amount_sat: Option<u64>,
+    fee_rate: FeeRate,
+) -> Result<BuiltPsbt> {
+    if !recipient
+        .as_unchecked()
+        .is_valid_for_network(vault.network())
+    {
+        return Err(Error::Psbt(format!(
+            "recipient address is not valid for vault network {:?}",
+            vault.network()
+        )));
+    }
+
+    let ext_path = resolve_owner_policy_path(wallet, KeychainKind::External)?;
+    let int_path = resolve_owner_policy_path(wallet, KeychainKind::Internal)?;
+
+    let mut psbt = {
+        let mut b = wallet.build_tx();
+        match amount_sat {
+            Some(sats) => {
+                b.add_recipient(recipient.script_pubkey(), bitcoin::Amount::from_sat(sats));
+            }
+            None => {
+                b.drain_wallet().drain_to(recipient.script_pubkey());
+            }
+        }
+        b.fee_rate(fee_rate)
+            .policy_path(ext_path, KeychainKind::External)
+            .policy_path(int_path, KeychainKind::Internal);
+        b.finish().map_err(|e| Error::Psbt(e.to_string()))?
+    };
+
+    let finalized = wallet
+        .sign(&mut psbt, SignOptions::default())
+        .map_err(|e| Error::Psbt(e.to_string()))?;
+
+    Ok(BuiltPsbt { psbt, finalized })
+}
+
 /// Build (and optionally sign) a heir-claim transaction.
 ///
 /// Drains the entire vault balance to `recipient`. The transaction uses the
@@ -339,6 +394,31 @@ mod tests {
         // At minimum, the root Thresh should be in the map (it must choose
         // the child that contains the relative timelock).
         assert!(!path.is_empty(), "policy path should not be empty");
+    }
+
+    #[test]
+    fn owner_policy_path_resolves() {
+        // Needs a signing wallet: the walker keys off BDK's
+        // `Complete` contribution, which watch-only never produces.
+        let (v, o, _h) = mk();
+        let w = build_signing(&v, &o).unwrap();
+        let path =
+            resolve_owner_policy_path(&w, KeychainKind::External).expect("must resolve path");
+        assert!(!path.is_empty(), "policy path should not be empty");
+    }
+
+    #[test]
+    fn owner_send_rejects_wrong_network_address() {
+        let (v, o, _h) = mk();
+        let mut w = build_signing(&v, &o).unwrap();
+        // Mainnet address against a regtest vault must fail fast,
+        // before any coin selection happens.
+        let addr = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
+            .parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()
+            .unwrap()
+            .assume_checked();
+        let err = build_owner_send(&mut w, &v, &addr, Some(1_000), FeeRate::BROADCAST_MIN);
+        assert!(err.is_err(), "wrong-network address must be rejected");
     }
 
     #[test]
