@@ -56,7 +56,7 @@ export function InheritPortal() {
         </header>
 
         <div className="mt-10 card-flat p-5">
-          <p className="text-[11px] uppercase tracking-wider text-dim">
+          <p className="text-xs uppercase tracking-wider text-dim">
             What the link looks like
           </p>
           <p className="mt-2 font-mono text-xs text-[var(--text)] break-all">

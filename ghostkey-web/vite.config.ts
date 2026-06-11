@@ -43,10 +43,10 @@ export default defineConfig({
         // Splash background on Android + iOS PWA install. Matches
         // the dark theme's `--bg` so the splash blends straight
         // into the dashboard without a white flash.
-        background_color: "#000000",
-        // The status-bar / OS UI tint. Matches the Bitcoin-orange
-        // accent in the favicon tile.
-        theme_color: "#F7931B",
+        background_color: "#090D12",
+        // The status-bar / OS UI tint. Matches the navy ground of
+        // the shield icon so the installed app reads as one piece.
+        theme_color: "#10151B",
         lang: "en",
         categories: ["finance", "utilities"],
         icons: [
@@ -96,10 +96,14 @@ export default defineConfig({
         // and the browser only ever downloads the ranges a page uses.
         // Precaching all of them would push ~250 KB of fonts the UI
         // never renders into every install. Latin + latin-ext stay.
+        // The 512px icons are only fetched by the OS at install time,
+        // never by the running app — no reason to precache them.
         globIgnores: [
           "**/zxcvbn-*.js",
           "**/inter-{cyrillic,greek,vietnamese}*.woff2",
           "**/inter-tight-{cyrillic,greek,vietnamese}*.woff2",
+          "**/pwa-512x512.png",
+          "**/maskable-icon-512x512.png",
         ],
         // Web push lives in its own classic script so the handlers
         // survive Workbox regenerating the SW body on every build.

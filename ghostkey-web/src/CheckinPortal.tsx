@@ -288,7 +288,7 @@ function Result({
 
       {events.length > 0 && (
         <div className="border-t border-app bg-surface-2/40 px-6 py-4">
-          <p className="text-[11px] uppercase tracking-wider text-dim">
+          <p className="text-xs uppercase tracking-wider text-dim">
             Recent activity
           </p>
           <ul role="list" className="mt-3 space-y-2 text-sm">

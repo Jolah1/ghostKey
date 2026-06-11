@@ -10,7 +10,7 @@
     "build:kit": "vite build --config vite.kit.config.ts",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "pwa:icons": "pwa-assets-generator"
+    "brand:icons": "python3 ../scripts/gen-brand-icons.py"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.2.8",
@@ -29,7 +29,6 @@
   "devDependencies": {
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
-    "@vite-pwa/assets-generator": "^1.0.2",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",
