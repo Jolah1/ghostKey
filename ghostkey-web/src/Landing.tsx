@@ -149,7 +149,7 @@ const STEPS: Step[] = [
   },
   {
     title: "The rules live on Bitcoin, not on us",
-    body: "If GhostKey shut down tomorrow, the person you named could still claim. The instructions are written into Bitcoin itself.",
+    body: "Your plan is written into Bitcoin itself, so nobody — not even us — can block or take what you left. GhostKey keeps it running: reminders for you, a guided claim for them.",
   },
 ];
 
@@ -335,8 +335,8 @@ const REASONS: Reason[] = [
   },
   {
     tag: "Durable",
-    title: "Survives us",
-    body: "Even if this site disappears tomorrow, the rules live on the chain. Your heir can still claim using any Bitcoin wallet that speaks Taproot.",
+    title: "Can't be lost",
+    body: "The rules live on the Bitcoin chain, where they can't be deleted or tampered with. GhostKey gives you and your heir the easy way to use them — check-ins, reminders, and a guided claim.",
   },
 ];
 
