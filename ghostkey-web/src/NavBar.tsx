@@ -15,21 +15,35 @@ interface NavItem {
   label: string;
 }
 
-const ITEMS: NavItem[] = [
+/**
+ * Signed out: the visitor's jobs are set up / sign in / inherit —
+ * the dashboard would only bounce them to the password prompt.
+ * Signed in: "Sign in" disappears (they already did) and the
+ * dashboard takes its place. Sessions end automatically after a
+ * period of inactivity (see App's guard), so there's no sign-out
+ * button to clutter the bar.
+ */
+const SIGNED_OUT_ITEMS: NavItem[] = [
   { key: "setup",     label: "Set up" },
   { key: "checkin",   label: "Sign in" },
   { key: "inherit",   label: "Inherit" },
+];
+
+const SIGNED_IN_ITEMS: NavItem[] = [
   { key: "dashboard", label: "Dashboard" },
+  { key: "inherit",   label: "Inherit" },
 ];
 
 interface Props {
   route: Route;
   onNavigate: (r: Route) => void;
+  signedIn: boolean;
 }
 
-export function NavBar({ route, onNavigate }: Props) {
+export function NavBar({ route, onNavigate, signedIn }: Props) {
   const [open, setOpen] = useState(false);
   const { theme, toggle } = useTheme();
+  const items = signedIn ? SIGNED_IN_ITEMS : SIGNED_OUT_ITEMS;
 
   useEffect(() => { setOpen(false); }, [route]);
 
@@ -45,7 +59,7 @@ export function NavBar({ route, onNavigate }: Props) {
           className="hidden h-full items-center gap-7 md:flex"
           aria-label="Primary"
         >
-          {ITEMS.map((item) => (
+          {items.map((item) => (
             <button
               key={item.key}
               type="button"
@@ -61,13 +75,22 @@ export function NavBar({ route, onNavigate }: Props) {
 
         <div className="flex items-center gap-2">
           <ThemeToggle theme={theme} onToggle={toggle} />
-          {route !== "setup" && (
+          {!signedIn && route !== "setup" && (
             <button
               type="button"
               onClick={() => onNavigate("setup")}
               className="btn btn-ghost hidden md:inline-flex"
             >
               Set up
+            </button>
+          )}
+          {signedIn && route !== "dashboard" && (
+            <button
+              type="button"
+              onClick={() => onNavigate("dashboard")}
+              className="btn btn-ghost hidden md:inline-flex"
+            >
+              Dashboard
             </button>
           )}
           <button
@@ -87,7 +110,7 @@ export function NavBar({ route, onNavigate }: Props) {
       {open && (
         <div id="mobile-menu" className="border-t border-app md:hidden">
           <nav className="mx-auto flex max-w-6xl flex-col gap-1 px-5 py-3">
-            {ITEMS.map((item) => (
+            {items.map((item) => (
               <button
                 key={item.key}
                 type="button"
@@ -100,10 +123,10 @@ export function NavBar({ route, onNavigate }: Props) {
             ))}
             <button
               type="button"
-              onClick={() => onNavigate("setup")}
+              onClick={() => onNavigate(signedIn ? "dashboard" : "setup")}
               className="btn btn-primary mt-2"
             >
-              Set up your vault
+              {signedIn ? "Open your dashboard" : "Set up your vault"}
             </button>
           </nav>
         </div>

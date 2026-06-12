@@ -118,6 +118,66 @@ export function getActiveVaultId(): string | null {
   }
 }
 
+/* ----------------------- inactivity auto sign-out ------------------------- *
+ *
+ * The dashboard session expires after SESSION_TIMEOUT_MS without user
+ * activity. Expiry wipes everything this module stores — vault metas,
+ * owner tokens, the active pointer — so a shared or stolen device
+ * holds nothing once the owner walks away. Password sign-in restores
+ * all of it on any device; that's the recovery path by design.
+ *
+ * `gk:lastActivityAt` is written (throttled) by the App shell on user
+ * interaction. A missing stamp counts as fresh: it's set on first
+ * touch, and treating "no stamp" as expired would sign out users who
+ * upgraded mid-session.
+ */
+
+const ACTIVITY_KEY = "gk:lastActivityAt";
+
+/** How long a session survives without any user activity. */
+export const SESSION_TIMEOUT_MS = 15 * 60_000;
+
+/** Record activity now. Cheap enough to call on every interaction. */
+export function touchSession() {
+  try {
+    localStorage.setItem(ACTIVITY_KEY, String(Date.now()));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** True when a session exists AND its activity stamp is too old. */
+export function sessionExpired(): boolean {
+  if (!getActiveVaultId()) return false;
+  try {
+    const raw = localStorage.getItem(ACTIVITY_KEY);
+    if (!raw) {
+      touchSession();
+      return false;
+    }
+    const last = Number(raw);
+    if (!Number.isFinite(last)) return false;
+    return Date.now() - last > SESSION_TIMEOUT_MS;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Sign out: remove every vault meta, owner token, the active-vault
+ * pointer, and the activity stamp from this device. Everything is
+ * restorable via email + password sign-in.
+ */
+export function clearSession() {
+  try {
+    localStorage.removeItem(STORE_KEY);
+    localStorage.removeItem(ACTIVE_KEY);
+    localStorage.removeItem(ACTIVITY_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 /**
  * Remove a vault's local metadata. If it was the active vault, the
  * caller is responsible for picking a new active id (e.g. switch to

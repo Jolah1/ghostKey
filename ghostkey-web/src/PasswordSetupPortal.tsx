@@ -772,8 +772,6 @@ const CHANNELS: {
   },
 ];
 
-const MONTH_OPTIONS = [1, 2, 3, 6, 9, 12];
-
 function monthsLabel(n: number): string {
   if (n === 12) return "1 year";
   return `${n} month${n === 1 ? "" : "s"}`;
@@ -867,28 +865,18 @@ function StepHeir({
               ))}
             </div>
           ) : (
-            <div className="flex items-center gap-4">
-              <input
-                type="range"
-                min={1}
-                max={12}
-                value={draft.waitingMonths}
-                onChange={(e) =>
-                  patch({ waitingMonths: Number(e.target.value) })
-                }
-                aria-label="Waiting period in months"
-                className="w-full accent-[var(--accent)]"
-                list="month-marks"
-              />
-              <datalist id="month-marks">
-                {MONTH_OPTIONS.map((m) => (
-                  <option key={m} value={m} />
-                ))}
-              </datalist>
-              <span className="min-w-[5.5rem] text-right font-display text-3xl font-bold tracking-tight text-accent">
-                {monthsLabel(draft.waitingMonths)}
-              </span>
-            </div>
+            <select
+              className="input"
+              value={draft.waitingMonths}
+              onChange={(e) => patch({ waitingMonths: Number(e.target.value) })}
+              aria-label="Waiting period"
+            >
+              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                <option key={m} value={m}>
+                  {monthsLabel(m)}
+                </option>
+              ))}
+            </select>
           )}
         </Field>
 
@@ -901,17 +889,33 @@ function StepHeir({
               Demo server: cadences are in seconds. Not for real funds.
             </div>
           )}
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {cadenceList.map((c) => (
-              <Tile
-                key={c.id}
-                title={c.label}
-                sub={c.sub}
-                selected={draft.cadenceId === c.id}
-                onClick={() => patch({ cadenceId: c.id })}
-              />
-            ))}
-          </div>
+          {demoMode ? (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {cadenceList.map((c) => (
+                <Tile
+                  key={c.id}
+                  title={c.label}
+                  sub={c.sub}
+                  selected={draft.cadenceId === c.id}
+                  onClick={() => patch({ cadenceId: c.id })}
+                />
+              ))}
+            </div>
+          ) : (
+            <select
+              className="input"
+              value={draft.cadenceId}
+              onChange={(e) => patch({ cadenceId: e.target.value })}
+              aria-label="Check-in reminder cadence"
+            >
+              {cadenceList.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
+                  {c.sub ? ` — ${c.sub.toLowerCase()}` : ""}
+                </option>
+              ))}
+            </select>
+          )}
         </Field>
 
         {demoMode ? null : (
@@ -919,17 +923,19 @@ function StepHeir({
             label="Grace period after a missed reminder"
             hint="Extra slack before the vault enters its alarm state. The heir still cannot claim for the full waiting period above."
           >
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <select
+              className="input"
+              value={draft.graceId}
+              onChange={(e) => patch({ graceId: e.target.value })}
+              aria-label="Grace period"
+            >
               {graceList.map((g) => (
-                <Tile
-                  key={g.id}
-                  title={g.label}
-                  sub={g.sub}
-                  selected={draft.graceId === g.id}
-                  onClick={() => patch({ graceId: g.id })}
-                />
+                <option key={g.id} value={g.id}>
+                  {g.label}
+                  {g.sub ? ` — ${g.sub.toLowerCase()}` : ""}
+                </option>
               ))}
-            </div>
+            </select>
           </Field>
         )}
 
