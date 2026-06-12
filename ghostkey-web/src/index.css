@@ -377,6 +377,15 @@
     border-radius: 14px;
   }
 
+  /* Floating guide chat panel. `dvh` tracks the *visible* mobile
+     viewport (browser chrome + keyboard), so the input never sinks
+     below the fold the way `100vh` lets it; the vh line stays as the
+     fallback for engines without dvh. */
+  .assist-panel {
+    max-height: min(560px, calc(100vh - 2.5rem));
+    max-height: min(560px, calc(100dvh - 2.5rem));
+  }
+
   /* Inputs — pill-leaning, generous padding, heavy focus ring. */
   .field-label {
     display: block;

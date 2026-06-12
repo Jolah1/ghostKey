@@ -106,8 +106,7 @@ export function AssistChat({ label = "Ask the guide", intro }: Props) {
       role="dialog"
       aria-modal="false"
       aria-label="GhostKey guide chat"
-      className="fixed bottom-5 right-5 z-40 flex w-[min(380px,calc(100vw-2rem))] flex-col rounded-2xl bg-[var(--surface)] shadow-xl ring-1 ring-[var(--border)]"
-      style={{ maxHeight: "min(560px, calc(100vh - 2.5rem))" }}
+      className="assist-panel fixed bottom-5 right-5 z-40 flex w-[min(380px,calc(100vw-2rem))] flex-col rounded-2xl bg-[var(--surface)] shadow-xl ring-1 ring-[var(--border)]"
     >
       <header className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
         <div>
@@ -160,7 +159,9 @@ export function AssistChat({ label = "Ask the guide", intro }: Props) {
                     : "mr-6 rounded-xl px-3 py-2 text-[var(--text)]"
                 }
               >
-                <p className="whitespace-pre-wrap leading-snug">{m.content}</p>
+                <p className="whitespace-pre-wrap break-words leading-snug">
+                  {m.content}
+                </p>
               </li>
             ))}
             {busy ? (
@@ -174,7 +175,7 @@ export function AssistChat({ label = "Ask the guide", intro }: Props) {
           </ul>
         )}
         {error ? (
-          <p className="mt-3 text-xs text-alarm">{error}</p>
+          <p className="mt-3 break-words text-xs text-alarm">{error}</p>
         ) : null}
       </div>
 
