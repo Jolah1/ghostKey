@@ -41,6 +41,112 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
     transition_ok_to_alarmed(state, &now).await?;
     send_alarm_escalations(state, &now).await?;
     transition_alarmed_to_claimable(state, &now).await?;
+    send_claim_ready_notices(state).await?;
+    Ok(())
+}
+
+/// Once a claim's challenge window has elapsed without the owner
+/// objecting, tell the heir they can finish. Without this, a
+/// non-technical heir who hit the wait screen has to remember to come
+/// back on their own.
+///
+/// `claim_ready_notified_at` dedupes; it is cleared (along with
+/// `claim_opened_at`) by check-in and panic, both of which kill the
+/// claim cycle entirely.
+async fn send_claim_ready_notices(state: &AppState) -> anyhow::Result<()> {
+    let window = crate::config::claim_challenge_window_secs();
+    if window == 0 {
+        return Ok(());
+    }
+    type ReadyRow = (
+        String,         // id
+        String,         // claim_opened_at
+        Option<String>, // heir_contact_ciphertext
+        Option<String>, // heir_contact_nonce
+        Option<String>, // claim_token_at_rest_b64
+    );
+    let rows: Vec<ReadyRow> = sqlx::query_as(
+        r#"SELECT id, claim_opened_at,
+                  heir_contact_ciphertext, heir_contact_nonce,
+                  claim_token_at_rest_b64
+             FROM vaults
+            WHERE claim_opened_at IS NOT NULL
+              AND claim_ready_notified_at IS NULL
+              AND claim_token_hash IS NOT NULL
+              AND claim_token_used_at IS NULL"#,
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let now = Utc::now();
+    for (vault_id, opened_s, heir_ct, heir_nn, token_at_rest) in rows {
+        let ready_at = crate::config::parse_rfc(&opened_s) + chrono::Duration::seconds(window);
+        if now < ready_at {
+            continue;
+        }
+
+        // Mark first (CAS) so a racing tick can't double-send.
+        let marked = sqlx::query(
+            "UPDATE vaults SET claim_ready_notified_at = ? \
+              WHERE id = ? AND claim_ready_notified_at IS NULL",
+        )
+        .bind(now.to_rfc3339())
+        .bind(&vault_id)
+        .execute(&state.db)
+        .await?;
+        if marked.rows_affected() == 0 {
+            continue;
+        }
+
+        let Some(contact) = parse_heir_contact(&vault_id, heir_ct.as_deref(), heir_nn.as_deref())?
+        else {
+            tracing::info!(vault_id = %vault_id, "claim ready but no heir contact; skipping notice");
+            continue;
+        };
+        if contact.channel.as_deref() != Some("email") {
+            tracing::info!(vault_id = %vault_id, "claim ready but heir channel unsupported; skipping notice");
+            continue;
+        }
+        let Some(recipient) = contact.contact.as_deref().filter(|c| !c.is_empty()) else {
+            continue;
+        };
+
+        // Password vaults keep the raw token at rest, so we can embed
+        // the link again; legacy vaults can't (the raw token only ever
+        // lived in the first email), so we point back at it.
+        let link_line = match token_at_rest.as_deref().filter(|t| !t.is_empty()) {
+            Some(token) => {
+                let base = public_base_url();
+                format!("Pick up where you left off:\n\n{base}/#/claim/{token}")
+            }
+            None => "Pick up where you left off by opening the link from our \
+                     earlier email again."
+                .to_string(),
+        };
+        let heir_name = contact.name.as_deref().unwrap_or("there");
+        let body = format!(
+            "Hello {heir_name},\n\n\
+             The short safety wait on your claim is over — you can now \
+             finish receiving what was left for you.\n\n\
+             {link_line}\n\n\
+             — GhostKey"
+        );
+        if let Err(e) = notifier::enqueue(
+            &state.db,
+            &vault_id,
+            NotificationKind::ClaimReady,
+            Channel::Email,
+            recipient,
+            "You can finish your claim now",
+            &body,
+        )
+        .await
+        {
+            tracing::warn!(vault_id = %vault_id, error = ?e, "claim-ready notice enqueue failed");
+        } else {
+            tracing::info!(vault_id = %vault_id, "claim-ready notice enqueued");
+        }
+    }
     Ok(())
 }
 
@@ -296,7 +402,7 @@ const PRE_DEADLINE_REMINDER_LEAD_SECS: i64 = 24 * 3600;
 /// that edge case: the next tick will see the marker and skip; the
 /// reminder simply doesn't go out that cycle. Logged loudly so it's
 /// observable.
-async fn mint_or_reuse_one_tap_token(
+pub(crate) async fn mint_or_reuse_one_tap_token(
     state: &AppState,
     vault_id: &str,
     now_iso: &str,
@@ -1844,5 +1950,161 @@ mod tests {
         .await
         .expect("pre count");
         assert_eq!(pre_n, 0);
+    }
+
+    /// First valid resolve stamps `claim_opened_at`, records the
+    /// `claim_opened` event, and gates; once the stamp is older than
+    /// the window the gate opens. Relies on the 48h default window
+    /// (GHOSTKEY_CLAIM_CHALLENGE_SECS unset in tests).
+    #[tokio::test]
+    async fn claim_challenge_stamps_then_gates_then_opens() {
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        insert_vault(
+            &pool,
+            "vault-cc",
+            "timelock_started",
+            "2026-04-01T00:00:00Z",
+            Some("2026-04-08T00:00:00Z"),
+        )
+        .await;
+
+        let gate = crate::routes::ensure_claim_challenge(&state, "vault-cc")
+            .await
+            .expect("first gate call");
+        let available = gate.expect("first resolve must open the window");
+        assert!(available > Utc::now(), "availability must be in the future");
+
+        let opened: Option<String> =
+            sqlx::query_scalar("SELECT claim_opened_at FROM vaults WHERE id = 'vault-cc'")
+                .fetch_one(&pool)
+                .await
+                .expect("read claim_opened_at");
+        assert!(opened.is_some(), "claim_opened_at must be stamped");
+
+        let ev: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE vault_id = 'vault-cc' AND kind = 'claim_opened'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("event count");
+        assert_eq!(ev, 1, "exactly one claim_opened event");
+
+        // Second call: still gated, no second event.
+        let gate2 = crate::routes::ensure_claim_challenge(&state, "vault-cc")
+            .await
+            .expect("second gate call");
+        assert!(gate2.is_some(), "window must still be open");
+        let ev2: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE vault_id = 'vault-cc' AND kind = 'claim_opened'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("event count 2");
+        assert_eq!(ev2, 1, "no duplicate claim_opened event");
+
+        // Backdate past the 48h default window: the gate opens.
+        let past = (Utc::now() - chrono::Duration::seconds(49 * 3600)).to_rfc3339();
+        sqlx::query("UPDATE vaults SET claim_opened_at = ? WHERE id = 'vault-cc'")
+            .bind(&past)
+            .execute(&pool)
+            .await
+            .expect("backdate");
+        let gate3 = crate::routes::ensure_claim_challenge(&state, "vault-cc")
+            .await
+            .expect("third gate call");
+        assert!(gate3.is_none(), "elapsed window must let the claim proceed");
+    }
+
+    /// Once the window has elapsed the scheduler marks the row
+    /// (dedup) even when there's no heir contact to email.
+    #[tokio::test]
+    async fn claim_ready_notice_marks_row_once() {
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        insert_vault(
+            &pool,
+            "vault-cr",
+            "timelock_started",
+            "2026-04-01T00:00:00Z",
+            Some("2026-04-08T00:00:00Z"),
+        )
+        .await;
+        let past = (Utc::now() - chrono::Duration::seconds(49 * 3600)).to_rfc3339();
+        sqlx::query(
+            "UPDATE vaults SET claim_token_hash = 'h', claim_opened_at = ? WHERE id = 'vault-cr'",
+        )
+        .bind(&past)
+        .execute(&pool)
+        .await
+        .expect("arm claim");
+
+        send_claim_ready_notices(&state).await.expect("tick 1");
+        let marked: Option<String> =
+            sqlx::query_scalar("SELECT claim_ready_notified_at FROM vaults WHERE id = 'vault-cr'")
+                .fetch_one(&pool)
+                .await
+                .expect("read marker");
+        assert!(marked.is_some(), "row must be marked after the window");
+
+        // Idempotent: a second tick does nothing.
+        send_claim_ready_notices(&state).await.expect("tick 2");
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE vault_id = 'vault-cr' AND kind = 'claim_ready'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("notice count");
+        assert_eq!(n, 0, "no heir contact on file -> no email, just the marker");
+    }
+
+    /// Issue #70: a panic on a vault WITH a sealed trusted contact
+    /// enqueues the panic_alert; a vault without one stays silent.
+    #[tokio::test]
+    async fn panic_alert_goes_to_trusted_contact() {
+        ensure_test_master_key();
+        let pool = fresh_db().await;
+        insert_vault(&pool, "vault-pa", "ok", "2026-04-01T00:00:00Z", None).await;
+        let sealed = crate::crypto::seal_for_vault("vault-pa", b"friend@example.com")
+            .expect("seal trusted contact");
+        sqlx::query(
+            "UPDATE vaults SET trusted_contact_ciphertext = ?, trusted_contact_nonce = ?, \
+             trusted_contact_channel = 'email' WHERE id = 'vault-pa'",
+        )
+        .bind(&sealed.ciphertext_b64)
+        .bind(&sealed.nonce_b64)
+        .execute(&pool)
+        .await
+        .expect("store trusted contact");
+
+        crate::lightning::notify_trusted_contact_of_panic(&pool, "vault-pa")
+            .await
+            .expect("notify");
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE vault_id = 'vault-pa' AND kind = 'panic_alert'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("alert count");
+        assert_eq!(n, 1, "panic alert must be enqueued");
+
+        // And a vault without a trusted contact alerts nobody.
+        insert_vault(&pool, "vault-pb", "ok", "2026-04-01T00:00:00Z", None).await;
+        crate::lightning::notify_trusted_contact_of_panic(&pool, "vault-pb")
+            .await
+            .expect("notify without contact");
+        let n2: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE vault_id = 'vault-pb' AND kind = 'panic_alert'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("alert count 2");
+        assert_eq!(n2, 0, "no trusted contact -> no alert");
     }
 }

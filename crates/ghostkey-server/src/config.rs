@@ -131,6 +131,30 @@ pub fn api_base_url() -> Option<String> {
         .map(|s| s.trim_end_matches('/').to_string())
 }
 
+/// How long the claim-challenge window holds a freshly-opened claim,
+/// in seconds. During the window the heir's key material and the
+/// claim endpoints stay locked while the owner (and trusted contact)
+/// are alerted — a live owner cancels the whole claim with one
+/// check-in; a dead one merely delays the heir.
+///
+/// `GHOSTKEY_CLAIM_CHALLENGE_SECS` overrides; `0` disables the window
+/// entirely. Default is 48 hours, except in demo mode where it drops
+/// to 15 seconds so the full open → alert → wait → claim arc fits in
+/// a live demo.
+pub fn claim_challenge_window_secs() -> i64 {
+    if let Some(v) = std::env::var("GHOSTKEY_CLAIM_CHALLENGE_SECS")
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+    {
+        return v.max(0);
+    }
+    if crate::demo::demo_mode() {
+        15
+    } else {
+        48 * 3600
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

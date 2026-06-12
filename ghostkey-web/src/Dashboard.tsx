@@ -445,7 +445,7 @@ export function Dashboard({ onNavigate }: Props) {
 
             {vault?.lnurl_panic && vault.status !== "frozen" && !isClosed && !isClaiming ? (
               <div className="mt-5">
-                <PanicCard lnurl={vault.lnurl_panic} />
+                <PanicCard lnurl={vault.lnurl_panic} hasTrustedContact={Boolean(vault.has_trusted_contact)} />
               </div>
             ) : null}
 
@@ -1780,8 +1780,9 @@ function FrozenBanner({ vault, now }: { vault: VaultView; now: Date }) {
       </p>
       <p className="mt-1 text-xs text-amber-100/80">
         {daysLeft != null
-          ? `Auto-unfreezes in ${daysLeft} day${daysLeft === 1 ? "" : "s"}. Your trusted contact has been alerted.`
-          : "Auto-unfreezes after the 90-day window. Your trusted contact has been alerted."}
+          ? `Auto-unfreezes in ${daysLeft} day${daysLeft === 1 ? "" : "s"}.`
+          : "Auto-unfreezes after the 90-day window."}
+        {vault.has_trusted_contact ? " Your trusted contact has been alerted." : ""}
       </p>
     </section>
   );
@@ -1920,7 +1921,15 @@ function IndependenceProofCard({ vault }: { vault: VaultView }) {
 
 /* ----------------------------- Panic card --------------------------------- */
 
-function PanicCard({ lnurl }: { lnurl: string }) {
+function PanicCard({
+  lnurl,
+  hasTrustedContact,
+}: {
+  lnurl: string;
+  // The "alert your trusted contact" copy only renders when one is on
+  // file — promising an alert the server won't send is issue #70.
+  hasTrustedContact: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -1932,7 +1941,7 @@ function PanicCard({ lnurl }: { lnurl: string }) {
         </p>
         <p className="mt-1.5 text-sm text-muted">
           If your wallet is compromised, freeze this vault for 90 days
-          and alert your trusted contact.
+          {hasTrustedContact ? " and alert your trusted contact" : ""}.
         </p>
         <div className="mt-3">
           <Button size="sm" variant="ghost" onClick={() => setExpanded(true)}>
@@ -1950,8 +1959,10 @@ function PanicCard({ lnurl }: { lnurl: string }) {
         </p>
         <p className="mt-1 text-xs text-amber-100/80">
           Paying the next QR freezes this vault for 90 days. Your heir
-          cannot claim during that window. Your trusted contact will be
-          alerted that you triggered a panic.
+          cannot claim during that window.
+          {hasTrustedContact
+            ? " Your trusted contact will be alerted that you triggered a panic."
+            : ""}
         </p>
         <div className="mt-3 flex flex-wrap gap-2">
           <Button

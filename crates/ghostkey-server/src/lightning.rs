@@ -570,6 +570,8 @@ pub async fn mark_panic_paid(db: &sqlx::SqlitePool, payment_hash: &str) -> anyho
                   claim_token_hash             = NULL,
                   claim_token_issued_at        = NULL,
                   claim_token_used_at          = NULL,
+                  claim_opened_at              = NULL,
+                  claim_ready_notified_at      = NULL,
                   pre_deadline_reminder_sent_at = NULL,
                   last_alarm_reminder_sent_at  = NULL,
                   alarm_reminder_count          = 0,
@@ -603,6 +605,66 @@ pub async fn mark_panic_paid(db: &sqlx::SqlitePool, payment_hash: &str) -> anyho
         frozen_until = %frozen_until_s,
         "panic-stop confirmed; vault frozen"
     );
+
+    // F4 / issue #70: tell the trusted contact. Best-effort — the
+    // freeze itself is already committed, and a vault without a
+    // trusted contact simply alerts nobody.
+    if let Err(e) = notify_trusted_contact_of_panic(db, &vault_id).await {
+        tracing::warn!(
+            vault_id = %vault_id,
+            error = ?e,
+            "panic alert to trusted contact could not be enqueued"
+        );
+    }
+    Ok(())
+}
+
+/// Enqueue the panic alert promised by the dashboard's emergency-stop
+/// copy. The trusted contact learns nothing about the vault — no
+/// label, no amounts — only that someone they know hit the alarm.
+pub(crate) async fn notify_trusted_contact_of_panic(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+) -> anyhow::Result<()> {
+    let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT trusted_contact_ciphertext, trusted_contact_nonce, trusted_contact_channel \
+           FROM vaults WHERE id = ?",
+    )
+    .bind(vault_id)
+    .fetch_optional(db)
+    .await?;
+    let Some((ct, nn, ch)) = row else {
+        return Ok(());
+    };
+    let Some(trusted) = crate::notifier::parse_owner_contact(
+        vault_id,
+        ct.as_deref(),
+        nn.as_deref(),
+        ch.as_deref(),
+    )?
+    else {
+        tracing::info!(vault_id = %vault_id, "no trusted contact on file; panic alert skipped");
+        return Ok(());
+    };
+    let body = "Someone you know named you as their emergency contact on \
+                GhostKey, a service that protects their Bitcoin.\n\n\
+                They just triggered an emergency freeze on their account. \
+                People usually do this when they think a password or device \
+                of theirs has been compromised — or when something feels \
+                wrong.\n\n\
+                Please check on them.\n\n\
+                — GhostKey";
+    crate::notifier::enqueue(
+        db,
+        vault_id,
+        crate::notifier::NotificationKind::PanicAlert,
+        trusted.channel,
+        &trusted.address,
+        "Someone named you as their emergency contact — please check on them",
+        body,
+    )
+    .await?;
+    tracing::info!(vault_id = %vault_id, "panic alert to trusted contact enqueued");
     Ok(())
 }
 

@@ -386,6 +386,12 @@ pub struct VaultView {
     pub descriptor_external: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub descriptor_internal: Option<String>,
+    /// Whether a trusted contact is on file. The dashboard's panic
+    /// copy promises "your trusted contact will be alerted" — that
+    /// promise must only render when it's true (issue #70). Only
+    /// populated on owner-authenticated `GET /vaults/:id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_trusted_contact: Option<bool>,
 }
 
 /// Response shape from a successful vault creation.
@@ -561,6 +567,7 @@ async fn create_vault(
                 owner_contact_verified: None,
                 descriptor_external: None,
                 descriptor_internal: None,
+                has_trusted_contact: None,
             },
             owner_token: issued_owner.token,
         }),
@@ -1070,6 +1077,7 @@ async fn create_vault_from_xpub(
                 owner_contact_verified: if has_owner_email { Some(false) } else { None },
                 descriptor_external: None,
                 descriptor_internal: None,
+                has_trusted_contact: None,
             },
             owner_token: issued_owner.token,
         }),
@@ -1124,6 +1132,183 @@ async fn send_contact_verification(
     )
     .await
     .map_err(|e| ApiError::Validation(format!("could not enqueue verification email: {e}")))?;
+    Ok(())
+}
+
+/* -------------------------------------------------------------------------- *
+ *  Claim-challenge window                                                    *
+ *                                                                            *
+ *  The heir's claim link is a bearer credential: whoever holds it can        *
+ *  sweep the vault. The challenge window is the defence against a           *
+ *  compromised heir inbox: the FIRST resolve of a valid, unconsumed         *
+ *  token stamps `claim_opened_at`, alerts the owner (with a one-tap         *
+ *  check-in link — one tap cancels the whole claim) and the trusted         *
+ *  contact, and every endpoint that hands out key material or moves         *
+ *  funds stays locked until the window elapses. A live owner loses          *
+ *  nothing; a dead one delays the heir by GHOSTKEY_CLAIM_CHALLENGE_SECS    *
+ *  (default 48h, 0 disables).                                                *
+ * -------------------------------------------------------------------------- */
+
+/// Returns `Ok(None)` when the claim may proceed, `Ok(Some(t))` when
+/// the window is still open until `t`. Stamps `claim_opened_at` and
+/// fires the alerts on the first call for a claim cycle; alert
+/// failures are logged, never surfaced — a broken SMTP config must
+/// not brick the heir's claim.
+pub(crate) async fn ensure_claim_challenge(
+    state: &AppState,
+    vault_id: &str,
+) -> Result<Option<DateTime<Utc>>, ApiError> {
+    let window = crate::config::claim_challenge_window_secs();
+    if window == 0 {
+        return Ok(None);
+    }
+    let now = Utc::now();
+
+    let opened: Option<Option<String>> =
+        sqlx::query_scalar("SELECT claim_opened_at FROM vaults WHERE id = ?")
+            .bind(vault_id)
+            .fetch_optional(&state.db)
+            .await?;
+    let opened = opened.ok_or(ApiError::NotFound)?;
+
+    if let Some(opened_s) = opened.as_deref() {
+        let available = parse_rfc(opened_s) + Duration::seconds(window);
+        return Ok((now < available).then_some(available));
+    }
+
+    // First open of this claim cycle. CAS so two racing resolves
+    // produce exactly one set of alerts.
+    let stamped = sqlx::query(
+        "UPDATE vaults SET claim_opened_at = ? WHERE id = ? AND claim_opened_at IS NULL",
+    )
+    .bind(now.to_rfc3339())
+    .bind(vault_id)
+    .execute(&state.db)
+    .await?;
+
+    let available = now + Duration::seconds(window);
+    if stamped.rows_affected() == 1 {
+        record_event(
+            &state.db,
+            vault_id,
+            "claim_opened",
+            Some(serde_json::json!({ "challenge_until": available.to_rfc3339() })),
+        )
+        .await?;
+        if let Err(e) = notify_claim_opened(state, vault_id, available).await {
+            tracing::warn!(
+                vault_id = %vault_id,
+                error = ?e,
+                "claim-opened alerts could not be enqueued"
+            );
+        }
+    }
+    Ok(Some(available))
+}
+
+/// Alert the owner and the trusted contact that a claim has started.
+/// Best-effort: a vault without contacts simply alerts nobody.
+async fn notify_claim_opened(
+    state: &AppState,
+    vault_id: &str,
+    available: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    type Row = (
+        Option<String>, // owner_contact_ciphertext
+        Option<String>, // owner_contact_nonce
+        Option<String>, // owner_contact_channel
+        Option<String>, // trusted_contact_ciphertext
+        Option<String>, // trusted_contact_nonce
+        Option<String>, // trusted_contact_channel
+    );
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT owner_contact_ciphertext, owner_contact_nonce, owner_contact_channel, \
+                trusted_contact_ciphertext, trusted_contact_nonce, trusted_contact_channel \
+           FROM vaults WHERE id = ?",
+    )
+    .bind(vault_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some((own_ct, own_nn, own_ch, tr_ct, tr_nn, tr_ch)) = row else {
+        return Ok(());
+    };
+
+    let hours = (crate::config::claim_challenge_window_secs() + 3599) / 3600;
+    let until = available.format("%B %-d, %Y at %H:%M UTC");
+    let base = crate::scheduler::public_base_url();
+
+    // Owner: the one-tap check-in link is the kill switch. If a live
+    // unused token is outstanding we can't recover its raw value, so
+    // fall back to the sign-in page — checking in there cancels the
+    // claim just the same.
+    if let Some(owner) = crate::notifier::parse_owner_contact(
+        vault_id,
+        own_ct.as_deref(),
+        own_nn.as_deref(),
+        own_ch.as_deref(),
+    )? {
+        let now_s = Utc::now().to_rfc3339();
+        let cancel_url =
+            match crate::scheduler::mint_or_reuse_one_tap_token(state, vault_id, &now_s).await? {
+                Some(token) => format!("{base}/#/checkin-link/{vault_id}/{token}"),
+                None => format!("{base}/#/checkin"),
+            };
+        let body = format!(
+            "Someone just opened the claim link for your vault.\n\n\
+             If you stopped checking in on purpose, you don't need to do \
+             anything — the person you chose is collecting what you left \
+             them.\n\n\
+             If you're reading this and you're fine, your vault thinks \
+             you're gone — or someone else got hold of the claim link. \
+             One check-in stops the claim immediately:\n\n\
+             {cancel_url}\n\n\
+             Nothing can leave the vault before {until}. After checking \
+             in, have a look at your dashboard.\n\n\
+             — GhostKey"
+        );
+        crate::notifier::enqueue(
+            &state.db,
+            vault_id,
+            crate::notifier::NotificationKind::ClaimOpened,
+            owner.channel,
+            &owner.address,
+            "A claim on your vault has started — check in if you're fine",
+            &body,
+        )
+        .await?;
+    }
+
+    // Trusted contact: knows nothing about the vault. Like the heir's
+    // email, this reveals no label, no amounts — just "check on them".
+    if let Some(trusted) = crate::notifier::parse_owner_contact(
+        vault_id,
+        tr_ct.as_deref(),
+        tr_nn.as_deref(),
+        tr_ch.as_deref(),
+    )? {
+        let body = format!(
+            "Someone you know named you as their emergency contact on \
+             GhostKey, a service that passes their Bitcoin to a person \
+             they chose if they ever stop responding.\n\n\
+             A claim on their account has just started. That usually \
+             means they have passed away.\n\n\
+             If you know they're alive and well, please tell them to \
+             check their email and sign in to GhostKey right away — \
+             nothing moves for at least {hours} hours, and one check-in \
+             from them stops the claim.\n\n\
+             — GhostKey"
+        );
+        crate::notifier::enqueue(
+            &state.db,
+            vault_id,
+            crate::notifier::NotificationKind::ClaimOpened,
+            trusted.channel,
+            &trusted.address,
+            "You're someone's emergency contact — please check on them",
+            &body,
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -1232,6 +1417,8 @@ async fn get_vault(
         owner_contact_verified_at: Option<String>,
         descriptor_external: String,
         descriptor_internal: String,
+        /// Has a sealed trusted contact (0/1).
+        has_trusted_contact: i64,
     }
     let row = sqlx::query_as::<_, VaultRow>(
         r#"SELECT id, label, network, timelock_blocks,
@@ -1241,7 +1428,8 @@ async fn get_vault(
                   owner_contact_channel,
                   owner_contact_ciphertext IS NOT NULL AS has_owner_contact,
                   owner_contact_verified_at,
-                  descriptor_external, descriptor_internal
+                  descriptor_external, descriptor_internal,
+                  trusted_contact_ciphertext IS NOT NULL AS has_trusted_contact
            FROM vaults WHERE id = ?"#,
     )
     .bind(&id)
@@ -1292,6 +1480,7 @@ async fn get_vault(
         },
         descriptor_external: Some(row.descriptor_external),
         descriptor_internal: Some(row.descriptor_internal),
+        has_trusted_contact: Some(row.has_trusted_contact == 1),
     }))
 }
 
@@ -1590,6 +1779,8 @@ async fn checkin(
                   claim_token_hash     = NULL,
                   claim_token_issued_at = NULL,
                   claim_token_used_at  = NULL,
+                  claim_opened_at      = NULL,
+                  claim_ready_notified_at = NULL,
                   pre_deadline_reminder_sent_at = NULL,
                   last_alarm_reminder_sent_at  = NULL,
                   alarm_reminder_count          = 0,
@@ -1714,6 +1905,8 @@ async fn checkin_from_link(
                   claim_token_hash     = NULL,
                   claim_token_issued_at = NULL,
                   claim_token_used_at  = NULL,
+                  claim_opened_at      = NULL,
+                  claim_ready_notified_at = NULL,
                   pre_deadline_reminder_sent_at = NULL,
                   last_alarm_reminder_sent_at  = NULL,
                   alarm_reminder_count          = 0,
@@ -1860,7 +2053,9 @@ async fn issue_claim(
         r#"UPDATE vaults
               SET claim_token_hash      = ?,
                   claim_token_issued_at = ?,
-                  claim_token_used_at   = NULL
+                  claim_token_used_at   = NULL,
+                  claim_opened_at       = NULL,
+                  claim_ready_notified_at = NULL
             WHERE id = ?"#,
     )
     .bind(&issued.hash_hex)
@@ -1907,6 +2102,11 @@ pub struct ClaimView {
     /// JSON body decrypted from the sealed contact, parsed for the
     /// heir's display name. May be empty for legacy vaults.
     pub heir_display_name: Option<String>,
+    /// When the claim-challenge window ends and the claim can be
+    /// completed. `None` means no wait — either the window is
+    /// disabled or it has already elapsed. While set, the claim page
+    /// shows the safety-wait screen and the key/PSBT endpoints refuse.
+    pub claim_available_at: Option<DateTime<Utc>>,
 }
 
 async fn resolve_claim(
@@ -1970,6 +2170,11 @@ async fn resolve_claim(
         return Err(ApiError::Conflict("claim token already used".into()));
     }
 
+    // First valid resolve starts the challenge window and alerts the
+    // owner + trusted contact; later resolves just report how long is
+    // left so the claim page can render the wait screen.
+    let claim_available_at = ensure_claim_challenge(&state, &vault_id).await?;
+
     // Decrypt the sealed contact (if any) and pull out the display name.
     let (heir_display_name, heir_channel) = match (ciphertext_b64, nonce_b64) {
         (Some(ct), Some(nonce)) => {
@@ -2013,6 +2218,7 @@ async fn resolve_claim(
         next_deadline_at: parse_rfc(&next_deadline),
         heir_channel,
         heir_display_name,
+        claim_available_at,
     }))
 }
 
