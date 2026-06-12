@@ -43,6 +43,24 @@ export interface GracePreset {
  * The "recommended" one in the UI is `bi-weekly` to match the existing
  * default before this expansion.
  */
+/**
+ * "Every N months" presets for N = 2..12. N = 3 keeps the historical
+ * `quarterly` id so vault drafts saved before the dropdown expansion
+ * still resolve; 12 reads as "Every year".
+ */
+const MONTHLY_CADENCES: readonly CadencePreset[] = Array.from(
+  { length: 11 },
+  (_, i) => {
+    const n = i + 2;
+    return {
+      id: n === 3 ? "quarterly" : `months-${n}`,
+      label: n === 12 ? "Every year" : `Every ${n} months`,
+      sub: n === 3 ? "Set-and-forget" : "",
+      seconds: n * 30 * DAY,
+    };
+  },
+);
+
 export const CADENCE_PRESETS: readonly CadencePreset[] = [
   {
     id: "weekly",
@@ -62,12 +80,7 @@ export const CADENCE_PRESETS: readonly CadencePreset[] = [
     sub: "More relaxed",
     seconds: 30 * DAY,
   },
-  {
-    id: "quarterly",
-    label: "Every 3 months",
-    sub: "Set-and-forget",
-    seconds: 90 * DAY,
-  },
+  ...MONTHLY_CADENCES,
 ] as const;
 
 /**
@@ -98,8 +111,20 @@ export const GRACE_PRESETS: readonly GracePreset[] = [
   {
     id: "1m",
     label: "1 month",
-    sub: "Maximum slack",
+    sub: "Long slack",
     seconds: 30 * DAY,
+  },
+  {
+    id: "2m",
+    label: "2 months",
+    sub: "Extended",
+    seconds: 60 * DAY,
+  },
+  {
+    id: "3m",
+    label: "3 months",
+    sub: "Maximum slack",
+    seconds: 90 * DAY,
   },
 ] as const;
 

@@ -28,7 +28,13 @@ import { Landing } from "./Landing";
 import { ServerOfflineBanner } from "./ServerOfflineBanner";
 import { Button } from "./ui";
 import { api } from "./api";
-import { getActiveVaultId } from "./vaultStore";
+import {
+  clearSession,
+  getActiveVaultId,
+  sessionExpired,
+  SESSION_TIMEOUT_MS,
+  touchSession,
+} from "./vaultStore";
 
 // Every route except the landing page is code-split. A visitor's
 // first paint only pays for the marketing page + shell; the heavier
@@ -189,6 +195,13 @@ export default function App() {
   // demo server sees "signet" instead of the historical "testnet"
   // literal. See `crates/ghostkey-server/src/config.rs`.
   const [network, setNetwork] = useState<"bitcoin" | "testnet" | "signet" | "regtest">("testnet");
+  // Whether this device holds a vault session. Drives the nav (no
+  // "Sign in" while signed in) and flips off when the inactivity
+  // guard below expires the session.
+  const [signedIn, setSignedIn] = useState(() => Boolean(getActiveVaultId()));
+  // One-shot notice shown after an inactivity sign-out so the owner
+  // knows why their dashboard asked for the password again.
+  const [expiredNotice, setExpiredNotice] = useState(false);
 
   // Sync the URL hash with the current location. Only writes back for
   // simple routes; the claim page's token-bearing URL is owned by the
@@ -208,6 +221,62 @@ export default function App() {
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+
+  // Inactivity auto sign-out. Interactions refresh a throttled
+  // activity stamp; a periodic check (plus one on tab re-focus)
+  // expires the session after SESSION_TIMEOUT_MS without any. Expiry
+  // wipes the device's vault metas + tokens — email + password
+  // sign-in restores them, so a walked-away laptop holds nothing.
+  useEffect(() => {
+    let lastTouch = 0;
+    const onActivity = () => {
+      const t = Date.now();
+      if (t - lastTouch > 30_000) {
+        lastTouch = t;
+        if (getActiveVaultId()) touchSession();
+      }
+    };
+    const check = () => {
+      if (sessionExpired()) {
+        clearSession();
+        setSignedIn(false);
+        setExpiredNotice(true);
+        setLocation((loc) =>
+          loc.kind === "route" && loc.route === "dashboard"
+            ? { kind: "route", route: "checkin" }
+            : loc,
+        );
+      } else {
+        setSignedIn(Boolean(getActiveVaultId()));
+      }
+    };
+    const events = ["pointerdown", "keydown", "scroll"] as const;
+    events.forEach((e) =>
+      window.addEventListener(e, onActivity, { passive: true }),
+    );
+    const id = window.setInterval(check, 30_000);
+    const onVis = () => {
+      if (!document.hidden) check();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    check();
+    return () => {
+      events.forEach((e) => window.removeEventListener(e, onActivity));
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, []);
+
+  // Route changes both count as activity and re-sync the signed-in
+  // flag (sign-in / setup completion lands here via navigation).
+  useEffect(() => {
+    const active = Boolean(getActiveVaultId());
+    setSignedIn(active);
+    if (active) {
+      touchSession();
+      setExpiredNotice(false);
+    }
+  }, [location]);
 
   // Health probe — also captures the demo_mode flag so we can render
   // the sticky banner. Polls every 20s; if the operator toggles the
@@ -263,7 +332,11 @@ export default function App() {
         <NavBar
           route={location.kind === "route" ? location.route : "landing"}
           onNavigate={setRoute}
+          signedIn={signedIn}
         />
+      )}
+      {expiredNotice && !isClaim && !isOneTap && (
+        <SessionExpiredNotice onDismiss={() => setExpiredNotice(false)} />
       )}
 
       {/* Routes render their own <main>; this anchor is the skip-link
@@ -333,6 +406,35 @@ function RouteLoading() {
         Loading…
       </div>
     </main>
+  );
+}
+
+/* -------------------------- SessionExpiredNotice -------------------------- */
+
+/**
+ * Shown once after the inactivity guard signs the user out, so the
+ * password prompt doesn't feel like a bug. Dismissable; also clears
+ * itself on the next successful sign-in.
+ */
+function SessionExpiredNotice({ onDismiss }: { onDismiss: () => void }) {
+  const minutes = Math.round(SESSION_TIMEOUT_MS / 60_000);
+  return (
+    <div role="status" className="border-b border-app bg-surface-2">
+      <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-5 py-2 md:px-8">
+        <p className="text-xs text-muted">
+          For your security, you were signed out after {minutes} minutes of
+          inactivity. Sign in with your email and password to open your
+          dashboard again.
+        </p>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="text-xs text-dim underline hover:text-[var(--text)]"
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
   );
 }
 

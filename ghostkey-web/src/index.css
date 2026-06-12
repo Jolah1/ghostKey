@@ -188,14 +188,24 @@
    * width from the table anyway. The result is the bug the user
    * reported: "zooming out and not in the centre on mobile phone".
    *
-   * We apply hidden at the html+body level. Individual scrollable
+   * We apply it at the html+body level. Individual scrollable
    * sub-regions (the comparison table wrapper, any future wide
    * code blocks) still scroll horizontally inside themselves — the
    * page just doesn't.
+   *
+   * `clip`, not `hidden`: overflow-x hidden on body turns body into
+   * a scroll container, and position:sticky descendants then stick
+   * to body (which never scrolls — the viewport does) instead of
+   * the viewport. That silently broke the sticky nav. `clip` clips
+   * without creating a scroll container, so sticky keeps working.
+   * The `hidden` line before it is the fallback for old engines
+   * that don't know `clip` (they get the old behaviour: no
+   * horizontal overflow, non-sticky nav).
    */
-  html { overflow-x: hidden; }
+  html { overflow-x: hidden; overflow-x: clip; }
   body {
     overflow-x: hidden;
+    overflow-x: clip;
     /* width: 100% explicitly so mobile browsers don't infer a wider
      * viewport from a descendant. Without this, `min-h-screen` +
      * `bg-app` on the root can still allow horizontal expansion in
