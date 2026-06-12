@@ -447,28 +447,34 @@ function ClaimableState({
 
   useEffect(() => {
     let cancelled = false;
+    // The server's "this vault is the wrong shape for this endpoint"
+    // probe signal. ApiError::Validation maps to HTTP 400 with a
+    // `validation: this vault was not created with ...` body; we match
+    // on the message (422 kept for belt-and-braces against any future
+    // remap) because matching the bare status code is what broke this
+    // flow before: 400 also covers genuine bad requests.
+    const isWrongShape = (e: unknown): e is ApiError =>
+      e instanceof ApiError &&
+      (e.status === 422 ||
+        (e.status === 400 && /this vault was not created with/i.test(e.message)));
     (async () => {
       // F2 first: if this vault was created with heir_derivation, the
       // dedicated endpoint returns 200 with the derivation params and
-      // we skip the sealed-heir path entirely. 422 means this is NOT
-      // an F2 vault, in which case we fall through to the
-      // password-vault / manual-psbt detection that pre-dated F2.
+      // we skip the sealed-heir path entirely. A wrong-shape error
+      // means this is NOT an F2 vault, in which case we fall through
+      // to the password-vault / manual-psbt detection that pre-dated
+      // F2.
       try {
         const params = await api.getHeirDerivationParams(token);
         if (!cancelled) setFlow({ kind: "derived-heir", params });
         return;
       } catch (e) {
         if (cancelled) return;
-        if (!(e instanceof ApiError) || e.status !== 422) {
-          if (e instanceof ApiError && (e.status === 404 || e.status === 409)) {
-            // These are handled by the outer Resolved switch; bubble.
-            setFlow({ kind: "probe-error", error: e });
-            return;
-          }
+        if (!isWrongShape(e)) {
           setFlow({ kind: "probe-error", error: e });
           return;
         }
-        // 422 -> not an F2 vault. Fall through.
+        // Not an F2 vault. Fall through.
       }
 
       try {
@@ -476,18 +482,14 @@ function ClaimableState({
         if (!cancelled) setFlow({ kind: "password-vault", sealed });
       } catch (e) {
         if (cancelled) return;
-        if (e instanceof ApiError) {
-          // 422 = no sealed blob on this row = legacy vault. The
-          // legacy two-step flow still works for it.
-          if (e.status === 422) {
-            setFlow({ kind: "manual-psbt" });
-            return;
-          }
-          // 404 / 409 should already have been handled by the outer
-          // Resolved switch, but just in case we slip through, bubble.
-          setFlow({ kind: "probe-error", error: e });
+        // Wrong shape = no sealed blob on this row = legacy vault.
+        // The legacy two-step flow still works for it.
+        if (isWrongShape(e)) {
+          setFlow({ kind: "manual-psbt" });
           return;
         }
+        // 404 / 409 should already have been handled by the outer
+        // Resolved switch, but just in case we slip through, bubble.
         setFlow({ kind: "probe-error", error: e });
       }
     })();
