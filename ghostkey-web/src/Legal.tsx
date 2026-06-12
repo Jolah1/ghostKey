@@ -18,7 +18,8 @@ import type { ReactNode } from "react";
 
 const OPERATOR = "GhostKey App Limited";
 const SUPPORT_EMAIL = "support@ghostkeyapp.com";
-const GOVERNING_LAW = "the State of Delaware, United States";
+const GOVERNING_LAW = "the Federal Republic of Nigeria";
+const VENUE = "the courts of Lagos State, Nigeria";
 const EFFECTIVE_DATE = "June 12, 2026";
 
 /* ------------------------------ shared layout ----------------------------- */
@@ -236,7 +237,8 @@ export function TermsPage() {
       <Section n={10} title="Governing law">
         <p>
           These terms are governed by the laws of {GOVERNING_LAW},
-          without regard to conflict-of-law rules.
+          without regard to conflict-of-law rules. Any dispute that
+          cannot be resolved informally will be heard in {VENUE}.
         </p>
       </Section>
     </LegalLayout>
