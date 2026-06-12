@@ -675,7 +675,8 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
 
   return (
     <main className="bg-app fade-in">
-      <div className="mx-auto max-w-xl px-5 py-12 md:py-16">
+      <div className="mx-auto max-w-xl px-5 py-12 md:py-16 lg:grid lg:max-w-5xl lg:grid-cols-[minmax(0,1fr)_320px] lg:items-start lg:gap-14">
+        <div className="min-w-0 lg:max-w-xl">
         <ProgressBar value={progress} />
 
         <div className="mt-10">
@@ -734,11 +735,132 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
             <Button onClick={onCancel}>Done</Button>
           ) : null}
         </div>
+        </div>
+
+        <SetupRail step={step} draft={draft} demoMode={demoMode} />
       </div>
       <AssistChat
         intro="Setting up a vault? Ask anything about who needs what, what your heir will see, or how the waiting period works."
       />
     </main>
+  );
+}
+
+/* ============================================================ */
+/* Desktop context rail                                           */
+/* ============================================================ */
+
+/**
+ * Right-hand rail shown only at `lg` and up. The wizard column stays
+ * narrow on purpose (focused forms read better); this fills the rest
+ * of a desktop viewport with a live recap of the plan plus the
+ * reassurance copy that on mobile lives inline. Hidden below `lg`,
+ * so phones see exactly the layout they did before.
+ */
+function SetupRail({
+  step,
+  draft,
+  demoMode,
+}: {
+  step: number;
+  draft: Draft;
+  demoMode: boolean;
+}) {
+  const namedHeirs = draft.heirs
+    .map((h) => h.name.trim())
+    .filter((n) => n.length > 0);
+
+  return (
+    <aside className="hidden lg:block" aria-label="Plan summary">
+      <div className="sticky top-24 space-y-4">
+        <div className="card-quiet p-5">
+          <p className="eyebrow-dim">Your plan so far</p>
+          <dl className="mt-4 space-y-3 text-sm">
+            <div className="flex items-baseline justify-between gap-3">
+              <dt className="text-muted">Who inherits</dt>
+              <dd className="text-right font-medium">
+                {namedHeirs.length > 0
+                  ? namedHeirs.join(", ")
+                  : draft.heirs.length > 1
+                    ? `${draft.heirs.length} heirs`
+                    : "Not named yet"}
+              </dd>
+            </div>
+            <div className="flex items-baseline justify-between gap-3">
+              <dt className="text-muted">They can claim after</dt>
+              <dd className="text-right font-medium">
+                {demoMode
+                  ? demoWaitingById(draft.demoWaitingId).label
+                  : monthsLabel(draft.waitingMonths)}{" "}
+                of silence
+              </dd>
+            </div>
+            <div className="flex items-baseline justify-between gap-3">
+              <dt className="text-muted">You check in</dt>
+              <dd className="text-right font-medium">
+                {cadenceByIdAnywhere(draft.cadenceId).label.toLowerCase()}
+              </dd>
+            </div>
+            {!demoMode ? (
+              <div className="flex items-baseline justify-between gap-3">
+                <dt className="text-muted">Slack if you miss one</dt>
+                <dd className="text-right font-medium">
+                  {graceByIdAnywhere(draft.graceId).label}
+                </dd>
+              </div>
+            ) : null}
+          </dl>
+        </div>
+
+        {step === 0 ? (
+          <div className="card-quiet p-5 text-sm text-muted">
+            <p className="font-medium text-[var(--text)]">
+              Nothing happens today
+            </p>
+            <p className="mt-2">
+              Your heir gets no message when you finish this. We only
+              reach out on the channel you pick here if you ever stop
+              checking in — and then they claim from a link, no wallet
+              or technical steps needed.
+            </p>
+          </div>
+        ) : null}
+
+        {step === 1 ? (
+          <div className="card-quiet p-5 text-sm text-muted">
+            <p className="font-medium text-[var(--text)]">
+              Your password is the key
+            </p>
+            <p className="mt-2">
+              It locks your vault on this device before anything is
+              sent to us — we never see it and can't reset it. Write
+              it down somewhere safe, like you would a house key.
+            </p>
+            <p className="mt-2">
+              Your email is only for check-in reminders. We never email
+              your heir from it.
+            </p>
+          </div>
+        ) : null}
+
+        {step === 2 ? (
+          <div className="card-quiet p-5 text-sm text-muted">
+            <p className="font-medium text-[var(--text)]">What's next</p>
+            <ul className="mt-2 space-y-2">
+              <li>• Send a small test amount first, then the rest.</li>
+              <li>
+                • Download the recovery file from your dashboard — it
+                works even if GhostKey disappears.
+              </li>
+              <li>
+                • We'll remind you before every check-in. One tap keeps
+                the vault quiet.
+              </li>
+            </ul>
+          </div>
+        ) : null}
+      </div>
+    </aside>
   );
 }
 
