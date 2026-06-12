@@ -62,6 +62,9 @@ const OneTapCheckinPage = lazy(() =>
 const VerifyEmailPage = lazy(() =>
   import("./VerifyEmailPage").then((m) => ({ default: m.VerifyEmailPage })),
 );
+const StatusPage = lazy(() =>
+  import("./StatusPage").then((m) => ({ default: m.StatusPage })),
+);
 
 /**
  * Route slugs the app understands. Two routes are "legacy" — they
@@ -86,7 +89,8 @@ export type Route =
   | "dashboard"
   | "checkin"
   | "checkin-legacy"
-  | "inherit";
+  | "inherit"
+  | "status";
 
 const VALID: Route[] = [
   "landing",
@@ -98,6 +102,7 @@ const VALID: Route[] = [
   "checkin",
   "checkin-legacy",
   "inherit",
+  "status",
 ];
 
 /**
@@ -279,6 +284,7 @@ export default function App() {
         <CheckinPortal initialId={getActiveVaultId() ?? undefined} />
       )}
       {location.kind === "route" && location.route === "inherit"   && <InheritPortal />}
+      {location.kind === "route" && location.route === "status"    && <StatusPage />}
       {location.kind === "claim" && <ClaimPage token={location.token} />}
       {location.kind === "one-tap-checkin" && (
         <OneTapCheckinPage
