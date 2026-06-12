@@ -679,6 +679,7 @@ const FOOTER_COLS: FooterCol[] = [
       { label: "Documentation",   href: "https://github.com/Jolah1/ghostKey#readme",                external: true },
       { label: "On-chain scripts", href: "https://github.com/Jolah1/ghostKey/tree/main/crates/ghostkey-core", external: true },
       { label: "GitHub",          href: "https://github.com/Jolah1/ghostKey",                       external: true },
+      { label: "System status",   href: "#/status" },
       { label: "Audit report",    href: "https://github.com/Jolah1/ghostKey#audits",                external: true },
     ],
   },
