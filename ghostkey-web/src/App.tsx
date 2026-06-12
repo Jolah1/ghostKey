@@ -65,6 +65,13 @@ const VerifyEmailPage = lazy(() =>
 const StatusPage = lazy(() =>
   import("./StatusPage").then((m) => ({ default: m.StatusPage })),
 );
+// Terms + Privacy share one chunk (both static, same layout).
+const TermsPage = lazy(() =>
+  import("./Legal").then((m) => ({ default: m.TermsPage })),
+);
+const PrivacyPage = lazy(() =>
+  import("./Legal").then((m) => ({ default: m.PrivacyPage })),
+);
 
 /**
  * Route slugs the app understands. Two routes are "legacy" — they
@@ -90,7 +97,9 @@ export type Route =
   | "checkin"
   | "checkin-legacy"
   | "inherit"
-  | "status";
+  | "status"
+  | "terms"
+  | "privacy";
 
 const VALID: Route[] = [
   "landing",
@@ -103,6 +112,8 @@ const VALID: Route[] = [
   "checkin-legacy",
   "inherit",
   "status",
+  "terms",
+  "privacy",
 ];
 
 /**
@@ -285,6 +296,8 @@ export default function App() {
       )}
       {location.kind === "route" && location.route === "inherit"   && <InheritPortal />}
       {location.kind === "route" && location.route === "status"    && <StatusPage />}
+      {location.kind === "route" && location.route === "terms"     && <TermsPage />}
+      {location.kind === "route" && location.route === "privacy"   && <PrivacyPage />}
       {location.kind === "claim" && <ClaimPage token={location.token} />}
       {location.kind === "one-tap-checkin" && (
         <OneTapCheckinPage

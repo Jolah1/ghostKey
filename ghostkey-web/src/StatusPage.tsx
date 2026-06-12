@@ -164,7 +164,11 @@ export function StatusPage() {
         </section>
 
         <p className="mt-8 text-sm text-dim">
-          Something look wrong for more than a few minutes? Open an issue on{" "}
+          Something look wrong for more than a few minutes? Email{" "}
+          <a className="underline" href="mailto:support@ghostkeyapp.com">
+            support@ghostkeyapp.com
+          </a>{" "}
+          or open an issue on{" "}
           <a
             className="underline"
             href="https://github.com/Jolah1/ghostKey/issues"

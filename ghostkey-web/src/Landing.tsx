@@ -701,6 +701,14 @@ const FOOTER_COLS: FooterCol[] = [
       { label: "Blog",          href: "https://github.com/Jolah1/ghostKey#blog", external: true },
     ],
   },
+  {
+    title: "Legal",
+    links: [
+      { label: "Terms of Service", href: "#/terms" },
+      { label: "Privacy Policy",   href: "#/privacy" },
+      { label: "Contact",          href: "mailto:support@ghostkeyapp.com" },
+    ],
+  },
 ];
 
 function Footer() {
@@ -708,7 +716,7 @@ function Footer() {
     <footer className="border-t border-app">
       <div className="mx-auto max-w-6xl px-5 py-14 md:px-8">
         <div className="grid grid-cols-1 gap-10 md:grid-cols-12">
-          <div className="md:col-span-5">
+          <div className="md:col-span-4">
             <p className="flex items-center gap-2.5 font-display text-2xl font-bold tracking-tight">
               <img src="/brand-mark.png" alt="" className="h-9 w-9 rounded-lg" />
               <span>ghost<span className="text-accent">Key</span></span>
