@@ -49,6 +49,11 @@ export interface VaultView {
    *  verification link. Absent/null when the vault has no email on
    *  file; `false` drives the dashboard's "confirm your email" card. */
   owner_contact_verified?: boolean | null;
+  /** Whether a trusted contact is on file. Gates the panic-stop
+   *  copy's "your trusted contact will be alerted" promise — only
+   *  rendered when true (issue #70). Absent on list/create
+   *  responses. */
+  has_trusted_contact?: boolean | null;
   /** Descriptor pair. Present only on the owner-authenticated
    *  `GET /vaults/:id`; embedded into the downloadable independence
    *  proof so the owner can reconstruct the wallet without GhostKey. */
@@ -236,6 +241,11 @@ export interface ClaimView {
   next_deadline_at: string;
   heir_channel: string | null;
   heir_display_name: string | null;
+  /** When the claim-challenge safety wait ends and the claim can be
+   *  completed. Absent/null when there's no wait (window disabled or
+   *  already elapsed). While set in the future, the claim page shows
+   *  the wait screen and the claim endpoints answer 409. */
+  claim_available_at?: string | null;
 }
 
 /**

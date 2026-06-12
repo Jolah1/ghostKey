@@ -104,6 +104,21 @@ pub enum NotificationKind {
     /// Closing the loop sets `vaults.owner_contact_verified_at`;
     /// see the 20260610000002 migration for why this matters.
     ContactVerification,
+    /// Owner-side (and trusted-contact-side), the moment anyone first
+    /// opens the claim link: "a claim on your vault has started; if
+    /// you're alive, one check-in stops it." Fired from
+    /// [`crate::routes::ensure_claim_challenge`]; `vaults.claim_opened_at`
+    /// guarantees at-most-once per claim cycle.
+    ClaimOpened,
+    /// Trusted-contact-side, when the owner triggers a panic stop:
+    /// "someone you know froze their account — check on them." Fired
+    /// from [`crate::lightning::mark_panic_paid`]. This is the alert
+    /// the dashboard has promised since F4; see issue #70.
+    PanicAlert,
+    /// Heir-side, once the claim-challenge window has elapsed without
+    /// the owner objecting: "you can finish your claim now." Fired by
+    /// the scheduler; `vaults.claim_ready_notified_at` dedupes.
+    ClaimReady,
 }
 
 impl NotificationKind {
@@ -114,6 +129,9 @@ impl NotificationKind {
             NotificationKind::PreDeadlineReminder => "pre_deadline_reminder",
             NotificationKind::AlarmEscalation => "alarm_escalation",
             NotificationKind::ContactVerification => "contact_verification",
+            NotificationKind::ClaimOpened => "claim_opened",
+            NotificationKind::PanicAlert => "panic_alert",
+            NotificationKind::ClaimReady => "claim_ready",
         }
     }
 }

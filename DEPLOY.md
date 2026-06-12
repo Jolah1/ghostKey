@@ -872,6 +872,20 @@ different amount:
 fly secrets set GHOSTKEY_LN_CHECKIN_SAT="21" -a ghostkey
 ```
 
+**Claim-challenge window.** The first time anyone opens a claim link,
+the server stamps the claim, emails the owner (with a one-tap check-in
+link that cancels the whole claim) and the trusted contact, and locks
+the heir's key material and every claim endpoint for
+`GHOSTKEY_CLAIM_CHALLENGE_SECS` seconds — default **172800** (48 h),
+`0` disables, and demo mode defaults to 15 s so the full arc fits in a
+live demo. When the window elapses the scheduler emails the heir that
+they can finish.
+
+```sh
+# Example: 24-hour window instead of the 48-hour default
+fly secrets set GHOSTKEY_CLAIM_CHALLENGE_SECS="86400" -a ghostkey
+```
+
 > **Upgrading from `GHOSTKEY_LN_BREEZ_*`.** The env vars used to be
 > `GHOSTKEY_LN_BREEZ_URL` / `GHOSTKEY_LN_BREEZ_SHARED_SECRET` back
 > when Breez was the only backend. Both the main server and both

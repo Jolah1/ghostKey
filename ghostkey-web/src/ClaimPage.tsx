@@ -284,13 +284,89 @@ function Resolved({ view, token }: { view: ClaimView; token: string }) {
       // This is rare but possible if an operator runs issue-claim manually.
       return <NotReadyState view={view} />;
     case "alarmed":
-    case "timelock_started":
+    case "timelock_started": {
+      // Claim-challenge window: the first open of this link alerted
+      // the vault's owner, and the claim can only be completed once
+      // the safety wait ends. Render the wait screen instead of
+      // probing the (gated) claim endpoints.
+      if (view.claim_available_at) {
+        return (
+          <ChallengeGate
+            availableAt={new Date(view.claim_available_at)}
+            view={view}
+            token={token}
+          />
+        );
+      }
       return <ClaimableState view={view} token={token} />;
+    }
     case "claimed":
       return <AlreadyClaimedState view={view} />;
     default:
       return <NotReadyState view={view} />;
   }
+}
+
+/**
+ * Wraps the claimable flow in the challenge-window clock: while the
+ * safety wait is running we show the wait screen, and the ticker
+ * flips the page into the real claim flow the minute it ends — no
+ * reload needed if the heir leaves the tab open.
+ */
+function ChallengeGate({
+  availableAt,
+  view,
+  token,
+}: {
+  availableAt: Date;
+  view: ClaimView;
+  token: string;
+}) {
+  const now = useTicker(30_000);
+  if (now.getTime() >= availableAt.getTime()) {
+    return <ClaimableState view={view} token={token} />;
+  }
+  return <SafetyWaitState availableAt={availableAt} now={now} />;
+}
+
+/**
+ * Shown between the first open of the claim link and the end of the
+ * challenge window. Calm by design: the heir has done everything
+ * right, the wait is a feature, and they'll get an email when it
+ * ends — no action needed, no jargon.
+ */
+function SafetyWaitState({ availableAt, now }: { availableAt: Date; now: Date }) {
+  const cd = useMemo(() => countdown(availableAt, now), [availableAt, now]);
+  const friendly = availableAt.toLocaleString(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return (
+    <section>
+      <Eyebrow>Almost there</Eyebrow>
+      <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
+        Your claim has started — there's a short safety wait
+      </h1>
+      <p className="mt-4 text-muted">
+        You've done everything right, and what was left for you is being
+        prepared. For everyone's protection, every claim includes a short
+        waiting period before anything can be collected.
+      </p>
+      <p className="mt-3 text-muted">
+        Come back <strong>{friendly}</strong> ({cd.friendly}) using this
+        same link. We'll also email you when it's time, so you don't have
+        to remember.
+      </p>
+      <p className="mt-3 text-sm text-dim">
+        Why the wait? It gives the person who set this up one last chance
+        to respond if this claim was started by mistake. If nothing
+        changes, your claim continues automatically.
+      </p>
+    </section>
+  );
 }
 
 function NotReadyState({ view }: { view: ClaimView }) {

@@ -593,6 +593,16 @@ pub async fn get_sealed_heir_xprv(
     if row.4.is_some() {
         return Err(ApiError::Conflict("claim token already used".into()));
     }
+    // Claim-challenge window: the sealed xprv is the vault. Handing it
+    // out before the window closes would let a hijacked claim link
+    // bypass the server-side gates entirely (the holder could sign and
+    // broadcast on their own once the on-chain timelock matures).
+    if let Some(available) = crate::routes::ensure_claim_challenge(&state, &row.0).await? {
+        return Err(ApiError::Conflict(format!(
+            "safety waiting period — this claim can be completed after {}",
+            available.to_rfc3339()
+        )));
+    }
     let ct = row.5.ok_or_else(|| {
         ApiError::Validation(
             "this vault was not created with a password and has no sealed heir key".into(),
@@ -947,9 +957,8 @@ pub async fn owner_send(
 
     let (txid, total_in, sent_sat, fee_sat, remaining_sat) = tokio::task::spawn_blocking(
         move || -> Result<(bitcoin::Txid, u64, u64, u64, u64), BlockingErr> {
-            let mut wallet =
-                ghostkey_core::wallet::build_signing_from_account(&vault, &owner_xprv)
-                    .map_err(|e| BlockingErr::Vault(e.to_string()))?;
+            let mut wallet = ghostkey_core::wallet::build_signing_from_account(&vault, &owner_xprv)
+                .map_err(|e| BlockingErr::Vault(e.to_string()))?;
 
             let update = try_each_esplora(&urls, |client| {
                 client
@@ -1105,6 +1114,16 @@ async fn load_vault_for_claim_token(
     }
     if used_at.is_some() {
         return Err(ApiError::Conflict("claim token already used".into()));
+    }
+
+    // Claim-challenge window: nothing moves while the owner still has
+    // time to object. Covers build-psbt, broadcast, and heir-claim in
+    // one place because they all load through here.
+    if let Some(available) = crate::routes::ensure_claim_challenge(state, &id).await? {
+        return Err(ApiError::Conflict(format!(
+            "safety waiting period — this claim can be completed after {}",
+            available.to_rfc3339()
+        )));
     }
 
     let network = crate::config::parse_network(&network_s).map_err(|name| {
@@ -1267,6 +1286,15 @@ pub async fn get_heir_derivation_params(
         return Err(ApiError::Validation(
             "this vault was not created with heir_derivation; the heir has their own xpub".into(),
         ));
+    }
+    // Claim-challenge window: derivation params + the heir's email
+    // reproduce the heir key, so they're as sensitive as the sealed
+    // xprv above.
+    if let Some(available) = crate::routes::ensure_claim_challenge(&state, &row.0).await? {
+        return Err(ApiError::Conflict(format!(
+            "safety waiting period — this claim can be completed after {}",
+            available.to_rfc3339()
+        )));
     }
     // The sealed contact stores a JSON object `{name, contact, channel}`,
     // not a bare email string. The heir's browser feeds this value
