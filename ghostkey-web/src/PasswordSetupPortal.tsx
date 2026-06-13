@@ -157,6 +157,11 @@ interface Draft {
   ownerEmail: string;
   password: string;
   passwordConfirm: string;
+  /** The user has confirmed they saved the password somewhere they
+   *  can get it back. Gates "Create vault": the password can never be
+   *  reset, so a fresh setup is the one moment we can insist they
+   *  store it before any money is at stake. */
+  savedPassword: boolean;
 
   /** F4: optional trusted contact who is alerted if the owner ever
    *  pays the panic-stop LNURL. Same channel vocabulary as heirs;
@@ -180,6 +185,7 @@ const EMPTY: Draft = {
   ownerEmail: "",
   password: "",
   passwordConfirm: "",
+  savedPassword: false,
   trustedContact: "",
   trustedContactChannel: "email",
 };
@@ -377,6 +383,9 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
       }
       if (draft.password !== draft.passwordConfirm) {
         return "The two passwords don't match.";
+      }
+      if (!draft.savedPassword) {
+        return "Save your password first, then tick the box to confirm. We can never reset it for you.";
       }
     }
     return null;
@@ -1307,6 +1316,31 @@ function StepPassword({
             disabled={busy}
           />
         </Field>
+
+        <div className="mt-5">
+          <InlineAlert tone="warning">
+            <p className="font-medium text-[var(--text)]">
+              Save this password now, before you go on.
+            </p>
+            <p className="mt-1">
+              It is the only key to your money. We never see it and we
+              can never reset it. Let your browser or a password manager
+              save it, or write it down and keep it somewhere safe like a
+              house key. If you lose it, the only way the funds move is to
+              your heir, on the schedule you set.
+            </p>
+            <label className="mt-3 flex items-start gap-2 text-sm text-[var(--text)]">
+              <input
+                type="checkbox"
+                checked={draft.savedPassword}
+                onChange={(e) => patch({ savedPassword: e.target.checked })}
+                className="mt-0.5"
+                disabled={busy}
+              />
+              <span>I have saved my password somewhere I can get it back.</span>
+            </label>
+          </InlineAlert>
+        </div>
 
         <Field
           label="Trusted contact (optional, for panic-stop)"
