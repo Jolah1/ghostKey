@@ -67,7 +67,6 @@ interface Props {
 type Phase =
   | { kind: "idle" }
   | { kind: "looking" }
-  | { kind: "choose"; vaults: FoundVault[] }
   | { kind: "unsealing"; vaultId: string; progress: number }
   | { kind: "done" };
 
@@ -106,7 +105,11 @@ export function SignInPortal({ onNavigate }: Props) {
       if (vaults.length === 1) {
         await openVault(vaults[0]);
       } else {
-        setPhase({ kind: "choose", vaults });
+        // Multiple vaults under one email are this owner's heir group
+        // (the server only allows additional vaults for the *same* owner
+        // key). Recover them all and stamp a shared group id so this
+        // device renders them as one vault — same as the setup device.
+        await openGroup(vaults);
       }
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
@@ -204,6 +207,103 @@ export function SignInPortal({ onNavigate }: Props) {
     }
   }
 
+  /**
+   * Recover every vault in an owner's heir group and persist them under
+   * one shared group id so this device renders them as a single vault
+   * (matching the setup device). All siblings share the owner password,
+   * so we unseal each in turn; a failure on the first is almost
+   * certainly a wrong password and aborts before anything is written.
+   *
+   * Cost: one Argon2id unwrap per heir. We show aggregate progress
+   * across the group so a multi-heir owner sees steady movement rather
+   * than a bar that restarts N times.
+   */
+  async function openGroup(vaults: FoundVault[]) {
+    setError(null);
+    const groupId = crypto.randomUUID();
+    let firstId: string | null = null;
+
+    for (let i = 0; i < vaults.length; i++) {
+      const v = vaults[i];
+      setPhase({ kind: "unsealing", vaultId: v.id, progress: 0 });
+      let blobs: SealedBlobsView;
+      try {
+        blobs = await api.getSealedBlobs(v.id);
+      } catch (e) {
+        // A legacy (non-password) row can't be recovered cross-device;
+        // skip it rather than failing the whole group.
+        if (e instanceof ApiError && e.status === 422) continue;
+        setError(e instanceof ApiError ? e.message : String(e));
+        setPhase({ kind: "idle" });
+        return;
+      }
+
+      try {
+        const out = await unsealOwner({
+          password,
+          passwordSalt: blobs.password_salt_b64,
+          memKiB: blobs.password_kdf_mem_kib,
+          iters: blobs.password_kdf_iters,
+          ownerXprvBlob: {
+            v: 1,
+            ct: blobs.owner_xprv_ct_b64,
+            nonce: blobs.owner_xprv_nonce_b64,
+          },
+          ownerTokenBlob: {
+            v: 1,
+            ct: blobs.owner_token_ct_b64,
+            nonce: blobs.owner_token_nonce_b64,
+          },
+          onProgress: (p) =>
+            setPhase({
+              kind: "unsealing",
+              vaultId: v.id,
+              progress: Math.round(((i + p) / vaults.length) * 100),
+            }),
+        });
+
+        // A placeholder owner_token means setup's re-seal never landed
+        // for this sibling. We still add it to the group so it's visible,
+        // but without a token its mutations will need a check-in from the
+        // original device first. `undefined` (not the placeholder string)
+        // keeps the dashboard's "no credential" handling intact.
+        const ownerToken =
+          out.ownerToken === PLACEHOLDER_OWNER_TOKEN
+            ? undefined
+            : out.ownerToken;
+
+        saveVaultMeta({
+          id: v.id,
+          label: v.label ?? "Your vault",
+          owner: { address: email.trim() },
+          heir: { name: "Heir", email: "", address: "" },
+          createdAt: v.created_at,
+          ownerToken,
+          groupId,
+        });
+        if (!firstId) firstId = v.id;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const isAuthTagFail = /poly1305|tag|invalid|decryp/i.test(msg);
+        setError(isAuthTagFail ? "Wrong password. Try again." : msg);
+        setPhase({ kind: "idle" });
+        return;
+      }
+    }
+
+    if (!firstId) {
+      setError(
+        "These vaults were set up before cross-device sign-in shipped. " +
+          "Check in from the device you used originally.",
+      );
+      setPhase({ kind: "idle" });
+      return;
+    }
+    setActiveVaultId(firstId);
+    setPhase({ kind: "done" });
+    onNavigate("dashboard");
+  }
+
   return (
     <main className="bg-app fade-in">
       <div className="mx-auto max-w-md px-5 py-12 md:py-16">
@@ -288,33 +388,6 @@ export function SignInPortal({ onNavigate }: Props) {
             </Button>
           </div>
         </form>
-
-        {phase.kind === "choose" && (
-          <div className="mt-8">
-            <p className="text-sm text-muted">
-              Multiple vaults are registered under this email. Pick one:
-            </p>
-            <ul role="list" className="mt-3 space-y-2">
-              {phase.vaults.map((v) => (
-                <li key={v.id}>
-                  <button
-                    type="button"
-                    onClick={() => void openVault(v)}
-                    className="card-flat w-full text-left p-4 hover:bg-[var(--surface-2)]"
-                  >
-                    <p className="font-medium text-[var(--text)]">
-                      {v.label ?? "Untitled vault"}
-                    </p>
-                    <p className="font-mono text-xs text-dim">
-                      {v.id.slice(0, 8)}… · created{" "}
-                      {new Date(v.created_at).toLocaleDateString()}
-                    </p>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
 
         <div className="mt-10 border-t border-app pt-6 text-center text-xs text-muted">
           New here?{" "}
