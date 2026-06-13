@@ -62,6 +62,7 @@ import {
   type SealedHeirView,
 } from "./api";
 import { countdown, parseRfc } from "./time";
+import { HeirVideoMessage } from "./HeirVideoMessage";
 import { b64decode, unsealHeirXprv } from "./crypto/sealing";
 import { deriveHeirKey } from "./crypto/heirKey";
 import type { Network } from "./crypto/keygen";
@@ -277,34 +278,46 @@ function Resolved({ view, token }: { view: ClaimView; token: string }) {
   // branch exists so a server adding a new status doesn't silently
   // render an empty page — it shows the generic NotReadyState until
   // the web app catches up.
-  switch (view.status) {
-    case "ok":
-    case "warning":
-      // Someone issued a claim link prematurely (owner is still active).
-      // This is rare but possible if an operator runs issue-claim manually.
-      return <NotReadyState view={view} />;
-    case "alarmed":
-    case "timelock_started": {
-      // Claim-challenge window: the first open of this link alerted
-      // the vault's owner, and the claim can only be completed once
-      // the safety wait ends. Render the wait screen instead of
-      // probing the (gated) claim endpoints.
-      if (view.claim_available_at) {
-        return (
-          <ChallengeGate
-            availableAt={new Date(view.claim_available_at)}
-            view={view}
-            token={token}
-          />
-        );
+  const body = (() => {
+    switch (view.status) {
+      case "ok":
+      case "warning":
+        // Someone issued a claim link prematurely (owner is still active).
+        // This is rare but possible if an operator runs issue-claim manually.
+        return <NotReadyState view={view} />;
+      case "alarmed":
+      case "timelock_started": {
+        // Claim-challenge window: the first open of this link alerted
+        // the vault's owner, and the claim can only be completed once
+        // the safety wait ends. Render the wait screen instead of
+        // probing the (gated) claim endpoints.
+        if (view.claim_available_at) {
+          return (
+            <ChallengeGate
+              availableAt={new Date(view.claim_available_at)}
+              view={view}
+              token={token}
+            />
+          );
+        }
+        return <ClaimableState view={view} token={token} />;
       }
-      return <ClaimableState view={view} token={token} />;
+      case "claimed":
+        return <AlreadyClaimedState view={view} />;
+      default:
+        return <NotReadyState view={view} />;
     }
-    case "claimed":
-      return <AlreadyClaimedState view={view} />;
-    default:
-      return <NotReadyState view={view} />;
-  }
+  })();
+
+  // The owner's video message (if any) sits above every state — it's the
+  // heir's first reassurance the link is genuine, shown whether they're
+  // waiting out the safety window or claiming right now.
+  return (
+    <>
+      <HeirVideoMessage token={token} />
+      {body}
+    </>
+  );
 }
 
 /**

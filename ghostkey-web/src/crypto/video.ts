@@ -12,7 +12,13 @@
 import { HDKey } from "@scure/bip32";
 import { sha256 } from "@noble/hashes/sha2.js";
 
-import { b64encode, deriveClaimKek, sealWithKey } from "./sealing";
+import {
+  b64decode,
+  b64encode,
+  deriveClaimKek,
+  openWithKey,
+  sealWithKey,
+} from "./sealing";
 
 export interface PreparedVideo {
   video_ct_b64: string;
@@ -25,6 +31,55 @@ function bytesToHex(b: Uint8Array): string {
   let s = "";
   for (const byte of b) s += byte.toString(16).padStart(2, "0");
   return s;
+}
+
+export interface VerifiedClip {
+  /** Decrypted clip bytes (caller builds an object URL to play). */
+  bytes: Uint8Array;
+  /** True iff the owner signature checks out against `ownerXpub` AND
+   *  the decrypted bytes hash to the signed digest. When false the clip
+   *  still decrypted, but its authenticity could not be confirmed —
+   *  the heir UI must treat it as suspect. */
+  verified: boolean;
+}
+
+/**
+ * Decrypt the owner's clip with the claim token and verify it is the
+ * genuine, untampered recording.
+ *
+ * Decryption uses XChaCha20-Poly1305 (AEAD): if the ciphertext was
+ * altered, or the token is wrong, this throws — a tampered or
+ * wrong-link clip never plays at all. If it decrypts, we additionally
+ * confirm the bytes hash to the signed digest and that the owner key
+ * signed it, so a clip swapped wholesale (even an AI deepfake) is
+ * flagged unverified.
+ */
+export function decryptAndVerifyVideo(input: {
+  claimTokenRaw: Uint8Array;
+  ownerXpub: string;
+  videoCtB64: string;
+  videoNonceB64: string;
+  ownerSigB64: string;
+  signedSha256Hex: string;
+}): VerifiedClip {
+  const kek = deriveClaimKek(input.claimTokenRaw);
+  const bytes = openWithKey(kek, {
+    v: 1,
+    ct: input.videoCtB64,
+    nonce: input.videoNonceB64,
+  });
+
+  let verified = false;
+  try {
+    const digest = sha256(bytes);
+    const hashMatches = bytesToHex(digest) === input.signedSha256Hex.toLowerCase();
+    const node = HDKey.fromExtendedKey(input.ownerXpub);
+    const sigOk = node.verify(digest, b64decode(input.ownerSigB64));
+    verified = hashMatches && sigOk;
+  } catch {
+    verified = false;
+  }
+  return { bytes, verified };
 }
 
 /**

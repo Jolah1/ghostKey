@@ -176,9 +176,36 @@ pub struct VideoView {
     pub duration_ms: Option<i64>,
     pub owner_sig_b64: String,
     pub signed_sha256_hex: String,
+    /// The vault owner's account xpub, extracted from the stored
+    /// descriptor. The heir verifies `owner_sig_b64` against it before
+    /// playing — a clip signed by any other key is shown as not
+    /// authentic. Anchored to the same key that controls the coins.
+    pub owner_xpub: String,
 }
 
 type VideoRow = (String, String, String, Option<i64>, String, String);
+
+/// Pull the owner account xpub out of a vault descriptor. The owner key
+/// is the first `pk(...)` in `tr(NUMS,or_d(pk([origin]XPUB/0/*),...))`;
+/// the xpub runs from just after the `]` origin tag to the `/` chain
+/// suffix.
+fn owner_xpub_from_descriptor(desc: &str) -> Option<String> {
+    let pk = desc.find("pk(")?;
+    let after = &desc[pk + 3..];
+    let rest = if let Some(stripped) = after.strip_prefix('[') {
+        let close = stripped.find(']')? + 1;
+        &stripped[close..]
+    } else {
+        after
+    };
+    let end = rest.find('/')?;
+    let xpub = &rest[..end];
+    if xpub.is_empty() {
+        None
+    } else {
+        Some(xpub.to_string())
+    }
+}
 
 /// Heir-side: fetch the encrypted clip for playback. Gated on a valid,
 /// unconsumed claim token (the same credential that unlocks the rest of
@@ -188,17 +215,21 @@ pub async fn get_claim_video(
     Path(token): Path<String>,
 ) -> Result<Json<VideoView>, ApiError> {
     let hash = hash_claim_token(&token);
-    let row: Option<(String, Option<String>)> = sqlx::query_as(
-        r#"SELECT id, claim_token_hash FROM vaults WHERE claim_token_hash = ?"#,
+    let row: Option<(String, Option<String>, String)> = sqlx::query_as(
+        r#"SELECT id, claim_token_hash, descriptor_external
+             FROM vaults WHERE claim_token_hash = ?"#,
     )
     .bind(&hash)
     .fetch_optional(&state.db)
     .await?;
-    let (vault_id, stored_hash) = row.ok_or(ApiError::NotFound)?;
+    let (vault_id, stored_hash, descriptor_external) = row.ok_or(ApiError::NotFound)?;
     let stored_hash = stored_hash.ok_or(ApiError::NotFound)?;
     if !claim_token_matches(&token, &stored_hash) {
         return Err(ApiError::NotFound);
     }
+    let owner_xpub = owner_xpub_from_descriptor(&descriptor_external).ok_or_else(|| {
+        ApiError::Validation("could not read owner key from descriptor".into())
+    })?;
 
     let v: Option<VideoRow> = sqlx::query_as(
         r#"SELECT video_ct_b64, video_nonce_b64, mime, duration_ms,
@@ -217,5 +248,25 @@ pub async fn get_claim_video(
         duration_ms: v.3,
         owner_sig_b64: v.4,
         signed_sha256_hex: v.5,
+        owner_xpub,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::owner_xpub_from_descriptor;
+
+    #[test]
+    fn extracts_owner_xpub_with_origin() {
+        let d = "tr(50929b74,or_d(pk([6b3b6632/86'/0'/0']xpub6BhZnOwner/0/*),and_v(v:pk([00000000/86'/0'/0']xpub6DNGqHeir/1/*),older(4320))))";
+        assert_eq!(
+            owner_xpub_from_descriptor(d).as_deref(),
+            Some("xpub6BhZnOwner"),
+        );
+    }
+
+    #[test]
+    fn none_when_no_pk() {
+        assert!(owner_xpub_from_descriptor("tr(50929b74)").is_none());
+    }
 }

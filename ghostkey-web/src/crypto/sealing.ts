@@ -130,7 +130,7 @@ export function sealWithKey(key: Uint8Array, plaintext: Uint8Array): SealedBlob 
   };
 }
 
-function openWithKey(key: Uint8Array, blob: SealedBlob): Uint8Array {
+export function openWithKey(key: Uint8Array, blob: SealedBlob): Uint8Array {
   if (blob.v !== 1) {
     throw new Error(`unknown sealed blob version: ${blob.v}`);
   }
