@@ -248,6 +248,20 @@ export interface ClaimView {
   claim_available_at?: string | null;
 }
 
+/** Encrypted owner video message returned by `GET /claim/:token/video`
+ *  (#85). The clip is sealed under the claim-token KEK; the signature is
+ *  verified client-side against `owner_xpub`. */
+export interface ClaimVideoView {
+  vault_id: string;
+  video_ct_b64: string;
+  video_nonce_b64: string;
+  mime: string;
+  duration_ms: number | null;
+  owner_sig_b64: string;
+  signed_sha256_hex: string;
+  owner_xpub: string;
+}
+
 /**
  * Heir-claim PSBT build request. The heir supplies the destination
  * Bitcoin address (where the funds should land) and optionally a fee
@@ -578,6 +592,27 @@ export const api = {
       { method: "POST", body: JSON.stringify(body) },
       ownerToken,
     ),
+  /** Store the owner's encrypted video message (#85). OwnerAuth via the
+   *  freshly-issued owner_token. The clip is sealed under the claim-token
+   *  KEK and signed with the owner key client-side; the server only ever
+   *  sees ciphertext + signature. */
+  uploadVideo: (
+    id: string,
+    ownerToken: string,
+    body: {
+      video_ct_b64: string;
+      video_nonce_b64: string;
+      mime: string;
+      duration_ms: number | null;
+      owner_sig_b64: string;
+      signed_sha256_hex: string;
+    },
+  ) =>
+    request<null>(
+      `/vaults/${id}/video`,
+      { method: "POST", body: JSON.stringify(body) },
+      ownerToken,
+    ),
   checkin: (id: string, ownerToken: string | null) =>
     request<CheckinResponse>(
       `/vaults/${id}/checkin`,
@@ -643,6 +678,11 @@ export const api = {
     request<VaultEvent[]>(`/vaults/${id}/events`, {}, ownerToken),
   resolveClaim: (token: string) =>
     request<ClaimView>(`/claim/${encodeURIComponent(token)}`),
+  /** Fetch the owner's encrypted video message for this claim (#85).
+   *  404 when the vault has no video. The browser decrypts it with the
+   *  claim token and verifies `owner_sig_b64` against `owner_xpub`. */
+  getClaimVideo: (token: string) =>
+    request<ClaimVideoView>(`/claim/${encodeURIComponent(token)}/video`),
   buildClaimPsbt: (token: string, req: BuildClaimPsbtRequest) =>
     request<BuildClaimPsbtResponse>(
       `/claim/${encodeURIComponent(token)}/build-psbt`,

@@ -143,10 +143,26 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/claim/:token/broadcast",
             post(crate::psbt_routes::broadcast_claim),
         )
+        .route(
+            "/claim/:token/video",
+            get(crate::video_routes::get_claim_video),
+        )
         .layer(axum::middleware::from_fn_with_state(
             claim_limiter,
             crate::rate_limit::enforce,
         ));
+
+    // Owner video message (#85). The POST carries a multi-MB encrypted
+    // clip, so this sub-router raises the body limit well above axum's
+    // 2 MB default; it stays scoped here so no other route inherits it.
+    let video_routes: Router<Arc<AppState>> = Router::new()
+        .route(
+            "/vaults/:id/video",
+            post(crate::video_routes::upload_video)
+                .get(crate::video_routes::get_video_status)
+                .delete(crate::video_routes::delete_video),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024));
 
     // Routes whose owner-auth or one-tap token already gates abuse,
     // plus the always-open `/health` and the LNURL endpoints (capped
@@ -202,6 +218,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(create_routes)
         .merge(find_routes)
         .merge(claim_routes)
+        .merge(video_routes)
         .merge(analytics_routes)
         .layer(TraceLayer::new_for_http().make_span_with(make_request_span))
         .layer(cors)
