@@ -98,6 +98,12 @@ function Hero({ onNavigate }: Props) {
           </button>
         </div>
 
+        {/* Founding-user offer. Hand-counted cap; retire this line
+            once the first 100 sign-ups are in. */}
+        <p className="mt-5 text-sm font-medium text-accent">
+          Free for the first 100 founding users, locked in forever.
+        </p>
+
         <TrustRow />
       </div>
     </section>
@@ -149,7 +155,7 @@ const STEPS: Step[] = [
   },
   {
     title: "The rules live on Bitcoin, not on us",
-    body: "Your plan is written into Bitcoin itself, so nobody — not even us — can block or take what you left. GhostKey keeps it running: reminders for you, a guided claim for them.",
+    body: "Your plan is written into Bitcoin itself, so nobody, not even us, can block or take what you left. GhostKey keeps it running: reminders for you, a guided claim for them.",
   },
 ];
 
@@ -316,7 +322,7 @@ const REASONS: Reason[] = [
   {
     tag: "Precise",
     title: "On-chain timelocks",
-    body: "Waiting periods are enforced by Bitcoin itself using OP_CSV. Once set, no one — not us, not them, not anyone — can move funds before the timer runs out.",
+    body: "Waiting periods are enforced by Bitcoin itself using OP_CSV. Once set, no one can move funds before the timer runs out. Not us, not them, not anyone.",
   },
   {
     tag: "Private",
@@ -326,7 +332,7 @@ const REASONS: Reason[] = [
   {
     tag: "Portable",
     title: "PSBT under the hood",
-    body: "Funding uses ordinary Bitcoin transactions. Claiming works in any browser — and if you prefer, advanced users can also sign with Sparrow, BlueWallet, Ledger, or Coldcard via PSBT.",
+    body: "Funding uses ordinary Bitcoin transactions. Claiming works in any browser. If you prefer, advanced users can also sign with Sparrow, BlueWallet, Ledger, or Coldcard via PSBT.",
   },
   {
     tag: "Trustless",
@@ -336,7 +342,7 @@ const REASONS: Reason[] = [
   {
     tag: "Durable",
     title: "Can't be lost",
-    body: "The rules live on the Bitcoin chain, where they can't be deleted or tampered with. GhostKey gives you and your heir the easy way to use them — check-ins, reminders, and a guided claim.",
+    body: "The rules live on the Bitcoin chain, where they can't be deleted or tampered with. GhostKey gives you and your heir the easy way to use them: check-ins, reminders, and a guided claim.",
   },
 ];
 
@@ -546,7 +552,7 @@ function Mark({ v }: { v: "yes" | "partial" | "no" }) {
 const FAQS = [
   {
     q: "What happens if I lose access to my wallet?",
-    a: "Treat the GhostKey vault like any other Bitcoin wallet — back up your seed phrase. If you lose both your wallet and your backup, no one can recover the funds. That includes us. This is the trade-off of true self-custody.",
+    a: "Treat the GhostKey vault like any other Bitcoin wallet and back up your seed phrase. If you lose both your wallet and your backup, no one can recover the funds. That includes us. This is the trade-off of true self-custody.",
   },
   {
     q: "Can I change my heir after creating a vault?",
@@ -566,7 +572,7 @@ const FAQS = [
   },
   {
     q: "What kinds of Bitcoin can I deposit?",
-    a: "Any spendable Bitcoin in a Taproot-capable wallet. You don't move it to us — you keep it in your wallet, and the inheritance rules live as a script alongside it.",
+    a: "Any spendable Bitcoin in a Taproot-capable wallet. You don't move it to us. You keep it in your wallet, and the inheritance rules live as a script alongside it.",
   },
   {
     q: "Is this a legal will?",

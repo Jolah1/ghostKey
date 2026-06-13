@@ -232,7 +232,7 @@ export function Dashboard({ onNavigate }: Props) {
     const token = getVaultOwnerToken(siblingId);
     if (!token) {
       setError(
-        "This browser doesn't have the owner credential for that heir — sign in first.",
+        "This browser doesn't have the owner credential for that heir. Sign in first.",
       );
       return;
     }
@@ -241,8 +241,8 @@ export function Dashboard({ onNavigate }: Props) {
         `This revokes the inheritance plan for this heir:\n` +
         `  • ${heirName} can no longer claim through GhostKey.\n` +
         `  • Pending alarm notifications are cancelled.\n\n` +
-        `Your Bitcoin stays yours. GhostKey never held your keys — ` +
-        `the funds remain spendable from your own wallet at any time.`,
+        `Your Bitcoin stays yours. GhostKey never held your keys, ` +
+        `so the funds remain spendable from your own wallet at any time.`,
     );
     if (!ok) return;
     try {
@@ -473,6 +473,10 @@ export function Dashboard({ onNavigate }: Props) {
             void refresh();
           }}
           onClose={() => setLightningOpen(false)}
+          onFreeCheckin={() => {
+            setLightningOpen(false);
+            onCheckin();
+          }}
         />
       ) : null}
 
@@ -646,7 +650,7 @@ function ReceiveCard({ vaultId }: { vaultId: string }) {
             </div>
             {view.network !== "bitcoin" ? (
               <p className="mt-2 text-xs text-dim">
-                This vault is on {view.network} — only send {view.network}{" "}
+                This vault is on {view.network}. Only send {view.network}{" "}
                 coins here.
               </p>
             ) : null}
@@ -765,7 +769,7 @@ function SendCard({
         <p className="mt-1.5 text-sm text-muted">
           Network fee: {formatSats(result.fee_sat)}.{" "}
           {result.remaining_sat > 0
-            ? `The remaining ${formatSats(result.remaining_sat)} stays in your vault, still covered by your inheritance plan — your heir's waiting clock starts fresh from this move.`
+            ? `The remaining ${formatSats(result.remaining_sat)} stays in your vault, still covered by your inheritance plan. Your heir's waiting clock starts fresh from this move.`
             : "The vault is now empty; add Bitcoin any time to keep the plan going."}
         </p>
         <div className="mt-3 flex items-center gap-3">
@@ -800,8 +804,9 @@ function SendCard({
         Send Bitcoin
       </p>
       <p className="mt-1.5 text-sm text-muted">
-        Your money is never locked up. Pay anyone from your vault — whatever
-        you leave behind stays covered by the same inheritance plan.
+        Your money is never locked up. Pay anyone from your vault, and
+        whatever you leave behind stays covered by the same inheritance
+        plan.
       </p>
       {!expanded ? (
         <div className="mt-3">
@@ -969,7 +974,7 @@ function VaultClosedCard({
         <h2 className="mt-6 font-serif text-2xl">Vault closed</h2>
         <p className="mt-2 max-w-md text-sm text-muted">
           {meta.heir.name || "Your heir"} claimed the funds. Check-ins are
-          no longer required — this vault is now in its terminal state.
+          no longer needed. This vault's work is done.
         </p>
         <Button onClick={onDismiss} className="mt-6">
           Done
@@ -1062,66 +1067,72 @@ function HeartbeatCard({
     <section className="card relative overflow-hidden p-5 text-center md:p-8">
       <div className="flex flex-col items-center">
         <Heartbeat
-          onTap={busy || locked ? undefined : onCheckin}
+          onTap={
+            busy || locked
+              ? undefined
+              : lightningEnabled
+                ? onLightning
+                : onCheckin
+          }
           disabled={busy || locked}
         />
 
         <h2 className="mt-6 font-serif text-2xl">
           {justChecked
-            ? "Thanks — you're safe"
+            ? "Thanks, you're safe"
             : locked
               ? "Already checked in"
-              : "Tap to check in"}
+              : "Time to check in"}
         </h2>
         <p className="mt-1 text-sm text-muted">
           {justChecked
             ? `${meta.heir.name}'s countdown starts again.`
             : locked
-              ? `One check-in per period. Next opens in ${lockedCd?.friendly ?? "a moment"}.`
+              ? `One check-in per period. The next one opens in ${lockedCd?.friendly ?? "a moment"}.`
               : `Let ${meta.heir.name} know the clock is reset.`}
         </p>
 
+        {/* Lightning is THE check-in when the server supports it: the
+            small payment is the proof of life. The free button only
+            appears on servers without Lightning (local dev, demo) so
+            those keep working. */}
         <div className="mt-6 flex w-full max-w-xs flex-col items-stretch gap-3 md:max-w-none md:flex-row md:flex-wrap md:items-center md:justify-center">
-          <Button
-            onClick={onCheckin}
-            loading={busy}
-            disabled={justChecked || locked}
-            size="lg"
-          >
-            {justChecked
-              ? "Checked in ✓"
-              : locked
-                ? "Locked until next period"
-                : "I'm still here"}
-          </Button>
           {lightningEnabled ? (
             <Button
-              variant="ghost"
-              size="lg"
               onClick={onLightning}
-              disabled={locked}
+              disabled={justChecked || locked}
+              size="lg"
             >
-              ⚡ Pay a few sats
+              {justChecked
+                ? "Checked in ✓"
+                : locked
+                  ? "Locked until next period"
+                  : "⚡ Check in with Lightning"}
             </Button>
-          ) : null}
+          ) : (
+            <Button
+              onClick={onCheckin}
+              loading={busy}
+              disabled={justChecked || locked}
+              size="lg"
+            >
+              {justChecked
+                ? "Checked in ✓"
+                : locked
+                  ? "Locked until next period"
+                  : "I'm still here"}
+            </Button>
+          )}
         </div>
 
-        {!locked ? (
-          lightningEnabled ? (
-            <>
-              <p className="mt-2 text-xs text-dim">
-                Pay a tiny Lightning invoice for cryptographic proof of liveness.
-              </p>
-              <LightningStatusBadge />
-            </>
-          ) : (
-            <p
-              className="mt-2 text-xs text-dim"
-              data-testid="ln-disabled-hint"
-            >
-              ⚡ Lightning check-in isn't enabled on this server yet.
+        {!locked && lightningEnabled ? (
+          <>
+            <p className="mt-2 text-xs text-dim">
+              Pay the small invoice from any Lightning wallet. The
+              payment is your proof of life.
             </p>
-          )
+            <LightningStatusBadge />
+          </>
         ) : null}
 
         {cd ? (
@@ -1326,7 +1337,7 @@ function ConfirmEmailCard({
       </div>
       {state.kind === "sent" ? (
         <p className="mt-2 text-xs text-muted">
-          On its way — give it a minute, and peek in spam if it hides.
+          On its way. Give it a minute, and check your spam folder too.
         </p>
       ) : null}
       {state.kind === "error" ? (
@@ -1429,7 +1440,7 @@ function PushOptInCard({
       </p>
       <p className="mt-1.5 text-sm text-muted">
         Want a nudge before your next check-in is due? We'll send a
-        notification to this device — one tap and you're done.
+        notification to this device. One tap and you're done.
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
         <Button
@@ -1776,7 +1787,7 @@ function FrozenBanner({ vault, now }: { vault: VaultView; now: Date }) {
   return (
     <section className="rounded-md border border-amber-500/40 bg-amber-500/10 p-4">
       <p className="text-sm font-semibold text-amber-200">
-        Panic stop active — vault is frozen.
+        Panic stop active. The vault is frozen.
       </p>
       <p className="mt-1 text-xs text-amber-100/80">
         {daysLeft != null
@@ -1814,7 +1825,7 @@ function LnurlCard({ lnurl }: { lnurl: string }) {
         Check in with a tiny Lightning payment
       </p>
       <p className="mt-1.5 text-sm text-muted">
-        The same code works every time — no setup, no expiry.
+        The same code works every time. No setup, no expiry.
       </p>
       {!expanded ? (
         <div className="mt-3">
@@ -1887,9 +1898,9 @@ function IndependenceProofCard({ vault }: { vault: VaultView }) {
       </p>
       <p className="mt-1.5 text-sm text-muted">
         Your spare key, for emergencies only. Keep a copy somewhere
-        safe (email it to yourself, a USB stick) — if you ever can't
-        get into GhostKey, opening it and typing your password gets
-        you to your money.
+        safe, like your email or a USB stick. If you ever can't get
+        into GhostKey, opening it and typing your password gets you
+        to your money.
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button
@@ -1901,13 +1912,13 @@ function IndependenceProofCard({ vault }: { vault: VaultView }) {
           {state.kind === "busy"
             ? "Preparing…"
             : state.kind === "done"
-              ? "Saved ✓ — download again"
+              ? "Saved ✓ Download again"
               : "Download recovery file"}
         </Button>
       </div>
       {state.kind === "done" ? (
         <p className="mt-2 text-xs text-dim">
-          Without your password the file reveals no secrets — but treat
+          Without your password the file reveals no secrets, but treat
           it like a bank statement: it does show your balance to anyone
           who opens it.
         </p>
@@ -1983,7 +1994,7 @@ function PanicCard({
   return (
     <section className="rounded-md border border-amber-500/40 bg-amber-500/5 p-5">
       <p className="text-sm font-semibold text-amber-200">
-        Panic stop — pay to freeze
+        Panic stop: pay to freeze
       </p>
       <p className="mt-1 text-xs text-amber-100/80">
         Pay this from any Lightning wallet. The freeze takes effect the

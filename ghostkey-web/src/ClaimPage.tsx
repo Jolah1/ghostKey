@@ -184,8 +184,8 @@ function AlreadyUsedState() {
       </h1>
       <p className="mt-4 text-muted">
         A claim link works once. If you've already received what was left for
-        you, you're done. If you haven't, contact the person who set this up —
-        they can issue a new link.
+        you, you're done. If you haven't, contact the person who set this
+        up. They can issue a new link.
       </p>
     </section>
   );
@@ -348,7 +348,7 @@ function SafetyWaitState({ availableAt, now }: { availableAt: Date; now: Date })
     <section>
       <Eyebrow>Almost there</Eyebrow>
       <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
-        Your claim has started — there's a short safety wait
+        Your claim has started. There's a short safety wait
       </h1>
       <p className="mt-4 text-muted">
         You've done everything right, and what was left for you is being
@@ -861,8 +861,8 @@ function DerivedHeirClaim({
           <p className="mt-2 text-sm text-soft">
             Write these 12 words down somewhere safe. They're the only
             way to recover this key without GhostKey. The funds you just
-            claimed are already on their way to your address — this is
-            insurance.
+            claimed are already on their way to your address. This is
+            just insurance.
           </p>
           <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
             {result.mnemonic.split(/\s+/).map((w, i) => (
@@ -909,8 +909,8 @@ function DerivedHeirClaim({
         </h2>
         <p className="mt-2 text-sm text-soft">
           Paste any Bitcoin address you control on the {networkLabel(params.network)}.{" "}
-          {walletExamplesInline(params.network)} — anything that can receive
-          on that network.
+          {walletExamplesInline(params.network)}. Anything that can receive
+          on that network works.
         </p>
 
         <div className="mt-4">

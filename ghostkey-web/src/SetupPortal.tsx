@@ -251,7 +251,7 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
       if (hasAdvancedDescriptor) return null;
 
       if (!draft.heirXpub.trim()) {
-        return "Paste the heir's xpub. They never have to know — you get this from them in advance, or from any wallet you set aside for them.";
+        return "Paste the heir's xpub. They never have to know. You get this from them in advance, or from any wallet you set aside for them.";
       }
       if (!looksLikeXpub(draft.heirXpub)) {
         return "That doesn't look like an xpub. It should start with xpub, tpub, or vpub.";
@@ -465,7 +465,7 @@ function StepWallet({
     <div>
       <h1 className="font-serif text-3xl md:text-4xl">Connect your wallet</h1>
       <p className="mt-2 text-muted">
-        Paste your wallet's xpub. This is a public key. It can watch — it cannot
+        Paste your wallet's xpub. This is a public key. It can watch, but it cannot
         spend. GhostKey never sees your private keys.
       </p>
 
@@ -590,7 +590,7 @@ function StepWallet({
           <Disclosure summary={<span>Advanced (paste a descriptor pair)</span>}>
             <p className="mb-4 text-xs text-muted">
               Already have a Taproot descriptor pair from the GhostKey
-              command-line app? Paste both lines below — we'll skip the xpub
+              command-line app? Paste both lines below and we'll skip the xpub
               step entirely.
             </p>
             <Field

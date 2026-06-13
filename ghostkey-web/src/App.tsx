@@ -403,7 +403,7 @@ function RouteLoading() {
         role="status"
         aria-live="polite"
       >
-        Loading…
+        Getting things ready…
       </div>
     </main>
   );

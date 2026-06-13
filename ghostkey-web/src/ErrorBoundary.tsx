@@ -44,8 +44,8 @@ export class ErrorBoundary extends Component<Props, State> {
             Something went wrong on this page
           </h1>
           <p className="mt-3 text-sm text-muted">
-            Your vault and your Bitcoin are not affected — this is only a
-            display problem. Reloading the page almost always fixes it.
+            Your vault and your Bitcoin are not affected. This is only a
+            display problem, and reloading the page almost always fixes it.
           </p>
           <button
             type="button"
@@ -56,7 +56,7 @@ export class ErrorBoundary extends Component<Props, State> {
           </button>
           <p className="mt-4 text-xs text-dim">
             If it keeps happening, close the tab and open the site
-            again — and remember your money is always reachable with
+            again. And remember, your money is always reachable with
             your emergency recovery file.
           </p>
         </div>

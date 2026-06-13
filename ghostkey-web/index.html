@@ -37,9 +37,24 @@
          script instead of an inline one, so the CSP can keep
          script-src down to 'self'. See public/theme-init.js. -->
     <script src="/theme-init.js"></script>
+    <!-- Pre-mount placeholder so the first paint is never a blank
+         page on slow connections. React replaces #root's children on
+         mount. Colors are hardcoded mid-greys that read on both the
+         dark and light theme backgrounds. -->
+    <style>
+      #gk-boot {
+        display: flex;
+        min-height: 100vh;
+        align-items: center;
+        justify-content: center;
+        font-family: system-ui, sans-serif;
+        font-size: 0.9rem;
+        color: #7e8894;
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><div id="gk-boot">Getting things ready…</div></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

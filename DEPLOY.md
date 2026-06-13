@@ -862,14 +862,14 @@ sidecar. With either missing, the server runs with `NoopProvider` and
 the UI shows the fallback hint instead (see issue #15).
 
 **Check-in amount.** Invoices (button, LNURL check-in, and panic stop)
-are minted for `GHOSTKEY_LN_CHECKIN_SAT` sats, default **21**. The
+are minted for `GHOSTKEY_LN_CHECKIN_SAT` sats, default **20**. The
 protocol minimum is 1 sat, but many custodial wallets (Bitnob, some
 exchange apps) refuse to send less than ~20 sats, so a 1-sat invoice
 was unpayable for their users. Set it on the main app if you want a
 different amount:
 
 ```sh
-fly secrets set GHOSTKEY_LN_CHECKIN_SAT="21" -a ghostkey
+fly secrets set GHOSTKEY_LN_CHECKIN_SAT="20" -a ghostkey
 ```
 
 **Claim-challenge window.** The first time anyone opens a claim link,

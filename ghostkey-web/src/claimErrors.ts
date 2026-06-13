@@ -84,7 +84,7 @@ const ENTRIES: Entry[] = [
       headline: "There's nothing to claim yet",
       body: "The vault is empty right now. Either it hasn't been funded, or someone has already moved the Bitcoin out.",
       nextStep:
-        "Contact the person who set this up — they can tell you whether to wait or whether nothing was ever inside.",
+        "Contact the person who set this up. They can tell you whether to wait or whether nothing was ever inside.",
       kind: "contact",
     },
   },
@@ -170,7 +170,7 @@ const ENTRIES: Entry[] = [
     matches: (_s, raw) => /poly1305|invalid tag|decryp/i.test(raw),
     copy: {
       headline: "Your link looks incomplete",
-      body: "Part of this link carries the key needed to unlock the inheritance. The link we received isn't whole — usually because it got cut off when it was shared.",
+      body: "Part of this link carries the key needed to unlock the inheritance. The link we received isn't whole, usually because it got cut off when it was shared.",
       nextStep: "Ask the person who sent it to share the full link again.",
       kind: "contact",
     },
@@ -208,7 +208,7 @@ const GENERIC_BY_CONTEXT: Record<ClaimContext, ClaimErrorCopy> = {
   },
   broadcast: {
     headline: "We couldn't send the transaction",
-    body: "Something went wrong publishing the signed transaction. Your link is still valid — the funds haven't moved.",
+    body: "Something went wrong publishing the signed transaction. Your link is still valid and the funds haven't moved.",
     nextStep:
       "Open the transaction in your wallet again, sign it cleanly, and paste the result back here.",
     kind: "fixable",

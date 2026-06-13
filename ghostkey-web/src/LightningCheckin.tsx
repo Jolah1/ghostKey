@@ -39,6 +39,9 @@ interface Props {
   onPaid: () => void;
   /** Called when the user dismisses the modal without paying. */
   onClose: () => void;
+  /** Free server-side check-in, offered when Lightning is down so an
+   *  outage on the payment rail can never cause a missed check-in. */
+  onFreeCheckin?: () => void;
 }
 
 type State =
@@ -60,6 +63,7 @@ export function LightningCheckin({
   ownerToken,
   onPaid,
   onClose,
+  onFreeCheckin,
 }: Props) {
   const [state, setState] = useState<State>({ kind: "minting" });
   const [copied, setCopied] = useState(false);
@@ -192,10 +196,19 @@ export function LightningCheckin({
                 Couldn't create an invoice
               </p>
               <p className="mt-1 text-xs text-muted">{state.message}</p>
-              <p className="mt-3 text-xs text-muted">
-                Tap the heartbeat button on the dashboard instead — it does
-                the same job server-side.
-              </p>
+              {onFreeCheckin ? (
+                <>
+                  <p className="mt-3 text-xs text-muted">
+                    Lightning seems to be unavailable right now. You can
+                    still check in the normal way, free of charge.
+                  </p>
+                  <div className="mt-3">
+                    <Button size="sm" onClick={onFreeCheckin}>
+                      Check in without paying
+                    </Button>
+                  </div>
+                </>
+              ) : null}
             </div>
           )}
 

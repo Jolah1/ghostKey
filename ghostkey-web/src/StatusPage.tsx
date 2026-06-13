@@ -102,7 +102,7 @@ export function StatusPage() {
         </h1>
         <p className="mt-3 text-muted" role="status" aria-live="polite">
           {probe.api === "down"
-            ? "Our server isn't responding right now. Your bitcoin is not affected — see below."
+            ? "Our server isn't responding right now. Your bitcoin is not affected. See below."
             : "Live checks from your browser, refreshed every 15 seconds."}
           {probe.checkedAt && (
             <span className="text-dim">
@@ -123,7 +123,7 @@ export function StatusPage() {
             name="Vault server"
             detail={
               probe.api === "down"
-                ? "Not responding. Dashboards, reminders, and claim links are paused until it's back. Deadlines are not silently missed — the schedule resumes where it left off."
+                ? "Not responding. Dashboards, reminders, and claim links are paused until it's back. Deadlines are not silently missed. The schedule resumes where it left off."
                 : `Keeps your schedule, sends reminders, and watches deadlines.${probe.version ? ` Version ${probe.version}.` : ""}`
             }
           />
@@ -146,7 +146,7 @@ export function StatusPage() {
             detail={
               probe.assistEnabled
                 ? "The chat helper on the setup page."
-                : "The chat helper on the setup page. Optional — setup works without it."
+                : "The chat helper on the setup page. Optional. Setup works without it."
             }
           />
         </ul>
@@ -158,7 +158,7 @@ export function StatusPage() {
           <p className="mt-1.5 text-sm text-muted">
             Your money never lives on these servers. It sits on the Bitcoin
             network, locked to keys only you and your heir can use. Your
-            emergency recovery file opens it with just your password — no
+            emergency recovery file opens it with just your password. No
             GhostKey required. That's the whole point.
           </p>
         </section>

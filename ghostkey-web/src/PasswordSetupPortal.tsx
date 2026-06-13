@@ -367,7 +367,7 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
       // button, hold them for a beat rather than let an unchecked
       // password through.
       if (strength === null) {
-        return "One moment — still checking that password.";
+        return "One moment. Still checking that password.";
       }
       if (!strength.acceptable) {
         return (
@@ -675,7 +675,9 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
 
   return (
     <main className="bg-app fade-in">
-      <div className="mx-auto max-w-xl px-5 py-12 md:py-16 lg:grid lg:max-w-5xl lg:grid-cols-[minmax(0,1fr)_320px] lg:items-start lg:gap-14">
+      {/* pb-28 keeps the wizard's Continue/Back row clear of the
+          floating GhostKey AI launcher (fixed bottom-right). */}
+      <div className="mx-auto max-w-xl px-5 pt-12 pb-28 md:pt-16 lg:grid lg:max-w-5xl lg:grid-cols-[minmax(0,1fr)_320px] lg:items-start lg:gap-14">
         <div className="min-w-0 lg:max-w-xl">
         <ProgressBar value={progress} />
 
@@ -820,7 +822,7 @@ function SetupRail({
             <p className="mt-2">
               Your heir gets no message when you finish this. We only
               reach out on the channel you pick here if you ever stop
-              checking in — and then they claim from a link, no wallet
+              checking in. Then they claim from a link, with no wallet
               or technical steps needed.
             </p>
           </div>
@@ -833,7 +835,7 @@ function SetupRail({
             </p>
             <p className="mt-2">
               It locks your vault on this device before anything is
-              sent to us — we never see it and can't reset it. Write
+              sent to us. We never see it and can't reset it. Write
               it down somewhere safe, like you would a house key.
             </p>
             <p className="mt-2">
@@ -849,7 +851,7 @@ function SetupRail({
             <ul className="mt-2 space-y-2">
               <li>• Send a small test amount first, then the rest.</li>
               <li>
-                • Download the recovery file from your dashboard — it
+                • Download the recovery file from your dashboard. It
                 works even if GhostKey disappears.
               </li>
               <li>
@@ -936,8 +938,8 @@ function StepHeir({
       </h1>
       <p className="mt-2 text-muted">
         They never have to know about this until the time comes. When it does,
-        we reach them on the channel you pick and they claim from a link —
-        no wallet install, no setup on their end.
+        we reach them on the channel you pick and they claim from a link.
+        No wallet install, no setup on their end.
       </p>
 
       <div className="mt-8 flex flex-col gap-5">
@@ -968,8 +970,8 @@ function StepHeir({
           </button>
         ) : (
           <p className="text-xs text-muted">
-            Maximum of {MAX_HEIRS} heirs per setup. Need more? File an issue —
-            we'll lift the cap when there's a real reason to.
+            Maximum of {MAX_HEIRS} heirs per setup. Need more? File an issue
+            and we'll lift the cap when there's a real reason to.
           </p>
         )}
 
@@ -1171,7 +1173,7 @@ function HeirCard({
           />
           <span>
             They don't have a Bitcoin wallet yet. We'll generate one for
-            them from their email when they open the claim link — no
+            them from their email when they open the claim link. No
             setup ahead of time.
           </span>
         </label>
@@ -1235,8 +1237,8 @@ function StepPassword({
     <div>
       <h1 className="font-serif text-3xl md:text-4xl">Pick your password</h1>
       <p className="mt-2 text-muted">
-        This unlocks your vault on any device. Lose it and the timer runs out
-        — your heir inherits on the schedule you picked. There is no recovery
+        This unlocks your vault on any device. Lose it and the timer runs
+        out, and your heir inherits on the schedule you picked. There is no recovery
         email and no support contact. That's the trade we make to be honestly
         non-custodial.
       </p>
@@ -1331,7 +1333,7 @@ function StepPassword({
             </div>
             <p className="mt-2 text-xs text-muted">
               We're running a deliberately slow key derivation. This takes
-              a couple of seconds on most phones — it's what makes your
+              a couple of seconds on most phones. It's what makes your
               password expensive to brute-force.
             </p>
           </div>
@@ -1343,7 +1345,7 @@ function StepPassword({
           >
             <ol className="space-y-2 pl-5 text-sm text-muted list-decimal">
               <li>
-                Your browser generates two fresh Bitcoin keys — one for you,
+                Your browser generates two fresh Bitcoin keys: one for you,
                 one for the person you named. They never leave this tab.
               </li>
               <li>
@@ -1358,7 +1360,7 @@ function StepPassword({
                 waiting period).
               </li>
               <li>
-                You'll get an address on the next screen — fund it with
+                You'll get an address on the next screen. Fund it with
                 testnet BTC and you're done.
               </li>
             </ol>
@@ -1397,7 +1399,7 @@ function StepFund({
             Each heir gets their own vault address. Send each one the
             share you want them to inherit. Your wallet probably lets
             you batch all {created.vaults.length} sends into a single
-            transaction (one fee, one signature) — Sparrow and Bitcoin
+            transaction (one fee, one signature). Sparrow and Bitcoin
             Core both do, most others do too.
           </>
         ) : (
@@ -1427,8 +1429,8 @@ function StepFund({
         <InlineAlert tone="neutral">
           {isGroup ? (
             <>
-              Bookmark this page or write down any of your vault ids —
-              the dashboard is also reachable from any browser by signing
+              Bookmark this page or write down any of your vault ids.
+              The dashboard is also reachable from any browser by signing
               in with your email and password. All {created.vaults.length}
               {" "}vaults appear together once you sign in.
             </>
@@ -1438,7 +1440,7 @@ function StepFund({
               <code className="font-mono text-xs">
                 {shortId(created.vaults[0]?.vaultId ?? "")}
               </code>
-              ) — the dashboard is also reachable from any browser by
+              ). The dashboard is also reachable from any browser by
               signing in with your email and password.
             </>
           )}
