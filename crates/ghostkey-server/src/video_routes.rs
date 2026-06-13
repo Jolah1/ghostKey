@@ -66,7 +66,9 @@ pub async fn upload_video(
         ));
     }
     if req.owner_sig_b64.is_empty() {
-        return Err(ApiError::Validation("owner_sig_b64 must be non-empty".into()));
+        return Err(ApiError::Validation(
+            "owner_sig_b64 must be non-empty".into(),
+        ));
     }
     if req.signed_sha256_hex.len() != 64
         || !req.signed_sha256_hex.bytes().all(|b| b.is_ascii_hexdigit())
@@ -145,12 +147,11 @@ pub async fn get_video_status(
     auth: OwnerAuth,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<VideoStatusView>, ApiError> {
-    let row: Option<(String, Option<i64>, String)> = sqlx::query_as(
-        "SELECT mime, duration_ms, created_at FROM vault_videos WHERE vault_id = ?",
-    )
-    .bind(&auth.vault_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let row: Option<(String, Option<i64>, String)> =
+        sqlx::query_as("SELECT mime, duration_ms, created_at FROM vault_videos WHERE vault_id = ?")
+            .bind(&auth.vault_id)
+            .fetch_optional(&state.db)
+            .await?;
     Ok(Json(match row {
         Some((mime, duration_ms, created_at)) => VideoStatusView {
             has_video: true,
@@ -227,9 +228,8 @@ pub async fn get_claim_video(
     if !claim_token_matches(&token, &stored_hash) {
         return Err(ApiError::NotFound);
     }
-    let owner_xpub = owner_xpub_from_descriptor(&descriptor_external).ok_or_else(|| {
-        ApiError::Validation("could not read owner key from descriptor".into())
-    })?;
+    let owner_xpub = owner_xpub_from_descriptor(&descriptor_external)
+        .ok_or_else(|| ApiError::Validation("could not read owner key from descriptor".into()))?;
 
     let v: Option<VideoRow> = sqlx::query_as(
         r#"SELECT video_ct_b64, video_nonce_b64, mime, duration_ms,
