@@ -175,6 +175,11 @@ export interface SealedBlobsView {
   owner_token_nonce_b64: string;
   network: string;
   timelock_blocks: number;
+  /** Owner descriptor key fragment (`[fp/86'/0'/0']xpub.../0/*`). The
+   *  "add a heir" flow strips the `/0/*` suffix and passes the rest as
+   *  an origin-tagged `owner.xpub` so the new sibling vault is built
+   *  under the identical owner key. `null` on legacy rows. */
+  owner_xpub_fragment_external?: string | null;
 }
 
 /** First external (receive) address derived from the vault descriptor.

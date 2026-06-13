@@ -712,23 +712,38 @@ pub struct SealedSetup {
     pub claim_token_b64: String,
 }
 
-/// One vault per owner email. Sign-in looks vaults up by this hash,
-/// so a second live vault under the same email only causes confusion
-/// about which one is being checked in. Claimed vaults don't count:
-/// their story is over, the email can start a new one.
-async fn reject_duplicate_owner_email(
+/// One *owner* per email — but an owner may have several heirs, each
+/// its own vault row sharing the same `owner_email_hash` and the same
+/// owner key. That's how a single owner adds heirs over time (and how
+/// multi-heir setup creates several at once). So we no longer reject
+/// every duplicate email; we reject only a vault whose owner *key*
+/// differs from the ones already on file for this email — a genuine
+/// collision (someone else's email, or the owner rotating keys) that
+/// would confuse sign-in and dashboard grouping. A row with no owner
+/// key fragment recorded is treated as a conflict, conservatively.
+/// Claimed vaults don't count: their story is over, the email is free.
+async fn reject_conflicting_owner_email(
     db: &sqlx::SqlitePool,
     owner_email_hash: &str,
+    owner_xpub_fragment_external: &str,
 ) -> Result<(), ApiError> {
     let existing: Option<(String,)> = sqlx::query_as(
-        "SELECT id FROM vaults WHERE owner_email_hash = ? AND status != 'claimed' LIMIT 1",
+        "SELECT id FROM vaults \
+          WHERE owner_email_hash = ? \
+            AND status != 'claimed' \
+            AND (owner_xpub_fragment_external IS NULL \
+                 OR owner_xpub_fragment_external != ?) \
+          LIMIT 1",
     )
     .bind(owner_email_hash)
+    .bind(owner_xpub_fragment_external)
     .fetch_optional(db)
     .await?;
     if existing.is_some() {
         return Err(ApiError::Conflict(
-            "a vault already exists for this email. Sign in to manage it instead".into(),
+            "a vault already exists for this email under a different key. \
+             Sign in to manage it instead"
+                .into(),
         ));
     }
     Ok(())
@@ -982,7 +997,7 @@ async fn create_vault_from_xpub(
     };
 
     if let Some(hash) = sealed_owner_email_hash.as_ref() {
-        reject_duplicate_owner_email(&state.db, hash).await?;
+        reject_conflicting_owner_email(&state.db, hash, &owner_ext).await?;
     }
 
     sqlx::query(
@@ -1527,17 +1542,53 @@ async fn get_vault(
     }))
 }
 
-/// Owner-initiated vault deletion. Removes the server-side vault row
-/// and its dependents (events, notifications, lightning_invoices) via
-/// `ON DELETE CASCADE`. The owner's on-chain funds are unaffected —
-/// they're spendable from the owner's xpub/seed, which the server
-/// never held. Returns 204 on success; 404 if the vault has already
-/// been removed.
+/// Owner-initiated vault deletion (used by "remove a heir"). Removes
+/// the server-side vault row and its dependents (events, notifications,
+/// lightning_invoices) via `ON DELETE CASCADE`. The owner's on-chain
+/// funds are unaffected — they're spendable from the owner's xpub/seed,
+/// which the server never held. Returns 204 on success; 404 if the
+/// vault has already been removed.
+///
+/// Heir protection: once the owner's time is up and the heir's claim is
+/// live, removal is *locked*. The owner can remove a heir while they're
+/// still checking in (`ok`) or in the grace window (`alarmed`, where a
+/// check-in still cancels everything), and while a panic freeze is in
+/// effect (`frozen` — the owner is demonstrably present). But once the
+/// claim link has been issued (`timelock_started`) or the heir has
+/// begun/finished claiming, the inheritance must be honoured — we
+/// refuse with 409 so no one with owner access can yank it away after
+/// the owner stopped checking in.
+/// Whether a vault's claim has progressed far enough that the owner can
+/// no longer remove the heir. Once the claim link is issued
+/// (`timelock_started`) or the heir is mid/post-claim, the inheritance
+/// must be honoured. `ok`, `alarmed`, and `frozen` are all owner-
+/// controllable states where removal stays allowed. See `delete_vault`.
+fn claim_is_live(status: &str) -> bool {
+    matches!(status, "timelock_started" | "claiming" | "claimed")
+}
+
 async fn delete_vault(
     auth: OwnerAuth,
     State(state): State<Arc<AppState>>,
 ) -> Result<StatusCode, ApiError> {
     let id = auth.vault_id;
+
+    let status: Option<(String,)> = sqlx::query_as("SELECT status FROM vaults WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await?;
+    let Some((status,)) = status else {
+        return Err(ApiError::NotFound);
+    };
+    if claim_is_live(&status) {
+        return Err(ApiError::Conflict(
+            "this heir's claim is already underway and can no longer be \
+             removed. To stop it, check in — that cancels the claim while \
+             you're still within the waiting window."
+                .into(),
+        ));
+    }
+
     let res = sqlx::query("DELETE FROM vaults WHERE id = ?")
         .bind(&id)
         .execute(&state.db)
@@ -2367,6 +2418,14 @@ pub struct SealedBlobsView {
     pub owner_token_nonce_b64: String,
     pub network: String,
     pub timelock_blocks: i64,
+    /// The owner's descriptor key fragment, e.g.
+    /// `[fp/86'/0'/0']xpub.../0/*`. Lets the "add a heir" flow create a
+    /// sibling vault under the *same* owner key without re-deriving the
+    /// master fingerprint (which the account-level xprv can't reproduce):
+    /// the client strips the `/0/*` suffix and passes the rest as an
+    /// origin-tagged `owner.xpub`, so the server rebuilds an identical
+    /// owner branch. `None` for legacy rows that predate this column.
+    pub owner_xpub_fragment_external: Option<String>,
 }
 
 async fn get_sealed_blobs(
@@ -2384,12 +2443,13 @@ async fn get_sealed_blobs(
         Option<String>, // owner_token_nonce
         String,         // network
         i64,            // timelock
+        Option<String>, // owner_xpub_fragment_external
     );
     let row: Option<Row> = sqlx::query_as(
         r#"SELECT id, password_salt_b64, password_kdf_mem_kib, password_kdf_iters,
                   owner_xprv_sealed_ct_b64, owner_xprv_sealed_nonce,
                   owner_token_sealed_ct_b64, owner_token_sealed_nonce,
-                  network, timelock_blocks
+                  network, timelock_blocks, owner_xpub_fragment_external
              FROM vaults WHERE id = ?"#,
     )
     .bind(&id)
@@ -2421,6 +2481,7 @@ async fn get_sealed_blobs(
         owner_token_nonce_b64: ot_n,
         network: row.8,
         timelock_blocks: row.9,
+        owner_xpub_fragment_external: row.10,
     }))
 }
 
@@ -3090,40 +3151,65 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn duplicate_owner_email_is_rejected_until_vault_is_claimed() {
+    async fn same_owner_may_add_heirs_but_different_owner_key_conflicts() {
         let state = fresh_state().await;
         let hash = "a".repeat(64);
+        let owner_frag = "tr(OWNERKEY/0/*)";
 
         // No vault yet: creation may proceed.
-        reject_duplicate_owner_email(&state.db, &hash)
+        reject_conflicting_owner_email(&state.db, &hash, owner_frag)
             .await
-            .expect("no duplicate when table is empty");
+            .expect("no conflict when table is empty");
 
         insert_vault_with_email(&state, "v-dup-1", "owner@example.com").await;
-        sqlx::query("UPDATE vaults SET owner_email_hash = ? WHERE id = 'v-dup-1'")
-            .bind(&hash)
-            .execute(&state.db)
-            .await
-            .expect("set email hash");
+        sqlx::query(
+            "UPDATE vaults \
+                SET owner_email_hash = ?, owner_xpub_fragment_external = ? \
+              WHERE id = 'v-dup-1'",
+        )
+        .bind(&hash)
+        .bind(owner_frag)
+        .execute(&state.db)
+        .await
+        .expect("set email hash + owner fragment");
 
-        let err = reject_duplicate_owner_email(&state.db, &hash)
+        // Same owner key, same email → adding another heir is allowed.
+        reject_conflicting_owner_email(&state.db, &hash, owner_frag)
             .await
-            .expect_err("live vault with same email must conflict");
+            .expect("same owner may add more heirs under one email");
+
+        // A *different* owner key on the same email is a real collision.
+        let err = reject_conflicting_owner_email(&state.db, &hash, "tr(SOMEONEELSE/0/*)")
+            .await
+            .expect_err("different owner key on same email must conflict");
         assert!(matches!(err, ApiError::Conflict(_)), "got {err:?}");
 
         // A different email is unaffected.
-        reject_duplicate_owner_email(&state.db, &"b".repeat(64))
+        reject_conflicting_owner_email(&state.db, &"b".repeat(64), owner_frag)
             .await
             .expect("different email passes");
 
-        // Once the vault is claimed, the email is free again.
+        // Once the vault is claimed, the email is free again — even for
+        // a brand-new owner key.
         sqlx::query("UPDATE vaults SET status = 'claimed' WHERE id = 'v-dup-1'")
             .execute(&state.db)
             .await
             .expect("mark claimed");
-        reject_duplicate_owner_email(&state.db, &hash)
+        reject_conflicting_owner_email(&state.db, &hash, "tr(SOMEONEELSE/0/*)")
             .await
             .expect("claimed vault frees the email");
+    }
+
+    #[test]
+    fn claim_is_live_locks_removal_once_claim_starts() {
+        // Owner-controllable states: heir removal stays allowed.
+        for s in ["ok", "alarmed", "frozen"] {
+            assert!(!claim_is_live(s), "{s} should allow removal");
+        }
+        // Claim underway or done: removal is locked (heir protection).
+        for s in ["timelock_started", "claiming", "claimed"] {
+            assert!(claim_is_live(s), "{s} should lock removal");
+        }
     }
 
     async fn verified_at(state: &AppState, id: &str) -> Option<String> {

@@ -47,6 +47,7 @@ import {
   type VaultMeta,
 } from "./vaultStore";
 import { LightningCheckin } from "./LightningCheckin";
+import { AddHeirPortal } from "./AddHeirPortal";
 import {
   getPushSubscription,
   isPushSupported,
@@ -105,6 +106,8 @@ export function Dashboard({ onNavigate }: Props) {
   // Whether the Lightning check-in modal is open. The modal owns its
   // own invoice + polling state; we just toggle visibility here.
   const [lightningOpen, setLightningOpen] = useState(false);
+  // Whether the "Add a heir" modal is open.
+  const [addHeirOpen, setAddHeirOpen] = useState(false);
   // VAPID public key from /health, or null when the server has no
   // push keypair configured. Gates the reminder opt-in card.
   const [pushKey, setPushKey] = useState<string | null>(null);
@@ -437,10 +440,29 @@ export function Dashboard({ onNavigate }: Props) {
                   meta={meta}
                   vault={vault}
                   onRemove={
-                    isClosed ? undefined : () => onRemoveHeir(meta.id, meta.heir.name)
+                    // Heir protection: once a claim is live the owner can
+                    // no longer remove the heir (server enforces this too).
+                    isClosed || isClaiming
+                      ? undefined
+                      : () => onRemoveHeir(meta.id, meta.heir.name)
                   }
                 />
               )}
+
+              {/* Add another heir to this vault — own share, own claim
+                  link, same one-tap check-in. Hidden once a claim is
+                  underway or the vault is closed. */}
+              {!isClosed && !isClaiming ? (
+                <div className="mt-3">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setAddHeirOpen(true)}
+                  >
+                    + Add a heir
+                  </Button>
+                </div>
+              ) : null}
             </div>
 
             {vault?.lnurl_panic && vault.status !== "frozen" && !isClosed && !isClaiming ? (
@@ -461,6 +483,22 @@ export function Dashboard({ onNavigate }: Props) {
           <ActivityList events={events} />
         </div>
       </div>
+
+      {addHeirOpen && activeId && vault ? (
+        <AddHeirPortal
+          siblingVaultId={activeId}
+          vault={vault}
+          groupId={meta.groupId}
+          ownerEmail={meta.owner.address}
+          onClose={() => setAddHeirOpen(false)}
+          onAdded={() => {
+            setAddHeirOpen(false);
+            // Reload so groupVaults / active state re-derive against
+            // the newly added sibling.
+            if (typeof window !== "undefined") window.location.reload();
+          }}
+        />
+      ) : null}
 
       {lightningOpen && activeId ? (
         <LightningCheckin
