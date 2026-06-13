@@ -60,6 +60,14 @@ import type { Route } from "./App";
 
 const PLACEHOLDER_OWNER_TOKEN = "ghostkey-placeholder-owner-token-v1";
 
+/** The sealed blobs don't carry the heir's name, but the vault label
+ *  does ("Ada's share" / "Ada's inheritance"). Pull the name back out
+ *  so cross-device sign-in shows the real name, not a placeholder. */
+function heirNameFromLabel(label: string | null): string {
+  const m = label?.match(/^(.+?)'s (?:share|inheritance)$/i);
+  return m ? m[1] : "Heir";
+}
+
 interface Props {
   onNavigate: (r: Route) => void;
 }
@@ -185,7 +193,7 @@ export function SignInPortal({ onNavigate }: Props) {
         id: v.id,
         label: v.label ?? "Your vault",
         owner: { address: email.trim() },
-        heir: { name: "Heir", email: "", address: "" },
+        heir: { name: heirNameFromLabel(v.label), email: "", address: "" },
         createdAt: v.created_at,
         ownerToken: out.ownerToken,
       });
@@ -276,7 +284,7 @@ export function SignInPortal({ onNavigate }: Props) {
           id: v.id,
           label: v.label ?? "Your vault",
           owner: { address: email.trim() },
-          heir: { name: "Heir", email: "", address: "" },
+          heir: { name: heirNameFromLabel(v.label), email: "", address: "" },
           createdAt: v.created_at,
           ownerToken,
           groupId,

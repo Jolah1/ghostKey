@@ -141,7 +141,14 @@ where
 {
     let mut last_err = BlockingErr::Esplora("no esplora endpoints configured".into());
     for (i, url) in urls.iter().enumerate() {
-        let client = esplora_client::Builder::new(url).build_blocking();
+        // Per-request socket timeout. The default is unbounded, so a
+        // slow/throttling public explorer (mempool.space rate-limits
+        // hard) could hang the whole scan past the gateway's 60s cap.
+        // Bounding each request lets a stuck endpoint fail over to the
+        // next one quickly instead.
+        let client = esplora_client::Builder::new(url)
+            .timeout(15)
+            .build_blocking();
         match op(&client) {
             Ok(v) => return Ok(v),
             Err(e @ BlockingErr::Esplora(_)) => {

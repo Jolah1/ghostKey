@@ -335,12 +335,11 @@ export function AddHeirPortal({
         ) : (
           <>
             <h2 id="add-heir-title" className="font-serif text-2xl">
-              Add a heir
+              Add Heir
             </h2>
             <p className="mt-2 text-sm text-muted">
-              They join this vault with their own share and their own claim
-              link. You won't set up anything from scratch — just their details
-              and your password.
+              They get their own share and their own claim link. Just add their
+              details and your password.
             </p>
 
             <div className="mt-5 space-y-4">
