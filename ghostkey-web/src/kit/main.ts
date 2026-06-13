@@ -5,14 +5,15 @@
  * independence-proof.html (spliced in by the dashboard at download
  * time) and offers two layers:
  *
- *   1. No password needed: the watch-only descriptor pair, which any
- *      descriptor wallet (Sparrow, Bitcoin Core) can use to SEE the
- *      funds.
+ *   1. No password needed: the watch-only descriptor pair, which a
+ *      miniscript-aware descriptor wallet (Bitcoin Core, Liana) can use
+ *      to SEE the funds. NOTE: Sparrow/Electrum/mobile wallets cannot —
+ *      the vault is a Taproot timelock miniscript they don't support.
  *   2. Password unlock: Argon2id + XChaCha20-Poly1305 — the exact
  *      primitives the dashboard uses (src/crypto/sealing.ts) — decrypt
  *      the owner's account xprv locally. We then splice the xprv into
- *      the descriptors so the result imports straight into Sparrow as
- *      a SPENDING wallet.
+ *      the descriptors so the result imports into Bitcoin Core as a
+ *      SPENDING wallet.
  *
  * Constraints this file lives under:
  *   - No network calls, ever. It must work from file:// with WiFi off.
@@ -250,7 +251,8 @@ function render() {
     );
 
     // Splice the xprv into the descriptors so they import into
-    // Sparrow / Bitcoin Core as spending wallets. The descriptors
+    // Bitcoin Core (or another miniscript-aware wallet) as spending
+    // wallets. The descriptors
     // embed the account XPUB; deriving it from the xprv tells us the
     // exact substring to replace. Falls back to bare-key display if
     // the splice doesn't match (it always should).
@@ -263,11 +265,15 @@ function render() {
           el(`<h2>Your spending wallet (import this)</h2>`),
         );
         result.appendChild(
-          el(`<p class="muted">In Sparrow Wallet: File → New Wallet →
-          name it → change “Policy Type” keystore entry via Edit →
-          paste the first line as the descriptor. Sparrow accepts the
-          receive descriptor and finds the change one itself; the
-          second line is there for wallets that want both.</p>`),
+          el(`<p class="muted">This vault uses a Taproot timelock
+          script, so it needs a wallet that understands miniscript.
+          <strong>Bitcoin Core</strong> is the surest: run
+          <code>bitcoin-cli importdescriptors</code> with the line below
+          and it can both watch and spend. <strong>Liana</strong>
+          (wizardsardine.com/liana) is a friendlier app built for exactly
+          this kind of timelocked inheritance wallet. Everyday wallets
+          like Sparrow, Electrum, and phone wallets cannot open this
+          vault, because they do not support the timelock script.</p>`),
         );
         result.appendChild(
           copyBlock(
@@ -303,11 +309,13 @@ function render() {
     el(`
     <div>
       <h2>Just want to check the money is there?</h2>
-      <p class="muted">No password needed for this part. These
-      “descriptors” are like account numbers — they let a wallet app
-      show the balance, but never spend. Import them in Sparrow
-      Wallet (sparrowwallet.com, free) via File → New Wallet → as a
-      watch-only descriptor wallet.</p>
+      <p class="muted">No password needed for this part. The simplest
+      way: open a block explorer like mempool.space and search for the
+      deposit address you funded. You will see the balance and every
+      payment, with GhostKey nowhere in the loop. To watch the whole
+      vault, import a descriptor below into Bitcoin Core or Liana, which
+      understand the timelock. Ordinary wallets like Sparrow cannot read
+      these.</p>
     </div>
   `),
   );
