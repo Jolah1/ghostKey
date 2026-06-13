@@ -85,8 +85,15 @@ fn master_key() -> Result<&'static [u8; 32], CryptoError> {
 
 fn load_master_key_from_env() -> Result<[u8; 32], CryptoError> {
     let raw = std::env::var("GHOSTKEY_MASTER_KEY").map_err(|_| CryptoError::MasterKeyMissing)?;
+    parse_master_key(&raw)
+}
+
+fn parse_master_key(raw: &str) -> Result<[u8; 32], CryptoError> {
+    // `openssl rand -base64 32` (the command every doc suggests) emits
+    // padded base64; accept it by stripping trailing '=' before the
+    // no-pad decode.
     let bytes = B64
-        .decode(raw.trim())
+        .decode(raw.trim().trim_end_matches('='))
         .map_err(|e| CryptoError::MasterKeyMalformed(format!("not base64: {e}")))?;
     if bytes.len() != 32 {
         return Err(CryptoError::MasterKeyMalformed(format!(
@@ -382,6 +389,27 @@ mod tests {
         assert!(matches!(
             err,
             Err(CryptoError::Decrypt) | Err(CryptoError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn master_key_accepts_padded_and_unpadded_base64() {
+        let key = [7u8; 32];
+        let unpadded = B64.encode(key);
+        let padded = base64::engine::general_purpose::STANDARD.encode(key);
+        assert!(
+            padded.ends_with('='),
+            "32 bytes must pad in standard base64"
+        );
+        assert_eq!(parse_master_key(&unpadded).expect("unpadded"), key);
+        assert_eq!(parse_master_key(&padded).expect("padded"), key);
+        assert_eq!(
+            parse_master_key(&format!("  {padded}\n")).expect("whitespace"),
+            key
+        );
+        assert!(matches!(
+            parse_master_key("too-short"),
+            Err(CryptoError::MasterKeyMalformed(_))
         ));
     }
 
