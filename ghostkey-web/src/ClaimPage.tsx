@@ -690,13 +690,15 @@ function PasswordVaultClaim({
         <div className="mt-10">
           <p className="text-xs uppercase tracking-wider text-dim">Step 2</p>
           <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
-            Where should the Bitcoin go?
+            Where should the money go?
           </h2>
           <p className="mt-2 text-sm text-soft">
-            Open your wallet. Tap <strong>Receive</strong>. Copy the long
-            address that starts with{" "}
-            <code className="font-mono">{bech32PrefixFor(sealed.network)}</code>.
-            Paste it below.
+            Open any Bitcoin wallet and tap <strong>Receive</strong>. A
+            Lightning wallet works too — apps like Wallet of Satoshi, Bitnob,
+            Cash App, or Phoenix each give you a Bitcoin address that adds the
+            money to your balance. Copy the long address that starts with{" "}
+            <code className="font-mono">{bech32PrefixFor(sealed.network)}</code>{" "}
+            and paste it below.
           </p>
 
           <div className="mt-4">
@@ -918,12 +920,13 @@ function DerivedHeirClaim({
       <div className="mt-10">
         <p className="text-xs uppercase tracking-wider text-dim">Step 1</p>
         <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
-          Where should the Bitcoin go?
+          Where should the money go?
         </h2>
         <p className="mt-2 text-sm text-soft">
           Paste any Bitcoin address you control on the {networkLabel(params.network)}.{" "}
-          {walletExamplesInline(params.network)}. Anything that can receive
-          on that network works.
+          A Lightning wallet works too — apps like Wallet of Satoshi, Bitnob,
+          Cash App, or Phoenix each give you a Bitcoin address that adds the
+          money to your balance. {walletExamplesInline(params.network)}.
         </p>
 
         <div className="mt-4">
