@@ -695,6 +695,28 @@ pub struct SealedSetup {
     pub claim_token_b64: String,
 }
 
+/// One vault per owner email. Sign-in looks vaults up by this hash,
+/// so a second live vault under the same email only causes confusion
+/// about which one is being checked in. Claimed vaults don't count:
+/// their story is over, the email can start a new one.
+async fn reject_duplicate_owner_email(
+    db: &sqlx::SqlitePool,
+    owner_email_hash: &str,
+) -> Result<(), ApiError> {
+    let existing: Option<(String,)> = sqlx::query_as(
+        "SELECT id FROM vaults WHERE owner_email_hash = ? AND status != 'claimed' LIMIT 1",
+    )
+    .bind(owner_email_hash)
+    .fetch_optional(db)
+    .await?;
+    if existing.is_some() {
+        return Err(ApiError::Conflict(
+            "a vault already exists for this email. Sign in to manage it instead".into(),
+        ));
+    }
+    Ok(())
+}
+
 async fn create_vault_from_xpub(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateVaultFromXpubRequest>,
@@ -941,6 +963,10 @@ async fn create_vault_from_xpub(
             None, None, None, None, None, None, None, None, None, None, None, None, None,
         )
     };
+
+    if let Some(hash) = sealed_owner_email_hash.as_ref() {
+        reject_duplicate_owner_email(&state.db, hash).await?;
+    }
 
     sqlx::query(
         r#"INSERT INTO vaults (
@@ -3044,6 +3070,43 @@ mod tests {
         .execute(&state.db)
         .await
         .expect("insert vault");
+    }
+
+    #[tokio::test]
+    async fn duplicate_owner_email_is_rejected_until_vault_is_claimed() {
+        let state = fresh_state().await;
+        let hash = "a".repeat(64);
+
+        // No vault yet: creation may proceed.
+        reject_duplicate_owner_email(&state.db, &hash)
+            .await
+            .expect("no duplicate when table is empty");
+
+        insert_vault_with_email(&state, "v-dup-1", "owner@example.com").await;
+        sqlx::query("UPDATE vaults SET owner_email_hash = ? WHERE id = 'v-dup-1'")
+            .bind(&hash)
+            .execute(&state.db)
+            .await
+            .expect("set email hash");
+
+        let err = reject_duplicate_owner_email(&state.db, &hash)
+            .await
+            .expect_err("live vault with same email must conflict");
+        assert!(matches!(err, ApiError::Conflict(_)), "got {err:?}");
+
+        // A different email is unaffected.
+        reject_duplicate_owner_email(&state.db, &"b".repeat(64))
+            .await
+            .expect("different email passes");
+
+        // Once the vault is claimed, the email is free again.
+        sqlx::query("UPDATE vaults SET status = 'claimed' WHERE id = 'v-dup-1'")
+            .execute(&state.db)
+            .await
+            .expect("mark claimed");
+        reject_duplicate_owner_email(&state.db, &hash)
+            .await
+            .expect("claimed vault frees the email");
     }
 
     async fn verified_at(state: &AppState, id: &str) -> Option<String> {

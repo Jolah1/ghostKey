@@ -51,7 +51,7 @@ export function InheritPortal() {
           <p className="mx-auto mt-3 max-w-md text-muted">
             If someone named you as an heir, you'll receive a one-time link
             by SMS, WhatsApp, or email when the vault becomes claimable.
-            Open that link on any device — there's no account to sign in to.
+            Open that link on any device. There's no account to sign in to.
           </p>
         </header>
 

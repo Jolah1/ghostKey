@@ -180,8 +180,8 @@ export function CheckinPortal({ initialId }: { initialId?: string }) {
               This device doesn't have the credentials for vault{" "}
               <span className="font-mono">{state.id.slice(0, 8)}…</span>.
               <br />
-              If the vault was set up via the password flow, sign in
-              instead with your email and password —{" "}
+              If you set this vault up with a password, sign in with
+              your email and password instead.{" "}
               <a
                 href="#/checkin"
                 className="underline hover:text-[var(--text)]"
@@ -264,7 +264,7 @@ function Result({
         <Heartbeat onTap={busy ? undefined : onCheckin} disabled={busy || vault.status === "claimed"} />
 
         <h2 className="mt-6 font-serif text-2xl">
-          {justChecked ? "Thanks — you're safe" : copy.long}
+          {justChecked ? "Thanks, you're safe" : copy.long}
         </h2>
         <p className="mt-2 text-sm text-muted">
           Next reminder{" "}

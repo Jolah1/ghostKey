@@ -45,7 +45,7 @@ interface KitData {
 export async function downloadIndependenceProof(vault: VaultView): Promise<void> {
   if (!vault.descriptor_external || !vault.descriptor_internal) {
     throw new Error(
-      "This vault's wallet details aren't available yet — reload the page and try again.",
+      "This vault's wallet details aren't available yet. Reload the page and try again.",
     );
   }
 

@@ -214,7 +214,7 @@ export function SignInPortal({ onNavigate }: Props) {
           </h1>
           <p className="mx-auto mt-3 text-sm text-muted">
             Use the email and password you picked when you set the vault up.
-            We unwrap your keys in this tab — nothing leaves the browser.
+            We unwrap your keys in this tab. Nothing leaves the browser.
           </p>
         </header>
 

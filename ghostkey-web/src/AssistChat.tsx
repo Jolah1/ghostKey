@@ -16,14 +16,14 @@ import { useEffect, useRef, useState } from "react";
 import { api, ApiError, type AssistChatMessage } from "./api";
 
 interface Props {
-  /** A short label that opens the chat. Defaults to "Ask the guide". */
+  /** A short label that opens the chat. Defaults to "GhostKey AI". */
   label?: string;
   /** Optional opener message shown above the input on first open.
    *  Use this to set scope ("Ask anything about funding your vault"). */
   intro?: string;
 }
 
-export function AssistChat({ label = "Ask the guide", intro }: Props) {
+export function AssistChat({ label = "GhostKey AI", intro }: Props) {
   const [open, setOpen] = useState(false);
   // We only probe /health on first open — keeps the dashboard cheap.
   const [enabled, setEnabled] = useState<boolean | null>(null);
@@ -105,21 +105,21 @@ export function AssistChat({ label = "Ask the guide", intro }: Props) {
     <div
       role="dialog"
       aria-modal="false"
-      aria-label="GhostKey guide chat"
+      aria-label="GhostKey AI chat"
       className="assist-panel fixed bottom-5 right-5 z-40 flex w-[min(380px,calc(100vw-2rem))] flex-col rounded-2xl bg-[var(--surface)] shadow-xl ring-1 ring-[var(--border)]"
     >
       <header className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
         <div>
-          <p className="text-sm font-semibold">Guide</p>
+          <p className="text-sm font-semibold">GhostKey AI</p>
           <p className="text-[11px] text-dim">
-            Explains GhostKey — never asks for your seed.
+            Explains GhostKey. It will never ask for your seed.
           </p>
         </div>
         <button
           type="button"
           className="rounded-md px-2 py-1 text-sm text-muted hover:bg-[var(--surface-2,var(--surface))]"
           onClick={() => setOpen(false)}
-          aria-label="Close guide"
+          aria-label="Close chat"
         >
           ✕
         </button>
@@ -131,7 +131,7 @@ export function AssistChat({ label = "Ask the guide", intro }: Props) {
       >
         {enabled === false ? (
           <p className="text-muted">
-            The AI guide isn't enabled on this server. Reach the team via
+            GhostKey AI isn't enabled on this server. Reach the team via
             the project README for help.
           </p>
         ) : messages.length === 0 ? (
@@ -140,7 +140,7 @@ export function AssistChat({ label = "Ask the guide", intro }: Props) {
             <p className="text-muted">
               Ask anything about how check-ins, the waiting period, or
               the heir's claim flow work. Never paste your seed phrase
-              or private key — the guide will refuse to forward it.
+              or private key here.
             </p>
             <ul className="space-y-1 text-xs text-dim">
               <li>• What does my heir need to do?</li>

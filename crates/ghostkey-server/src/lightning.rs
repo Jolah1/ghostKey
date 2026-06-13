@@ -251,9 +251,10 @@ fn sidecar_env() -> (Option<String>, Option<String>) {
 /// via `GHOSTKEY_LN_CHECKIN_SAT`. The protocol minimum is 1 sat, but
 /// many custodial wallets (Bitnob, some exchange wallets) refuse to
 /// send less than ~20 sats, which made a 1-sat invoice unpayable for
-/// their users. 21 clears every minimum we know of while staying
-/// symbolic. The panic-stop invoice uses the same amount.
-pub const DEFAULT_HEARTBEAT_AMOUNT_SAT: u64 = 21;
+/// their users. 20 is the product's chosen price of a check-in now
+/// that Lightning is the primary check-in path. The panic-stop
+/// invoice uses the same amount.
+pub const DEFAULT_HEARTBEAT_AMOUNT_SAT: u64 = 20;
 
 /// Resolve the heartbeat invoice amount: `GHOSTKEY_LN_CHECKIN_SAT`
 /// when set to a positive integer, otherwise the default. Garbage or
