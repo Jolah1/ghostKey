@@ -73,6 +73,8 @@ import {
 } from "./api";
 import { saveVaultMeta } from "./vaultStore";
 import { AssistChat } from "./AssistChat";
+import { VideoMessageRecorder, type RecordedClip } from "./VideoMessageRecorder";
+import { prepareVideo } from "./crypto/video";
 import {
   MIN_LENGTH,
   checkPassword,
@@ -215,6 +217,10 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [kdfProgress, setKdfProgress] = useState<number>(0);
+  // Optional owner video message (#85), captured on the password step
+  // and uploaded silently during creation. Not in `draft` because a
+  // Blob isn't serialisable to localStorage.
+  const [videoClip, setVideoClip] = useState<RecordedClip | null>(null);
   // Demo-mode flag from /health. See SetupPortal.tsx for the
   // rationale; both portals share the same gating logic so the
   // experience is consistent across the two creation paths.
@@ -602,6 +608,26 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
           }
         }
 
+        // (g2) Upload the owner's video message, if recorded (#85).
+        // Sealed under THIS heir's claim token (so their link unlocks
+        // it) and signed with the owner key (so a swapped clip fails
+        // the heir's verification). Best-effort: a failure here must
+        // not abort an otherwise-good vault — the message is a nicety,
+        // not the inheritance.
+        if (videoClip) {
+          try {
+            const bytes = new Uint8Array(await videoClip.blob.arrayBuffer());
+            const prepared = prepareVideo(ownerParty.xprv, claimToken, bytes);
+            await api.uploadVideo(resp.id, resp.owner_token, {
+              ...prepared,
+              mime: videoClip.mime,
+              duration_ms: Math.round(videoClip.durationMs),
+            });
+          } catch (e) {
+            console.warn("video upload failed for vault", resp.id, e);
+          }
+        }
+
         // (h) Persist local meta with the shared groupId so the
         // Dashboard groups this vault with its siblings.
         saveVaultMeta({
@@ -699,13 +725,24 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
         <div className="mt-8">
           {step === 0 && <StepHeir draft={draft} patch={patch} demoMode={demoMode} />}
           {step === 1 && (
-            <StepPassword
-              draft={draft}
-              patch={patch}
-              busy={busy}
-              kdfProgress={kdfProgress}
-              strength={strength}
-            />
+            <>
+              <StepPassword
+                draft={draft}
+                patch={patch}
+                busy={busy}
+                kdfProgress={kdfProgress}
+                strength={strength}
+              />
+              <div className="mt-6">
+                <VideoMessageRecorder
+                  heirName={
+                    draft.heirs.length === 1 ? draft.heirs[0]?.name : undefined
+                  }
+                  onChange={setVideoClip}
+                  disabled={busy}
+                />
+              </div>
+            </>
           )}
           {step === 2 && created && <StepFund created={created} />}
         </div>

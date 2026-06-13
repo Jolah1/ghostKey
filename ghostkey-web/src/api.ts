@@ -578,6 +578,27 @@ export const api = {
       { method: "POST", body: JSON.stringify(body) },
       ownerToken,
     ),
+  /** Store the owner's encrypted video message (#85). OwnerAuth via the
+   *  freshly-issued owner_token. The clip is sealed under the claim-token
+   *  KEK and signed with the owner key client-side; the server only ever
+   *  sees ciphertext + signature. */
+  uploadVideo: (
+    id: string,
+    ownerToken: string,
+    body: {
+      video_ct_b64: string;
+      video_nonce_b64: string;
+      mime: string;
+      duration_ms: number | null;
+      owner_sig_b64: string;
+      signed_sha256_hex: string;
+    },
+  ) =>
+    request<null>(
+      `/vaults/${id}/video`,
+      { method: "POST", body: JSON.stringify(body) },
+      ownerToken,
+    ),
   checkin: (id: string, ownerToken: string | null) =>
     request<CheckinResponse>(
       `/vaults/${id}/checkin`,
