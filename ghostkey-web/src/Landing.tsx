@@ -332,7 +332,7 @@ const REASONS: Reason[] = [
   {
     tag: "Portable",
     title: "PSBT under the hood",
-    body: "Funding uses ordinary Bitcoin transactions. Claiming works in any browser. If you prefer, advanced users can also sign with Sparrow, BlueWallet, Ledger, or Coldcard via PSBT.",
+    body: "Funding uses ordinary Bitcoin transactions, and claiming works in any browser with nothing to install. Recovering on your own, without GhostKey, uses Bitcoin Core, which understands the vault's timelock script.",
   },
   {
     tag: "Trustless",
@@ -584,7 +584,7 @@ const FAQS = [
   },
   {
     q: "What if GhostKey shuts down?",
-    a: "Your heir can still claim. The conditions are written into Bitcoin itself, not into our database. Any wallet that speaks Taproot can spend from the vault when the waiting period ends.",
+    a: "Your heir can still claim. The conditions live in Bitcoin itself, not in our database. Recovering without us needs a wallet that understands the vault's timelock script, which today means Bitcoin Core. The recovery kit you download holds everything needed, so your heir, or any Bitcoin-savvy person helping them, can spend the funds even if GhostKey disappears.",
   },
 ];
 
