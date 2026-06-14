@@ -247,9 +247,11 @@ created:
   Three clicks total.
 
 - **Manual PSBT flow** (when the vault was created without sealed
-  heir material): the page hands the heir an unsigned PSBT to copy
-  into Sparrow. The heir signs in Sparrow, pastes the signed PSBT
-  back, and the server broadcasts.
+  heir material): the page hands the heir an unsigned PSBT to sign in
+  a **miniscript-aware** wallet. The vault is a Taproot timelock
+  miniscript, so this means **Bitcoin Core** (Sparrow and Liana can't
+  open these descriptors — see MAINNET_DRY_RUN.md step 4). The heir
+  signs, pastes the signed PSBT back, and the server broadcasts.
 
 For a signet runbook you probably want the password-vault flow
 (simpler, no second wallet needed on the heir side). The script

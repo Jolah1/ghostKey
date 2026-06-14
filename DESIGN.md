@@ -154,7 +154,7 @@ The heir is usually the least technical person in the system. They may never hav
 
 **No fake successes.** If the chain scan finds no coins — timelock hasn't elapsed, funds already moved, indexer down — the page says so in plain English. It does not pretend the transaction succeeded.
 
-**The link doesn't expire on first view.** The heir will probably open it on their phone, then move to a desktop with Sparrow to sign. The claim token is consumed only on a successful broadcast. Viewing does nothing destructive.
+**The link doesn't expire on first view.** The heir will probably open it on their phone, then move to a desktop to sign. The claim token is consumed only on a successful broadcast. Viewing does nothing destructive.
 
 **End with proof.** After a successful broadcast, the page shows the transaction ID and a block explorer link. Not a thank-you screen — a "here's how to watch it confirm" screen. The heir wants proof, not branding.
 
@@ -362,7 +362,7 @@ In rough priority order. Some are weeks of work; some are afternoons.
 2. Create a vault with a 6-block timelock on signet
 3. Fund from a signet faucet
 4. Wait out the timelock
-5. Walk through the claim page using Sparrow on signet
+5. Walk through the claim page on signet (manual-PSBT flow signs in Bitcoin Core — Sparrow/Liana can't open these descriptors; the default password-vault flow signs in the browser and needs no wallet)
 6. Confirm the transaction lands
 
 This is the single highest-value piece of remaining work.
