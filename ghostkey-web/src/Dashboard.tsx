@@ -36,7 +36,6 @@ import {
 } from "./api";
 import { countdown, parseRfc } from "./time";
 import { AssistChat } from "./AssistChat";
-import { statusCopy } from "./vocab";
 import {
   getActiveVaultId,
   getVaultMeta,
@@ -354,19 +353,11 @@ export function Dashboard({ onNavigate }: Props) {
 
             {vault ? (
               <div className="mt-5">
-                <BalanceCard vaultId={vault.id} />
-              </div>
-            ) : null}
-
-            {vault && !isClosed && !isClaiming ? (
-              <div className="mt-5">
-                <ReceiveCard vaultId={vault.id} />
-              </div>
-            ) : null}
-
-            {vault && !isClosed && !isClaiming && ownerToken ? (
-              <div className="mt-5">
-                <SendCard vaultId={vault.id} ownerToken={ownerToken} />
+                <MoneyCard
+                  vaultId={vault.id}
+                  ownerToken={ownerToken}
+                  canManage={!isClosed && !isClaiming}
+                />
               </div>
             ) : null}
 
@@ -395,26 +386,15 @@ export function Dashboard({ onNavigate }: Props) {
 
           <div className="min-w-0">
             {vault ? (
-              <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:mt-0 lg:grid-cols-1">
-                <StatCard
-                  label="Vault status"
-                  value={
-                    <span className={statusValueColor(vault)}>
-                      {statusCopy(vault.status).label}
-                    </span>
-                  }
-                  sub={statusCopy(vault.status).long}
-                />
-                <StatCard
-                  label="Waiting period"
-                  value={
-                    demoMode
-                      ? prettySeconds(vault.grace_period_secs)
-                      : prettyBlocks(vault.timelock_blocks)
-                  }
-                  sub="After a missed check-in"
-                />
-              </div>
+              <p className="text-sm text-muted lg:mt-0 mt-5">
+                If you miss a check-in, your heir waits{" "}
+                <span className="text-[var(--text)]">
+                  {demoMode
+                    ? prettySeconds(vault.grace_period_secs)
+                    : prettyBlocks(vault.timelock_blocks)}
+                </span>{" "}
+                before they can claim.
+              </p>
             ) : null}
 
             <div className="mt-5">
@@ -459,7 +439,7 @@ export function Dashboard({ onNavigate }: Props) {
                     size="sm"
                     onClick={() => setAddHeirOpen(true)}
                   >
-                    + Add a heir
+                    Add Heir
                   </Button>
                 </div>
               ) : null}
@@ -470,12 +450,8 @@ export function Dashboard({ onNavigate }: Props) {
                 <PanicCard lnurl={vault.lnurl_panic} hasTrustedContact={Boolean(vault.has_trusted_contact)} />
               </div>
             ) : null}
-
-            {vault?.descriptor_external && !isClosed ? (
-              <div className="mt-5">
-                <IndependenceProofCard vault={vault} />
-              </div>
-            ) : null}
+            {/* Recovery file now lives on its own nav page (Recovery
+                kit) to keep the dashboard calm. */}
           </div>
         </div>
 
@@ -525,66 +501,177 @@ export function Dashboard({ onNavigate }: Props) {
   );
 }
 
+/* ------------------------------- Money card ------------------------------- */
+
+/**
+ * One card for everything money: balance, adding funds, sending. Tabs
+ * keep the dashboard calm instead of three stacked cards. Add/Send only
+ * appear while the vault is active and the owner is signed in here.
+ */
+function MoneyCard({
+  vaultId,
+  ownerToken,
+  canManage,
+}: {
+  vaultId: string;
+  ownerToken: string | null;
+  canManage: boolean;
+}) {
+  const canSend = canManage && Boolean(ownerToken);
+  type Tab = "balance" | "add" | "send";
+  const [tab, setTab] = useState<Tab>("balance");
+  const tabs: Array<{ id: Tab; label: string }> = [
+    { id: "balance", label: "Balance" },
+    ...(canManage ? [{ id: "add" as Tab, label: "Add" }] : []),
+    ...(canSend ? [{ id: "send" as Tab, label: "Send" }] : []),
+  ];
+
+  return (
+    <section className="card-flat p-5">
+      <div role="tablist" className="flex gap-2">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            onClick={() => setTab(t.id)}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+              tab === t.id
+                ? "bg-[var(--accent)] text-[var(--bg)]"
+                : "text-muted hover:bg-[var(--surface-2)]"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div className="mt-4">
+        {tab === "balance" ? <BalanceCard vaultId={vaultId} embedded /> : null}
+        {tab === "add" ? <ReceiveCard vaultId={vaultId} embedded /> : null}
+        {tab === "send" && ownerToken ? (
+          <SendCard vaultId={vaultId} ownerToken={ownerToken} embedded />
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 /* ----------------------------- Balance card ------------------------------- */
 
-function BalanceCard({ vaultId }: { vaultId: string }) {
+const BALANCE_HIDDEN_KEY = "gk:balanceHidden";
+
+/** Resolve `p`, or reject after `ms` so a slow balance fetch (public
+ *  explorers can crawl) never leaves the card stuck loading. */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error("timeout")), ms),
+    ),
+  ]);
+}
+
+function BalanceCard({
+  vaultId,
+  embedded,
+}: {
+  vaultId: string;
+  embedded?: boolean;
+}) {
   const [balance, setBalance] = useState<VaultBalanceView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hidden, setHidden] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(BALANCE_HIDDEN_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const b = await api.getVaultBalance(vaultId);
+      const b = await withTimeout(api.getVaultBalance(vaultId), 25000);
       setBalance(b);
     } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
       setError(
-        e instanceof ApiError
-          ? e.message
-          : e instanceof Error
+        msg === "timeout"
+          ? "Couldn't load your balance. Tap refresh to try again."
+          : e instanceof ApiError
             ? e.message
-            : String(e),
+            : msg,
       );
     } finally {
       setLoading(false);
     }
   }, [vaultId]);
 
+  // Only reach out to the chain when the balance is visible. Hiding it
+  // also skips the slow lookup.
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (!hidden) void load();
+  }, [load, hidden]);
+
+  function toggleHidden() {
+    setHidden((h) => {
+      const next = !h;
+      try {
+        localStorage.setItem(BALANCE_HIDDEN_KEY, next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }
 
   return (
-    <div className="card-flat p-5">
+    <div className={embedded ? "" : "card-flat p-5"}>
       <div className="flex items-baseline justify-between gap-3">
         <p className="text-xs uppercase tracking-wider text-dim">
-          Vault balance
+          {embedded ? "" : "Balance"}
         </p>
-        <button
-          type="button"
-          onClick={() => void load()}
-          disabled={loading}
-          className="text-xs text-muted underline-offset-2 hover:underline disabled:opacity-50"
-          aria-label="Refresh balance"
-        >
-          {loading ? "Refreshing…" : "Refresh"}
-        </button>
+        <div className="flex items-center gap-3">
+          {!hidden ? (
+            <button
+              type="button"
+              onClick={() => void load()}
+              disabled={loading}
+              className="text-xs text-muted underline-offset-2 hover:underline disabled:opacity-50"
+            >
+              {loading ? "Refreshing" : "Refresh"}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={toggleHidden}
+            className="text-xs text-muted underline-offset-2 hover:underline"
+          >
+            {hidden ? "Show" : "Hide"}
+          </button>
+        </div>
       </div>
-      <div className="mt-2 font-display text-2xl font-bold tracking-tight">
-        {balance ? formatSats(balance.total_sat) : loading ? "…" : "—"}
-      </div>
-      {balance && balance.unconfirmed_sat > 0 ? (
-        <p className="mt-1.5 text-sm text-muted">
-          {formatSats(balance.confirmed_sat)} confirmed ·{" "}
-          {formatSats(balance.unconfirmed_sat)} pending
-        </p>
-      ) : balance ? (
-        <p className="mt-1.5 text-sm text-muted">Confirmed on chain.</p>
-      ) : null}
-      {error ? (
-        <p className="mt-2 text-sm text-alarm">{error}</p>
-      ) : null}
+      {hidden ? (
+        <div className="mt-2 font-display text-2xl font-bold tracking-tight">
+          ••••••
+        </div>
+      ) : (
+        <>
+          <div className="mt-2 font-display text-2xl font-bold tracking-tight">
+            {balance ? formatSats(balance.total_sat) : loading ? "…" : "—"}
+          </div>
+          {balance && balance.unconfirmed_sat > 0 ? (
+            <p className="mt-1.5 text-sm text-muted">
+              {formatSats(balance.confirmed_sat)} confirmed,{" "}
+              {formatSats(balance.unconfirmed_sat)} pending
+            </p>
+          ) : null}
+          {error ? <p className="mt-2 text-sm text-alarm">{error}</p> : null}
+        </>
+      )}
     </div>
   );
 }
@@ -607,7 +694,13 @@ function formatSats(sats: number): string {
  * address is fetched lazily on first expand, and the QR renders
  * locally as a data: URL — the CSP blocks external image hosts.
  */
-function ReceiveCard({ vaultId }: { vaultId: string }) {
+function ReceiveCard({
+  vaultId,
+  embedded,
+}: {
+  vaultId: string;
+  embedded?: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [view, setView] = useState<VaultAddressView | null>(null);
   const [loading, setLoading] = useState(false);
@@ -653,14 +746,13 @@ function ReceiveCard({ vaultId }: { vaultId: string }) {
   }
 
   return (
-    <section className="card-flat p-5">
-      <p className="text-xs uppercase tracking-wider text-dim">
-        Add Bitcoin
-      </p>
-      <p className="mt-1.5 text-sm text-muted">
-        Send any amount from any wallet or exchange, as often as you
-        like. New funds are covered by the same inheritance plan
-        automatically.
+    <section className={embedded ? "" : "card-flat p-5"}>
+      {!embedded ? (
+        <p className="text-xs uppercase tracking-wider text-dim">Add Bitcoin</p>
+      ) : null}
+      <p className={`text-sm text-muted ${embedded ? "" : "mt-1.5"}`}>
+        Send any amount from any wallet or exchange, as often as you like. New
+        funds join the same plan automatically.
       </p>
       {!expanded ? (
         <div className="mt-3">
@@ -714,9 +806,11 @@ function ReceiveCard({ vaultId }: { vaultId: string }) {
 function SendCard({
   vaultId,
   ownerToken,
+  embedded,
 }: {
   vaultId: string;
   ownerToken: string;
+  embedded?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [destination, setDestination] = useState("");
@@ -797,10 +891,12 @@ function SendCard({
 
   if (result) {
     return (
-      <section className="card-flat p-5">
-        <p className="text-xs uppercase tracking-wider text-dim">
-          Send Bitcoin
-        </p>
+      <section className={embedded ? "" : "card-flat p-5"}>
+        {!embedded ? (
+          <p className="text-xs uppercase tracking-wider text-dim">
+            Send Bitcoin
+          </p>
+        ) : null}
         <p className="mt-2 text-sm font-semibold text-ok">
           Sent ✓ {formatSats(result.sent_sat)} is on its way.
         </p>
@@ -837,10 +933,10 @@ function SendCard({
   }
 
   return (
-    <section className="card-flat p-5">
-      <p className="text-xs uppercase tracking-wider text-dim">
-        Send Bitcoin
-      </p>
+    <section className={embedded ? "" : "card-flat p-5"}>
+      {!embedded ? (
+        <p className="text-xs uppercase tracking-wider text-dim">Send Bitcoin</p>
+      ) : null}
       <p className="mt-1.5 text-sm text-muted">
         Your money is never locked up. Pay anyone from your vault, and
         whatever you leave behind stays covered by the same inheritance
@@ -1353,35 +1449,28 @@ function ConfirmEmailCard({
   }
 
   return (
-    <section className="card-flat p-5" data-testid="confirm-email-card">
-      <p className="text-xs uppercase tracking-wider text-dim">
-        One thing left
+    <div
+      className="card-flat flex items-center justify-between gap-3 px-4 py-3"
+      data-testid="confirm-email-card"
+    >
+      <p className="text-sm text-muted">
+        {state.kind === "sent"
+          ? "Email sent. Check your inbox or spam."
+          : state.kind === "error"
+            ? state.message
+            : "Confirm your email so reminders reach you."}
       </p>
-      <p className="mt-1.5 text-sm text-muted">
-        We sent a confirmation link to your email. Tap it so we know
-        your check-in reminders will reach you. No link in your inbox?
-        Check spam, or send a fresh one.
-      </p>
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Button
-          size="sm"
-          variant="ghost"
+      {state.kind !== "sent" ? (
+        <button
+          type="button"
           onClick={() => void onResend()}
-          loading={state.kind === "sending"}
-          disabled={state.kind === "sent"}
+          disabled={state.kind === "sending"}
+          className="shrink-0 text-xs text-muted underline-offset-2 hover:underline disabled:opacity-50"
         >
-          {state.kind === "sent" ? "Email sent ✓" : "Send it again"}
-        </Button>
-      </div>
-      {state.kind === "sent" ? (
-        <p className="mt-2 text-xs text-muted">
-          On its way. Give it a minute, and check your spam folder too.
-        </p>
+          {state.kind === "sending" ? "Sending" : "Resend"}
+        </button>
       ) : null}
-      {state.kind === "error" ? (
-        <p className="mt-2 text-sm text-alarm">{state.message}</p>
-      ) : null}
-    </section>
+    </div>
   );
 }
 
@@ -1459,77 +1548,45 @@ function PushOptInCard({
 
   if (state.kind === "done") {
     return (
-      <section className="card-flat p-5" data-testid="push-optin-card">
-        <p className="text-xs uppercase tracking-wider text-dim">
-          Reminders
-        </p>
-        <p className="mt-1.5 text-sm text-muted">
-          <span className="text-ok">✓</span> Reminders are on. We'll give
-          you a nudge before each check-in is due.
-        </p>
-      </section>
+      <div
+        className="card-flat px-4 py-3 text-sm text-muted"
+        data-testid="push-optin-card"
+      >
+        <span className="text-ok">✓</span> Reminders are on.
+      </div>
     );
   }
 
   return (
-    <section className="card-flat p-5" data-testid="push-optin-card">
-      <p className="text-xs uppercase tracking-wider text-dim">
-        Reminders
+    <div
+      className="card-flat flex items-center justify-between gap-3 px-4 py-3"
+      data-testid="push-optin-card"
+    >
+      <p className="text-sm text-muted">
+        {state.kind === "error"
+          ? state.message
+          : "Get a reminder before each check-in?"}
       </p>
-      <p className="mt-1.5 text-sm text-muted">
-        Want a nudge before your next check-in is due? We'll send a
-        notification to this device. One tap and you're done.
-      </p>
-      <div className="mt-3 flex flex-wrap gap-2">
-        <Button
-          size="sm"
+      <div className="flex shrink-0 items-center gap-3">
+        <button
+          type="button"
           onClick={() => void onTurnOn()}
-          loading={state.kind === "busy"}
+          disabled={state.kind === "busy"}
+          className="text-xs text-muted underline-offset-2 hover:underline disabled:opacity-50"
         >
-          Turn on reminders
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
+          {state.kind === "busy" ? "Turning on" : "Turn on"}
+        </button>
+        <button
+          type="button"
           onClick={onNotNow}
           disabled={state.kind === "busy"}
+          className="text-xs text-dim underline-offset-2 hover:underline disabled:opacity-50"
         >
           Not now
-        </Button>
+        </button>
       </div>
-      {state.kind === "error" ? (
-        <p className="mt-2 text-sm text-alarm">{state.message}</p>
-      ) : null}
-    </section>
-  );
-}
-
-/* ----------------------------- Stat card ---------------------------------- */
-
-function StatCard({
-  label,
-  value,
-  sub,
-}: {
-  label: string;
-  value: React.ReactNode;
-  sub?: string;
-}) {
-  return (
-    <div className="card-flat p-5">
-      <p className="text-xs uppercase tracking-wider text-dim">{label}</p>
-      <div className="mt-2 font-display text-2xl font-bold tracking-tight">{value}</div>
-      {sub ? <p className="mt-1.5 text-sm text-muted">{sub}</p> : null}
     </div>
   );
-}
-
-function statusValueColor(v: VaultView): string {
-  const tone = statusCopy(v.status).tone;
-  if (tone === "ok") return "text-ok";
-  if (tone === "warning") return "text-warning";
-  if (tone === "alarm") return "text-alarm";
-  return "";
 }
 
 function prettyBlocks(blocks: number): string {
@@ -1891,79 +1948,6 @@ function LnurlCard({ lnurl }: { lnurl: string }) {
           </div>
         </>
       )}
-    </section>
-  );
-}
-
-/* ----------------------- Independence proof card -------------------------- */
-
-/**
- * Lets the owner download the self-contained proof file (descriptors
- * + password-sealed key). Assembly happens in independenceProof.ts;
- * this card is just the affordance + the three UI states. Hidden for
- * legacy vaults (no descriptors on the VaultView) by the caller; the
- * sealed-blobs fetch inside can still 400 for non-password vaults, so
- * errors render inline instead of assuming success.
- */
-function IndependenceProofCard({ vault }: { vault: VaultView }) {
-  const [state, setState] = useState<
-    { kind: "idle" } | { kind: "busy" } | { kind: "done" } | { kind: "error"; message: string }
-  >({ kind: "idle" });
-
-  async function onDownload() {
-    setState({ kind: "busy" });
-    try {
-      const { downloadIndependenceProof } = await import("./independenceProof");
-      await downloadIndependenceProof(vault);
-      setState({ kind: "done" });
-    } catch (e) {
-      setState({
-        kind: "error",
-        message:
-          e instanceof ApiError && e.status === 400
-            ? "This vault was made before recovery files existed, so one can't be created for it."
-            : e instanceof Error
-              ? e.message
-              : String(e),
-      });
-    }
-  }
-
-  return (
-    <section className="card-flat p-5">
-      <p className="text-xs uppercase tracking-wider text-dim">
-        Emergency recovery file
-      </p>
-      <p className="mt-1.5 text-sm text-muted">
-        Your spare key, for emergencies only. Keep a copy somewhere
-        safe, like your email or a USB stick. If you ever can't get
-        into GhostKey, opening it and typing your password gets you
-        to your money.
-      </p>
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => void onDownload()}
-          disabled={state.kind === "busy"}
-        >
-          {state.kind === "busy"
-            ? "Preparing…"
-            : state.kind === "done"
-              ? "Saved ✓ Download again"
-              : "Download recovery file"}
-        </Button>
-      </div>
-      {state.kind === "done" ? (
-        <p className="mt-2 text-xs text-dim">
-          Without your password the file reveals no secrets, but treat
-          it like a bank statement: it does show your balance to anyone
-          who opens it.
-        </p>
-      ) : null}
-      {state.kind === "error" ? (
-        <p className="mt-2 text-xs text-amber-200">{state.message}</p>
-      ) : null}
     </section>
   );
 }
