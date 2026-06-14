@@ -5,10 +5,14 @@
  * independence-proof.html (spliced in by the dashboard at download
  * time) and offers two layers:
  *
- *   1. No password needed: the watch-only descriptor pair, which a
- *      miniscript-aware descriptor wallet (Bitcoin Core, Liana) can use
- *      to SEE the funds. NOTE: Sparrow/Electrum/mobile wallets cannot —
- *      the vault is a Taproot timelock miniscript they don't support.
+ *   1. No password needed: the watch-only descriptor pair, which
+ *      Bitcoin Core can use to SEE the funds. NOTE: Sparrow, Liana,
+ *      Electrum, and mobile wallets cannot — the vault is a Taproot
+ *      timelock miniscript. Sparrow/Electrum/mobile have no miniscript
+ *      support at all; Liana only accepts its own descriptor shape and
+ *      refuses ours (verified 2026-06-14). Bitcoin Core is the one tool
+ *      that opens these vaults. To just see the balance with no wallet,
+ *      look up the funded deposit address on a block explorer.
  *   2. Password unlock: Argon2id + XChaCha20-Poly1305 — the exact
  *      primitives the dashboard uses (src/crypto/sealing.ts) — decrypt
  *      the owner's account xprv locally. We then splice the xprv into
@@ -266,14 +270,14 @@ function render() {
         );
         result.appendChild(
           el(`<p class="muted">This vault uses a Taproot timelock
-          script, so it needs a wallet that understands miniscript.
-          <strong>Bitcoin Core</strong> is the surest: run
-          <code>bitcoin-cli importdescriptors</code> with the line below
-          and it can both watch and spend. <strong>Liana</strong>
-          (wizardsardine.com/liana) is a friendlier app built for exactly
-          this kind of timelocked inheritance wallet. Everyday wallets
-          like Sparrow, Electrum, and phone wallets cannot open this
-          vault, because they do not support the timelock script.</p>`),
+          script, so it needs <strong>Bitcoin Core</strong> (version 26
+          or newer): run <code>bitcoin-cli importdescriptors</code> with
+          the line below and it can both watch and spend. Everyday
+          wallets like Sparrow, Electrum, and phone wallets cannot open
+          this vault, and <strong>Liana cannot either</strong> — it only
+          accepts its own descriptor shape. Bitcoin Core is the surest
+          tool. If you are not comfortable with it, ask a Bitcoin-savvy
+          person to help: this file is all they need.</p>`),
         );
         result.appendChild(
           copyBlock(
@@ -313,9 +317,9 @@ function render() {
       way: open a block explorer like mempool.space and search for the
       deposit address you funded. You will see the balance and every
       payment, with GhostKey nowhere in the loop. To watch the whole
-      vault, import a descriptor below into Bitcoin Core or Liana, which
-      understand the timelock. Ordinary wallets like Sparrow cannot read
-      these.</p>
+      vault, import a descriptor below into Bitcoin Core (version 26 or
+      newer), which understands the timelock. Ordinary wallets like
+      Sparrow, and even Liana, cannot read these.</p>
     </div>
   `),
   );

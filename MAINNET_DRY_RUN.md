@@ -17,9 +17,10 @@ What this run *does* prove, which nothing else can:
   endpoints** (mainnet has no public default — see pre-flight);
 - owner **Send** estimates fees against the real mempool and
   broadcasts a real transaction;
-- the **independence proof** actually recovers the wallet in Sparrow
-  with no GhostKey involvement — the non-custodial promise, observed
-  with real sats;
+- the **independence proof** actually recovers the wallet in Bitcoin
+  Core with no GhostKey involvement — the non-custodial promise,
+  observed with real sats (Sparrow and Liana **cannot** open these
+  vaults; see step 4);
 - Lightning check-in (21 sats) works against the production sidecar.
 
 Plan ~1–2 hours, most of it waiting for confirmations. Total cost:
@@ -169,13 +170,48 @@ default.
 
 ### 4. Prove independence (~15 min)
 
+The vault is a Taproot timelock miniscript. **Sparrow, Electrum, and
+mobile wallets cannot open it** (no miniscript support), and **Liana
+cannot either** — Liana only accepts its own descriptor shape and
+refuses ours ("invalid or incompatible with network"), verified
+2026-06-14. The one tool that reads these vaults is **Bitcoin Core
+26+**. This was confirmed on mainnet on 2026-06-14.
+
 Open the independence-proof HTML **offline** (turn off wifi, open the
-file), unlock it with the vault password, and follow its Sparrow
-instructions: import the descriptors into Sparrow on mainnet and
-confirm Sparrow sees the 5,000 sats with GhostKey nowhere in the
-loop. This is the "if GhostKey is down, funds are still accessible"
+file) and unlock it with the vault password to reveal the two
+watch-only descriptors (receive + change). Then, with Bitcoin Core:
+
+**Lightweight proof (no blockchain sync needed).** `deriveaddresses`
+is pure computation, so it works the instant `bitcoind` starts:
+
+```bash
+bitcoind -daemon
+bitcoin-cli deriveaddresses "<RECEIVE_DESCRIPTOR_WITH_CHECKSUM>" "[0,5]"
+```
+
+The first address must match the deposit address GhostKey gave you to
+fund the vault. Look it up on a block explorer and you'll see the
+5,000 sats — GhostKey nowhere in the loop. If Bitcoin Core derives
+your funded address from the kit alone, recovery is proven.
+
+**Full balance proof (needs a synced, non-pruned node).** Import both
+descriptors into a blank watch-only wallet and read the balance off
+the chain. Write the request to a file to avoid shell-quoting issues
+(the `tr()` apostrophes break inline JSON):
+
+```bash
+bitcoin-cli createwallet "ghostkey_check" true true "" false true
+# Put both descriptors (with their #checksums) in a JSON file, then:
+bitcoin-cli -rpcwallet=ghostkey_check importdescriptors "$(cat import.json)"
+bitcoin-cli -rpcwallet=ghostkey_check getbalances
+```
+
+This is the "if GhostKey is down, funds are still accessible"
 guarantee — observe it with real money once before asking users to
-trust it.
+trust it. (Note: Bitcoin Core is a technical tool; the recovery kit
+tells a non-technical heir to get a Bitcoin-savvy helper, and the
+file is self-contained so no password is needed just to *see* the
+funds. The friendlier-GUI recovery path is tracked in issue #84.)
 
 ### 5. Drain it back (~30 min, mostly confirmation wait)
 
