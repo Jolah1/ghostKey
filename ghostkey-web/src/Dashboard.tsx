@@ -429,10 +429,11 @@ export function Dashboard({ onNavigate }: Props) {
                 />
               )}
 
-              {/* Add another heir to this vault — own share, own claim
-                  link, same one-tap check-in. Hidden once a claim is
-                  underway or the vault is closed. */}
-              {!isClosed && !isClaiming ? (
+              {/* Add another heir — own share, own claim link, same
+                  one-tap check-in. Stays available even after an heir
+                  has claimed: a new heir reuses your owner key, so you
+                  can keep building your plan without starting over. */}
+              {vault ? (
                 <div className="mt-3">
                   <Button
                     variant="ghost"
