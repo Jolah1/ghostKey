@@ -40,7 +40,7 @@ import {
 import { generateParty, wipe, type Network } from "./crypto/keygen";
 import { prepareVideo } from "./crypto/video";
 import { randomBytes } from "@noble/hashes/utils.js";
-import { getVaultMeta, saveVaultMeta } from "./vaultStore";
+import { getVaultMeta, saveVaultMeta, setActiveVaultId } from "./vaultStore";
 import { VideoMessageRecorder, type RecordedClip } from "./VideoMessageRecorder";
 
 const PLACEHOLDER_OWNER_TOKEN = "ghostkey-placeholder-owner-token-v1";
@@ -265,6 +265,10 @@ export function AddHeirPortal({
         ownerToken: resp.owner_token,
         groupId: gid,
       });
+      // Land on the new heir after the reload. If the sibling we added
+      // from was already claimed, the dashboard would otherwise reopen
+      // on its closed card — point it at the fresh, manageable heir.
+      setActiveVaultId(resp.id);
 
       // (6) Fetch the receive address to show the owner where to fund
       // this heir's share. Best-effort.

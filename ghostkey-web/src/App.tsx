@@ -352,6 +352,7 @@ export default function App() {
       {location.kind === "route" && (location.route === "setup" || location.route === "setup-password") && (
         <PasswordSetupPortal
           onCancel={() => setRoute("dashboard")}
+          onSignIn={() => setRoute("checkin")}
           onCreated={() => {
             /* Stay on the funding screen — the user dismisses
              * manually from inside the portal once they've copied

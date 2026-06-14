@@ -110,6 +110,8 @@ import {
 interface Props {
   onCancel: () => void;
   onCreated: (v: VaultListItem) => void;
+  /** Sent to the sign-in page when this email already has a vault. */
+  onSignIn: () => void;
 }
 
 type ContactChannel = "sms" | "email" | "whatsapp";
@@ -211,10 +213,13 @@ function monthsToBlocks(months: number): number {
 
 /* ============================================================ */
 
-export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
+export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
   const [step, setStep] = useState(0);
   const [draft, setDraft] = useState<Draft>(EMPTY);
   const [error, setError] = useState<string | null>(null);
+  // True when create failed because this email already has a vault —
+  // we steer the user to sign in and use Add Heir instead.
+  const [emailTaken, setEmailTaken] = useState(false);
   const [busy, setBusy] = useState(false);
   const [kdfProgress, setKdfProgress] = useState<number>(0);
   // Optional owner video message (#85), captured on the password step
@@ -425,6 +430,7 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
 
     setBusy(true);
     setError(null);
+    setEmailTaken(false);
     setKdfProgress(0);
 
     // Multi-heir is N parallel vaults that share owner xpub +
@@ -683,13 +689,21 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
       // group from this attempt stays as-is. Acceptable for an MVP
       // (the alternative is a server-side group rollback API that
       // doesn't exist yet).
-      setError(
-        e instanceof ApiError
-          ? e.message
-          : e instanceof Error
+      if (e instanceof ApiError && e.status === 409) {
+        setEmailTaken(true);
+        setError(
+          "You already have a vault for this email. Sign in and use " +
+            "Add Heir to add another.",
+        );
+      } else {
+        setError(
+          e instanceof ApiError
             ? e.message
-            : String(e),
-      );
+            : e instanceof Error
+              ? e.message
+              : String(e),
+        );
+      }
     } finally {
       // Best-effort wipe of plaintext key material in memory.
       if (ownerParty) {
@@ -750,6 +764,13 @@ export function PasswordSetupPortal({ onCancel, onCreated }: Props) {
         {error ? (
           <div className="mt-6">
             <InlineAlert tone="alarm">{error}</InlineAlert>
+            {emailTaken ? (
+              <div className="mt-3">
+                <Button variant="ghost" size="sm" onClick={onSignIn}>
+                  Sign in
+                </Button>
+              </div>
+            ) : null}
           </div>
         ) : null}
 
