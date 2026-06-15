@@ -18,3 +18,17 @@ wasm-bindgen = "0.2"
 # the same getrandom the rest of the Bitcoin stack already depends on.
 getrandom = { version = "0.2", features = ["js"] }
 console_error_panic_hook = "0.1"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+# Modern LLVM emits wasm features (bulk-memory, sign-ext, ...) that the
+# wasm-opt bundled with wasm-pack won't process unless explicitly enabled.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = [
+    "-O",
+    "--enable-bulk-memory",
+    "--enable-sign-ext",
+    "--enable-nontrapping-float-to-int",
+    "--enable-mutable-globals",
+]

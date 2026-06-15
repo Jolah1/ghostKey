@@ -76,8 +76,14 @@ struct SweepResponse {
 #[wasm_bindgen]
 pub fn sign_sweep(request_json: &str) -> Result<String, JsError> {
     console_error_panic_hook::set_once();
-    let out = run(request_json).map_err(|e| JsError::new(&e))?;
-    serde_json::to_string(&out).map_err(|e| JsError::new(&e.to_string()))
+    sign_sweep_json(request_json).map_err(|e| JsError::new(&e))
+}
+
+/// Plain-Rust core of [`sign_sweep`], returning a `String` error so it can
+/// be exercised by native tests (where `JsError` carries no message).
+pub fn sign_sweep_json(request_json: &str) -> Result<String, String> {
+    let out = run(request_json)?;
+    serde_json::to_string(&out).map_err(|e| e.to_string())
 }
 
 fn run(request_json: &str) -> Result<SweepResponse, String> {

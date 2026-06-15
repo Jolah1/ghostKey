@@ -150,11 +150,19 @@ fn load_utxos(w: &mut Wallet, funding: Vec<ConfirmedTx>, chain_tip_height: u32) 
     tx_update.txs = txs;
     tx_update.anchors = anchors;
 
-    w.apply_update(Update {
-        last_active_indices: BTreeMap::new(),
-        tx_update,
-        chain: Some(cp),
-    })
+    // `apply_update_at` with an explicit timestamp, not `apply_update`,
+    // because the latter calls `SystemTime::now()` which panics on
+    // wasm32-unknown-unknown (where this runs, inside the recovery kit).
+    // Our transactions are confirmed (anchored), so the seen-at value is
+    // irrelevant; 0 is fine.
+    w.apply_update_at(
+        Update {
+            last_active_indices: BTreeMap::new(),
+            tx_update,
+            chain: Some(cp),
+        },
+        0,
+    )
     .map_err(|e| Error::Psbt(format!("could not load vault history: {e}")))?;
     Ok(())
 }

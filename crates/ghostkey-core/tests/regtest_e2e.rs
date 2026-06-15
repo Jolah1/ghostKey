@@ -489,6 +489,67 @@ fn offline_sweep_owner_and_heir() -> Result<()> {
     Ok(())
 }
 
+/// Emit a deterministic owner-sweep fixture for the wasm runtime test
+/// (`ghostkey-wasm`). Run with `--ignored --nocapture` and capture the
+/// JSON between the BEGIN/END markers. No node required: the funding tx is
+/// fabricated (its inputs are irrelevant — the signer only references its
+/// output by txid:vout, and signs against the real vault scriptPubKey).
+#[test]
+#[ignore]
+fn emit_wasm_owner_fixture() -> Result<()> {
+    use bitcoin::consensus::encode::serialize_hex;
+    use bitcoin::hashes::Hash;
+    use bitcoin::{
+        transaction, Amount, OutPoint, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+    };
+
+    let net = Network::Regtest;
+    let (vault, owner_m, _heir_m) = build_vault_and_keys()?;
+    let secp = Secp256k1::new();
+    let owner_acct = owner_m.derive_priv(&secp, &vault_account_path(net))?;
+
+    let mut watch = build_watch_only(&vault)?;
+    let deposit = watch.reveal_next_address(KeychainKind::External).address;
+    let recipient = watch.reveal_next_address(KeychainKind::External).address;
+
+    // Fabricate a funding tx paying the deposit address 100_000 sats.
+    let funding = Transaction {
+        version: transaction::Version::TWO,
+        lock_time: bitcoin::absolute::LockTime::ZERO,
+        // A non-null prevout so this isn't mistaken for a coinbase (whose
+        // outputs carry a 100-block maturity and would read as unspendable).
+        input: vec![TxIn {
+            previous_output: OutPoint::new(Txid::from_byte_array([0x11; 32]), 0),
+            script_sig: Default::default(),
+            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+            witness: Witness::new(),
+        }],
+        output: vec![TxOut {
+            value: Amount::from_sat(100_000),
+            script_pubkey: deposit.script_pubkey(),
+        }],
+    };
+    let funding_hex = serialize_hex(&funding);
+
+    let req = serde_json::json!({
+        "role": "owner",
+        "descriptor_external": vault.descriptor_for(Chain::External),
+        "descriptor_internal": vault.descriptor_for(Chain::Internal),
+        "timelock_blocks": vault.timelock_blocks(),
+        "network": "regtest",
+        "account_xprv": owner_acct.to_string(),
+        "funding": [ { "tx_hex": funding_hex, "confirmation_height": 100u32 } ],
+        "chain_tip_height": 105u32,
+        "recipient": recipient.to_string(),
+        "amount_sat": serde_json::Value::Null,
+        "fee_rate_sat_vb": 2u64,
+    });
+    println!("WASM_FIXTURE_BEGIN");
+    println!("{}", serde_json::to_string(&req)?);
+    println!("WASM_FIXTURE_END");
+    Ok(())
+}
+
 fn broadcast_tx(rpc: &Client, tx: &bitcoin::Transaction) -> Result<bitcoin::Txid> {
     use bitcoin::consensus::encode::serialize_hex;
     let raw = serialize_hex(tx);
