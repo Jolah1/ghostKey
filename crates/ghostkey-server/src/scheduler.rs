@@ -724,8 +724,9 @@ async fn transition_ok_to_alarmed(state: &AppState, now_iso: &str) -> anyhow::Re
         // Owner notification. Skips are silent and not errors:
         //   - vault has no sealed owner contact (legacy row, or owner
         //     declined to provide one at setup) → Ok(None)
-        //   - channel column holds a value the notifier can't deliver
-        //     to today (sms, whatsapp) → Ok(None) with a debug log
+        //   - owner alarm delivers over email or web push only; the
+        //     owner contact channel is email in the UI, so a non-email
+        //     channel here is skipped → Ok(None)
         //   - decryption failed (corrupt row, master key rotated)
         //     → tracing::warn and continue
         if let Err(e) = enqueue_alarm_owner(
@@ -1013,12 +1014,12 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
         )
         .await?;
 
-        // Try to enqueue a notification for the heir. We only know
-        // how to deliver via email today; sms / whatsapp channels
-        // get logged and skipped. A vault with no encrypted heir
-        // contact (legacy, or owner declined to provide one) also
-        // skips here. None of those skips block the status
-        // transition above.
+        // Try to enqueue a notification for the heir. Email, SMS, and
+        // WhatsApp are all deliverable (the worker routes them to SMTP
+        // or Twilio); an unknown channel is logged and skipped. A vault
+        // with no encrypted heir contact (legacy, or owner declined to
+        // provide one) also skips here. None of those skips block the
+        // status transition above.
         if let Err(e) = enqueue_claim_link(
             state,
             &id,
@@ -1052,10 +1053,17 @@ async fn enqueue_claim_link(
         return Ok(());
     };
 
+    // Email, SMS, and WhatsApp are all deliverable: the notifier worker
+    // routes email over SMTP and sms/whatsapp over Twilio. If the
+    // matching backend isn't configured yet (e.g. Twilio secrets not
+    // set), the worker leaves the row pending and retries once it is —
+    // enqueuing here is safe regardless.
     let channel = match contact.channel.as_deref() {
         Some("email") => Channel::Email,
+        Some("sms") => Channel::Sms,
+        Some("whatsapp") => Channel::Whatsapp,
         Some(other) => {
-            tracing::info!(vault_id = %vault_id, channel = %other, "heir channel not yet supported; skipping notification");
+            tracing::info!(vault_id = %vault_id, channel = %other, "heir channel not deliverable; skipping notification");
             return Ok(());
         }
         None => {
@@ -1085,19 +1093,31 @@ async fn enqueue_claim_link(
     let _ = label;
     let heir_name = contact.name.as_deref().unwrap_or("there");
     let subject = "A message for you about something someone left you".to_string();
-    let body = format!(
-        "Hello {heir_name},\n\n\
-         Someone you knew set up a Bitcoin inheritance with GhostKey, and \
-         asked us to reach out to you if they ever stopped checking in. \
-         That has happened.\n\n\
-         Open this link on any phone or computer to see what they left you \
-         and the next steps:\n\n\
-         {claim_url}\n\n\
-         The link works once. You don't need an account.\n\n\
-         If this message reached you by mistake, you can ignore it -- \
-         nothing happens until you open the link.\n\n\
-         — GhostKey\n"
-    );
+    // Email carries the full explanation. SMS and WhatsApp get a short
+    // message that fits a segment or two, with the same one-time link.
+    // (The subject above is unused on the Twilio path — send_twilio only
+    // sends the body — but enqueue stores it sealed either way.)
+    let body = match channel {
+        Channel::Email => format!(
+            "Hello {heir_name},\n\n\
+             Someone you knew set up a Bitcoin inheritance with GhostKey, and \
+             asked us to reach out to you if they ever stopped checking in. \
+             That has happened.\n\n\
+             Open this link on any phone or computer to see what they left you \
+             and the next steps:\n\n\
+             {claim_url}\n\n\
+             The link works once. You don't need an account.\n\n\
+             If this message reached you by mistake, you can ignore it -- \
+             nothing happens until you open the link.\n\n\
+             — GhostKey\n"
+        ),
+        _ => format!(
+            "Hello {heir_name}, someone you knew left you a Bitcoin \
+             inheritance through GhostKey and asked us to reach you if they \
+             ever stopped checking in. Open this link to see what they left \
+             you:\n\n{claim_url}\n\nThe link works once. You don't need an account."
+        ),
+    };
 
     notifier::enqueue(
         &state.db,
@@ -1517,6 +1537,85 @@ mod tests {
         )
         .expect("decrypt recipient");
         assert_eq!(opened, b"alice@example.test");
+    }
+
+    /// Insert a claim-ready vault carrying a sealed heir contact with a
+    /// chosen channel. The heir contact is a sealed JSON blob
+    /// `{name, contact, channel}` (unlike the owner's plain-string
+    /// contact + separate channel column).
+    async fn insert_vault_with_sealed_heir(
+        pool: &SqlitePool,
+        id: &str,
+        next_deadline_at: &str,
+        claim_eligible_at: &str,
+        channel: &str,
+        contact: &str,
+    ) {
+        let json = format!(r#"{{"name":"Pat","contact":"{contact}","channel":"{channel}"}}"#);
+        let sealed = crate::crypto::seal_for_vault(id, json.as_bytes()).expect("seal heir contact");
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network,
+                descriptor_external, descriptor_internal,
+                timelock_blocks,
+                checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status,
+                claim_eligible_at,
+                heir_contact_ciphertext, heir_contact_nonce
+            ) VALUES (?, 'regtest', ?, ?, 144, 86400, 3600,
+                      '2026-01-01T00:00:00Z', ?, 'alarmed', ?,
+                      ?, ?)"#,
+        )
+        .bind(id)
+        .bind(format!("tr(fake/{id}/0/*)"))
+        .bind(format!("tr(fake/{id}/1/*)"))
+        .bind(next_deadline_at)
+        .bind(claim_eligible_at)
+        .bind(&sealed.ciphertext_b64)
+        .bind(&sealed.nonce_b64)
+        .execute(pool)
+        .await
+        .expect("insert vault with sealed heir contact");
+    }
+
+    /// A heir saved with the WhatsApp channel must get a `claim_link`
+    /// notification enqueued on the Twilio (whatsapp) channel when the
+    /// claim becomes eligible — the scheduler used to skip every
+    /// non-email channel, dropping these silently.
+    #[tokio::test]
+    async fn claim_link_enqueued_for_whatsapp_heir() {
+        ensure_test_master_key();
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        insert_vault_with_sealed_heir(
+            &pool,
+            "vault-wa",
+            "2026-04-01T00:00:00Z", // deadline past
+            "2026-04-08T00:00:00Z", // eligibility past
+            "whatsapp",
+            "+15551230000",
+        )
+        .await;
+
+        tick_once(&state).await.expect("tick");
+
+        let (status, hash) = read_status_and_token_hash(&pool, "vault-wa").await;
+        assert_eq!(status, "timelock_started");
+        assert!(hash.is_some(), "claim token must be issued");
+
+        let (kind, channel, status_n): (String, String, String) = sqlx::query_as(
+            "SELECT kind, channel, status FROM notifications \
+             WHERE vault_id = 'vault-wa' AND kind = 'claim_link'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("claim_link notification row");
+        assert_eq!(kind, "claim_link");
+        assert_eq!(channel, "whatsapp");
+        assert_eq!(status_n, "pending");
     }
 
     /// Legacy / no-owner-contact vault: alarm still transitions, but
