@@ -30,6 +30,7 @@ pub mod descriptor;
 pub mod error;
 pub mod keys;
 pub mod psbt;
+pub mod sweep;
 pub mod vault;
 pub mod wallet;
 
