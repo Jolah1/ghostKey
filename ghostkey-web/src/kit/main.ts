@@ -39,6 +39,12 @@ import { buildSpendSection } from "./spend";
  *  Mirrors buildKitData() in src/independenceProof.ts — keep in sync. */
 interface KitData {
   v: 1;
+  /** "owner" (default) or "heir". Heir envelopes are sealed under a
+   *  one-off passphrase the owner kept with the file, carry the heir's
+   *  xprv in the `*_xprv_*` fields, and spend the timelocked heir
+   *  branch. Older owner-kit files predate this field; treat a missing
+   *  value as "owner". */
+  role?: "owner" | "heir";
   generated_at: string;
   label: string | null;
   vault_id: string;
@@ -120,9 +126,31 @@ function render() {
     return;
   }
 
+  const isHeir = data.role === "heir";
   const created = new Date(data.generated_at);
   main.appendChild(
-    el(`
+    el(
+      isHeir
+        ? `
+    <div>
+      <h1>Your Bitcoin — a file someone left for you</h1>
+      <p class="muted">${data.label ? `“${esc(data.label)}” · ` : ""}${esc(data.network)} · saved ${created.toLocaleDateString()}</p>
+
+      <div class="box">
+        <p style="margin-top:0"><strong>What this is.</strong>
+        Someone set up a Bitcoin inheritance for you with a service
+        called GhostKey, and kept this file for you in case they were no
+        longer around. If they are gone, this file plus the secret code
+        they kept with it is everything you need to reach the money. You
+        do not need GhostKey, an account, or the internet to open it.</p>
+        <p style="margin-bottom:0"><strong>Before you go further.</strong>
+        It's worth looking up “GhostKey Bitcoin inheritance” on your own
+        first, so you understand what this is, before trusting any link.
+        This file works on its own and asks you for nothing but the code.</p>
+      </div>
+    </div>
+  `
+        : `
     <div>
       <h1>Your Bitcoin — Emergency Recovery File</h1>
       <p class="muted">Vault${data.label ? ` “${esc(data.label)}”` : ""} ·
@@ -142,20 +170,29 @@ function render() {
         it does not reveal your keys. It works without internet.</p>
       </div>
     </div>
-  `),
+  `,
+    ),
   );
 
   /* ---- unlock section ---- */
   const unlock = el(`
     <div>
-      <h2>Unlock with your password</h2>
-      <p class="muted">Type the password you chose when you set up the
+      <h2>${isHeir ? "Unlock with the code" : "Unlock with your password"}</h2>
+      <p class="muted">${
+        isHeir
+          ? `Type the secret code that was kept with this file. Unlocking
+      happens entirely inside this page — nothing is sent anywhere. It
+      takes a few seconds on purpose; that slowness is what keeps the
+      code hard to crack.`
+          : `Type the password you chose when you set up the
       vault. Unlocking happens entirely inside this page — nothing is
       sent anywhere. It takes a few seconds on purpose; that slowness
-      is what makes your password hard to crack.</p>
+      is what makes your password hard to crack.`
+      }</p>
       <div class="box">
         <input type="password" autocomplete="current-password"
-               placeholder="Your vault password" aria-label="Vault password" />
+               placeholder="${isHeir ? "The code kept with this file" : "Your vault password"}"
+               aria-label="${isHeir ? "Unlock code" : "Vault password"}" />
         <div style="margin-top:10px">
           <button type="button">Unlock</button>
         </div>
@@ -200,9 +237,11 @@ function render() {
       }
       showUnlocked(xprv);
     } catch {
-      errLine.textContent =
-        "That password didn't work. Check for typos and try again — " +
-        "it's the same password you use to sign in.";
+      errLine.textContent = isHeir
+        ? "That code didn't work. Check for typos and try again — it's the " +
+          "secret code that was kept together with this file."
+        : "That password didn't work. Check for typos and try again — " +
+          "it's the same password you use to sign in.";
       errLine.hidden = false;
     } finally {
       bar.hidden = true;
@@ -285,6 +324,7 @@ function render() {
     // explicit "find coins" / "broadcast" steps touch the network.
     result.appendChild(
       buildSpendSection({
+        role: isHeir ? "heir" : "owner",
         network: data!.network,
         descriptorExternal: data!.descriptor_external,
         descriptorInternal: data!.descriptor_internal,

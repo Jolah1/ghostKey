@@ -72,6 +72,11 @@ import {
   type VaultBalanceView,
 } from "./api";
 import { saveVaultMeta } from "./vaultStore";
+import {
+  buildHeirEnvelope,
+  downloadHeirEnvelope,
+  type HeirEnvelope,
+} from "./independenceProof";
 import { AssistChat } from "./AssistChat";
 import { VideoMessageRecorder, type RecordedClip } from "./VideoMessageRecorder";
 import { prepareVideo } from "./crypto/video";
@@ -287,6 +292,10 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           vaultId: string;
           heirName: string;
           address: string | null;
+          /** Heir envelope (block A), built at setup while the heir
+           *  xprv is in memory. Absent for F2 no-wallet heirs and on
+           *  best-effort build failure. */
+          envelope?: HeirEnvelope;
         }>;
       }
     | null
@@ -494,6 +503,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
         vaultId: string;
         heirName: string;
         address: string | null;
+        envelope?: HeirEnvelope;
       }> = [];
 
       // (f) Per-heir loop: seal, POST, persist.
@@ -661,10 +671,42 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           console.warn("address fetch failed for vault", resp.id, e);
         }
 
+        // (i2) Block A — heir envelope. Built here, the one moment the
+        // heir xprv lives in this browser. Sealed under a one-off
+        // passphrase (returned to show the owner once) so it can be
+        // handed down without sharing the sign-in password. Skipped for
+        // F2 no-wallet heirs (their real key is server-derived, so
+        // heirParty.xprv wouldn't match the descriptor). Best-effort:
+        // a failure here must never abort an otherwise-good vault.
+        let envelope: HeirEnvelope | undefined;
+        if (
+          !useHeirDerivation &&
+          resp.descriptor_external &&
+          resp.descriptor_internal
+        ) {
+          try {
+            setKdfProgress(0);
+            envelope = await buildHeirEnvelope({
+              vaultId: resp.id,
+              label: resp.label ?? label,
+              network,
+              timelockBlocks,
+              descriptorExternal: resp.descriptor_external,
+              descriptorInternal: resp.descriptor_internal,
+              heirName: heir.name.trim(),
+              heirXprv: heirParty.xprv,
+              onProgress: (pp) => setKdfProgress(Math.round(pp * 100)),
+            });
+          } catch (e) {
+            console.warn("heir envelope build failed for vault", resp.id, e);
+          }
+        }
+
         createdEntries.push({
           vaultId: resp.id,
           heirName: heir.name.trim(),
           address,
+          envelope,
         });
 
         // Notify the parent once per vault. The parent uses this to
@@ -1476,10 +1518,12 @@ function StepFund({
       vaultId: string;
       heirName: string;
       address: string | null;
+      envelope?: HeirEnvelope;
     }>;
   };
 }) {
   const isGroup = created.vaults.length > 1;
+  const anyEnvelope = created.vaults.some((v) => v.envelope);
   return (
     <div>
       <h1 className="font-serif text-3xl md:text-4xl">
@@ -1537,6 +1581,97 @@ function StepFund({
             </>
           )}
         </InlineAlert>
+      </div>
+
+      {anyEnvelope && (
+        <div className="mt-10">
+          <h2 className="font-serif text-2xl">
+            Extra safety for {isGroup ? "your heirs" : "your heir"} (optional)
+          </h2>
+          <p className="mt-2 text-muted">
+            {isGroup ? "Each file below" : "This file"} lets{" "}
+            {isGroup ? "each heir" : "your heir"} reach the Bitcoin even if
+            GhostKey no longer exists. It's locked, and useless until the
+            waiting period passes, so it's safe to keep for them. Save it
+            somewhere they'll find it if you're gone, together with its
+            secret code. Without GhostKey, this is the only way they get in
+            on their own — so if it matters to you, do it now.
+          </p>
+          <div className="mt-6 flex flex-col gap-4">
+            {created.vaults.map((v) =>
+              v.envelope ? (
+                <HeirEnvelopeCard
+                  key={v.vaultId}
+                  heirName={v.heirName}
+                  envelope={v.envelope}
+                  showHeading={isGroup}
+                />
+              ) : null,
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One heir-envelope download card on the funding screen. Shows the
+ * one-off passphrase once (we never persist it) and lets the owner
+ * download the sealed file. Copy is deliberately blunt: the file and
+ * the code only help together, and only if the owner is gone.
+ */
+function HeirEnvelopeCard({
+  heirName,
+  envelope,
+  showHeading,
+}: {
+  heirName: string;
+  envelope: HeirEnvelope;
+  showHeading: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [downloaded, setDownloaded] = useState(false);
+
+  async function copyCode() {
+    try {
+      await navigator.clipboard.writeText(envelope.passphrase);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard may be blocked; the owner can select the text instead.
+    }
+  }
+
+  return (
+    <div className="card-flat p-5">
+      {showHeading && (
+        <p className="font-serif text-lg">For {heirName || "your heir"}</p>
+      )}
+      <p className="text-xs uppercase tracking-wider text-dim">
+        Secret code — write it down with the file
+      </p>
+      <div className="mt-2 flex flex-wrap items-center gap-3">
+        <code className="select-all rounded bg-[var(--bg-elev)] px-3 py-2 font-mono text-sm">
+          {envelope.passphrase}
+        </code>
+        <Button variant="ghost" onClick={() => void copyCode()}>
+          {copied ? "Copied" : "Copy code"}
+        </Button>
+      </div>
+      <p className="mt-3 text-sm text-muted">
+        The file is locked with this code. We won't show the code again,
+        and we never store it. Keep them together.
+      </p>
+      <div className="mt-4">
+        <Button
+          onClick={() => {
+            downloadHeirEnvelope(envelope);
+            setDownloaded(true);
+          }}
+        >
+          {downloaded ? "Download again" : "Download the file"}
+        </Button>
       </div>
     </div>
   );
