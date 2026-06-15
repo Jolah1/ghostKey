@@ -40,3 +40,6 @@ ghostkey-web/public/independence-proof.html
 
 # local scheduler lock
 .claude/scheduled_tasks.lock
+
+# Local demo throwaway master key (scripts/demo.sh)
+.demo-master-key
