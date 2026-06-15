@@ -316,6 +316,10 @@ export interface HeirDerivationParamsView {
   timelock_blocks: number;
   vault_secret_hex: string;
   heir_email: string;
+  /** Public watch-only descriptor pair. Lets the heir's browser build a
+   *  self-contained recovery file (block B) it can sign offline. */
+  descriptor_external: string;
+  descriptor_internal: string;
 }
 
 /**
@@ -334,6 +338,10 @@ export interface SealedHeirView {
   timelock_blocks: number;
   heir_xprv_ct_b64: string;
   heir_xprv_nonce_b64: string;
+  /** Public watch-only descriptor pair. Lets the heir's browser build a
+   *  self-contained recovery file (block B) it can sign offline. */
+  descriptor_external: string;
+  descriptor_internal: string;
 }
 
 /**
