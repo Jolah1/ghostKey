@@ -67,6 +67,11 @@ import { b64decode, unsealHeirXprv } from "./crypto/sealing";
 import { deriveHeirKey } from "./crypto/heirKey";
 import type { Network } from "./crypto/keygen";
 import {
+  buildHeirEnvelope,
+  downloadHeirEnvelope,
+  type HeirEnvelope,
+} from "./independenceProof";
+import {
   classifyClaimError,
   rawErrorMessage,
   type ClaimContext,
@@ -762,6 +767,22 @@ function PasswordVaultClaim({
           {error ? <ClaimErrorBlock error={error} context="send" /> : null}
         </div>
       )}
+
+      <HeirRecoveryFileSection
+        vaultId={sealed.vault_id}
+        network={sealed.network}
+        timelockBlocks={sealed.timelock_blocks}
+        descriptorExternal={sealed.descriptor_external}
+        descriptorInternal={sealed.descriptor_internal}
+        heirName={view.heir_display_name?.trim() || ""}
+        deriveXprv={() =>
+          unsealHeirXprv(b64decode(token), {
+            v: 1,
+            ct: sealed.heir_xprv_ct_b64,
+            nonce: sealed.heir_xprv_nonce_b64,
+          })
+        }
+      />
     </section>
   );
 }
@@ -970,6 +991,22 @@ function DerivedHeirClaim({
           Claim and send
         </Button>
       </div>
+
+      <HeirRecoveryFileSection
+        vaultId={params.vault_id}
+        network={params.network}
+        timelockBlocks={params.timelock_blocks}
+        descriptorExternal={params.descriptor_external}
+        descriptorInternal={params.descriptor_internal}
+        heirName={view.heir_display_name?.trim() || ""}
+        deriveXprv={() =>
+          deriveHeirKey(
+            params.vault_secret_hex,
+            params.heir_email,
+            params.network as Network,
+          ).xprvBase58
+        }
+      />
     </section>
   );
 }
@@ -1475,6 +1512,143 @@ function WalletGuide({
         ))}
       </ul>
     </div>
+  );
+}
+
+/* ------------------ Heir recovery file (block B) -------------------------- */
+
+/**
+ * Optional, secondary action on the claim page: download a
+ * self-contained recovery file the heir can use to reach the Bitcoin
+ * without GhostKey — the same offline-signing kit the owner gets,
+ * built for the heir branch.
+ *
+ * Why offer it here? Two reasons. (1) Independence from this moment on:
+ * once they hold the file plus its code, GhostKey going away never
+ * strands them. (2) Self-serve fallback: if the one-shot send above
+ * ever fails (Esplora down, etc.), they can open the file and move the
+ * money themselves.
+ *
+ * The heir's xprv is re-derived on click (cheap — HKDF or BIP39, no
+ * Argon2), sealed under an auto-generated code inside
+ * `buildHeirEnvelope`, and dropped immediately after. We never hold it
+ * in component state.
+ */
+function HeirRecoveryFileSection({
+  vaultId,
+  network,
+  timelockBlocks,
+  descriptorExternal,
+  descriptorInternal,
+  heirName,
+  deriveXprv,
+}: {
+  vaultId: string;
+  network: string;
+  timelockBlocks: number;
+  descriptorExternal: string;
+  descriptorInternal: string;
+  heirName: string;
+  deriveXprv: () => string;
+}) {
+  const [status, setStatus] = useState<
+    | { kind: "idle" }
+    | { kind: "building" }
+    | { kind: "ready"; env: HeirEnvelope }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
+
+  // Descriptors are required to build the file; on older servers that
+  // don't return them yet, just hide the section rather than error.
+  if (!descriptorExternal || !descriptorInternal) return null;
+
+  async function onCreate() {
+    setStatus({ kind: "building" });
+    let xprv: string | null = null;
+    try {
+      xprv = deriveXprv();
+      const env = await buildHeirEnvelope({
+        vaultId,
+        label: heirName ? `${heirName}'s inheritance` : null,
+        network,
+        timelockBlocks,
+        descriptorExternal,
+        descriptorInternal,
+        heirName,
+        heirXprv: xprv,
+      });
+      setStatus({ kind: "ready", env });
+    } catch (e) {
+      setStatus({
+        kind: "error",
+        message: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      xprv = null;
+    }
+  }
+
+  return (
+    <details className="mt-10">
+      <summary className="cursor-pointer text-sm text-muted">
+        Advanced: save your own recovery file
+      </summary>
+      <div className="mt-3 card-flat p-5">
+        <p className="text-sm text-soft">
+          This downloads a file that can reach this Bitcoin{" "}
+          <strong>without GhostKey</strong>, using just a code we'll show
+          you. You don't need it to receive the money above — it's a
+          backup, and a way to do it yourself if you ever want to.
+        </p>
+
+        {status.kind === "idle" && (
+          <div className="mt-4">
+            <Button variant="ghost" onClick={() => void onCreate()}>
+              Create my recovery file
+            </Button>
+          </div>
+        )}
+
+        {status.kind === "building" && (
+          <p className="mt-4 text-sm text-muted" aria-live="polite">
+            Preparing your file… this takes a few seconds.
+          </p>
+        )}
+
+        {status.kind === "error" && (
+          <div className="mt-4">
+            <InlineAlert tone="alarm">
+              <p className="text-sm">Couldn't build the file: {status.message}</p>
+            </InlineAlert>
+            <div className="mt-3">
+              <Button variant="ghost" onClick={() => void onCreate()}>
+                Try again
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {status.kind === "ready" && (
+          <div className="mt-4">
+            <p className="text-xs uppercase tracking-wider text-dim">
+              Your code — write it down
+            </p>
+            <code className="mt-2 inline-block select-all rounded bg-[var(--bg-elev)] px-3 py-2 font-mono text-sm">
+              {status.env.passphrase}
+            </code>
+            <p className="mt-3 text-sm text-muted">
+              The file is locked with this code. We won't show it again,
+              and we never store it. Keep the file and the code together.
+            </p>
+            <div className="mt-4">
+              <Button onClick={() => downloadHeirEnvelope(status.env)}>
+                Download the file
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </details>
   );
 }
 

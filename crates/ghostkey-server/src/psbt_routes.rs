@@ -566,6 +566,13 @@ pub struct SealedHeirView {
     pub timelock_blocks: i64,
     pub heir_xprv_ct_b64: String,
     pub heir_xprv_nonce_b64: String,
+    /// Public watch-only descriptor pair. Returned so the heir's
+    /// browser can build a self-contained recovery file (block B):
+    /// it needs the owner xpub (which only the descriptor carries) to
+    /// derive the vault's addresses and sign the timelocked branch
+    /// offline. No private material — safe for any valid claim token.
+    pub descriptor_external: String,
+    pub descriptor_internal: String,
 }
 
 pub async fn get_sealed_heir_xprv(
@@ -581,11 +588,14 @@ pub async fn get_sealed_heir_xprv(
         Option<String>, // claim_token_used_at
         Option<String>, // heir_xprv_ct
         Option<String>, // heir_xprv_nonce
+        String,         // descriptor_external
+        String,         // descriptor_internal
     );
     let row: Option<Row> = sqlx::query_as(
         r#"SELECT id, network, timelock_blocks,
                   claim_token_hash, claim_token_used_at,
-                  heir_xprv_sealed_ct_b64, heir_xprv_sealed_nonce
+                  heir_xprv_sealed_ct_b64, heir_xprv_sealed_nonce,
+                  descriptor_external, descriptor_internal
              FROM vaults
             WHERE claim_token_hash = ?"#,
     )
@@ -624,6 +634,8 @@ pub async fn get_sealed_heir_xprv(
         timelock_blocks: row.2,
         heir_xprv_ct_b64: ct,
         heir_xprv_nonce_b64: nonce,
+        descriptor_external: row.7,
+        descriptor_internal: row.8,
     }))
 }
 
@@ -1253,6 +1265,10 @@ pub struct HeirDerivationParamsView {
     /// hop only — the heir is already authenticated by holding the claim
     /// token. Should be displayed for confirmation, not stored.
     pub heir_email: String,
+    /// Public watch-only descriptor pair, for the same block-B recovery
+    /// file as [`SealedHeirView`]. No private material.
+    pub descriptor_external: String,
+    pub descriptor_internal: String,
 }
 
 pub async fn get_heir_derivation_params(
@@ -1269,12 +1285,15 @@ pub async fn get_heir_derivation_params(
         i64,            // heir_derived
         Option<String>, // heir_contact_ciphertext
         Option<String>, // heir_contact_nonce
+        String,         // descriptor_external
+        String,         // descriptor_internal
     );
     let row: Option<Row> = sqlx::query_as(
         r#"SELECT id, network, timelock_blocks,
                   claim_token_hash, claim_token_used_at,
                   heir_derived,
-                  heir_contact_ciphertext, heir_contact_nonce
+                  heir_contact_ciphertext, heir_contact_nonce,
+                  descriptor_external, descriptor_internal
              FROM vaults
             WHERE claim_token_hash = ?"#,
     )
@@ -1335,6 +1354,8 @@ pub async fn get_heir_derivation_params(
         timelock_blocks: row.2,
         vault_secret_hex,
         heir_email,
+        descriptor_external: row.8,
+        descriptor_internal: row.9,
     }))
 }
 
