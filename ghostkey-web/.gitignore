@@ -3,3 +3,8 @@ dist
 .vite
 tsconfig.tsbuildinfo
 *.tsbuildinfo
+
+# Playwright (in-browser e2e) artifacts
+test-results
+playwright-report
+.playwright
