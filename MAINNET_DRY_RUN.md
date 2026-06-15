@@ -21,10 +21,10 @@ What this run *does* prove, which nothing else can:
   Core with no GhostKey involvement — the non-custodial promise,
   observed with real sats (Sparrow and Liana **cannot** open these
   vaults; see step 4);
-- Lightning check-in (21 sats) works against the production sidecar.
+- Lightning check-in (20 sats) works against the production sidecar.
 
 Plan ~1–2 hours, most of it waiting for confirmations. Total cost:
-on-chain fees for two transactions (deposit + drain) plus 21 sats per
+on-chain fees for two transactions (deposit + drain) plus 20 sats per
 Lightning check-in. The 5,000 sats themselves come back to you.
 
 ---
@@ -163,7 +163,7 @@ logged and worth noticing now rather than during a real claim.
 
 ### 3. Check in over Lightning (~5 min)
 
-Do one Lightning check-in (21 sats) from a real wallet on your phone.
+Do one Lightning check-in (20 sats) from a real wallet on your phone.
 Confirm the dashboard deadline advances. This is the same flow your
 users will run monthly, now on the production app with the mainnet
 default.

@@ -30,7 +30,7 @@ Before you start, you need:
 3. **Two phones if possible** — one iOS, one Android — and at least
    five wallets installed across them (see matrix below).
 4. **Testnet sats** on the wallets you're paying *from*. Invoices
-   default to 21 sats (`GHOSTKEY_LN_CHECKIN_SAT`); a few thousand
+   default to 20 sats (`GHOSTKEY_LN_CHECKIN_SAT`); a few thousand
    sats is plenty for the whole audit.
 5. **Permission to take screenshots** of the wallets you test.
    Blur preimages, balances, and addresses before attaching them
@@ -91,7 +91,7 @@ For each cell, run both of these:
    laptop, or the staging URL on a second phone).
 2. Open the wallet's "scan" / "send" flow on the test phone.
 3. Point the camera at the QR.
-4. **Expected:** wallet decodes a 21-sat BOLT11 (or an LNURL on
+4. **Expected:** wallet decodes a 20-sat BOLT11 (or an LNURL on
    surfaces 2 / 3) and offers a confirm step.
 5. Confirm → pay.
 6. **Expected:** within ~3 seconds the dashboard updates
@@ -180,7 +180,7 @@ the procedure to produce it.
   `qrcode-generator` into a `data:` URL (shipped with the CSP
   work — external image hosts are blocked). The QR *content*
   is unchanged, so the matrix above still applies as written.
-- The check-in amount was raised from 1 sat to a 21-sat default
+- The check-in amount was raised from 1 sat to a 20-sat default
   because several wallets (Bitnob-class) refuse sub-20-sat
   invoices. If a wallet still rejects the invoice on amount,
   note the wallet's minimum in the cell.
