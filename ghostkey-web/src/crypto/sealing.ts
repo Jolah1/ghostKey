@@ -259,6 +259,41 @@ export async function sealVaultSecrets(
   return out;
 }
 
+/** Result of sealing one secret under a password: the ciphertext plus
+ *  the KDF parameters a reader needs to re-derive the same KEK. Shaped
+ *  to drop straight into a recovery-kit data blob. */
+export interface PasswordSealed {
+  password_salt_b64: string;
+  password_kdf_mem_kib: number;
+  password_kdf_iters: number;
+  blob: SealedBlob;
+}
+
+/**
+ * Seal one secret under a fresh password-derived KEK (Argon2id), the
+ * same primitives the owner kit uses. Used by the heir envelope, which
+ * seals the heir's xprv under a one-off passphrase the owner keeps with
+ * the file. The KEK is wiped before return.
+ */
+export async function sealUnderPassword(
+  password: string,
+  plaintext: Uint8Array,
+  onProgress?: (pct: number) => void,
+): Promise<PasswordSealed> {
+  const salt = randomBytes(16);
+  const kek = await deriveOwnerKek(password, salt, { onProgress });
+  try {
+    return {
+      password_salt_b64: b64encode(salt),
+      password_kdf_mem_kib: ARGON_MEM_KIB,
+      password_kdf_iters: ARGON_ITERS,
+      blob: sealWithKey(kek, plaintext),
+    };
+  } finally {
+    kek.fill(0);
+  }
+}
+
 export interface UnsealOwnerInput {
   password: string;
   passwordSalt: string;

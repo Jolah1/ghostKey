@@ -18,6 +18,10 @@ import { deriveAddresses, signSweep, type FundingInput } from "./signer";
 import type { Network } from "../crypto/keygen";
 
 interface SpendParams {
+  /** "owner" spends the always-available branch; "heir" spends the
+   *  timelocked branch (only valid once the coins have sat untouched
+   *  for the vault's waiting period). */
+  role: "owner" | "heir";
   network: Network;
   descriptorExternal: string;
   descriptorInternal: string;
@@ -52,14 +56,23 @@ type EsploraUtxo = {
 };
 
 export function buildSpendSection(params: SpendParams): HTMLElement {
+  const isHeir = params.role === "heir";
   const section = el(`
     <div>
-      <h2>Or move your Bitcoin from here</h2>
-      <p class="muted">Advanced, and the only part of this page that uses the
+      <h2>${isHeir ? "Move your Bitcoin to your own wallet" : "Or move your Bitcoin from here"}</h2>
+      <p class="muted">${
+        isHeir
+          ? `The only part of this page that uses the internet. It looks up
+      the coins, signs the payment on this device (the secret key never
+      leaves this page), and sends it to a wallet address you choose. If
+      this says the coins can't be spent yet, the waiting period hasn't
+      passed — try again later.`
+          : `Advanced, and the only part of this page that uses the
       internet. It looks up your coins, signs the payment on this device
       (your secret key never leaves this page), and gives you a finished
       transaction. If you'd rather not, the import method above works in
-      Bitcoin Core instead.</p>
+      Bitcoin Core instead.`
+      }</p>
       <div class="box">
         <p class="muted" style="margin-top:0">Send to this Bitcoin address</p>
         <input data-to type="text" placeholder="bc1..." aria-label="Recipient address"
@@ -197,7 +210,7 @@ export function buildSpendSection(params: SpendParams): HTMLElement {
     signBtn.disabled = true;
     try {
       const result = await signSweep({
-        role: "owner",
+        role: params.role,
         descriptor_external: params.descriptorExternal,
         descriptor_internal: params.descriptorInternal,
         timelock_blocks: params.timelockBlocks,
