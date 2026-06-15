@@ -429,6 +429,13 @@ pub struct CreatedVault {
     /// inheritance is unaffected (the owner can still spend, the
     /// heir can still wait out the timelock).
     pub owner_token: String,
+    /// F2 only: the vault secret the owner's browser HKDFs with the
+    /// heir email to derive the heir's account key, so it can build the
+    /// heir envelope (block A) at setup. `None` for vaults where the
+    /// heir brought their own xpub. See the create handler for why this
+    /// is no new exposure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vault_secret_hex: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -587,6 +594,7 @@ async fn create_vault(
                 has_trusted_contact: None,
             },
             owner_token: issued_owner.token,
+            vault_secret_hex: None,
         }),
     ))
 }
@@ -800,7 +808,15 @@ async fn create_vault_from_xpub(
     // at claim time via `crypto/heirKey.ts`, which is the whole point
     // of the feature: an heir with nothing but an email gets a real
     // BIP86 key without setup ahead of time.
-    let (id, heir_fp, heir_xpub, heir_derived) = if let Some(hd) = req.heir_derivation.as_ref() {
+    // `vault_secret_hex` is returned to the owner ONLY for heir-derived
+    // (F2) vaults, so their browser can derive the heir's account key and
+    // build the heir envelope (block A) at setup — the one moment that's
+    // possible. It's no new exposure: the owner already controls the
+    // funds via the owner branch, and the heir-claim flow already hands
+    // the same secret to whoever holds a valid claim token.
+    let (id, heir_fp, heir_xpub, heir_derived, vault_secret_hex) = if let Some(hd) =
+        req.heir_derivation.as_ref()
+    {
         let id = Uuid::new_v4().to_string();
         let email = hd.email.trim();
         if email.is_empty() {
@@ -816,10 +832,18 @@ async fn create_vault_from_xpub(
         let (_entropy, derived_xpub) =
             ghostkey_core::keys::derive_heir_seed(email, &id, &master, net)
                 .map_err(|e| ApiError::Validation(format!("heir_derivation: {e}")))?;
-        (id, Fingerprint::default(), derived_xpub, true)
+        let vault_secret = ghostkey_core::keys::compute_vault_secret(&id, &master)
+            .map_err(|e| ApiError::Validation(format!("vault_secret: {e}")))?;
+        (
+            id,
+            Fingerprint::default(),
+            derived_xpub,
+            true,
+            Some(hex::encode(vault_secret)),
+        )
     } else {
         let (fp, xpub) = resolve_party("heir", &req.heir.xpub, req.heir.fingerprint.as_deref())?;
-        (Uuid::new_v4().to_string(), fp, xpub, false)
+        (Uuid::new_v4().to_string(), fp, xpub, false, None)
     };
 
     if owner_xpub == heir_xpub {
@@ -1133,11 +1157,15 @@ async fn create_vault_from_xpub(
                 lnurl_checkin: None,
                 lnurl_panic: None,
                 owner_contact_verified: if has_owner_email { Some(false) } else { None },
-                descriptor_external: None,
-                descriptor_internal: None,
+                // Return the public descriptor pair so the setup browser
+                // can build the heir envelope (block A) immediately,
+                // without a second round-trip. Watch-only; no secrets.
+                descriptor_external: Some(pair.external.clone()),
+                descriptor_internal: Some(pair.internal.clone()),
                 has_trusted_contact: None,
             },
             owner_token: issued_owner.token,
+            vault_secret_hex,
         }),
     ))
 }

@@ -80,6 +80,7 @@ import {
 import { AssistChat } from "./AssistChat";
 import { VideoMessageRecorder, type RecordedClip } from "./VideoMessageRecorder";
 import { prepareVideo } from "./crypto/video";
+import { deriveHeirKey } from "./crypto/heirKey";
 import {
   MIN_LENGTH,
   checkPassword,
@@ -672,31 +673,44 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
         }
 
         // (i2) Block A — heir envelope. Built here, the one moment the
-        // heir xprv lives in this browser. Sealed under a one-off
-        // passphrase (returned to show the owner once) so it can be
-        // handed down without sharing the sign-in password. Skipped for
-        // F2 no-wallet heirs (their real key is server-derived, so
-        // heirParty.xprv wouldn't match the descriptor). Best-effort:
-        // a failure here must never abort an otherwise-good vault.
+        // heir's account key is reachable in this browser. Sealed under a
+        // one-off passphrase (returned to show the owner once) so it can
+        // be handed down without sharing the sign-in password.
+        //
+        // The right key differs by heir type: a bring-your-own heir uses
+        // the party we minted above; an F2 (server-derived) heir's key is
+        // derived from vault_secret + their email — the server returns
+        // vault_secret only for these vaults. Best-effort throughout: a
+        // failure here must never abort an otherwise-good vault.
         let envelope: HeirEnvelope | undefined;
-        if (
-          !useHeirDerivation &&
-          resp.descriptor_external &&
-          resp.descriptor_internal
-        ) {
+        if (resp.descriptor_external && resp.descriptor_internal) {
           try {
-            setKdfProgress(0);
-            envelope = await buildHeirEnvelope({
-              vaultId: resp.id,
-              label: resp.label ?? label,
-              network,
-              timelockBlocks,
-              descriptorExternal: resp.descriptor_external,
-              descriptorInternal: resp.descriptor_internal,
-              heirName: heir.name.trim(),
-              heirXprv: heirParty.xprv,
-              onProgress: (pp) => setKdfProgress(Math.round(pp * 100)),
-            });
+            let heirXprv: string | null = null;
+            if (useHeirDerivation) {
+              if (resp.vault_secret_hex) {
+                heirXprv = deriveHeirKey(
+                  resp.vault_secret_hex,
+                  heir.contact.trim(),
+                  network,
+                ).xprvBase58;
+              }
+            } else {
+              heirXprv = heirParty.xprv;
+            }
+            if (heirXprv) {
+              setKdfProgress(0);
+              envelope = await buildHeirEnvelope({
+                vaultId: resp.id,
+                label: resp.label ?? label,
+                network,
+                timelockBlocks,
+                descriptorExternal: resp.descriptor_external,
+                descriptorInternal: resp.descriptor_internal,
+                heirName: heir.name.trim(),
+                heirXprv,
+                onProgress: (pp) => setKdfProgress(Math.round(pp * 100)),
+              });
+            }
           } catch (e) {
             console.warn("heir envelope build failed for vault", resp.id, e);
           }
