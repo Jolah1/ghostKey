@@ -1,0 +1,20 @@
+[package]
+name = "ghostkey-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WASM bindings for GhostKey: offline sweep signing inside the browser recovery kit (#93)"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ghostkey-core = { path = "../ghostkey-core" }
+bitcoin = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+wasm-bindgen = "0.2"
+# getrandom must be told to use the browser's crypto on wasm. This pulls in
+# the same getrandom the rest of the Bitcoin stack already depends on.
+getrandom = { version = "0.2", features = ["js"] }
+console_error_panic_hook = "0.1"
