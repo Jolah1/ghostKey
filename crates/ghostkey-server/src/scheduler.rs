@@ -1083,6 +1083,16 @@ async fn enqueue_claim_link(
     let base = public_base_url();
     let claim_url = format!("{base}/#/claim/{token}");
 
+    // Demo mode has no real delivery channel in a local run (no SMTP /
+    // Twilio), so the claim link would otherwise stay sealed in the
+    // notifications table and the operator could never open the claim
+    // page. Print it to the server log so a local demo is self-serve.
+    // Gated on demo mode, which is already forbidden on mainnet — a
+    // production server never logs a live claim link.
+    if crate::demo::demo_mode() {
+        tracing::warn!(vault_id = %vault_id, "DEMO MODE claim link (do not enable in production): {claim_url}");
+    }
+
     // F5: the heir must not learn the vault label before they open
     // the claim link — the label often names the asset ("BTC for
     // mom"), which leaks the owner's identity to anyone who can read
