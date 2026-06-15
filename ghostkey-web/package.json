@@ -10,6 +10,7 @@
     "build:kit": "vite build --config vite.kit.config.ts",
     "wasm:bundle": "node scripts/bundle-kit-wasm.mjs",
     "wasm:verify": "node scripts/verify-kit-signer.mjs",
+    "e2e": "npm run build:kit && playwright test",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
@@ -31,6 +32,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@playwright/test": "^1.61.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
