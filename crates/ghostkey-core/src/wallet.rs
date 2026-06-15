@@ -91,6 +91,28 @@ pub fn next_receive_address(w: &mut Wallet) -> bitcoin::Address {
     w.reveal_next_address(KeychainKind::External).address
 }
 
+/// Peek the first `count` receive and change addresses of a watch-only
+/// vault, as strings. Used by the recovery kit to know which addresses to
+/// scan for coins on the user's chosen explorer.
+pub fn peek_addresses(vault: &Vault, count: u32) -> Result<(Vec<String>, Vec<String>)> {
+    let w = build_watch_only(vault)?;
+    let external = (0..count)
+        .map(|i| {
+            w.peek_address(KeychainKind::External, i)
+                .address
+                .to_string()
+        })
+        .collect();
+    let internal = (0..count)
+        .map(|i| {
+            w.peek_address(KeychainKind::Internal, i)
+                .address
+                .to_string()
+        })
+        .collect();
+    Ok((external, internal))
+}
+
 /// Same as [`build_signing`] but takes an already-derived BIP86
 /// account xprv (the key at `m/86'/coin'/0'`) instead of a master
 /// xprv. Used by the browser-side password-vault flow where the

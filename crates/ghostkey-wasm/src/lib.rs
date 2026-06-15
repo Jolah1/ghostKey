@@ -86,6 +86,45 @@ pub fn sign_sweep_json(request_json: &str) -> Result<String, String> {
     serde_json::to_string(&out).map_err(|e| e.to_string())
 }
 
+/// Derive the vault's first `count` receive and change addresses, so the
+/// kit knows which addresses to scan for coins on the user's chosen
+/// explorer. Returns JSON `{ "external": [...], "internal": [...] }`.
+#[wasm_bindgen]
+pub fn derive_vault_addresses(
+    descriptor_external: &str,
+    descriptor_internal: &str,
+    network: &str,
+    count: u32,
+) -> Result<String, JsError> {
+    derive_addresses_json(descriptor_external, descriptor_internal, network, count)
+        .map_err(|e| JsError::new(&e))
+}
+
+/// Plain-Rust core of [`derive_vault_addresses`] for native testing.
+pub fn derive_addresses_json(
+    descriptor_external: &str,
+    descriptor_internal: &str,
+    network: &str,
+    count: u32,
+) -> Result<String, String> {
+    let net = parse_network(network)?;
+    let vault = Vault::from_config(VaultConfig {
+        descriptor_external: descriptor_external.to_string(),
+        descriptor_internal: descriptor_internal.to_string(),
+        timelock_blocks: 1, // irrelevant for address derivation
+        network: net,
+        role: VaultRole::Watchonly,
+        label: None,
+    })
+    .map_err(|e| format!("invalid vault descriptors: {e}"))?;
+
+    let (external, internal) =
+        ghostkey_core::wallet::peek_addresses(&vault, count).map_err(|e| e.to_string())?;
+
+    serde_json::to_string(&serde_json::json!({ "external": external, "internal": internal }))
+        .map_err(|e| e.to_string())
+}
+
 fn run(request_json: &str) -> Result<SweepResponse, String> {
     let req: SweepRequest = serde_json::from_str(request_json)
         .map_err(|e| format!("could not read the request: {e}"))?;

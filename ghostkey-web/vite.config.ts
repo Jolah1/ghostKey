@@ -104,6 +104,9 @@ export default defineConfig({
           "**/inter-tight-{cyrillic,greek,vietnamese}*.woff2",
           "**/pwa-512x512.png",
           "**/maskable-icon-512x512.png",
+          // The recovery kit is a one-off download (~5 MB with the inlined
+          // signer wasm), not part of the app shell. Never precache it.
+          "**/independence-proof.html",
         ],
         // Web push lives in its own classic script so the handlers
         // survive Workbox regenerating the SW body on every build.

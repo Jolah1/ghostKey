@@ -8,6 +8,8 @@
     "dev": "vite",
     "build": "npm run build:kit && tsc -b && vite build",
     "build:kit": "vite build --config vite.kit.config.ts",
+    "wasm:bundle": "node scripts/bundle-kit-wasm.mjs",
+    "wasm:verify": "node scripts/verify-kit-signer.mjs",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
