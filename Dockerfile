@@ -34,15 +34,21 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ghostkey-core/Cargo.toml   crates/ghostkey-core/Cargo.toml
 COPY crates/ghostkey-cli/Cargo.toml    crates/ghostkey-cli/Cargo.toml
 COPY crates/ghostkey-server/Cargo.toml crates/ghostkey-server/Cargo.toml
+# ghostkey-wasm is a workspace member, so `cargo fetch --locked` must be
+# able to read its manifest even though we never build it here (the
+# release build below targets only -p ghostkey-server).
+COPY crates/ghostkey-wasm/Cargo.toml   crates/ghostkey-wasm/Cargo.toml
 
 # Empty stub source files so `cargo fetch` can resolve.
 RUN mkdir -p \
         crates/ghostkey-core/src \
         crates/ghostkey-cli/src \
         crates/ghostkey-server/src \
+        crates/ghostkey-wasm/src \
     && echo "fn main() {}" > crates/ghostkey-cli/src/main.rs \
     && echo "fn main() {}" > crates/ghostkey-server/src/main.rs \
-    && echo "// stub"      > crates/ghostkey-core/src/lib.rs
+    && echo "// stub"      > crates/ghostkey-core/src/lib.rs \
+    && echo "// stub"      > crates/ghostkey-wasm/src/lib.rs
 
 RUN cargo fetch --locked
 
