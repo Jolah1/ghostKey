@@ -462,6 +462,10 @@ async function request<T>(
  */
 export interface CreatedVault extends VaultView {
   owner_token: string;
+  /** F2 only: the vault secret the owner's browser HKDFs with the heir
+   *  email to derive the heir's account key, so it can build the heir
+   *  envelope (block A) at setup. Absent for bring-your-own-xpub heirs. */
+  vault_secret_hex?: string | null;
 }
 
 export const api = {
