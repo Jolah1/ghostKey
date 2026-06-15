@@ -34,8 +34,10 @@ use bitcoin::{Address, Amount, FeeRate, Network};
 use bitcoincore_rpc::json::AddressType;
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 
-use ghostkey_core::keys::{account_xpub, descriptor_key_fragment, Chain};
+use bitcoin::secp256k1::Secp256k1;
+use ghostkey_core::keys::{account_xpub, descriptor_key_fragment, vault_account_path, Chain};
 use ghostkey_core::psbt::{build_check_in, build_heir_claim};
+use ghostkey_core::sweep::{sign_heir_sweep, sign_owner_sweep, ConfirmedTx};
 use ghostkey_core::vault::{Vault, VaultRole};
 use ghostkey_core::wallet::{build_signing, build_watch_only};
 
@@ -341,6 +343,210 @@ fn owner_checkin_then_heir_claim() -> Result<()> {
         "vault must be fully drained after heir claim"
     );
 
+    Ok(())
+}
+
+/// Offline sweep (issue #93): prove the recovery kit's signing path.
+///
+/// This is the same owner-spend and heir-claim as
+/// `owner_checkin_then_heir_claim`, but built the way the browser kit
+/// must: with **no chain sync**. We hand the signer only the funding
+/// transactions (as the kit's JS would, fetched from an explorer), and it
+/// must still produce a finished, broadcastable transaction — for the
+/// owner branch immediately, and for the heir branch only after the
+/// relative timelock has matured.
+#[test]
+#[ignore]
+fn offline_sweep_owner_and_heir() -> Result<()> {
+    let net = Network::Regtest;
+    let node = Bitcoind::spawn()?;
+    let bare = node.client()?;
+    let node_w = ensure_node_wallet(&node, "miner")?;
+    mine_blocks(&node_w, 101)?;
+
+    let (vault, owner_m, heir_m) = build_vault_and_keys()?;
+    let secp = Secp256k1::new();
+    // The kit holds the BIP86 *account* key, not the master — derive it.
+    let owner_acct = owner_m.derive_priv(&secp, &vault_account_path(net))?;
+    let heir_acct = heir_m.derive_priv(&secp, &vault_account_path(net))?;
+
+    // A watch-only wallet just to learn the vault's deposit addresses.
+    let mut watch = build_watch_only(&vault)?;
+
+    // ---- Owner offline sweep (spendable immediately) ----
+    let deposit_addr = watch.reveal_next_address(KeychainKind::External).address;
+    let deposit = Amount::from_btc(0.5)?;
+    let fund_txid =
+        node_w.send_to_address(&deposit_addr, deposit, None, None, None, None, None, None)?;
+    let fund_height = mine_blocks(&node_w, 1)?;
+    // The kit's JS would fetch this from an explorer; the node wallet has it.
+    let funding_tx: bitcoin::Transaction =
+        node_w.get_transaction(&fund_txid, None)?.transaction()?;
+
+    let owner_dest: Address = node_w
+        .get_new_address(Some("owner-sweep"), Some(AddressType::Bech32))?
+        .require_network(net)
+        .map_err(|e| anyhow!("{e}"))?;
+    let swept = sign_owner_sweep(
+        &vault,
+        &owner_acct,
+        vec![ConfirmedTx {
+            tx: funding_tx,
+            confirmation_height: fund_height,
+        }],
+        fund_height, // chain tip
+        &owner_dest,
+        None, // drain all
+        fee_rate(),
+    )?;
+    println!(
+        "owner offline sweep txid = {} (fee {})",
+        swept.txid, swept.fee_sat
+    );
+    broadcast_tx(&bare, &swept.tx)?;
+    mine_blocks(&node_w, 1)?;
+    let recv = received_by_address(&node_w, &owner_dest)?;
+    assert!(
+        recv > Amount::from_btc(0.499)?,
+        "owner offline sweep should deliver ~0.5 BTC minus fee, got {recv}"
+    );
+
+    // ---- Heir offline sweep (only valid after the timelock) ----
+    let heir_vault_addr = watch.reveal_next_address(KeychainKind::External).address;
+    let deposit2 = Amount::from_btc(0.3)?;
+    let fund2_txid = node_w.send_to_address(
+        &heir_vault_addr,
+        deposit2,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )?;
+    let fund2_height = mine_blocks(&node_w, 1)?;
+    let funding_tx2: bitcoin::Transaction =
+        node_w.get_transaction(&fund2_txid, None)?.transaction()?;
+    let funding2 = ConfirmedTx {
+        tx: funding_tx2,
+        confirmation_height: fund2_height,
+    };
+
+    let heir_dest: Address = node_w
+        .get_new_address(Some("heir-sweep"), Some(AddressType::Bech32))?
+        .require_network(net)
+        .map_err(|e| anyhow!("{e}"))?;
+
+    // Before maturity (tip == funding height, age 0): the signer may either
+    // refuse to satisfy the timelock locally, or build a tx the network
+    // rejects as non-BIP68-final. Both outcomes prove it can't be claimed
+    // early.
+    match sign_heir_sweep(
+        &vault,
+        &heir_acct,
+        vec![funding2.clone()],
+        fund2_height,
+        &heir_dest,
+        fee_rate(),
+    ) {
+        Ok(early) => {
+            let early_res = broadcast_tx(&bare, &early.tx);
+            assert!(
+                early_res.is_err(),
+                "pre-timelock heir sweep must be rejected, node accepted {}",
+                early.txid
+            );
+            println!(
+                "early heir offline sweep rejected by node as expected: {}",
+                early_res.unwrap_err()
+            );
+        }
+        Err(e) => println!("early heir offline sweep refused locally (also acceptable): {e}"),
+    }
+
+    // Age the UTXO past the timelock; now it must confirm.
+    let tip = mine_blocks(&node_w, TIMELOCK_BLOCKS.into())?;
+    let claim = sign_heir_sweep(
+        &vault,
+        &heir_acct,
+        vec![funding2],
+        tip,
+        &heir_dest,
+        fee_rate(),
+    )?;
+    println!(
+        "heir offline sweep txid = {} (fee {})",
+        claim.txid, claim.fee_sat
+    );
+    broadcast_tx(&bare, &claim.tx)?;
+    mine_blocks(&node_w, 1)?;
+    let recv2 = received_by_address(&node_w, &heir_dest)?;
+    assert!(
+        recv2 > Amount::from_btc(0.299)?,
+        "heir offline sweep should deliver ~0.3 BTC minus fee, got {recv2}"
+    );
+
+    Ok(())
+}
+
+/// Emit a deterministic owner-sweep fixture for the wasm runtime test
+/// (`ghostkey-wasm`). Run with `--ignored --nocapture` and capture the
+/// JSON between the BEGIN/END markers. No node required: the funding tx is
+/// fabricated (its inputs are irrelevant — the signer only references its
+/// output by txid:vout, and signs against the real vault scriptPubKey).
+#[test]
+#[ignore]
+fn emit_wasm_owner_fixture() -> Result<()> {
+    use bitcoin::consensus::encode::serialize_hex;
+    use bitcoin::hashes::Hash;
+    use bitcoin::{
+        transaction, Amount, OutPoint, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+    };
+
+    let net = Network::Regtest;
+    let (vault, owner_m, _heir_m) = build_vault_and_keys()?;
+    let secp = Secp256k1::new();
+    let owner_acct = owner_m.derive_priv(&secp, &vault_account_path(net))?;
+
+    let mut watch = build_watch_only(&vault)?;
+    let deposit = watch.reveal_next_address(KeychainKind::External).address;
+    let recipient = watch.reveal_next_address(KeychainKind::External).address;
+
+    // Fabricate a funding tx paying the deposit address 100_000 sats.
+    let funding = Transaction {
+        version: transaction::Version::TWO,
+        lock_time: bitcoin::absolute::LockTime::ZERO,
+        // A non-null prevout so this isn't mistaken for a coinbase (whose
+        // outputs carry a 100-block maturity and would read as unspendable).
+        input: vec![TxIn {
+            previous_output: OutPoint::new(Txid::from_byte_array([0x11; 32]), 0),
+            script_sig: Default::default(),
+            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+            witness: Witness::new(),
+        }],
+        output: vec![TxOut {
+            value: Amount::from_sat(100_000),
+            script_pubkey: deposit.script_pubkey(),
+        }],
+    };
+    let funding_hex = serialize_hex(&funding);
+
+    let req = serde_json::json!({
+        "role": "owner",
+        "descriptor_external": vault.descriptor_for(Chain::External),
+        "descriptor_internal": vault.descriptor_for(Chain::Internal),
+        "timelock_blocks": vault.timelock_blocks(),
+        "network": "regtest",
+        "account_xprv": owner_acct.to_string(),
+        "funding": [ { "tx_hex": funding_hex, "confirmation_height": 100u32 } ],
+        "chain_tip_height": 105u32,
+        "recipient": recipient.to_string(),
+        "amount_sat": serde_json::Value::Null,
+        "fee_rate_sat_vb": 2u64,
+    });
+    println!("WASM_FIXTURE_BEGIN");
+    println!("{}", serde_json::to_string(&req)?);
+    println!("WASM_FIXTURE_END");
     Ok(())
 }
 

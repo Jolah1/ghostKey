@@ -4,6 +4,7 @@ members = [
     "crates/ghostkey-core",
     "crates/ghostkey-cli",
     "crates/ghostkey-server",
+    "crates/ghostkey-wasm",
 ]
 # Both sidecars are deliberately excluded from the workspace.
 #

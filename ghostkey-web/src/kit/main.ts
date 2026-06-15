@@ -32,6 +32,8 @@ import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { HDKey } from "@scure/bip32";
 import { deriveOwnerKek, b64decode } from "../crypto/sealing";
 import { bip32Versions, type Network } from "../crypto/keygen";
+import { el, esc, copyBlock } from "./dom";
+import { buildSpendSection } from "./spend";
 
 /** Shape of the JSON the dashboard splices into the placeholder.
  *  Mirrors buildKitData() in src/independenceProof.ts — keep in sync. */
@@ -82,35 +84,6 @@ const css = `
   progress { width: 100%; height: 8px; }
   a { color: #e0b664; }
 `;
-
-function el(html: string): HTMLElement {
-  const t = document.createElement("template");
-  t.innerHTML = html.trim();
-  return t.content.firstElementChild as HTMLElement;
-}
-
-function esc(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-/** A labelled monospace block with a copy button. */
-function copyBlock(label: string, value: string): HTMLElement {
-  const node = el(`
-    <div class="box">
-      <p class="muted" style="margin-top:0">${esc(label)}</p>
-      <p class="mono">${esc(value)}</p>
-      <button class="copy" type="button">Copy</button>
-    </div>
-  `);
-  const btn = node.querySelector("button")!;
-  btn.addEventListener("click", () => {
-    void navigator.clipboard.writeText(value).then(() => {
-      btn.textContent = "Copied ✓";
-      window.setTimeout(() => (btn.textContent = "Copy"), 1500);
-    });
-  });
-  return node;
-}
 
 function readKitData(): KitData | null {
   const raw = document.getElementById("ghostkey-kit-data")?.textContent ?? "";
@@ -306,6 +279,19 @@ function render() {
       } Derivation path: m/86'/${data!.network === "bitcoin" ? 0 : 1}'/0'.</p>`),
     );
     result.appendChild(copyBlock("Account secret key (xprv)", xprv));
+
+    // Local-signing spend panel: move funds straight from here, no
+    // Bitcoin Core, no GhostKey. Signing is offline (in wasm); only the
+    // explicit "find coins" / "broadcast" steps touch the network.
+    result.appendChild(
+      buildSpendSection({
+        network: data!.network,
+        descriptorExternal: data!.descriptor_external,
+        descriptorInternal: data!.descriptor_internal,
+        timelockBlocks: data!.timelock_blocks,
+        accountXprv: xprv,
+      }),
+    );
   }
 
   /* ---- watch-only + help sections ---- */
