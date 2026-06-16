@@ -359,6 +359,24 @@ pub async fn enqueue(
     subject: &str,
     body: &str,
 ) -> Result<i64, EnqueueError> {
+    // A local demo run usually has no delivery backend at all (no
+    // SMTP, no Twilio), so this message would be sealed into the
+    // notifications table and never seen — the operator concludes
+    // "nothing arrived". Print it so a local demo is self-serve: every
+    // contact-verification link and reminder shows up in the server
+    // log. The claim link is already logged at issue time in the
+    // scheduler (and the docs point at that line), so skip it here to
+    // avoid a duplicate. Gated on demo mode, which is forbidden on
+    // mainnet — a production server never logs a recipient or link.
+    if crate::demo::demo_mode() && !matches!(kind, NotificationKind::ClaimLink) {
+        tracing::warn!(
+            vault_id = %vault_id,
+            kind = %kind.as_str(),
+            channel = %channel.as_str(),
+            "DEMO MODE notification (no real delivery): to={recipient} | {subject} | {body}"
+        );
+    }
+
     let recipient_sealed = seal_for_vault(vault_id, recipient.as_bytes())?;
     let subject_sealed = seal_for_vault(vault_id, subject.as_bytes())?;
     let body_sealed = seal_for_vault(vault_id, body.as_bytes())?;

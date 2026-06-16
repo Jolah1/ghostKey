@@ -243,6 +243,9 @@ stays the default and GhostKey is live for real deposits.
   claim flow) verified via demo mode locally, 2026-06-12.
 - Claim with real on-chain funds + BIP68 timelock verified on signet
   (`SIGNET_E2E_RUNBOOK.md`).
+- Full e2e heir claim (fund -> alarm -> claim link -> unwrap heir key
+  -> build/sign/broadcast, real coins moving, BIP68 timelock matured)
+  verified on Mutinynet via the local demo, 2026-06-16.
 - Email (Resend), web push, Lightning check-ins, Litestream backups
   all verified working in production.
 - Web claim-probe bug (#77) fixed and deployed — heirs of password

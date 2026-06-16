@@ -21,11 +21,17 @@ which is waiting for signet blocks to confirm.
 
 ### Prerequisites
 
-- **A signet-capable wallet** for both the owner side and the heir
-  side. Sparrow is the easiest path — it lets you create a "Signet"
-  wallet from File → New Wallet → Network: Signet. Use TWO separate
-  wallets so the owner xpub and heir xpub are genuinely different
-  keys (the server refuses to create a vault where they match).
+- **The recommended (password-vault) flow needs no wallet at all.**
+  GhostKey generates and seals both the owner and heir keys in the
+  browser, so neither side installs anything. For that flow, skip the
+  xpub steps and use the web `/setup` page (see the note in Phase 1).
+- **The legacy xpub script flow below needs two signet xpubs** — one
+  for the owner, one for the heir (the server refuses a vault where
+  they match). Any BIP86 wallet can export one; Sparrow's File → New
+  Wallet → Network: Signet is one easy way. This only *exports* an
+  xpub: no consumer wallet — Sparrow or Liana included — can open the
+  finished vault, whose Taproot timelock miniscript loads only in
+  Bitcoin Core (see the "Heir claim" step and MAINNET_DRY_RUN.md).
 - **Two email addresses** — one for the owner (reminders + alarm
   notice), one for the heir (claim link).
 - **`curl` and `python3`** on your laptop. Optional: `jq` for
@@ -118,7 +124,9 @@ through the wizard manually, the same flow works in the browser.
 
 ### Get your xpubs
 
-In Sparrow, open both signet wallets. For each:
+Only needed for the script flow below — the password-vault flow needs
+no xpubs. In your signet wallet (Sparrow shown here), open both
+wallets. For each:
 
 - Settings → Keystores → expand → "xpub". Copy the `tpub...` string
   AND the master fingerprint (eight hex characters near the top).
