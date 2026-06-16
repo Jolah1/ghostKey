@@ -131,6 +131,11 @@ export interface CreateVaultFromXpubRequest {
    *  a panic-stop. Optional. */
   trusted_contact?: string | null;
   trusted_contact_channel?: "sms" | "email" | "whatsapp" | null;
+  /** #98 Part 2 (item 3): named, personal first contact. The owner's
+   *  display name and a short note, shown to the heir in the claim
+   *  message. Both optional, sealed at rest server-side. */
+  from_name?: string | null;
+  heir_note?: string | null;
 }
 
 /** Snake-cased to match the Rust struct exactly; the server is the

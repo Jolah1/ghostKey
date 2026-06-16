@@ -676,6 +676,13 @@ pub struct CreateVaultFromXpubRequest {
     pub trusted_contact: Option<String>,
     /// Channel for `trusted_contact`. Same vocabulary as `heir_contact_channel`.
     pub trusted_contact_channel: Option<String>,
+
+    /// #98 Part 2 (item 3): a named, personal first contact. The owner's
+    /// display name (renders as "Jane set this up for you") and a short
+    /// note, both shown to the heir in the claim message. Sealed at rest
+    /// as a JSON blob in `heir_intro_*`. Both optional.
+    pub from_name: Option<String>,
+    pub heir_note: Option<String>,
 }
 
 /// Opt-in heir-derivation parameters (F2).
@@ -928,6 +935,37 @@ async fn create_vault_from_xpub(
         .clone()
         .or_else(|| trusted_sealed.as_ref().map(|_| "email".to_string()));
 
+    // #98 Part 2 (item 3): seal the optional named/personal first
+    // contact. Creation is unauthenticated and these land in an outgoing
+    // email, so cap the lengths. We seal a JSON blob {from_name, note}
+    // at rest, matching the contact-sealing pattern above.
+    let intro_from_name = req
+        .from_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let intro_note = req
+        .heir_note
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if intro_from_name.is_some_and(|s| s.chars().count() > 80) {
+        return Err(ApiError::Validation("from_name too long (max 80)".into()));
+    }
+    if intro_note.is_some_and(|s| s.chars().count() > 500) {
+        return Err(ApiError::Validation("heir_note too long (max 500)".into()));
+    }
+    let heir_intro_sealed: Option<SealedContact> =
+        if intro_from_name.is_some() || intro_note.is_some() {
+            let blob =
+                serde_json::json!({ "from_name": intro_from_name, "note": intro_note }).to_string();
+            Some(seal_for_vault(&id, blob.as_bytes())?)
+        } else {
+            None
+        };
+    let heir_intro_ct_b64 = heir_intro_sealed.as_ref().map(|s| s.ciphertext_b64.clone());
+    let heir_intro_nn_b64 = heir_intro_sealed.as_ref().map(|s| s.nonce_b64.clone());
+
     // Seal the owner contact the same way. New as of 20260527: this
     // unlocks the scheduler's "you missed your check-in" email path.
     // We don't populate the legacy plaintext `owner_contact` column
@@ -1046,7 +1084,8 @@ async fn create_vault_from_xpub(
             owner_email_hash,
             claim_token_at_rest_b64, claim_token_hash, claim_token_issued_at,
             heir_derived,
-            trusted_contact_ciphertext, trusted_contact_nonce, trusted_contact_channel
+            trusted_contact_ciphertext, trusted_contact_nonce, trusted_contact_channel,
+            heir_intro_ciphertext, heir_intro_nonce
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'ok',
                   ?, ?, ?, ?, ?,
                   ?, ?,
@@ -1060,7 +1099,8 @@ async fn create_vault_from_xpub(
                   ?,
                   ?, ?, ?,
                   ?,
-                  ?, ?, ?)"#,
+                  ?, ?, ?,
+                  ?, ?)"#,
     )
     .bind(&id)
     .bind(&req.label)
@@ -1105,6 +1145,8 @@ async fn create_vault_from_xpub(
     .bind(&trusted_ct_b64)
     .bind(&trusted_nn_b64)
     .bind(&trusted_channel)
+    .bind(&heir_intro_ct_b64)
+    .bind(&heir_intro_nn_b64)
     .execute(&state.db)
     .await?;
 
