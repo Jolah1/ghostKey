@@ -63,6 +63,21 @@ if [[ ! -d ghostkey-web/node_modules ]]; then
     (cd ghostkey-web && npm install)
 fi
 
+# Refuse to start if a previous demo is still holding either port.
+# Otherwise Vite silently jumps to :5174 while an orphaned old Vite
+# keeps answering :5173 with no server behind it — which looks exactly
+# like "the backend is down" (ECONNREFUSED on /api, /health). Fail
+# loudly with the fix instead.
+for port in 8787 5173; do
+    if (ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null) | grep -qE "[.:]$port "; then
+        echo "error: port $port is already in use — a previous demo is probably still running." >&2
+        echo "       Stop the strays, then re-run ./scripts/demo.sh :" >&2
+        echo "         pkill -f target/debug/ghostkey-server" >&2
+        echo "         pkill -f node_modules/.bin/vite" >&2
+        exit 1
+    fi
+done
+
 pids=()
 cleanup() {
     echo
@@ -75,9 +90,14 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "=== Starting server (demo mode, network=$NETWORK) on :8787 ..."
+# Point claim/check-in links at the LOCAL dashboard. Without this the
+# server falls back to the production URL (ghostkeyapp.vercel.app), so
+# the claim link printed below would open the live mainnet site — which
+# has never seen your local token and just says "link doesn't work".
 GHOSTKEY_DEMO_MODE=1 \
 GHOSTKEY_DEFAULT_NETWORK="$NETWORK" \
 GHOSTKEY_MASTER_KEY="$MASTER_KEY" \
+GHOSTKEY_PUBLIC_BASE_URL="http://127.0.0.1:5173" \
     cargo run -p ghostkey-server &
 pids+=($!)
 
@@ -113,4 +133,10 @@ Press Ctrl+C to stop both processes.
 
 EOF
 
-wait
+# Wait on the server specifically. If it dies (a panic, or a port it
+# couldn't bind), the EXIT trap tears Vite down too — so you never get
+# an orphaned dashboard answering with no backend behind it.
+server_pid="${pids[0]}"
+wait "$server_pid"
+echo
+echo "=== server process exited — stopping the demo." >&2
