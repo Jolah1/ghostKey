@@ -1102,6 +1102,35 @@ async fn enqueue_claim_link(
     // to hand without re-plumbing the function signature.
     let _ = label;
     let heir_name = contact.name.as_deref().unwrap_or("there");
+
+    // #98 Part 2 (item 3): a named, personal first contact. If the owner
+    // gave their name and/or a short note at setup, weave them in so the
+    // message reads as a real person reaching out, not a cold "someone".
+    // Absent for legacy vaults and owners who skipped it.
+    let intro = load_heir_intro(state, vault_id).await;
+    let from_name = intro
+        .as_ref()
+        .and_then(|i| i.from_name.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let note = intro
+        .as_ref()
+        .and_then(|i| i.note.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let email_opener = match from_name {
+        Some(n) => format!("{n} set up a Bitcoin inheritance with GhostKey"),
+        None => "Someone you knew set up a Bitcoin inheritance with GhostKey".to_string(),
+    };
+    let note_block = match note {
+        Some(n) => format!("They left you a note:\n\n  {n}\n\n"),
+        None => String::new(),
+    };
+    let sms_opener = match from_name {
+        Some(n) => format!("{n} left you a Bitcoin inheritance through GhostKey"),
+        None => "someone you knew left you a Bitcoin inheritance through GhostKey".to_string(),
+    };
+
     let subject = "A message for you about something someone left you".to_string();
     // Email carries the full explanation. SMS and WhatsApp get a short
     // message that fits a segment or two, with the same one-time link.
@@ -1110,9 +1139,9 @@ async fn enqueue_claim_link(
     let body = match channel {
         Channel::Email => format!(
             "Hello {heir_name},\n\n\
-             Someone you knew set up a Bitcoin inheritance with GhostKey, and \
-             asked us to reach out to you if they ever stopped checking in. \
-             That has happened.\n\n\
+             {email_opener}, and asked us to reach out to you if they ever \
+             stopped checking in. That has happened.\n\n\
+             {note_block}\
              Before you open anything: a message like this can look like a \
              scam, and you are right to be careful. Look up GhostKey on your \
              own and make sure it is genuine first. Don't take this message's \
@@ -1126,12 +1155,11 @@ async fn enqueue_claim_link(
              — GhostKey\n"
         ),
         _ => format!(
-            "Hello {heir_name}, someone you knew left you a Bitcoin \
-             inheritance through GhostKey and asked us to reach you if they \
-             ever stopped checking in. A message like this can look like a \
-             scam, so please check GhostKey is genuine before you open \
-             anything. When you're ready:\n\n{claim_url}\n\nThe link works \
-             once. You don't need an account."
+            "Hello {heir_name}, {sms_opener} and asked us to reach you if \
+             they ever stopped checking in. A message like this can look \
+             like a scam, so please check GhostKey is genuine before you \
+             open anything. When you're ready:\n\n{claim_url}\n\nThe link \
+             works once. You don't need an account."
         ),
     };
 
@@ -1147,6 +1175,38 @@ async fn enqueue_claim_link(
     .await?;
     tracing::info!(vault_id = %vault_id, "claim-link notification enqueued");
     Ok(())
+}
+
+/// #98 Part 2 (item 3): the owner's optional name + note for the heir,
+/// sealed per-vault as a JSON blob. `None` when absent or unreadable
+/// (legacy vaults, owner skipped it, or a key mismatch) — the caller
+/// falls back to the generic "someone you knew" wording.
+#[derive(serde::Deserialize, Default)]
+struct HeirIntro {
+    from_name: Option<String>,
+    note: Option<String>,
+}
+
+async fn load_heir_intro(state: &AppState, vault_id: &str) -> Option<HeirIntro> {
+    let row: Option<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT heir_intro_ciphertext, heir_intro_nonce FROM vaults WHERE id = ?")
+            .bind(vault_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
+    let (Some(ct), Some(nn)) = row? else {
+        return None;
+    };
+    let bytes = crate::crypto::open_for_vault(
+        vault_id,
+        &crate::crypto::SealedContact {
+            ciphertext_b64: ct,
+            nonce_b64: nn,
+        },
+    )
+    .ok()?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 /// The public base URL the heir's claim link should point at. We
@@ -1632,6 +1692,76 @@ mod tests {
         assert_eq!(kind, "claim_link");
         assert_eq!(channel, "whatsapp");
         assert_eq!(status_n, "pending");
+    }
+
+    /// #98 Part 2 (item 3): when the owner left a name + note, the claim
+    /// email opens with their name and includes the note, instead of the
+    /// generic "someone you knew" wording.
+    #[tokio::test]
+    async fn claim_link_includes_owner_name_and_note() {
+        ensure_test_master_key();
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        insert_vault_with_sealed_heir(
+            &pool,
+            "vault-intro",
+            "2026-04-01T00:00:00Z",
+            "2026-04-08T00:00:00Z",
+            "email",
+            "heir@example.com",
+        )
+        .await;
+
+        // Attach a sealed heir_intro blob, as create_vault_from_xpub does.
+        let blob = r#"{"from_name":"Jane Adeyemi","note":"For your school fees. Love, Mum."}"#;
+        let sealed =
+            crate::crypto::seal_for_vault("vault-intro", blob.as_bytes()).expect("seal intro");
+        sqlx::query(
+            "UPDATE vaults SET heir_intro_ciphertext = ?, heir_intro_nonce = ? WHERE id = ?",
+        )
+        .bind(&sealed.ciphertext_b64)
+        .bind(&sealed.nonce_b64)
+        .bind("vault-intro")
+        .execute(&pool)
+        .await
+        .expect("attach heir_intro");
+
+        tick_once(&state).await.expect("tick");
+
+        let (body_ct, body_nn): (String, String) = sqlx::query_as(
+            "SELECT body_ciphertext, body_nonce FROM notifications \
+             WHERE vault_id = 'vault-intro' AND kind = 'claim_link'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("claim_link notification row");
+        let body = String::from_utf8(
+            crate::crypto::open_for_vault(
+                "vault-intro",
+                &crate::crypto::SealedContact {
+                    ciphertext_b64: body_ct,
+                    nonce_b64: body_nn,
+                },
+            )
+            .expect("decrypt body"),
+        )
+        .expect("utf8 body");
+
+        assert!(
+            body.contains("Jane Adeyemi set up a Bitcoin inheritance"),
+            "named opener missing from body: {body}"
+        );
+        assert!(
+            body.contains("For your school fees. Love, Mum."),
+            "personal note missing from body: {body}"
+        );
+        assert!(
+            !body.contains("Someone you knew set up"),
+            "generic opener should be replaced when a name is present: {body}"
+        );
     }
 
     /// Legacy / no-owner-contact vault: alarm still transitions, but

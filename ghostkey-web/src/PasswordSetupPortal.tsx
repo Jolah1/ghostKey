@@ -140,6 +140,9 @@ interface HeirDraft {
    *  master key, and the heir's browser re-derives the matching
    *  xprv at claim time. */
   noWallet?: boolean;
+  /** #98 Part 2 (item 3): optional short note from the owner, shown to
+   *  this heir in the claim message ("They left you a note: ..."). */
+  note?: string;
 }
 
 /** Largest number of heirs the wizard allows. Arbitrary cap. */
@@ -165,6 +168,9 @@ interface Draft {
 
   // Step 2 — owner identity + password
   ownerEmail: string;
+  /** #98 Part 2 (item 3): owner's display name, shown to the heir as
+   *  "<name> set this up for you" in the claim message. Optional. */
+  ownerName: string;
   password: string;
   passwordConfirm: string;
   /** The user has confirmed they saved the password somewhere they
@@ -193,6 +199,7 @@ const EMPTY: Draft = {
   graceId: DEFAULT_GRACE_ID,
   demoWaitingId: DEFAULT_DEMO_WAITING_ID,
   ownerEmail: "",
+  ownerName: "",
   password: "",
   passwordConfirm: "",
   savedPassword: false,
@@ -600,6 +607,9 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           trusted_contact_channel: draft.trustedContact.trim()
             ? draft.trustedContactChannel
             : null,
+          // #98 Part 2 (item 3): named, personal first contact.
+          from_name: draft.ownerName.trim() || null,
+          heir_note: heir.note?.trim() || null,
         });
 
         // (g) Re-seal the REAL owner_token under the same password
@@ -1302,6 +1312,17 @@ function HeirCard({
         </label>
       ) : null}
 
+      <Field label="A short note for them (optional)">
+        <textarea
+          value={heir.note ?? ""}
+          onChange={(e) => onChange({ note: e.target.value })}
+          placeholder="A few words they'll see when they claim. No need to explain how it works."
+          rows={2}
+          maxLength={500}
+          className="input"
+        />
+      </Field>
+
       <p className="mt-2 text-xs text-muted">
         Tip: tell this person, with no details, that if they ever hear
         from GhostKey it is real and from you. A quiet heads-up now makes
@@ -1384,6 +1405,22 @@ function StepPassword({
             placeholder="you@example.com"
             autoComplete="email"
             inputMode="email"
+            className="input"
+            disabled={busy}
+          />
+        </Field>
+
+        <Field
+          label="Your name (optional)"
+          hint="Shown to your heir as 'this person set it up for you', so the message feels personal and not like a scam."
+        >
+          <input
+            type="text"
+            value={draft.ownerName}
+            onChange={(e) => patch({ ownerName: e.target.value })}
+            placeholder="Jane Adeyemi"
+            autoComplete="name"
+            maxLength={80}
             className="input"
             disabled={busy}
           />
