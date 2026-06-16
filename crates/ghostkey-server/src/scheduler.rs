@@ -1113,19 +1113,25 @@ async fn enqueue_claim_link(
              Someone you knew set up a Bitcoin inheritance with GhostKey, and \
              asked us to reach out to you if they ever stopped checking in. \
              That has happened.\n\n\
-             Open this link on any phone or computer to see what they left you \
-             and the next steps:\n\n\
+             Before you open anything: a message like this can look like a \
+             scam, and you are right to be careful. Look up GhostKey on your \
+             own and make sure it is genuine first. Don't take this message's \
+             word for it.\n\n\
+             When you are ready, open this link on any phone or computer to \
+             see what they left you and the next steps:\n\n\
              {claim_url}\n\n\
              The link works once. You don't need an account.\n\n\
-             If this message reached you by mistake, you can ignore it -- \
-             nothing happens until you open the link.\n\n\
+             If this message reached you by mistake, you can ignore it. \
+             Nothing happens until you open the link.\n\n\
              — GhostKey\n"
         ),
         _ => format!(
             "Hello {heir_name}, someone you knew left you a Bitcoin \
              inheritance through GhostKey and asked us to reach you if they \
-             ever stopped checking in. Open this link to see what they left \
-             you:\n\n{claim_url}\n\nThe link works once. You don't need an account."
+             ever stopped checking in. A message like this can look like a \
+             scam, so please check GhostKey is genuine before you open \
+             anything. When you're ready:\n\n{claim_url}\n\nThe link works \
+             once. You don't need an account."
         ),
     };
 
