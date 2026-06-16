@@ -1301,6 +1301,12 @@ function HeirCard({
           </span>
         </label>
       ) : null}
+
+      <p className="mt-2 text-xs text-muted">
+        Tip: tell this person, with no details, that if they ever hear
+        from GhostKey it is real and from you. A quiet heads-up now makes
+        the message easy to trust later.
+      </p>
     </div>
   );
 }
