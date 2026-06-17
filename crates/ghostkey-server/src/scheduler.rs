@@ -27,10 +27,31 @@ use crate::AppState;
 
 pub async fn run(state: Arc<AppState>, tick: Duration) {
     loop {
-        if let Err(e) = tick_once(&state).await {
-            tracing::error!(error = ?e, "scheduler tick failed");
+        match tick_once(&state).await {
+            // Record a heartbeat only on a clean tick, so /health can
+            // distinguish "scheduler is running" from "process is up but
+            // the loop is wedged / erroring every tick".
+            Ok(()) => record_heartbeat(&state.db).await,
+            Err(e) => tracing::error!(error = ?e, "scheduler tick failed"),
         }
         tokio::time::sleep(tick).await;
+    }
+}
+
+/// Upsert the single-row scheduler heartbeat. Best-effort: a write
+/// failure is logged, not fatal -- losing a heartbeat must never stop
+/// the scheduler from doing its real work on the next tick.
+async fn record_heartbeat(db: &sqlx::SqlitePool) {
+    let now = Utc::now().to_rfc3339();
+    if let Err(e) = sqlx::query(
+        "INSERT INTO scheduler_heartbeat (id, last_tick_at) VALUES (1, ?) \
+         ON CONFLICT(id) DO UPDATE SET last_tick_at = excluded.last_tick_at",
+    )
+    .bind(&now)
+    .execute(db)
+    .await
+    {
+        tracing::warn!(error = %e, "failed to record scheduler heartbeat");
     }
 }
 
@@ -1762,6 +1783,29 @@ mod tests {
             !body.contains("Someone you knew set up"),
             "generic opener should be replaced when a name is present: {body}"
         );
+    }
+
+    /// The scheduler heartbeat is a single upserted row: repeated ticks
+    /// overwrite it rather than accumulating, and it records a timestamp
+    /// that /health can age out.
+    #[tokio::test]
+    async fn heartbeat_upserts_single_row() {
+        let pool = fresh_db().await;
+        record_heartbeat(&pool).await;
+        record_heartbeat(&pool).await;
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM scheduler_heartbeat")
+            .fetch_one(&pool)
+            .await
+            .expect("count heartbeat rows");
+        assert_eq!(count, 1, "heartbeat must be a single upserted row");
+
+        let last: Option<String> =
+            sqlx::query_scalar("SELECT last_tick_at FROM scheduler_heartbeat WHERE id = 1")
+                .fetch_optional(&pool)
+                .await
+                .expect("read heartbeat");
+        assert!(last.is_some(), "heartbeat must record a timestamp");
     }
 
     /// Legacy / no-owner-contact vault: alarm still transitions, but
