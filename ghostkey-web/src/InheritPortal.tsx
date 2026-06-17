@@ -60,7 +60,7 @@ export function InheritPortal() {
             What the link looks like
           </p>
           <p className="mt-2 font-mono text-xs text-[var(--text)] break-all">
-            https://ghostkeyapp.vercel.app/#/claim/AbCdEf12_3456_etc…
+            https://www.ghostkeyapp.com/#/claim/AbCdEf12_3456_etc…
           </p>
           <p className="mt-3 text-sm text-muted">
             The bit after <span className="font-mono">/claim/</span> is your
@@ -79,7 +79,7 @@ export function InheritPortal() {
                 type="text"
                 value={claimUrl}
                 onChange={(e) => setClaimUrl(e.target.value)}
-                placeholder="https://ghostkeyapp.vercel.app/#/claim/…"
+                placeholder="https://www.ghostkeyapp.com/#/claim/…"
                 spellCheck={false}
                 autoComplete="off"
                 className="input font-mono text-[13px]"
