@@ -693,10 +693,8 @@ const FOOTER_COLS: FooterCol[] = [
     title: "Protocol",
     links: [
       { label: "Documentation",   href: "https://github.com/Jolah1/ghostKey#readme",                external: true },
-      { label: "On-chain scripts", href: "https://github.com/Jolah1/ghostKey/tree/main/crates/ghostkey-core", external: true },
       { label: "GitHub",          href: "https://github.com/Jolah1/ghostKey",                       external: true },
       { label: "System status",   href: "#/status" },
-      { label: "Audit report",    href: "https://github.com/Jolah1/ghostKey#audits",                external: true },
     ],
   },
   {
@@ -711,10 +709,7 @@ const FOOTER_COLS: FooterCol[] = [
   {
     title: "Community",
     links: [
-      { label: "Twitter / X",   href: "https://twitter.com",                  external: true },
-      { label: "Discord",       href: "https://discord.com",                  external: true },
-      { label: "Bitcoin forum", href: "https://bitcointalk.org",              external: true },
-      { label: "Blog",          href: "https://github.com/Jolah1/ghostKey#blog", external: true },
+      { label: "X", href: "https://x.com/ghostkeyappbtc", external: true },
     ],
   },
   {
