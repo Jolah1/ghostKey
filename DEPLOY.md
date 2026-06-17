@@ -738,6 +738,41 @@ fly deploy
 The image rebuilds, the volume reattaches with the existing SQLite
 file, no manual migration step.
 
+### Monitoring (mandatory)
+
+For an inheritance product the worst failure is silent: the process is
+up, but the scheduler loop has wedged, so alarms never fire and a claim
+is never triggered. A plain "is the port open" check will not catch
+this.
+
+`GET /health` exposes the scheduler's liveness alongside the usual
+config flags:
+
+```json
+{
+  "ok": true,
+  "scheduler_last_tick_at": "2026-06-17T00:22:22Z",
+  "scheduler_age_secs": 0,
+  "scheduler_healthy": true
+}
+```
+
+`scheduler_healthy` goes false when the scheduler has never ticked
+since boot, or its last tick is older than three ticks (floored at
+120s). The endpoint deliberately still returns HTTP 200 in that case —
+it reflects process liveness, and we don't want a Fly health check to
+restart-loop a machine on a transient stall.
+
+Wire an external uptime monitor (Better Stack, UptimeRobot, a cron, or
+Fly's own checks) to poll `/health` every minute and alert you when:
+
+- the endpoint is unreachable or non-200 (process down), **or**
+- `scheduler_healthy` is `false` (process up, scheduler stalled).
+
+Most monitors support a JSON/keyword assertion for the second case. Set
+the alert to reach you on a channel you actually watch — a missed alarm
+is the one failure with no user-visible warning.
+
 ### Backups & disaster recovery (mandatory)
 
 The Fly volume is single-host. A corrupted block, an accidental

@@ -277,12 +277,50 @@ struct Health {
     /// `applicationServerKey` to `pushManager.subscribe()` and hides
     /// the reminder opt-in entirely when null.
     push_public_key: Option<String>,
+
+    /// Monitoring: RFC3339 time of the last successful scheduler tick,
+    /// null if it has never ticked since boot.
+    scheduler_last_tick_at: Option<String>,
+    /// Seconds since the last scheduler tick, null if never.
+    scheduler_age_secs: Option<i64>,
+    /// False if the scheduler has never ticked or is stale (older than
+    /// 3 ticks, floored at 120s). An external uptime check should alert
+    /// on this: a process that is up but whose scheduler has stalled
+    /// will never fire an alarm, so the inheritance trigger silently
+    /// stops working. This is the failure we most need to surface.
+    scheduler_healthy: bool,
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
     let assist_enabled = std::env::var("ANTHROPIC_API_KEY")
         .map(|v| !v.trim().is_empty())
         .unwrap_or(false);
+
+    // Effective scheduler tick, matching main.rs: demo mode forces it to
+    // 1s, otherwise GHOSTKEY_TICK_SECS (default 30). We treat the
+    // scheduler as stale once it's missed ~3 ticks, floored at 120s so a
+    // production 30s tick doesn't flap on a brief GC/IO pause.
+    let tick_secs: i64 = if crate::demo::demo_mode() {
+        crate::demo::DEMO_SCHEDULER_TICK_SECS as i64
+    } else {
+        std::env::var("GHOSTKEY_TICK_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30)
+    };
+    let stale_after = (tick_secs * 3).max(120);
+
+    let scheduler_last_tick_at: Option<String> =
+        sqlx::query_scalar("SELECT last_tick_at FROM scheduler_heartbeat WHERE id = 1")
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
+    let scheduler_age_secs = scheduler_last_tick_at
+        .as_deref()
+        .map(|s| (Utc::now() - crate::config::parse_rfc(s)).num_seconds());
+    let scheduler_healthy = scheduler_age_secs.is_some_and(|a| a >= 0 && a <= stale_after);
+
     Json(Health {
         ok: true,
         version: env!("CARGO_PKG_VERSION"),
@@ -291,6 +329,9 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         default_network: crate::config::default_network(),
         assist_enabled,
         push_public_key: crate::push::VapidConfig::public_key_from_env(),
+        scheduler_last_tick_at,
+        scheduler_age_secs,
+        scheduler_healthy,
     })
 }
 
