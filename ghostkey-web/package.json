@@ -11,6 +11,7 @@
     "wasm:bundle": "node scripts/bundle-kit-wasm.mjs",
     "wasm:verify": "node scripts/verify-kit-signer.mjs",
     "e2e": "npm run build:kit && playwright test",
+    "test": "vitest run",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
@@ -46,6 +47,7 @@
     "typescript-eslint": "^8.61.0",
     "vite": "^5.4.11",
     "vite-plugin-pwa": "^1.3.0",
-    "vite-plugin-singlefile": "^2.3.3"
+    "vite-plugin-singlefile": "^2.3.3",
+    "vitest": "^4.1.9"
   }
 }
