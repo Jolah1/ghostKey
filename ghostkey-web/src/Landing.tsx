@@ -566,27 +566,27 @@ const FAQS = [
   },
   {
     q: "Can I change my heir after creating a vault?",
-    a: "Yes, while you're still checking in. From the dashboard you can rotate the heir, the waiting period, or the cadence. The change takes effect at the next on-chain spend.",
+    a: "Yes, while you're still checking in. From the dashboard you can change the heir, the waiting period, or how often you check in. The change takes effect the next time you update the vault.",
   },
   {
     q: "What does a check-in cost?",
     a: "Nothing. The monthly tap is a web action that resets a timer on our reminder service. No transaction is broadcast and no Bitcoin moves.",
   },
   {
-    q: "Are there protocol fees?",
-    a: "GhostKey takes no protocol fee. You pay only the standard Bitcoin network fee when you fund the vault and again when your heir eventually claims.",
+    q: "Are there fees?",
+    a: "GhostKey takes no cut. You only pay the normal Bitcoin network fee when you fund the vault, and again when your heir claims.",
   },
   {
     q: "Can my heir claim early?",
-    a: "No. The waiting period is enforced by Bitcoin itself using OP_CSV. Until the timer fully runs out on-chain, no one can move the funds. Not them, not us.",
+    a: "No. The waiting period is locked into Bitcoin itself. Until it fully runs out, nobody can move the funds. Not your heir, not us.",
   },
   {
     q: "What kinds of Bitcoin can I deposit?",
-    a: "Any spendable Bitcoin in a Taproot-capable wallet. You don't move it to us. You keep it in your wallet, and the inheritance rules live as a script alongside it.",
+    a: "Any Bitcoin you already hold. You don't send it to us. It stays in your wallet, with the inheritance rules attached to it.",
   },
   {
     q: "Is this a legal will?",
-    a: "No. GhostKey is programmable self-custody continuity. Most people use it alongside a traditional will, which still handles other assets and legal formalities.",
+    a: "No. GhostKey is a way to pass on Bitcoin you hold yourself. Most people use it alongside a normal will, which still covers their other things and the legal paperwork.",
   },
   {
     q: "Can I reclaim my Bitcoin after creating a vault?",
@@ -594,7 +594,7 @@ const FAQS = [
   },
   {
     q: "What if GhostKey shuts down?",
-    a: "Your heir can still claim. The conditions live in Bitcoin itself, not in our database. Recovering without us needs a wallet that understands the vault's timelock script, which today means Bitcoin Core. The recovery kit you download holds everything needed, so your heir, or any Bitcoin-savvy person helping them, can spend the funds even if GhostKey disappears.",
+    a: "Your heir can still claim. When you set up, you download a recovery kit: one file with everything needed to claim the Bitcoin straight from the Bitcoin network. If GhostKey ever disappears, your heir, or anyone helping them, uses that file to unlock the funds without us. Keep it with your important papers.",
   },
 ];
 
