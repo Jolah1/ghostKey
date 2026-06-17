@@ -1143,7 +1143,7 @@ function StepHeir({
               role="note"
               className="mb-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200"
             >
-              Demo server: cadences are in seconds. Not for real funds.
+              Demo server: check-in timers run in seconds. Not for real funds.
             </div>
           )}
           {demoMode ? (
@@ -1163,7 +1163,7 @@ function StepHeir({
               className="input"
               value={draft.cadenceId}
               onChange={(e) => patch({ cadenceId: e.target.value })}
-              aria-label="Check-in reminder cadence"
+              aria-label="How often to remind me to check in"
             >
               {cadenceList.map((c) => (
                 <option key={c.id} value={c.id}>
