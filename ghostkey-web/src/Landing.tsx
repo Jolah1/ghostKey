@@ -377,17 +377,19 @@ function WhyBitcoin() {
 
 interface CompRow {
   name: string;
-  selfCustody: "yes" | "partial" | "no";
-  trustless:   "yes" | "partial" | "no";
-  onChain:     "yes" | "partial" | "no";
-  highlight?:  boolean;
+  heirNoSetup:    "yes" | "partial" | "no";
+  nonTechHeir:    "yes" | "partial" | "no";
+  noCosigner:     "yes" | "partial" | "no";
+  onChainLock:    "yes" | "partial" | "no";
+  highlight?:     boolean;
 }
 
 const COMP: CompRow[] = [
-  { name: "Seed phrase in a safe",   selfCustody: "yes",     trustless: "no",      onChain: "no" },
-  { name: "Casa inheritance",        selfCustody: "partial", trustless: "no",      onChain: "no" },
-  { name: "Safe Haven",              selfCustody: "partial", trustless: "partial", onChain: "yes" },
-  { name: "GhostKey",                selfCustody: "yes",     trustless: "yes",     onChain: "yes", highlight: true },
+  { name: "Seed phrase in a safe",   heirNoSetup: "no",  nonTechHeir: "no",      noCosigner: "yes", onChainLock: "no"      },
+  { name: "Nunchuk inheritance",     heirNoSetup: "no",  nonTechHeir: "partial", noCosigner: "no",  onChainLock: "partial" },
+  { name: "AnchorWatch",             heirNoSetup: "no",  nonTechHeir: "no",      noCosigner: "no",  onChainLock: "yes"     },
+  { name: "Liana",                   heirNoSetup: "no",  nonTechHeir: "no",      noCosigner: "yes", onChainLock: "yes"     },
+  { name: "GhostKey",                heirNoSetup: "yes", nonTechHeir: "yes",     noCosigner: "yes", onChainLock: "yes", highlight: true },
 ];
 
 function Comparison() {
@@ -432,18 +434,22 @@ function Comparison() {
                   </span>
                 )}
               </div>
-              <dl className="mt-3 grid grid-cols-3 gap-2 text-xs">
+              <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
                 <div className="flex flex-col items-start gap-1">
-                  <dt className="text-dim">Self-custodial</dt>
-                  <dd><Mark v={row.selfCustody} /></dd>
+                  <dt className="text-dim">No heir setup</dt>
+                  <dd><Mark v={row.heirNoSetup} /></dd>
                 </div>
                 <div className="flex flex-col items-start gap-1">
-                  <dt className="text-dim">Trustless</dt>
-                  <dd><Mark v={row.trustless} /></dd>
+                  <dt className="text-dim">Non-technical heir</dt>
+                  <dd><Mark v={row.nonTechHeir} /></dd>
                 </div>
                 <div className="flex flex-col items-start gap-1">
-                  <dt className="text-dim">On-chain</dt>
-                  <dd><Mark v={row.onChain} /></dd>
+                  <dt className="text-dim">No third-party key</dt>
+                  <dd><Mark v={row.noCosigner} /></dd>
+                </div>
+                <div className="flex flex-col items-start gap-1">
+                  <dt className="text-dim">On-chain timelock</dt>
+                  <dd><Mark v={row.onChainLock} /></dd>
                 </div>
               </dl>
             </div>
@@ -455,9 +461,10 @@ function Comparison() {
             <thead>
               <tr className="text-left text-xs uppercase tracking-wider text-dim">
                 <th scope="col" className="py-3 pr-4 font-medium">Solution</th>
-                <th scope="col" className="py-3 px-4 font-medium">Self-custodial</th>
-                <th scope="col" className="py-3 px-4 font-medium">Trustless</th>
-                <th scope="col" className="py-3 px-4 font-medium">On-chain</th>
+                <th scope="col" className="py-3 px-4 font-medium">No heir setup</th>
+                <th scope="col" className="py-3 px-4 font-medium">Non-technical heir</th>
+                <th scope="col" className="py-3 px-4 font-medium">No third-party key</th>
+                <th scope="col" className="py-3 px-4 font-medium">On-chain timelock</th>
               </tr>
             </thead>
             <tbody>
@@ -499,13 +506,16 @@ function Comparison() {
                       </span>
                     </th>
                     <td className="border-t border-app py-4 px-4">
-                      <Mark v={row.selfCustody} />
+                      <Mark v={row.heirNoSetup} />
                     </td>
                     <td className="border-t border-app py-4 px-4">
-                      <Mark v={row.trustless} />
+                      <Mark v={row.nonTechHeir} />
+                    </td>
+                    <td className="border-t border-app py-4 px-4">
+                      <Mark v={row.noCosigner} />
                     </td>
                     <td className={`border-t border-app py-4 px-4 ${last && row.highlight ? "rounded-br-xl" : ""}`}>
-                      <Mark v={row.onChain} />
+                      <Mark v={row.onChainLock} />
                     </td>
                   </tr>
                 );
