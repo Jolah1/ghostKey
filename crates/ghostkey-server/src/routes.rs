@@ -753,8 +753,12 @@ pub struct SealedSetup {
     pub owner_token_ct_b64: String,
     pub owner_token_nonce_b64: String,
 
-    pub heir_xprv_ct_b64: String,
-    pub heir_xprv_nonce_b64: String,
+    /// The heir's sealed xprv. Absent for Door B vaults, where the heir
+    /// holds their own key and the server stores nothing that can spend.
+    /// When present, `claim_token_b64` must be present too (the xprv is
+    /// sealed under it); when absent, so is the claim token.
+    pub heir_xprv_ct_b64: Option<String>,
+    pub heir_xprv_nonce_b64: Option<String>,
 
     /// SHA-256 hex of the lower-cased, NFKC-normalised owner email.
     /// Used by `/vaults/find` for cross-device password recovery.
@@ -764,8 +768,10 @@ pub struct SealedSetup {
     /// key. The server stores this verbatim so that when the trigger
     /// fires it can construct the heir's URL fragment. SHA-256 hash is
     /// also computed and stored as `claim_token_hash` for the
-    /// `/claim/:token` resolver.
-    pub claim_token_b64: String,
+    /// `/claim/:token` resolver. Absent for Door B vaults — there the
+    /// scheduler mints a fresh claim token at trigger time, exactly like
+    /// a legacy vault, since no heir secret is bound to it.
+    pub claim_token_b64: Option<String>,
 }
 
 /// One *owner* per email — but an owner may have several heirs, each
@@ -1077,7 +1083,25 @@ async fn create_vault_from_xpub(
                 "owner_email_hash must be 64 hex characters".into(),
             ));
         }
-        let token_hash = crypto::hash_claim_token(&s.claim_token_b64);
+        // Heir sealed material and the claim token are coupled: the xprv
+        // is sealed under the token. They must be all-present (Door A) or
+        // all-absent (Door B). Reject a half-populated shape.
+        let heir_present = s.heir_xprv_ct_b64.is_some() && s.heir_xprv_nonce_b64.is_some();
+        if heir_present != s.claim_token_b64.is_some() {
+            return Err(ApiError::Validation(
+                "sealed heir xprv and claim token must be both present or both absent".into(),
+            ));
+        }
+        // Door B: no heir secret, no at-rest claim token. The scheduler
+        // mints a fresh token at trigger time (legacy path).
+        let (at_rest, token_hash, token_issued) = match s.claim_token_b64.as_ref() {
+            Some(tok) => (
+                Some(tok.clone()),
+                Some(crypto::hash_claim_token(tok)),
+                Some(now_s.clone()),
+            ),
+            None => (None, None, None),
+        };
         (
             Some(s.password_salt_b64.clone()),
             Some(s.password_kdf_mem_kib),
@@ -1086,12 +1110,12 @@ async fn create_vault_from_xpub(
             Some(s.owner_xprv_nonce_b64.clone()),
             Some(s.owner_token_ct_b64.clone()),
             Some(s.owner_token_nonce_b64.clone()),
-            Some(s.heir_xprv_ct_b64.clone()),
-            Some(s.heir_xprv_nonce_b64.clone()),
+            s.heir_xprv_ct_b64.clone(),
+            s.heir_xprv_nonce_b64.clone(),
             Some(s.owner_email_hash.clone()),
-            Some(s.claim_token_b64.clone()),
-            Some(token_hash),
-            Some(now_s.clone()),
+            at_rest,
+            token_hash,
+            token_issued,
         )
     } else {
         (

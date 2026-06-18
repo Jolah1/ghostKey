@@ -151,11 +151,16 @@ export interface SealedSetup {
   owner_token_ct_b64: string;
   owner_token_nonce_b64: string;
 
-  heir_xprv_ct_b64: string;
-  heir_xprv_nonce_b64: string;
+  /** Absent for Door B vaults (heir holds their own key; the server
+   *  stores nothing that can spend). Present with `claim_token_b64`, or
+   *  both absent, never one without the other. */
+  heir_xprv_ct_b64?: string;
+  heir_xprv_nonce_b64?: string;
 
   owner_email_hash: string;
-  claim_token_b64: string;
+  /** Absent for Door B — the scheduler mints a fresh claim token at
+   *  trigger time, since no heir secret is bound to it. */
+  claim_token_b64?: string;
 }
 
 /** One vault entry returned by `POST /vaults/find`. */
