@@ -117,9 +117,9 @@ function render() {
     main.appendChild(
       el(`
       <div>
-        <h1>Recovery file — template</h1>
+        <h1>Recovery file (template)</h1>
         <p>This is the unfilled template. Download your personal copy from
-        your GhostKey dashboard — it will contain your vault's details.</p>
+        your GhostKey dashboard. It will contain your vault's details.</p>
       </div>
     `),
     );
@@ -133,7 +133,7 @@ function render() {
       isHeir
         ? `
     <div>
-      <h1>Your Bitcoin — a file someone left for you</h1>
+      <h1>Your Bitcoin: a file someone left for you</h1>
       <p class="muted">${data.label ? `“${esc(data.label)}” · ` : ""}${esc(data.network)} · saved ${created.toLocaleDateString()}</p>
 
       <div class="box">
@@ -152,7 +152,7 @@ function render() {
   `
         : `
     <div>
-      <h1>Your Bitcoin — Emergency Recovery File</h1>
+      <h1>Your Bitcoin: Emergency Recovery File</h1>
       <p class="muted">Vault${data.label ? ` “${esc(data.label)}”` : ""} ·
         ${esc(data.network)} · saved ${created.toLocaleDateString()}</p>
 
@@ -160,12 +160,12 @@ function render() {
         <p style="margin-top:0"><strong>What this file is.</strong>
         The emergency spare key for your GhostKey vault. Everything
         needed to reach your money is locked inside it with the same
-        password you sign in with. Day to day you won't need it —
-        your GhostKey dashboard is the place to check in and manage
+        password you sign in with. Day to day you won't need it.
+        Your GhostKey dashboard is the place to check in and manage
         your vault. Use this file only in a true emergency, like
         losing access to your account.</p>
         <p style="margin-bottom:0"><strong>Where to keep it.</strong>
-        Anywhere you like — email it to yourself, put it on a USB
+        Anywhere you like. Email it to yourself, put it on a USB
         stick, keep copies in several places. Without your password
         it does not reveal your keys. It works without internet.</p>
       </div>
@@ -181,11 +181,11 @@ function render() {
       <p class="muted">${
         isHeir
           ? `Type the secret code that was kept with this file. Unlocking
-      happens entirely inside this page — nothing is sent anywhere. It
+      happens entirely inside this page. Nothing is sent anywhere. It
       takes a few seconds on purpose; that slowness is what keeps the
       code hard to crack.`
           : `Type the password you chose when you set up the
-      vault. Unlocking happens entirely inside this page — nothing is
+      vault. Unlocking happens entirely inside this page. Nothing is
       sent anywhere. It takes a few seconds on purpose; that slowness
       is what makes your password hard to crack.`
       }</p>
@@ -238,10 +238,10 @@ function render() {
       showUnlocked(xprv);
     } catch {
       errLine.textContent = isHeir
-        ? "That code didn't work. Check for typos and try again — it's the " +
+        ? "That code didn't work. Check for typos and try again. It's the " +
           "secret code that was kept together with this file."
-        : "That password didn't work. Check for typos and try again — " +
-          "it's the same password you use to sign in.";
+        : "That password didn't work. Check for typos and try again. " +
+          "It's the same password you use to sign in.";
       errLine.hidden = false;
     } finally {
       bar.hidden = true;
@@ -286,7 +286,7 @@ function render() {
           or newer): run <code>bitcoin-cli importdescriptors</code> with
           the line below and it can both watch and spend. Everyday
           wallets like Sparrow, Electrum, and phone wallets cannot open
-          this vault, and <strong>Liana cannot either</strong> — it only
+          this vault, and <strong>Liana cannot either</strong>. It only
           accepts its own descriptor shape. Bitcoin Core is the surest
           tool. If you are not comfortable with it, ask a Bitcoin-savvy
           person to help: this file is all they need.</p>`),
@@ -314,7 +314,7 @@ function render() {
       el(`<p class="muted">${
         spliced
           ? "Only needed if a wallet asks for the key separately."
-          : "Give this and the watch-only descriptors below to the wallet — together they restore spending."
+          : "Give this and the watch-only descriptors below to the wallet. Together they restore spending."
       } Derivation path: m/86'/${data!.network === "bitcoin" ? 0 : 1}'/0'.</p>`),
     );
     result.appendChild(copyBlock("Account secret key (xprv)", xprv));
@@ -364,7 +364,7 @@ function render() {
         pass without the money moving, your heir's key can also spend it.
         Moving the funds with your key restarts that clock.</li>
         <li>If you're stuck, any Bitcoin-savvy person can help using just
-        this file — show them this page. They do not need your password
+        this file. Show them this page. They do not need your password
         to verify the funds exist.</li>
       </ol>
       <p class="muted">Vault reference: <span class="mono">${esc(data.vault_id)}</span></p>

@@ -93,11 +93,14 @@ export function TermsPage() {
         <>
           <p>
             GhostKey schedules reminders and notifications around your
-            Bitcoin. We never hold your bitcoin, your keys, or your
-            password — so we can't move your money, and we can't recover
-            it for you either. You're responsible for your password and
-            your recovery file. The service is provided as-is, free of
-            charge, with no guarantees.
+            Bitcoin. We never store your keys or your password, so we
+            can't recover them for you, and we can't touch your funds
+            while you keep checking in. The one exception: on the easy
+            heir setup we can unlock your heir's wallet to deliver a claim
+            after the waiting period, and the advanced setup removes even
+            that. You're responsible for your password and your recovery
+            file. The service is provided as-is, free of charge, with no
+            guarantees.
           </p>
         </>
       }
@@ -120,7 +123,12 @@ export function TermsPage() {
           check-in schedule you set, reminds you before deadlines, and —
           if you stop responding — sends the person you chose a link to
           claim your bitcoin. The rules that actually control your funds
-          live on the Bitcoin network, not on our servers.
+          live on the Bitcoin network, not on our servers. One detail to
+          be honest about: if you let us make your heir a wallet from
+          their email, we can unlock that wallet to deliver a claim once
+          your waiting period has passed. If you'd rather we never be able
+          to, use the advanced setup and give us only your heir's public
+          key.
         </p>
         <p>
           We are <strong>not</strong> a bank, a custodian, an exchange, or

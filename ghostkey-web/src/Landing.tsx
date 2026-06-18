@@ -113,7 +113,7 @@ function Hero({ onNavigate }: Props) {
 function TrustRow() {
   const items = [
     { strong: "0",        sub: "Third parties" },
-    { strong: "100%",     sub: "Non-custodial" },
+    { strong: "Your key", sub: "Never stored" },
     { strong: "On-chain", sub: "Guaranteed" },
   ];
   return (
@@ -240,7 +240,7 @@ const STAGES: Stage[] = [
   {
     tag: "Claimable",
     title: "Heirs can claim",
-    body: "After the waiting period passes on-chain, the person you named can spend what's theirs.",
+    body: "Once the waiting time has fully passed, the person you named can spend what's theirs.",
   },
   {
     tag: "Closed",
@@ -337,7 +337,7 @@ const REASONS: Reason[] = [
   {
     tag: "Trustless",
     title: "Self-custodied keys",
-    body: "Your private key never sits on our servers. We can never spend your Bitcoin on our own.",
+    body: "Your own key never sits on our servers, so no one can move your Bitcoin while you keep checking in. For the strictest setup, give your heir their own key too, and GhostKey holds nothing that can spend it.",
   },
   {
     tag: "Durable",
@@ -400,8 +400,8 @@ function Comparison() {
         <div className="max-w-2xl">
           <Eyebrow dim>Comparison</Eyebrow>
           <h2 className="mt-4 font-display text-3xl font-bold leading-[1.05] tracking-tight md:text-6xl">
-            <span className="title-gradient">Nothing else </span>
-            <span className="text-accent">comes close</span>
+            <span className="title-gradient">How GhostKey </span>
+            <span className="text-accent">compares</span>
           </h2>
         </div>
 

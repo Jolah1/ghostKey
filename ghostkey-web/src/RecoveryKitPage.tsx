@@ -98,8 +98,9 @@ export function RecoveryKitPage({ onNavigate }: Props) {
             </Button>
             {state.kind === "done" ? (
               <p className="mt-3 text-xs text-dim">
-                Without your password the file gives nothing away. It does show
-                your balance though, so keep it private.
+                Saved. Keep it somewhere you'll still have access to in years to
+                come. Without your password the file gives nothing away, but it
+                does show your balance, so keep it private.
               </p>
             ) : null}
             {state.kind === "error" ? (
