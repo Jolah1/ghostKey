@@ -80,7 +80,6 @@ import {
 import { AssistChat } from "./AssistChat";
 import { VideoMessageRecorder, type RecordedClip } from "./VideoMessageRecorder";
 import { prepareVideo } from "./crypto/video";
-import { deriveHeirKey } from "./crypto/heirKey";
 import {
   MIN_LENGTH,
   checkPassword,
@@ -135,11 +134,6 @@ interface HeirDraft {
   name: string;
   contact: string;
   channel: ContactChannel;
-  /** F2: heir has no Bitcoin wallet yet. When true and `channel ===
-   *  "email"`, the server derives the heir's xpub from the email +
-   *  master key, and the heir's browser re-derives the matching
-   *  xprv at claim time. */
-  noWallet?: boolean;
   /** #98 Part 2 (item 3): optional short note from the owner, shown to
    *  this heir in the claim message ("They left you a note: ..."). */
   note?: string;
@@ -571,16 +565,11 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           channel: heir.channel,
         });
 
-        // F2: when the heir has no Bitcoin wallet (`noWallet` flag),
-        // tell the server to derive the heir's xpub itself. The
-        // `heir.xpub` we send in this branch is a throwaway — the
-        // server ignores it. We still seal a heir_xprv into
-        // `sealedBody.heir_xprv_ct_b64` because the password-vault
-        // path requires *some* sealed material; the heir's browser
-        // will use the F2-derivation xprv at claim time and ignore
-        // the sealed blob.
-        const useHeirDerivation =
-          Boolean(heir.noWallet) && heir.channel === "email";
+        // The heir key is always the browser-generated `heirParty`,
+        // sealed under this heir's claim token (above). We never ask
+        // the server to derive the heir key from its master key — that
+        // would make every such heir key recoverable from one secret.
+        // `heir_derivation` is therefore always null on new vaults.
         const resp = await api.createVaultFromXpub({
           label,
           network,
@@ -600,9 +589,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           heir_contact: heirContactPayload,
           heir_contact_channel: heir.channel,
           sealed: sealedBody,
-          heir_derivation: useHeirDerivation
-            ? { email: heir.contact.trim() }
-            : null,
+          heir_derivation: null,
           trusted_contact: draft.trustedContact.trim() || null,
           trusted_contact_channel: draft.trustedContact.trim()
             ? draft.trustedContactChannel
@@ -687,26 +674,13 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
         // one-off passphrase (returned to show the owner once) so it can
         // be handed down without sharing the sign-in password.
         //
-        // The right key differs by heir type: a bring-your-own heir uses
-        // the party we minted above; an F2 (server-derived) heir's key is
-        // derived from vault_secret + their email — the server returns
-        // vault_secret only for these vaults. Best-effort throughout: a
+        // The heir key is the `heirParty` we minted above (same key the
+        // server holds sealed under the claim token). Best-effort: a
         // failure here must never abort an otherwise-good vault.
         let envelope: HeirEnvelope | undefined;
         if (resp.descriptor_external && resp.descriptor_internal) {
           try {
-            let heirXprv: string | null = null;
-            if (useHeirDerivation) {
-              if (resp.vault_secret_hex) {
-                heirXprv = deriveHeirKey(
-                  resp.vault_secret_hex,
-                  heir.contact.trim(),
-                  network,
-                ).xprvBase58;
-              }
-            } else {
-              heirXprv = heirParty.xprv;
-            }
+            const heirXprv = heirParty.xprv;
             if (heirXprv) {
               setKdfProgress(0);
               envelope = await buildHeirEnvelope({
@@ -1295,22 +1269,6 @@ function HeirCard({
           className="input"
         />
       </Field>
-
-      {heir.channel === "email" ? (
-        <label className="mt-1 flex items-start gap-2 text-xs text-muted">
-          <input
-            type="checkbox"
-            checked={Boolean(heir.noWallet)}
-            onChange={(e) => onChange({ noWallet: e.target.checked })}
-            className="mt-0.5"
-          />
-          <span>
-            They don't have a Bitcoin wallet yet. We'll generate one for
-            them from their email when they open the claim link. No
-            setup ahead of time.
-          </span>
-        </label>
-      ) : null}
 
       <Field label="A short note for them (optional)">
         <textarea
