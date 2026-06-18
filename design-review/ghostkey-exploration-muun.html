@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GhostKey x Muun exploration</title>
+<style>
+  :root{
+    --bg:#f4f8f8; --screen:#ffffff; --card:#ffffff;
+    --ink:#0c2227; --ink2:#3f565a; --muted:#7f9396; --faint:#9fb0b2;
+    --teal:#0fae97; --teal-deep:#0a8c7c; --teal-soft:#e6f7f3; --teal-ink:#063b34;
+    --line:#eef3f3;
+    --blobA:#d7f3ec; --blobB:#eafbf6;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:#e7eeee;
+    font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--ink); padding:34px; -webkit-font-smoothing:antialiased;
+  }
+  .intro{max-width:1100px;margin:0 auto 26px;color:#4a5d60;font-size:13px;line-height:1.6}
+  .intro b{color:#0c2227}
+  .stage{display:flex;flex-wrap:wrap;gap:40px 34px;justify-content:center;align-items:flex-start;max-width:1340px;margin:0 auto}
+  .col{width:375px}
+  .label{
+    background:#1a1a1a;color:#fff;font-size:13px;line-height:1.4;border-radius:6px;
+    padding:7px 11px;margin-bottom:14px;min-height:46px;display:flex;align-items:center
+  }
+  .label b{color:#3fe0c4;font-weight:600}
+
+  .phone{
+    width:375px;height:812px;background:var(--screen);border:11px solid #e9eeee;
+    border-radius:46px;position:relative;overflow:hidden;
+    box-shadow:0 34px 80px rgba(13,60,52,.22);
+  }
+  .notch{position:absolute;top:0;left:50%;transform:translateX(-50%);width:150px;height:30px;
+    background:#e9eeee;border-bottom-left-radius:18px;border-bottom-right-radius:18px;z-index:5}
+  .statusbar{height:46px;display:flex;align-items:center;justify-content:space-between;
+    padding:0 28px;font-size:14px;font-weight:600;color:var(--ink)}
+  .statusbar .icons{font-size:12px;letter-spacing:1px}
+  .screen{height:766px;position:relative;display:flex;flex-direction:column}
+  .topbar{display:flex;align-items:center;justify-content:space-between;padding:4px 24px 0}
+  .back{width:34px;height:34px;border-radius:50%;background:var(--bg);display:flex;align-items:center;justify-content:center;color:var(--ink2);font-size:16px}
+  .dots{display:flex;gap:6px;align-items:center}
+  .dots i{width:7px;height:7px;border-radius:50%;background:#dbe6e6}
+  .dots i.on{background:var(--teal);width:20px;border-radius:4px}
+  .skip{color:var(--muted);font-size:13px;font-weight:600}
+
+  .body{flex:1;display:flex;flex-direction:column;padding:8px 28px 0;overflow:hidden}
+  .spacer{flex:1}
+
+  .hero{width:158px;height:158px;border-radius:50%;margin:18px auto 6px;position:relative;
+    background:radial-gradient(circle at 35% 30%,var(--blobB),var(--blobA));
+    display:flex;align-items:center;justify-content:center}
+  .hero .ic{font-size:62px}
+  .hero::after{content:"";position:absolute;inset:-14px;border-radius:50%;border:1px solid var(--teal-soft)}
+
+  h1{font-size:30px;font-weight:800;letter-spacing:-.03em;line-height:1.08;text-align:center;margin-top:14px}
+  h1 .a{color:var(--teal-deep)}
+  .lead{color:var(--ink2);font-size:15.5px;line-height:1.6;text-align:center;margin-top:14px;padding:0 4px}
+  .micro{color:var(--muted);font-size:12.5px;line-height:1.5;text-align:center}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:18px;
+    box-shadow:0 10px 30px rgba(13,60,52,.06)}
+
+  .quote{background:var(--teal-soft);border-radius:18px;padding:16px 18px;margin-top:20px}
+  .quote .from{font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:var(--teal-deep);font-weight:700}
+  .quote .txt{font-size:15px;color:var(--teal-ink);line-height:1.5;margin-top:6px;font-style:italic}
+
+  .field{width:100%;background:var(--bg);border:1.5px solid var(--line);border-radius:16px;
+    padding:16px;color:var(--ink);font-size:15px;text-align:center}
+  .field.ph{color:var(--faint)}
+
+  .opt{display:flex;align-items:center;gap:13px;background:var(--teal-soft);border:1.5px solid rgba(15,174,151,.35);
+    border-radius:18px;padding:15px 16px;margin-top:14px}
+  .opt .ck{width:26px;height:26px;border-radius:50%;background:var(--teal);color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;flex:none}
+  .opt .t{font-size:14.5px;font-weight:700;color:var(--teal-ink)}
+  .opt .d{font-size:12.5px;color:#3c7068;margin-top:2px}
+
+  .foot{padding:16px 28px 26px}
+  .btn{display:block;width:100%;text-align:center;border:none;border-radius:18px;padding:17px;
+    font-size:16px;font-weight:700;cursor:pointer}
+  .btn-primary{background:var(--teal);color:#fff;box-shadow:0 12px 26px rgba(15,174,151,.32)}
+  .btn-text{background:transparent;color:var(--teal-deep);font-weight:700;font-size:14.5px;margin-top:6px}
+  .reassure{display:flex;align-items:center;justify-content:center;gap:7px;color:var(--muted);font-size:12.5px;margin-top:14px}
+  .reassure .lk{font-size:13px}
+
+  .amount{text-align:center;margin-top:6px}
+  .amount .n{font-size:34px;font-weight:800;letter-spacing:-.02em}
+  .amount .c{color:var(--muted);font-size:13px;margin-top:2px}
+
+  .summary{max-width:1100px;margin:40px auto 0;background:#1a1a1a;border-radius:12px;overflow:hidden}
+  .summary h3{color:#fff;font-size:15px;padding:16px 18px 4px}
+  .summary p{color:#c9c9c9;font-size:13px;line-height:1.6;padding:6px 18px 18px}
+  .summary p b{color:#3fe0c4}
+</style>
+</head>
+<body>
+
+  <div class="intro">
+    <b>GhostKey, reimagined in Muun's design language.</b> A playground, not a final direction. Light and airy surfaces, one idea per screen, a soft hero graphic to carry a heavy moment, and Muun's explain-then-ask rhythm. I kept GhostKey's teal as the accent so this reads as a real fusion you could ship. The screen pushed furthest is the heir inherit entry, shown here as a short three-step flow.
+  </div>
+
+  <div class="stage">
+
+    <!-- SCREEN A: WELCOME -->
+    <div class="col">
+      <div class="label">Heir flow 1 of 3 &middot; Welcome — <b>&nbsp;a soft hero and a warm headline meet the heir before any task; one calm primary action.</b></div>
+      <div class="phone">
+        <div class="notch"></div>
+        <div class="screen">
+          <div class="statusbar"><span>9:41</span><span class="icons">&#9679;&#9679;&#9679; &#128246; &#128267;</span></div>
+          <div class="topbar"><div></div><div class="dots"><i class="on"></i><i></i><i></i></div><div></div></div>
+          <div class="body">
+            <div class="hero"><div class="ic">&#128150;</div></div>
+            <h1>Someone trusted<br>you with <span class="a">this</span></h1>
+            <p class="lead">Someone close to you made sure you could reach the Bitcoin they left for you. There is no account to sign in to, and nothing hard to do. We will go one gentle step at a time.</p>
+            <div class="spacer"></div>
+          </div>
+          <div class="foot">
+            <button class="btn btn-primary">I have a link</button>
+            <button class="btn btn-text">What is GhostKey?</button>
+            <div class="reassure"><span class="lk">&#128274;</span> Your link is private and only works once</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SCREEN B: WHAT YOU'VE BEEN LEFT -->
+    <div class="col">
+      <div class="label">Heir flow 2 of 3 &middot; What's been left — <b>&nbsp;explain-then-ask: the gift and a personal note land before any mechanics.</b></div>
+      <div class="phone">
+        <div class="notch"></div>
+        <div class="screen">
+          <div class="statusbar"><span>9:41</span><span class="icons">&#9679;&#9679;&#9679; &#128246; &#128267;</span></div>
+          <div class="topbar"><div class="back">&#8249;</div><div class="dots"><i></i><i class="on"></i><i></i></div><div></div></div>
+          <div class="body">
+            <div class="hero" style="width:120px;height:120px;margin-top:10px"><div class="ic" style="font-size:48px">&#127873;</div></div>
+            <h1 style="font-size:27px">Fola left you<br>some <span class="a">Bitcoin</span></h1>
+            <div class="amount">
+              <div class="n">6,660 sat</div>
+              <div class="c">We'll help you move it somewhere safe</div>
+            </div>
+            <div class="quote">
+              <div class="from">A note from Fola</div>
+              <div class="txt">"This is for you and the kids. Take your time, and ask Uncle Tunde if you get stuck. Love you."</div>
+            </div>
+            <div class="spacer"></div>
+            <p class="micro" style="margin-bottom:6px">Nothing has moved yet. You decide where it goes next.</p>
+          </div>
+          <div class="foot">
+            <button class="btn btn-primary">Continue</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SCREEN C: WHERE SHOULD IT GO -->
+    <div class="col">
+      <div class="label">Heir flow 3 of 3 &middot; Where it goes — <b>&nbsp;the no-wallet path is the default, framed as the easy, safe choice; one field, one button.</b></div>
+      <div class="phone">
+        <div class="notch"></div>
+        <div class="screen">
+          <div class="statusbar"><span>9:41</span><span class="icons">&#9679;&#9679;&#9679; &#128246; &#128267;</span></div>
+          <div class="topbar"><div class="back">&#8249;</div><div class="dots"><i></i><i></i><i class="on"></i></div><div></div></div>
+          <div class="body">
+            <div class="hero" style="width:110px;height:110px;margin-top:14px"><div class="ic" style="font-size:44px">&#128176;</div></div>
+            <h1 style="font-size:26px">Where should<br>it <span class="a">go?</span></h1>
+            <p class="lead" style="font-size:14.5px;margin-top:10px">If you're new to Bitcoin, the easiest choice is to let us make you a free wallet. You stay fully in control of it.</p>
+
+            <div class="opt">
+              <div class="ck">&#10003;</div>
+              <div>
+                <div class="t">Make me a free wallet</div>
+                <div class="d">Recommended. Ready in seconds, no app to install.</div>
+              </div>
+            </div>
+            <button class="btn-text" style="width:100%;text-align:center;margin-top:14px">I already have a Bitcoin wallet</button>
+            <div class="spacer"></div>
+          </div>
+          <div class="foot">
+            <button class="btn btn-primary">Claim my Bitcoin</button>
+            <div class="reassure"><span class="lk">&#128274;</span> This happens on your device. We never hold your keys</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="summary">
+    <h3>What to react to in this playground</h3>
+    <p>
+      Things that may feel right: <b>the light surface lifts the mood</b> at the hardest possible moment, the hero graphic carries the emotion so the copy doesn't have to overwork, and Muun's one-action-per-screen rhythm means a grieving person is never asked to decide more than one thing at a time.
+      Things that may feel wrong: <b>light mode breaks from your dark brand</b> everywhere else, the gift emoji may read as too cheerful for a death, and showing the amount this early is a product decision worth debating.
+      Things that may surprise you: <b>splitting one dense screen into three gentle ones</b> can feel faster, not slower, and a personal note from the person who passed may be the single most reassuring element in the whole product. Steal what works, leave the rest.
+    </p>
+  </div>
+
+</body>
+</html>

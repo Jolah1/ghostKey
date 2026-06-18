@@ -1,0 +1,191 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: transparent; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    width: 1080px;
+    padding: 24px;
+  }
+  .row { display: flex; align-items: flex-start; gap: 0; }
+  .col { width: 248px; padding: 0 12px; display: flex; flex-direction: column; align-items: center; }
+  .divider { width: 1px; align-self: stretch; background: #2a2a2a; margin-top: 28px; }
+  .screen-title { font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: #8a8a8a; margin-bottom: 10px; text-align: center; height: 28px; display: flex; align-items: center; }
+
+  .phone {
+    width: 200px;
+    height: 430px;
+    background: #111;
+    border: 6px solid #2a2a2a;
+    border-radius: 32px;
+    box-shadow: 0 18px 40px rgba(0,0,0,0.55);
+    position: relative;
+    padding: 18px 12px 12px;
+    overflow: hidden;
+  }
+  .notch { position: absolute; top: 7px; left: 50%; transform: translateX(-50%); width: 54px; height: 5px; border-radius: 4px; background: #2a2a2a; }
+
+  .wordmark { width: 64px; height: 16px; border-radius: 4px; background: #F5A300; margin-bottom: 12px; }
+
+  .bar { background: #1f1f1f; border-radius: 4px; height: 9px; margin: 6px 0; }
+  .bar.lg { height: 13px; }
+  .bar.w90 { width: 90%; } .bar.w80 { width: 80%; } .bar.w70 { width: 70%; }
+  .bar.w60 { width: 60%; } .bar.w50 { width: 50%; } .bar.w40 { width: 40%; }
+
+  .status { color: #cfcfcf; font-size: 10px; line-height: 1.35; margin: 5px 0; }
+  .status.strong { color: #fff; font-size: 12px; font-weight: 600; }
+
+  .btn-primary { background: #F5A300; color: #111; font-size: 11px; font-weight: 700; text-align: center; padding: 9px; border-radius: 18px; margin-top: 8px; }
+  .btn-secondary { background: transparent; border: 1px solid #2a2a2a; color: #bdbdbd; font-size: 11px; text-align: center; padding: 8px; border-radius: 18px; margin-top: 8px; }
+
+  .card { border: 1px solid #2a2a2a; border-radius: 10px; padding: 9px; margin: 8px 0; }
+  .banner { border: 1px solid #F5A300; border-radius: 8px; padding: 8px; margin: 8px 0; }
+  .heart { width: 40px; height: 40px; border-radius: 50%; border: 2px solid #2a2a2a; margin: 6px auto; }
+  .pill-state { display: inline-block; font-size: 9px; color: #cfcfcf; border: 1px solid #2a2a2a; border-radius: 10px; padding: 2px 7px; }
+  .field { border: 1px solid #2a2a2a; border-radius: 8px; height: 26px; margin: 6px 0; }
+  .opt-row { display: flex; gap: 5px; margin: 6px 0; }
+  .opt { flex: 1; border: 1px solid #2a2a2a; border-radius: 7px; padding: 6px 3px; font-size: 8px; color: #cfcfcf; text-align: center; }
+  .opt.sel { border-color: #F5A300; color: #fff; }
+  .row-flex { display: flex; align-items: center; gap: 6px; }
+  .avatar { width: 18px; height: 18px; border-radius: 50%; background: #1f1f1f; }
+  .codeblock { background: #181818; border: 1px solid #2a2a2a; border-radius: 6px; height: 34px; margin-top: 6px; }
+  .small { font-size: 9px; color: #7c7c7c; margin-top: 4px; }
+
+  .annos { margin-top: 14px; width: 224px; display: flex; flex-direction: column; gap: 6px; }
+  .anno {
+    background: #1a1a1a; color: #ffffff; font-size: 13px; line-height: 1.3;
+    border-radius: 6px; padding: 6px 8px; position: relative; padding-left: 20px;
+  }
+  .anno::before { content: ""; position: absolute; left: 8px; top: 10px; width: 6px; height: 6px; border-radius: 50%; background: #F5A300; }
+</style>
+</head>
+<body>
+  <div class="row">
+
+    <!-- PHONE 1: OWNER DASHBOARD -->
+    <div class="col">
+      <div class="screen-title">Owner dashboard</div>
+      <div class="phone">
+        <div class="notch"></div>
+        <div class="wordmark"></div>
+        <div class="banner">
+          <div class="status strong">Confirm your email</div>
+          <div class="status">We can't remind you to check in until you do.</div>
+        </div>
+        <div class="status strong">You're all set</div>
+        <div class="status">Next check-in opens in 4 days.</div>
+        <div class="heart"></div>
+        <div class="card">
+          <div class="row-flex">
+            <div class="avatar"></div>
+            <div class="bar w50" style="margin:0;"></div>
+            <span class="pill-state">Standing by</span>
+          </div>
+        </div>
+        <div class="bar lg w40"></div>
+        <div class="status">Balance 6,660 sat</div>
+        <div class="status" style="color:#7c7c7c;">You sent Bitcoin</div>
+        <div class="status" style="color:#7c7c7c;">Reminder check-in paid</div>
+        <div class="status" style="color:#7c7c7c;">Vault activated</div>
+      </div>
+      <div class="annos">
+        <div class="anno">Heir badge now says "Standing by", not "Ready to claim"</div>
+        <div class="anno">Email warning raised to a top banner, with the stakes named</div>
+        <div class="anno">Plain activity labels, no owner_send codes</div>
+        <div class="anno">Fixed the "in in" doubled words</div>
+        <div class="anno">Calm resting state instead of a dead locked button</div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- PHONE 2: HEIR INHERIT ENTRY -->
+    <div class="col">
+      <div class="screen-title">Heir inherit entry</div>
+      <div class="phone">
+        <div class="notch"></div>
+        <div class="wordmark"></div>
+        <div class="status strong">Someone trusted you with this</div>
+        <div class="status">We will walk you through it slowly. There is nothing hard to do.</div>
+        <div class="bar w90"></div>
+        <div class="bar w80"></div>
+        <div class="bar w70"></div>
+        <div class="status strong" style="margin-top:10px;">Have your link?</div>
+        <div class="field"></div>
+        <div class="btn-primary">Open my link</div>
+        <div class="card" style="margin-top:10px;">
+          <div class="status">No link yet? That's normal. There is nothing to do until then.</div>
+        </div>
+      </div>
+      <div class="annos">
+        <div class="anno">Warm human opening line before any mechanics</div>
+        <div class="anno">Dropped token vocabulary and the raw URL</div>
+        <div class="anno">Private and works once, said in plain words</div>
+        <div class="anno">Kept the honest "no link yet, that's normal" note</div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- PHONE 3: EMERGENCY RECOVERY FILE -->
+    <div class="col">
+      <div class="screen-title">Emergency recovery file</div>
+      <div class="phone">
+        <div class="notch"></div>
+        <div class="wordmark"></div>
+        <div class="status strong">Reach your Bitcoin</div>
+        <div class="status">Type the password you chose. That is all you need.</div>
+        <div class="field"></div>
+        <div class="btn-primary">Unlock</div>
+        <div class="bar w60" style="margin-top:12px;"></div>
+        <div class="card">
+          <div class="status strong">For a Bitcoin expert helping you</div>
+          <div class="small">Tap to open. Hidden by default.</div>
+          <div class="codeblock"></div>
+        </div>
+      </div>
+      <div class="annos">
+        <div class="anno">Calm heir layer on top: password and Unlock only</div>
+        <div class="anno">Expert section clearly separated and collapsed</div>
+        <div class="anno">Descriptors hidden until opened, not shown raw</div>
+        <div class="anno">Kept "any Bitcoin expert can help with this file"</div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- PHONE 4: SETUP STEP 1 -->
+    <div class="col">
+      <div class="screen-title">Setup step 1</div>
+      <div class="phone">
+        <div class="notch"></div>
+        <div class="wordmark"></div>
+        <div class="status strong">Step 1 of 3 &middot; Who inherits</div>
+        <div class="small">Their name</div>
+        <div class="field"></div>
+        <div class="small">The way you reach them</div>
+        <div class="opt-row">
+          <div class="opt sel">Email</div>
+          <div class="opt">Text</div>
+          <div class="opt">WhatsApp</div>
+        </div>
+        <div class="field"></div>
+        <div class="banner">
+          <div class="status">They have no wallet yet. We make one for them. (on by default)</div>
+        </div>
+        <div class="btn-primary">Continue</div>
+      </div>
+      <div class="annos">
+        <div class="anno">"The way you reach them", not "the channel you pick"</div>
+        <div class="anno">"Extra time", not "slack"; no "alarm state"</div>
+        <div class="anno">No-wallet path promoted and on by default</div>
+        <div class="anno">Spacing fixed so labels no longer collide</div>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

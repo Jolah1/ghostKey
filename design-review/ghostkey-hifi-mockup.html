@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GhostKey hi-fi mockup</title>
+<style>
+  :root{
+    --bg:#0a0f10; --screen:#0b1112; --surface:#10181a; --surface2:#0e1517;
+    --border:#1c2a2d; --border2:#243437;
+    --teal:#27e0c0; --teal-ink:#04201b; --teal-dim:rgba(39,224,192,.12);
+    --text:#e9eff0; --muted:#8a999c; --faint:#5f6e71;
+    --amber:#f5a623; --amber-dim:rgba(245,166,35,.12);
+    --green:#34d399;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:#050809;
+    font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--text); padding:32px; -webkit-font-smoothing:antialiased;
+  }
+  .intro{max-width:1100px;margin:0 auto 26px;color:var(--muted);font-size:13px;line-height:1.6}
+  .intro b{color:var(--text)}
+  .stage{display:flex;flex-wrap:wrap;gap:40px 34px;justify-content:center;align-items:flex-start;max-width:1720px;margin:0 auto}
+  .col{width:375px}
+  .label{
+    background:#1a1a1a;color:#ffffff;font-size:13px;line-height:1.4;border-radius:6px;
+    padding:6px 10px;margin-bottom:14px;min-height:46px;display:flex;align-items:center
+  }
+  .label b{color:var(--teal);font-weight:600}
+
+  /* iPhone frame */
+  .phone{
+    width:375px;height:812px;background:var(--screen);border:11px solid #161c1d;
+    border-radius:46px;position:relative;overflow:hidden;
+    box-shadow:0 30px 70px rgba(0,0,0,.6);
+  }
+  .notch{position:absolute;top:0;left:50%;transform:translateX(-50%);width:150px;height:30px;
+    background:#161c1d;border-bottom-left-radius:18px;border-bottom-right-radius:18px;z-index:5}
+  .statusbar{height:46px;display:flex;align-items:center;justify-content:space-between;
+    padding:0 26px;font-size:14px;font-weight:600;color:var(--text)}
+  .statusbar .icons{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text)}
+  .screen{height:766px;overflow:hidden;position:relative}
+  .pad{padding:6px 20px 20px}
+
+  /* top app bar */
+  .appbar{display:flex;align-items:center;justify-content:space-between;padding:2px 20px 10px}
+  .wordmark{font-size:17px;font-weight:800;letter-spacing:-.02em}
+  .wordmark span{color:var(--teal)}
+  .gear{width:30px;height:30px;border-radius:50%;border:1px solid var(--border2);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px}
+
+  .eyebrow{font-size:11px;letter-spacing:1.6px;text-transform:uppercase;color:var(--faint);font-weight:600}
+  h1{font-size:30px;font-weight:800;letter-spacing:-.025em;line-height:1.05;margin:6px 0}
+  h1 .accent{color:var(--teal)}
+  .sub{color:var(--muted);font-size:14px;line-height:1.5}
+  .micro{color:var(--faint);font-size:12px;line-height:1.5}
+
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:16px}
+  .card+.card{margin-top:12px}
+
+  .banner{background:var(--amber-dim);border:1px solid rgba(245,166,35,.5);border-radius:14px;
+    padding:13px 14px;display:flex;gap:11px;align-items:flex-start}
+  .banner .dot{width:8px;height:8px;border-radius:50%;background:var(--amber);margin-top:5px;flex:none}
+  .banner .t{font-size:13.5px;font-weight:700;color:#f8d79a}
+  .banner .d{font-size:12.5px;color:#caa566;line-height:1.45;margin-top:2px}
+  .banner .act{margin-left:auto;color:var(--amber);font-size:13px;font-weight:600;flex:none;align-self:center}
+
+  .btn{display:block;width:100%;text-align:center;border-radius:26px;padding:14px;font-size:15px;font-weight:700;border:none;cursor:pointer}
+  .btn-primary{background:var(--teal);color:var(--teal-ink);box-shadow:0 0 26px rgba(39,224,192,.32)}
+  .btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--border2)}
+  .field{width:100%;background:var(--surface2);border:1px solid var(--border2);border-radius:12px;
+    padding:13px 14px;color:var(--text);font-size:14px}
+  .field.ph{color:var(--faint)}
+  .flabel{font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:var(--faint);font-weight:600;margin-bottom:7px;display:block}
+
+  /* dashboard heartbeat */
+  .heartcard{text-align:center;padding:24px 16px}
+  .ring{width:104px;height:104px;border-radius:50%;border:2px solid rgba(39,224,192,.45);
+    margin:2px auto 14px;display:flex;align-items:center;justify-content:center;
+    box-shadow:0 0 34px rgba(39,224,192,.16) inset}
+  .ring .hb{font-size:34px;color:var(--teal)}
+  .heartcard .big{font-size:20px;font-weight:800;letter-spacing:-.02em}
+  .heartcard .sm{color:var(--muted);font-size:13px;margin-top:4px}
+  .countpill{display:inline-block;margin-top:14px;font-size:12.5px;color:var(--teal);
+    background:var(--teal-dim);border:1px solid rgba(39,224,192,.3);border-radius:20px;padding:7px 14px;font-weight:600}
+
+  .heir{display:flex;align-items:center;gap:11px}
+  .avatar{width:34px;height:34px;border-radius:50%;background:var(--teal-dim);border:1px solid rgba(39,224,192,.4);
+    color:var(--teal);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex:none}
+  .heir .nm{font-weight:600;font-size:14px}
+  .chip{font-size:11px;font-weight:600;border-radius:20px;padding:4px 10px;border:1px solid var(--border2);color:var(--muted);background:var(--surface2)}
+  .heir .more{margin-left:auto;color:var(--faint);font-size:13px}
+
+  .balrow{display:flex;align-items:center;justify-content:space-between}
+  .bal{font-size:22px;font-weight:800;letter-spacing:-.02em}
+  .balacts{display:flex;gap:14px}
+  .balacts a{color:var(--teal);font-size:13px;font-weight:600}
+
+  .actlist .it{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--border)}
+  .actlist .it:first-child{border-top:none}
+  .actlist .d{width:7px;height:7px;border-radius:50%;flex:none}
+  .actlist .d.t{background:var(--teal)} .actlist .d.a{background:var(--amber)}
+  .actlist .lab{font-size:13.5px;color:var(--text)}
+  .actlist .time{margin-left:auto;font-size:11.5px;color:var(--faint);font-family:ui-monospace,Menlo,monospace}
+
+  .sectlabel{font-size:11px;letter-spacing:1.4px;text-transform:uppercase;color:var(--faint);font-weight:600;margin:18px 0 8px}
+
+  /* tab bar */
+  .tabbar{position:absolute;bottom:0;left:0;right:0;height:74px;background:rgba(8,13,14,.94);
+    border-top:1px solid var(--border);display:flex;justify-content:space-around;align-items:flex-start;padding-top:11px}
+  .tab{text-align:center;font-size:10.5px;color:var(--faint);font-weight:600}
+  .tab .ic{font-size:18px;display:block;margin-bottom:3px}
+  .tab.on{color:var(--teal)}
+
+  /* segmented */
+  .seg{display:flex;gap:8px}
+  .seg .o{flex:1;border:1px solid var(--border2);border-radius:12px;padding:11px 6px;text-align:center;font-size:13px;color:var(--muted);font-weight:600}
+  .seg .o.on{border-color:var(--teal);color:var(--text);background:var(--teal-dim);box-shadow:0 0 18px rgba(39,224,192,.16)}
+  .seg .o .s{display:block;font-size:10px;color:var(--faint);font-weight:500;margin-top:2px}
+
+  /* toggle */
+  .togcard{display:flex;gap:12px;align-items:flex-start;border-color:rgba(39,224,192,.35);background:var(--teal-dim)}
+  .tog{width:42px;height:24px;border-radius:14px;background:var(--teal);position:relative;flex:none;margin-top:2px}
+  .tog::after{content:"";position:absolute;top:3px;right:3px;width:18px;height:18px;border-radius:50%;background:#04201b}
+  .togcard .tt{font-size:13.5px;font-weight:600;line-height:1.4}
+  .togcard .td{font-size:12px;color:var(--muted);margin-top:3px}
+
+  .progress{height:4px;background:var(--border);border-radius:3px;overflow:hidden;margin-bottom:18px}
+  .progress i{display:block;height:100%;width:33%;background:var(--teal)}
+
+  .expander{display:flex;align-items:center;gap:12px;border-style:dashed;border-color:var(--border2)}
+  .expander .chev{margin-left:auto;color:var(--faint);font-size:16px}
+  .expander .et{font-size:13.5px;font-weight:700}
+  .expander .ed{font-size:12px;color:var(--muted);margin-top:2px}
+
+  /* summary table */
+  .summary{max-width:1100px;margin:40px auto 0;background:#1a1a1a;border-radius:12px;overflow:hidden}
+  .summary h3{color:#fff;font-size:15px;padding:16px 18px 6px}
+  table{width:100%;border-collapse:collapse;color:#fff;font-size:13px}
+  th,td{text-align:left;padding:11px 18px;border-top:1px solid #2a2a2a;vertical-align:top;line-height:1.45}
+  th{color:#bdbdbd;font-size:11px;letter-spacing:1px;text-transform:uppercase;font-weight:600}
+  td.s{color:var(--teal);font-weight:600;white-space:nowrap}
+</style>
+</head>
+<body>
+
+  <div class="intro">
+    <b>GhostKey high-fidelity mockup.</b> Four priority screens rendered in GhostKey's own visual language: near-black surfaces, a single teal accent used only for safe primary actions, amber reserved for "needs your attention", and green reserved strictly for a genuinely claimable state. Colour is semantic, one focal point per screen, negative space kept intentional.
+  </div>
+
+  <div class="stage">
+
+    <!-- ============ SCREEN 1: OWNER DASHBOARD ============ -->
+    <div class="col">
+      <div class="label">Screen 1 &middot; Owner dashboard (healthy) — <b>&nbsp;true live state: neutral "Standing by" chip, attention-amber email banner raised to the top, human activity labels.</b></div>
+      <div class="phone">
+        <div class="notch"></div>
+        <div class="screen">
+          <div class="statusbar"><span>9:41</span><span class="icons">&#9679;&#9679;&#9679; &#128246; &#128267;</span></div>
+          <div class="appbar">
+            <div class="wordmark">ghost<span>Key</span></div>
+            <div class="gear">&#9881;</div>
+          </div>
+          <div class="pad">
+            <div class="eyebrow">Your vault</div>
+            <h1>You're still here</h1>
+            <div class="sub">Last check-in 5 days ago. Next reminder in 4 days.</div>
+
+            <div class="banner" style="margin-top:16px">
+              <div class="dot"></div>
+              <div>
+                <div class="t">Confirm your email</div>
+                <div class="d">Until you do, we can't remind you to check in.</div>
+              </div>
+              <div class="act">Resend</div>
+            </div>
+
+            <div class="card heartcard" style="margin-top:12px">
+              <div class="ring"><div class="hb">&#9829;</div></div>
+              <div class="big">You're all set</div>
+              <div class="sm">One check-in per period keeps your vault active.</div>
+              <div class="countpill">Next check-in opens in 4 days</div>
+            </div>
+
+            <div class="card">
+              <div class="micro" style="margin-bottom:11px">If you stop checking in, your heir waits <b style="color:var(--text)">1 month</b> before they can claim.</div>
+              <div class="heir">
+                <div class="avatar">F</div>
+                <div class="nm">Fola</div>
+                <span class="chip">Standing by</span>
+                <span class="more">Manage</span>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="balrow">
+                <div class="bal">6,660 sat</div>
+                <div class="balacts"><a>Add</a><a>Send</a></div>
+              </div>
+            </div>
+
+            <div class="sectlabel">Recent activity</div>
+            <div class="actlist">
+              <div class="it"><span class="d a"></span><span class="lab">You sent Bitcoin</span><span class="time">Jun 13</span></div>
+              <div class="it"><span class="d t"></span><span class="lab">Checked in</span><span class="time">Jun 13</span></div>
+              <div class="it"><span class="d a"></span><span class="lab">Reminder check-in paid</span><span class="time">Jun 13</span></div>
+              <div class="it"><span class="d a"></span><span class="lab">Vault activated</span><span class="time">Jun 13</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="tabbar">
+          <div class="tab on"><span class="ic">&#9829;</span>Dashboard</div>
+          <div class="tab"><span class="ic">&#128273;</span>Recovery kit</div>
+          <div class="tab"><span class="ic">&#128229;</span>Inherit</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ SCREEN 2: HEIR INHERIT ENTRY ============ -->
+    <div class="col">
+      <div class="label">Screen 2 &middot; Heir inherit entry — <b>&nbsp;a warm human line leads; token jargon and the raw URL are gone; the page is plainly dormant until it matters.</b></div>
+      <div class="phone">
+        <div class="notch"></div>
+        <div class="screen">
+          <div class="statusbar"><span>9:41</span><span class="icons">&#9679;&#9679;&#9679; &#128246; &#128267;</span></div>
+          <div class="appbar">
+            <div class="wordmark">ghost<span>Key</span></div>
+          </div>
+          <div class="pad">
+            <div class="eyebrow" style="text-align:center;margin-top:30px">Inherit</div>
+            <h1 style="text-align:center;font-size:32px;margin-top:10px">Someone trusted<br>you with <span class="accent">this</span></h1>
+            <div class="sub" style="text-align:center;margin-top:14px;padding:0 6px">
+              Someone close to you made sure you could reach the Bitcoin they left. There is no account to sign in to, and nothing hard to do. We will go one step at a time.
+            </div>
+
+            <div class="card" style="margin-top:26px">
+              <span class="flabel">Have your link?</span>
+              <div class="field ph">Paste your link here</div>
+              <button class="btn btn-primary" style="margin-top:12px">Open my link</button>
+              <div class="micro" style="margin-top:11px;text-align:center">Your link is private and works only once. Please don't share it.</div>
+            </div>
+
+            <div class="card" style="background:var(--surface2);border-style:dashed">
+              <div style="display:flex;gap:11px;align-items:flex-start">
+                <span style="color:var(--muted);font-size:15px;flex:none">&#9432;</span>
+                <div class="micro" style="font-size:12.5px">
+                  No link yet? That's normal. You'll only get one if the person who set this up stops checking in. Until then, there is nothing for you to do here.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ SCREEN 3: EMERGENCY RECOVERY FILE ============ -->
+    <div class="col">
+      <div class="label">Screen 3 &middot; Emergency recovery file — <b>&nbsp;calm heir layer on top (password and Unlock only); the descriptors and Bitcoin Core path are a separate, collapsed expert layer.</b></div>
+      <div class="phone">
+        <div class="notch"></div>
+        <div class="screen">
+          <div class="statusbar"><span>9:41</span><span class="icons">&#9679;&#9679;&#9679; &#128246; &#128267;</span></div>
+          <div class="appbar">
+            <div class="wordmark">ghost<span>Key</span></div>
+          </div>
+          <div class="pad">
+            <div class="eyebrow">Emergency recovery file</div>
+            <h1 style="font-size:27px">Reach your Bitcoin</h1>
+            <div class="sub">Vault: Fola's inheritance &middot; saved 18 Jun 2026</div>
+
+            <div class="card" style="margin-top:16px">
+              <div style="font-size:13.5px;font-weight:700;margin-bottom:6px">What this file is</div>
+              <div class="micro" style="font-size:12.5px">Your spare key, for emergencies only. Everything needed to reach your money is locked inside it with the same password you sign in with. Day to day, use your GhostKey dashboard instead.</div>
+            </div>
+
+            <div class="card">
+              <span class="flabel">Unlock with your password</span>
+              <div class="field ph">Your vault password</div>
+              <button class="btn btn-primary" style="margin-top:12px">Unlock</button>
+              <div class="micro" style="margin-top:11px;font-size:12px">It unlocks here on your device. Nothing is sent anywhere. Unlocking takes a few seconds on purpose, which is what keeps your password hard to crack.</div>
+            </div>
+
+            <div class="card expander">
+              <div>
+                <div class="et">For a Bitcoin expert helping you</div>
+                <div class="ed">Wallet descriptors and self-recovery details. You don't need these to unlock above.</div>
+              </div>
+              <span class="chev">&#9656;</span>
+            </div>
+
+            <div class="micro" style="margin-top:14px;text-align:center;font-size:12px">Stuck? Any Bitcoin expert can help using just this file.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ SCREEN 4: SETUP STEP 1 ============ -->
+    <div class="col">
+      <div class="label">Screen 4 &middot; Setup, step 1 of 3 — <b>&nbsp;plain "the way you reach them", the no-wallet path promoted and on by default, breathing room so labels no longer collide.</b></div>
+      <div class="phone">
+        <div class="notch"></div>
+        <div class="screen">
+          <div class="statusbar"><span>9:41</span><span class="icons">&#9679;&#9679;&#9679; &#128246; &#128267;</span></div>
+          <div class="appbar">
+            <div class="wordmark">ghost<span>Key</span></div>
+            <div class="gear" style="border:none;color:var(--muted);font-size:13px">Cancel</div>
+          </div>
+          <div class="pad">
+            <div class="progress"><i></i></div>
+            <div class="eyebrow">Step 1 of 3 &middot; Who inherits</div>
+            <h1 style="font-size:27px">Who should<br>receive this</h1>
+            <div class="sub" style="font-size:13px">They never need to know until the time comes. If you ever stop checking in, we reach them the way you choose and they claim from a link.</div>
+
+            <div style="margin-top:18px">
+              <span class="flabel">Their name</span>
+              <div class="field">Fola</div>
+            </div>
+
+            <div style="margin-top:16px">
+              <span class="flabel">The way you reach them</span>
+              <div class="seg">
+                <div class="o on">Email<span class="s">Inbox</span></div>
+                <div class="o">Text<span class="s">Phone</span></div>
+                <div class="o">WhatsApp<span class="s">Same no.</span></div>
+              </div>
+            </div>
+
+            <div style="margin-top:16px">
+              <span class="flabel">Their email</span>
+              <div class="field">fola@example.com</div>
+              <div class="micro" style="margin-top:7px;font-size:12px">Stored encrypted. We only contact them if you stop checking in.</div>
+            </div>
+
+            <div class="card togcard" style="margin-top:16px">
+              <div class="tog"></div>
+              <div>
+                <div class="tt">Make a wallet for them</div>
+                <div class="td">They have no Bitcoin wallet yet. We'll create one from their email when they open the claim link. Recommended.</div>
+              </div>
+            </div>
+
+            <button class="btn btn-primary" style="margin-top:18px">Continue</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- SUMMARY TABLE -->
+  <div class="summary">
+    <h3>Which screen addresses which finding</h3>
+    <table>
+      <tr><th style="width:170px">Screen</th><th style="width:230px">Principles</th><th>Findings addressed</th></tr>
+      <tr>
+        <td class="s">Owner dashboard</td>
+        <td>2 Trust, 4 Jargon, 7 Visible state, 1 &amp; 10 Permanent mistakes</td>
+        <td>Heir badge corrected from "Ready to claim" to a neutral "Standing by". Email confirmation raised to a prominent amber banner with the stakes named. Activity codes (owner_send, lightning_invoice_issued) rewritten in plain language. "in in" doubled words fixed. Locked dead button replaced with a calm "You're all set" state.</td>
+      </tr>
+      <tr>
+        <td class="s">Heir inherit entry</td>
+        <td>3 Onboarding crisis, 4 Jargon, 2 Trust</td>
+        <td>Warm human opening line before any mechanics. "one-time access token" and the raw /claim/ URL removed; replaced with plain "private and works only once". Honest "no link yet, that's normal" reassurance kept.</td>
+      </tr>
+      <tr>
+        <td class="s">Emergency recovery file</td>
+        <td>4 Jargon, 6 Extreme user range, 9 Education, 10 Password</td>
+        <td>Split into a calm heir layer (password plus Unlock) and a clearly separated, collapsed expert layer holding the descriptors and Bitcoin Core path. The "unlocks on your device, nothing is sent" and "slow on purpose" education kept. "Any Bitcoin expert can help" framing leads the expert section.</td>
+      </tr>
+      <tr>
+        <td class="s">Setup, step 1</td>
+        <td>4 Jargon, 5 Progressive disclosure, 7 Visible state</td>
+        <td>"the channel you pick" becomes "the way you reach them"; "slack" and "alarm state" removed. No-wallet path promoted to a default-on card instead of a colliding checkbox. Step counter matched to a clearer "Who inherits" sub step. Encrypted-storage reassurance kept inline.</td>
+      </tr>
+    </table>
+  </div>
+
+</body>
+</html>
