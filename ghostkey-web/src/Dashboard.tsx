@@ -47,6 +47,12 @@ import {
 } from "./vaultStore";
 import { LightningCheckin } from "./LightningCheckin";
 import { AddHeirPortal } from "./AddHeirPortal";
+import { ConfirmSend } from "./ConfirmSend";
+import {
+  addressMatchesNetwork,
+  bech32PrefixFor,
+  looksLikeBitcoinAddress,
+} from "./address";
 import {
   getPushSubscription,
   isPushSupported,
@@ -355,6 +361,7 @@ export function Dashboard({ onNavigate }: Props) {
               <div className="mt-5">
                 <MoneyCard
                   vaultId={vault.id}
+                  network={vault.network}
                   ownerToken={ownerToken}
                   canManage={!isClosed && !isClaiming}
                 />
@@ -511,10 +518,12 @@ export function Dashboard({ onNavigate }: Props) {
  */
 function MoneyCard({
   vaultId,
+  network,
   ownerToken,
   canManage,
 }: {
   vaultId: string;
+  network: string;
   ownerToken: string | null;
   canManage: boolean;
 }) {
@@ -551,7 +560,12 @@ function MoneyCard({
         {tab === "balance" ? <BalanceCard vaultId={vaultId} embedded /> : null}
         {tab === "add" ? <ReceiveCard vaultId={vaultId} embedded /> : null}
         {tab === "send" && ownerToken ? (
-          <SendCard vaultId={vaultId} ownerToken={ownerToken} embedded />
+          <SendCard
+            vaultId={vaultId}
+            network={network}
+            ownerToken={ownerToken}
+            embedded
+          />
         ) : null}
       </div>
     </section>
@@ -806,10 +820,12 @@ function ReceiveCard({
  */
 function SendCard({
   vaultId,
+  network,
   ownerToken,
   embedded,
 }: {
   vaultId: string;
+  network: string;
   ownerToken: string;
   embedded?: boolean;
 }) {
@@ -818,6 +834,7 @@ function SendCard({
   const [amountStr, setAmountStr] = useState("");
   const [sendAll, setSendAll] = useState(false);
   const [password, setPassword] = useState("");
+  const [confirming, setConfirming] = useState(false);
   const [phase, setPhase] = useState<"idle" | "unlocking" | "sending">("idle");
   const [unlockPct, setUnlockPct] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -825,11 +842,13 @@ function SendCard({
 
   const busy = phase !== "idle";
   const amountSat = sendAll ? null : Number.parseInt(amountStr, 10);
+  const addrShapeOk = looksLikeBitcoinAddress(destination);
+  const addrNetworkOk = addressMatchesNetwork(destination, network);
+  const addrOk = addrShapeOk && addrNetworkOk;
+  const amountOk =
+    sendAll || (Number.isFinite(amountSat) && (amountSat as number) > 0);
   const canSubmit =
-    !busy &&
-    destination.trim().length > 0 &&
-    password.length > 0 &&
-    (sendAll || (Number.isFinite(amountSat) && (amountSat as number) > 0));
+    !busy && addrOk && password.length > 0 && amountOk;
 
   async function onSend() {
     setError(null);
@@ -924,6 +943,7 @@ function SendCard({
               setDestination("");
               setAmountStr("");
               setSendAll(false);
+              setConfirming(false);
             }}
           >
             Send again
@@ -954,7 +974,7 @@ function SendCard({
           className="mt-3 flex flex-col gap-3"
           onSubmit={(e) => {
             e.preventDefault();
-            if (canSubmit) void onSend();
+            if (canSubmit) setConfirming(true);
           }}
         >
           <label className="block">
@@ -963,12 +983,22 @@ function SendCard({
               type="text"
               value={destination}
               onChange={(e) => setDestination(e.target.value)}
-              placeholder="bc1q…"
+              placeholder={`${bech32PrefixFor(network)}…`}
               autoComplete="off"
               spellCheck={false}
-              disabled={busy}
+              disabled={busy || confirming}
               className="input mt-1 w-full font-mono text-xs"
             />
+            {destination && !addrShapeOk ? (
+              <span className="mt-1 block text-xs text-alarm">
+                That doesn't look like a Bitcoin address. Check the start.
+              </span>
+            ) : destination && !addrNetworkOk ? (
+              <span className="mt-1 block text-xs text-alarm">
+                That address is for a different network. It should start with{" "}
+                {bech32PrefixFor(network)}.
+              </span>
+            ) : null}
           </label>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
             <label className="block flex-1">
@@ -980,7 +1010,7 @@ function SendCard({
                 value={sendAll ? "" : amountStr}
                 onChange={(e) => setAmountStr(e.target.value)}
                 placeholder={sendAll ? "everything" : "e.g. 50000"}
-                disabled={busy || sendAll}
+                disabled={busy || sendAll || confirming}
                 className="input mt-1 w-full"
               />
             </label>
@@ -989,7 +1019,7 @@ function SendCard({
                 type="checkbox"
                 checked={sendAll}
                 onChange={(e) => setSendAll(e.target.checked)}
-                disabled={busy}
+                disabled={busy || confirming}
               />
               Send everything
             </label>
@@ -1001,7 +1031,7 @@ function SendCard({
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="current-password"
-              disabled={busy}
+              disabled={busy || confirming}
               className="input mt-1 w-full"
             />
             <span className="mt-1 block text-xs text-dim">
@@ -1009,15 +1039,35 @@ function SendCard({
             </span>
           </label>
           {error ? <p className="text-xs text-alarm">{error}</p> : null}
-          <div>
-            <Button size="sm" disabled={!canSubmit} type="submit">
-              {phase === "unlocking"
-                ? `Unlocking… ${unlockPct}%`
-                : phase === "sending"
-                  ? "Sending…"
-                  : "Send"}
-            </Button>
-          </div>
+          {confirming ? (
+            <div className="card-flat p-4">
+              <ConfirmSend
+                destination={destination.trim()}
+                amountLabel={
+                  sendAll
+                    ? "Everything in your vault"
+                    : formatSats(amountSat as number)
+                }
+                networkLabel={network === "bitcoin" ? "Bitcoin" : `${network} network`}
+                busy={busy}
+                confirmLabel={
+                  phase === "unlocking"
+                    ? `Unlocking… ${unlockPct}%`
+                    : phase === "sending"
+                      ? "Sending…"
+                      : "Yes, send it"
+                }
+                onConfirm={() => void onSend()}
+                onBack={() => setConfirming(false)}
+              />
+            </div>
+          ) : (
+            <div>
+              <Button size="sm" disabled={!canSubmit} type="submit">
+                Review
+              </Button>
+            </div>
+          )}
         </form>
       )}
     </section>
