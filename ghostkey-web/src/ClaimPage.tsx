@@ -1182,9 +1182,10 @@ function ManualPsbtClaim({
         </h2>
         <p className="mt-2 text-sm text-soft">
           A Bitcoin wallet is an app where you can receive and hold Bitcoin on
-          the {networkLabel(view.network)}. For this claim you'll need one
-          that can <em>sign a PSBT</em> — most self-custody wallets can.
-          Custodial Lightning apps cannot.
+          the {networkLabel(view.network)}. This claim is special: it needs a
+          wallet that can sign a Bitcoin Taproot timelock.{" "}
+          <strong>Most phone wallets can't.</strong> The one we've tested is
+          Bitcoin Core, on a computer.
         </p>
 
         <div className="mt-4 grid grid-cols-2 gap-2">
@@ -1192,7 +1193,7 @@ function ManualPsbtClaim({
             selected={hasWallet === true}
             onClick={() => setHasWallet(true)}
             title="Yes, I do"
-            sub="Skip to step 2"
+            sub="On a computer"
           />
           <Tile
             selected={hasWallet === false}
@@ -1201,6 +1202,17 @@ function ManualPsbtClaim({
             sub="We'll point you somewhere"
           />
         </div>
+
+        {hasWallet === true && (
+          <div className="mt-4">
+            <InlineAlert tone="warning">
+              One thing to check first: most phone wallets can't sign this
+              kind of claim. If your wallet can't sign a Bitcoin Taproot
+              script, choose <strong>No, not yet</strong> and we'll point you
+              to Bitcoin Core.
+            </InlineAlert>
+          </div>
+        )}
 
         {hasWallet === false && (
           <WalletGuide network={view.network} requirePsbt />

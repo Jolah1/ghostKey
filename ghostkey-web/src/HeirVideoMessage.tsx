@@ -79,13 +79,17 @@ export function HeirVideoMessage({ token }: { token: string }) {
   }
 
   if (state.kind === "error") {
+    // A load/decrypt failure — NOT a tamper signal. A clip that decrypts
+    // but fails signature verification is the real "may be altered" case,
+    // and it's handled below in the `ready` branch via `verified: false`.
+    // So keep this neutral: leading with scam language on a transient
+    // network hiccup scares a legitimate heir off a real claim.
     return (
-      <div className="mb-6">
-        <InlineAlert tone="warning">
-          A video message was left for you, but it couldn't be opened or its
-          authenticity couldn't be confirmed. Don't rely on it — continue only
-          if you trust how you received this link.
-        </InlineAlert>
+      <div className="mb-6 rounded-2xl border border-app p-5">
+        <p className="text-app-subtle text-sm">
+          There was a video message left for you, but it couldn't be loaded
+          right now. You can still continue with your claim below.
+        </p>
       </div>
     );
   }
