@@ -1306,6 +1306,8 @@ async fn send_contact_verification(
          due.\n\n\
          Tap once to confirm reminders can reach you:\n\n\
          {link}\n\n\
+         This link works for 7 days. If it expires, open your dashboard \
+         and resend.\n\n\
          If you didn't set up a GhostKey vault, you can ignore this \
          email — nothing is linked to your address until you tap.\n\n\
          — GhostKey"
@@ -1844,14 +1846,15 @@ async fn verify_contact(
     State(state): State<Arc<AppState>>,
     Path((id, token)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT owner_contact_verify_token_hash, owner_contact_verified_at \
+    let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT owner_contact_verify_token_hash, owner_contact_verified_at, \
+                owner_contact_verify_sent_at \
            FROM vaults WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.db)
     .await?;
-    let (stored_hash, verified_at) = row.ok_or(ApiError::NotFound)?;
+    let (stored_hash, verified_at, sent_at) = row.ok_or(ApiError::NotFound)?;
 
     // Already confirmed: report success whatever token was presented.
     // The common path here is the owner tapping the same email link
@@ -1863,6 +1866,19 @@ async fn verify_contact(
     let stored_hash = stored_hash.ok_or(ApiError::NotFound)?;
     if !crypto::claim_token_matches(&token, &stored_hash) {
         return Err(ApiError::NotFound);
+    }
+
+    // A4 (#122): the verification link expires. An old link sitting in a
+    // mailbox shouldn't be able to confirm the address weeks later — by
+    // then the owner may no longer control that inbox. `resend_verification`
+    // re-mints the token and resets sent_at, so a fresh window is always a
+    // tap away from the dashboard.
+    if verify_token_expired(sent_at.as_deref()) {
+        return Err(ApiError::Validation(
+            "This confirmation link has expired. Open your GhostKey dashboard \
+             and resend the confirmation email."
+                .into(),
+        ));
     }
 
     sqlx::query(
@@ -1880,6 +1896,22 @@ async fn verify_contact(
 
     record_event(&state.db, &id, "owner_contact_verified", None).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// How long a confirmation link stays valid. Seven days is long enough
+/// for a real person to get to their inbox and tap, short enough that a
+/// link leaked from an old mailbox can't be used to confirm the address
+/// much later. Surfaced to the owner in the email body.
+pub const VERIFY_TTL_SECS: i64 = 7 * 24 * 3600;
+
+/// True when a verification token minted at `sent_at` is older than
+/// [`VERIFY_TTL_SECS`]. A missing or unparseable `sent_at` is treated as
+/// expired (fail closed): a token we can't date is one we won't trust.
+fn verify_token_expired(sent_at: Option<&str>) -> bool {
+    match sent_at.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()) {
+        Some(sent) => Utc::now().signed_duration_since(sent).num_seconds() > VERIFY_TTL_SECS,
+        None => true,
+    }
 }
 
 /// Minimum gap between verification emails. Generous enough for "it
@@ -3156,6 +3188,25 @@ mod tests {
         let (fp, _path, xpub) =
             ghostkey_core::keys::account_xpub(&master, Network::Regtest).unwrap();
         (xpub.to_string(), format!("{fp}"))
+    }
+
+    #[test]
+    fn verify_token_expiry_window() {
+        // Fresh: minted now -> still valid.
+        let now = Utc::now().to_rfc3339();
+        assert!(!verify_token_expired(Some(&now)));
+
+        // Just inside the window (6 days old) -> valid.
+        let six_days = (Utc::now() - Duration::seconds(6 * 24 * 3600)).to_rfc3339();
+        assert!(!verify_token_expired(Some(&six_days)));
+
+        // Past the window (8 days old) -> expired.
+        let eight_days = (Utc::now() - Duration::seconds(8 * 24 * 3600)).to_rfc3339();
+        assert!(verify_token_expired(Some(&eight_days)));
+
+        // Fail closed on missing or garbage timestamps.
+        assert!(verify_token_expired(None));
+        assert!(verify_token_expired(Some("not-a-date")));
     }
 
     #[test]
