@@ -46,12 +46,14 @@ export function InheritPortal() {
         <header className="text-center">
           <p className="eyebrow">Inherit</p>
           <h1 className="mt-6 font-serif text-3xl md:text-5xl">
-            You should have received a link
+            Someone trusted you with this
           </h1>
           <p className="mx-auto mt-3 max-w-md text-muted">
-            If someone named you as an heir, you'll receive a one-time link
-            by SMS, WhatsApp, or email when the vault becomes claimable.
-            Open that link on any device. There's no account to sign in to.
+            If you're here, someone you knew left something behind and
+            trusted you to look after it. We'll walk you through it slowly,
+            one step at a time. If you don't have your link yet, that's
+            normal — it arrives by SMS, WhatsApp, or email when the time
+            comes. There's no account to sign in to.
           </p>
         </header>
 
@@ -63,9 +65,8 @@ export function InheritPortal() {
             https://www.ghostkeyapp.com/#/claim/AbCdEf12_3456_etc…
           </p>
           <p className="mt-3 text-sm text-muted">
-            The bit after <span className="font-mono">/claim/</span> is your
-            one-time access token. It only works once you tap it, and only
-            until the inheritance is claimed.
+            Your link is private and works only once. Please don't share it
+            with anyone.
           </p>
         </div>
 

@@ -651,7 +651,7 @@ function StepHeir({
       <h1 className="font-serif text-3xl md:text-4xl">Who should receive this</h1>
       <p className="mt-2 text-muted">
         They never have to know about this until the time comes. When it does,
-        we reach them on the channel you pick below and they claim from there.
+        we reach them the way you choose to reach them below and they claim from there.
       </p>
 
       <div className="mt-8">
@@ -686,7 +686,7 @@ function StepHeir({
               ? "Their email"
               : "Their phone number"
           }
-          hint="Stored encrypted. We don't message them until the alarm fires."
+          hint="Stored encrypted. We don't message them unless you stop checking in."
         >
           <input
             type={draft.heirContactChannel === "email" ? "email" : "tel"}
@@ -804,7 +804,7 @@ function StepTiming({
 
         <Field
           label="Grace period"
-          hint="Extra slack after a missed reminder, before the vault enters its alarm state."
+          hint="Extra time after a missed reminder, before the countdown to inheritance begins."
         >
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {graceList.map((g) => (
