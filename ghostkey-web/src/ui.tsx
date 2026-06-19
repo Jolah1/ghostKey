@@ -412,11 +412,29 @@ export function usePolling(
 export function friendlyEventKind(kind: string): string {
   switch (kind) {
     case "registered": return "Vault activated";
-    case "checkin":    return "Checked in";
-    case "warning":    return "Reminder due soon";
-    case "alarm":      return "Missed reminder";
-    case "resolved":   return "Back on track";
-    default:           return kind;
+    case "checkin": return "Checked in";
+    case "warning": return "Reminder due soon";
+    case "pre_deadline_reminder": return "Reminder sent";
+    case "alarm": return "Missed check-in";
+    case "resolved": return "Back on track";
+    case "lightning_invoice_issued": return "Check-in invoice created";
+    case "owner_send": return "You sent Bitcoin";
+    case "owner_contact_verified": return "Email confirmed";
+    case "timelock_started": return "Waiting period started";
+    case "claim_issued": return "Claim link sent to your heir";
+    case "claim_opened": return "Your heir opened the claim link";
+    case "claim_psbt_built": return "Your heir prepared the transaction";
+    case "claim_broadcast": return "Your heir broadcast the claim";
+    case "claim_ready": return "Your heir can now claim";
+    case "claim_resolved": return "Claim stopped — you checked in";
+    case "panic_activated": return "Emergency freeze on";
+    case "panic_expired": return "Emergency freeze ended";
+    default:
+      // Never show a raw database code (T4 #117). De-snake-case any
+      // event we haven't named yet: "some_new_event" -> "Some new event".
+      return kind
+        .replace(/_/g, " ")
+        .replace(/^\w/, (c) => c.toUpperCase());
   }
 }
 
