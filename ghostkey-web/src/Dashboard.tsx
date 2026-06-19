@@ -612,13 +612,15 @@ function BalanceCard({
       const b = await withTimeout(api.getVaultBalance(vaultId), 25000);
       setBalance(b);
     } catch (e) {
+      // Keep raw server text (e.g. "500 Internal Server Error") out of the
+      // owner's face — a chain/explorer hiccup isn't actionable jargon. The
+      // figure already falls back to "—" when nothing loaded, so it never
+      // reads as a misleading zero.
       const msg = e instanceof Error ? e.message : String(e);
       setError(
         msg === "timeout"
-          ? "Couldn't load your balance. Tap refresh to try again."
-          : e instanceof ApiError
-            ? e.message
-            : msg,
+          ? "Couldn't load your balance. Tap Refresh to try again."
+          : "Couldn't load your balance right now. Tap Refresh to try again.",
       );
     } finally {
       setLoading(false);
@@ -1681,10 +1683,16 @@ function HeirCard({
       : { tone: "ok" as const, label: "Ready to claim" };
 
   return (
-    <div className="card-flat flex items-center gap-4 p-5">
+    <div className="card-flat flex flex-wrap items-center gap-x-4 gap-y-2 p-5">
       <Avatar name={meta.heir.name} />
-      <div className="min-w-0 flex-1">
-        <p className="truncate font-semibold text-[var(--text)]">{meta.heir.name}</p>
+      {/* basis-40 keeps the name a readable width before the pill/Remove
+          wrap to the next line on a narrow card — otherwise flex-1 + min-w-0
+          let it collapse to "B…". The contact line, not the name, is what
+          should truncate. */}
+      <div className="min-w-0 flex-1 basis-40">
+        <p className="font-semibold text-[var(--text)] break-words">
+          {meta.heir.name}
+        </p>
         <p className="truncate text-xs text-muted">
           {meta.heir.email ? `${meta.heir.email} · ` : ""}
           <span className="font-mono">{shortAddr(meta.heir.address)}</span>
@@ -1695,7 +1703,7 @@ function HeirCard({
         <button
           type="button"
           onClick={onRemove}
-          className="ml-2 rounded-md px-2 py-1 text-xs text-muted hover:bg-[var(--surface-2,var(--surface))] hover:text-alarm"
+          className="rounded-md px-2 py-1 text-xs text-muted hover:bg-[var(--surface-2,var(--surface))] hover:text-alarm"
           aria-label={`Remove ${meta.heir.name}`}
         >
           Remove
