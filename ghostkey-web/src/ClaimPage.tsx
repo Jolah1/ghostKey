@@ -63,6 +63,12 @@ import {
 } from "./api";
 import { countdown, parseRfc } from "./time";
 import { HeirVideoMessage } from "./HeirVideoMessage";
+import { ConfirmSend } from "./ConfirmSend";
+import {
+  addressMatchesNetwork,
+  bech32PrefixFor,
+  looksLikeBitcoinAddress,
+} from "./address";
 import { b64decode, unsealHeirXprv } from "./crypto/sealing";
 import { deriveHeirKey } from "./crypto/heirKey";
 import type { Network } from "./crypto/keygen";
@@ -580,6 +586,7 @@ function PasswordVaultClaim({
   const [hasWallet, setHasWallet] = useState<boolean | null>(null);
   const [address, setAddress] = useState("");
   const [feeRate, setFeeRate] = useState("");
+  const [confirming, setConfirming] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<BroadcastClaimResponse | null>(null);
   // The unwrapped error object, not just a string — `claimErrors.ts`
@@ -588,7 +595,9 @@ function PasswordVaultClaim({
   const [error, setError] = useState<unknown>(null);
 
   const heir = view.heir_display_name?.trim() || "you";
-  const validAddr = looksLikeBitcoinAddress(address);
+  const addrShapeOk = looksLikeBitcoinAddress(address);
+  const addrNetworkOk = addressMatchesNetwork(address, sealed.network);
+  const validAddr = addrShapeOk && addrNetworkOk;
   const feeRateNum = parseFeeRate(feeRate);
   const feeRateValid = feeRate.trim() === "" || feeRateNum !== null;
 
@@ -710,9 +719,11 @@ function PasswordVaultClaim({
             <Field
               label="Your Bitcoin address"
               hint={
-                address && !validAddr
+                address && !addrShapeOk
                   ? "That doesn't look like a Bitcoin address. Check the start."
-                  : undefined
+                  : address && !addrNetworkOk
+                    ? `That address is for a different network. It should start with ${bech32PrefixFor(sealed.network)}.`
+                    : undefined
               }
             >
               <textarea
@@ -723,7 +734,7 @@ function PasswordVaultClaim({
                 spellCheck={false}
                 autoComplete="off"
                 className="textarea"
-                disabled={submitting}
+                disabled={submitting || confirming}
               />
             </Field>
           </div>
@@ -744,25 +755,43 @@ function PasswordVaultClaim({
                 onChange={(e) => setFeeRate(e.target.value)}
                 placeholder="2"
                 className="input"
-                disabled={submitting}
+                disabled={submitting || confirming}
               />
             </Field>
           </div>
 
-          <div className="mt-4">
-            <Button
-              onClick={() => void onSubmit()}
-              disabled={!validAddr || !feeRateValid || submitting}
-              size="lg"
-            >
-              {submitting ? "Sending Bitcoin…" : "Send the Bitcoin"}
-            </Button>
-          </div>
+          {!confirming ? (
+            <>
+              <div className="mt-4">
+                <Button
+                  onClick={() => setConfirming(true)}
+                  disabled={!validAddr || !feeRateValid}
+                  size="lg"
+                >
+                  Review and send
+                </Button>
+              </div>
 
-          <p className="mt-3 text-xs text-muted">
-            We'll prepare and broadcast the transaction for you. You don't
-            need to sign anything in another app.
-          </p>
+              <p className="mt-3 text-xs text-muted">
+                We'll show you the details to check, then prepare and
+                broadcast the transaction for you. You don't need to sign
+                anything in another app.
+              </p>
+            </>
+          ) : (
+            <div className="mt-4 card-flat p-4">
+              <ConfirmSend
+                destination={address.trim()}
+                amountLabel="Everything in the vault, minus the network fee"
+                networkLabel={networkLabel(sealed.network)}
+                feeLabel={feeRateNum ? `${feeRateNum} sat/vB` : "2 sat/vB"}
+                busy={submitting}
+                confirmLabel={submitting ? "Sending Bitcoin…" : "Send the Bitcoin"}
+                onConfirm={() => void onSubmit()}
+                onBack={() => setConfirming(false)}
+              />
+            </div>
+          )}
 
           {error ? <ClaimErrorBlock error={error} context="send" /> : null}
         </div>
@@ -836,6 +865,7 @@ function DerivedHeirClaim({
 }) {
   const [address, setAddress] = useState("");
   const [feeRate, setFeeRate] = useState("");
+  const [confirming, setConfirming] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<
     | { kind: "ok"; resp: BroadcastClaimResponse; mnemonic: string }
@@ -844,7 +874,9 @@ function DerivedHeirClaim({
   const [error, setError] = useState<unknown>(null);
 
   const heir = view.heir_display_name?.trim() || "you";
-  const validAddr = looksLikeBitcoinAddress(address);
+  const addrShapeOk = looksLikeBitcoinAddress(address);
+  const addrNetworkOk = addressMatchesNetwork(address, params.network);
+  const validAddr = addrShapeOk && addrNetworkOk;
   const feeRateNum = parseFeeRate(feeRate);
   const feeRateValid = feeRate.trim() === "" || feeRateNum !== null;
 
@@ -958,8 +990,18 @@ function DerivedHeirClaim({
             placeholder={`${bech32PrefixFor(params.network)}...`}
             autoComplete="off"
             className="input"
-            disabled={submitting}
+            disabled={submitting || confirming}
           />
+          {address && !addrShapeOk ? (
+            <p className="mt-1 text-xs text-alarm">
+              That doesn't look like a Bitcoin address. Check the start.
+            </p>
+          ) : address && !addrNetworkOk ? (
+            <p className="mt-1 text-xs text-alarm">
+              That address is for a different network. It should start with{" "}
+              {bech32PrefixFor(params.network)}.
+            </p>
+          ) : null}
         </div>
 
         <details className="mt-3">
@@ -974,7 +1016,7 @@ function DerivedHeirClaim({
               placeholder="sat/vB (optional, e.g. 4)"
               autoComplete="off"
               className="input"
-              disabled={submitting}
+              disabled={submitting || confirming}
             />
           </div>
         </details>
@@ -982,15 +1024,29 @@ function DerivedHeirClaim({
 
       {error ? <ClaimErrorBlock error={error} context="send" /> : null}
 
-      <div className="mt-8">
-        <Button
-          onClick={onSubmit}
-          loading={submitting}
-          disabled={!validAddr || !feeRateValid}
-        >
-          Claim and send
-        </Button>
-      </div>
+      {!confirming ? (
+        <div className="mt-8">
+          <Button
+            onClick={() => setConfirming(true)}
+            disabled={!validAddr || !feeRateValid}
+          >
+            Review and claim
+          </Button>
+        </div>
+      ) : (
+        <div className="mt-8 card-flat p-4">
+          <ConfirmSend
+            destination={address.trim()}
+            amountLabel="Everything in the vault, minus the network fee"
+            networkLabel={networkLabel(params.network)}
+            feeLabel={feeRateNum ? `${feeRateNum} sat/vB` : "2 sat/vB"}
+            busy={submitting}
+            confirmLabel={submitting ? "Sending Bitcoin…" : "Claim and send"}
+            onConfirm={() => void onSubmit()}
+            onBack={() => setConfirming(false)}
+          />
+        </div>
+      )}
 
       <HeirRecoveryFileSection
         vaultId={params.vault_id}
@@ -1039,7 +1095,9 @@ function ManualPsbtClaim({
   const [copied, setCopied] = useState(false);
 
   const heir = view.heir_display_name?.trim() || "you";
-  const validAddr = looksLikeBitcoinAddress(address);
+  const addrShapeOk = looksLikeBitcoinAddress(address);
+  const addrNetworkOk = addressMatchesNetwork(address, view.network);
+  const validAddr = addrShapeOk && addrNetworkOk;
   const feeRateNum = parseFeeRate(feeRate);
   const feeRateValid = feeRate.trim() === "" || feeRateNum !== null;
 
@@ -1167,9 +1225,11 @@ function ManualPsbtClaim({
             <Field
               label="Your Bitcoin address"
               hint={
-                address && !validAddr
+                address && !addrShapeOk
                   ? "That doesn't look like a Bitcoin address. Check the start."
-                  : undefined
+                  : address && !addrNetworkOk
+                    ? `That address is for a different network. It should start with ${bech32PrefixFor(view.network)}.`
+                    : undefined
               }
             >
               <textarea
@@ -1445,15 +1505,6 @@ function networkLabel(network: string): string {
   return network === "bitcoin" ? "Bitcoin network" : `${network} network`;
 }
 
-/** The bech32 address prefix the heir's wallet should produce. Used
- *  both in copy and as the input placeholder so it matches what
- *  they're about to paste. */
-function bech32PrefixFor(network: string): string {
-  if (network === "bitcoin") return "bc1q";
-  if (network === "regtest") return "bcrt1q";
-  return "tb1q"; // testnet and signet share the tb1 prefix
-}
-
 /** A handful of wallet names, comma-separated, for inline copy.
  *  Avoids hard-coding mainnet-only names when the vault is on a
  *  test network. */
@@ -1702,16 +1753,6 @@ function Eyebrow({ children }: { children: React.ReactNode }) {
  * the real validation. This is just to gate the "Prepare transaction"
  * button — the server re-validates against the vault's network.
  */
-function looksLikeBitcoinAddress(s: string): boolean {
-  const t = s.trim();
-  if (!t) return false;
-  // Bech32 mainnet / testnet / signet / regtest.
-  if (/^(bc1|tb1|bcrt1)[02-9ac-hj-np-z]{20,}$/i.test(t)) return true;
-  // Base58 P2PKH / P2SH (mainnet starts with 1 or 3, testnet 2 / m / n).
-  if (/^[13mn2][1-9A-HJ-NP-Za-km-z]{20,}$/.test(t)) return true;
-  return false;
-}
-
 /**
  * Parse the optional fee-rate field. Returns null when:
  *   - the field is non-empty but doesn't parse as an integer, or
