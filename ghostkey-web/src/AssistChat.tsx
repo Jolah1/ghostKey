@@ -139,14 +139,20 @@ export function AssistChat({ label = "GhostKey AI", intro }: Props) {
             {intro ? <p className="text-muted">{intro}</p> : null}
             <p className="text-muted">
               Ask anything about how check-ins, the waiting period, or
-              the heir's claim flow work. Never paste your seed phrase
-              or private key here.
+              the heir's claim flow work. Never paste your password, seed
+              phrase, or private key here.
             </p>
             <ul className="space-y-1 text-xs text-dim">
               <li>• What does my heir need to do?</li>
               <li>• Is my heir's email stored on the server?</li>
               <li>• What happens if I lose my password?</li>
             </ul>
+            {/* A3 (#122): be honest that questions leave the browser for
+                an AI service — a metadata path that matters to high-risk
+                users. */}
+            <p className="text-[11px] text-dim">
+              Your questions are processed by an AI assistant.
+            </p>
           </div>
         ) : (
           <ul className="space-y-3">

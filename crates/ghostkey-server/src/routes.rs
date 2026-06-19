@@ -1302,7 +1302,7 @@ async fn send_contact_verification(
     let body = format!(
         "Hi,\n\n\
          This address was entered as the reminder email for a GhostKey \
-         vault. GhostKey will nudge you here before every check-in is \
+         vault. GhostKey will remind you here before each check-in is \
          due.\n\n\
          Tap once to confirm reminders can reach you:\n\n\
          {link}\n\n\
