@@ -54,6 +54,22 @@
  *     with the next_deadline_at already set by the server based on
  *     the check-in cadence; no further action is needed before
  *     funding.
+ *
+ * Heir-key threat model (#116 L4):
+ *   - Door A (default, no-wallet heir): the heir's key is generated in
+ *     THIS browser and sealed under a random claim token via HKDF. Only
+ *     the ciphertext leaves the browser; the server stores the sealed
+ *     blob and the claim token sealed at rest (so it can email the link
+ *     once the owner is gone). The server never derives or sees the heir
+ *     xprv in spendable form — the earlier master-key derivation (which
+ *     a server/master-key breach could have reconstructed) was removed.
+ *     Residual: at claim time the server momentarily handles the
+ *     unsealed key to build+sign the one-shot send (the impossibility
+ *     theorem for a zero-knowledge heir with no third party). Misuse is
+ *     gated on the timelock and visible on-chain.
+ *   - Door B (heir holds own key): the owner pastes the heir's xpub; the
+ *     server stores only that public key and never anything spendable.
+ *     Strictly non-custodial; the residual above does not apply.
  */
 import { useEffect, useState } from "react";
 import {
@@ -1346,6 +1362,18 @@ function HeirCard({
         />
       </Field>
 
+      {/* L4 (#116): say plainly how the heir's key comes to exist on the
+          default path, so the owner chooses knowingly. The key is made in
+          this browser and sealed so only the one-time claim link can open
+          it; GhostKey never stores it in a form it could spend. */}
+      <p className="text-xs text-dim">
+        By default, GhostKey makes a key for your heir right here in your
+        browser and locks it so only their one-time claim link can open it,
+        and only after the waiting period. We never keep it in a form we
+        could spend. Want your heir to hold their own key instead? Use the
+        advanced option below.
+      </p>
+
       <details className="mt-1 rounded-lg border border-app px-3 py-2">
         <summary className="cursor-pointer text-xs text-muted">
           Advanced: your heir holds their own key
@@ -1486,6 +1514,16 @@ function StepPassword({
             disabled={busy}
           />
         </Field>
+        {/* L5 (#116): the email is load-bearing — reminders ride on it.
+            Set the expectation now that a confirmation link is coming, so
+            an unconfirmed address doesn't silently swallow reminders and
+            trigger inheritance by accident. The dashboard enforces it too. */}
+        <p className="mt-1.5 text-xs text-muted">
+          After you create the vault, we'll email you a link to confirm this
+          address. Open it — your check-in reminders ride on it. If it's
+          never confirmed, a reminder could go missing and start the
+          inheritance by accident.
+        </p>
 
         <Field
           label="Your name (optional)"
