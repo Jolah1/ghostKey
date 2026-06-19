@@ -326,6 +326,15 @@ export function Dashboard({ onNavigate }: Props) {
             source order is unchanged — the grid only kicks in at lg. */}
         <div className="mt-10 lg:grid lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start lg:gap-8">
           <div className="min-w-0">
+            {/* T6 (#117): an unconfirmed email guards the one mechanism
+                that prevents an accidental trigger, so it leads the column
+                rather than sitting near the bottom. */}
+            {vault && !isClosed && !isClaiming && vault.owner_contact_verified === false ? (
+              <div className="mb-5">
+                <ConfirmEmailCard vaultId={vault.id} ownerToken={ownerToken} />
+              </div>
+            ) : null}
+
             <div>
               {isClosed ? (
                 <VaultClosedCard
@@ -371,12 +380,6 @@ export function Dashboard({ onNavigate }: Props) {
             {vault?.lnurl_checkin && !isClosed && !isClaiming ? (
               <div className="mt-5">
                 <LnurlCard lnurl={vault.lnurl_checkin} />
-              </div>
-            ) : null}
-
-            {vault && !isClosed && !isClaiming && vault.owner_contact_verified === false ? (
-              <div className="mt-5">
-                <ConfirmEmailCard vaultId={vault.id} ownerToken={ownerToken} />
               </div>
             ) : null}
 
@@ -1123,7 +1126,8 @@ function Greeting({
     const next = deadline ? countdown(deadline, now).friendly : null;
     sub =
       (last ? `Last checked in ${ago}.` : `Vault for ${meta.heir.name} is active.`) +
-      (next ? ` Next reminder in ${next}.` : "");
+      // `friendly` already starts with "in", so no extra "in" here (T3).
+      (next ? ` Next reminder ${next}.` : "");
   }
 
   return (
@@ -1268,14 +1272,15 @@ function HeartbeatCard({
           {justChecked
             ? "Thanks, you're safe"
             : locked
-              ? "Already checked in"
+              ? "You're all set"
               : "Time to check in"}
         </h2>
         <p className="mt-1 text-sm text-muted">
           {justChecked
             ? `${meta.heir.name}'s countdown starts again.`
             : locked
-              ? `One check-in per period. The next one opens in ${lockedCd?.friendly ?? "a moment"}.`
+              ? // `friendly` already starts with "in" (T3, T7).
+                `You're covered for this period. Your next check-in opens ${lockedCd?.friendly ?? "shortly"}.`
               : `Let ${meta.heir.name} know the clock is reset.`}
         </p>
 
@@ -1293,7 +1298,7 @@ function HeartbeatCard({
               {justChecked
                 ? "Checked in ✓"
                 : locked
-                  ? "Locked until next period"
+                  ? "Checked in for this period"
                   : "⚡ Check in with Lightning"}
             </Button>
           ) : (
@@ -1306,7 +1311,7 @@ function HeartbeatCard({
               {justChecked
                 ? "Checked in ✓"
                 : locked
-                  ? "Locked until next period"
+                  ? "Checked in for this period"
                   : "I'm still here"}
             </Button>
           )}
@@ -1324,8 +1329,10 @@ function HeartbeatCard({
 
         {cd ? (
           <p className="mt-5 text-xs text-muted" aria-live="polite">
+            {/* Labelled so it doesn't read as a contradictory second
+                countdown (T3). `friendly` already starts with "in". */}
+            Check-in due{" "}
             <span className="text-[var(--text)] font-medium">{cd.friendly}</span>
-            {" "}before countdown begins
           </p>
         ) : null}
 
@@ -1501,24 +1508,36 @@ function ConfirmEmailCard({
     }
   }
 
+  // T6 (#117): this guards the one mechanism that stops an accidental,
+  // irreversible trigger, so it's a prominent warning banner with the
+  // stakes named — not a quiet grey strip. The caller renders it only
+  // while the email is unconfirmed, so it persists until that's fixed.
   return (
     <div
-      className="card-flat flex items-center justify-between gap-3 px-4 py-3"
+      className="flex items-center justify-between gap-3 rounded-xl border border-app px-4 py-3"
+      style={{ background: "var(--warning-tint)", color: "var(--warning)" }}
+      role="alert"
       data-testid="confirm-email-card"
     >
-      <p className="text-sm text-muted">
-        {state.kind === "sent"
-          ? "Email sent. Check your inbox or spam."
-          : state.kind === "error"
-            ? state.message
-            : "Confirm your email so reminders reach you."}
+      <p className="text-sm text-[var(--text)]">
+        {state.kind === "sent" ? (
+          "Confirmation email sent. Tap the link in it — check spam too."
+        ) : state.kind === "error" ? (
+          state.message
+        ) : (
+          <>
+            <span className="font-semibold">Confirm your email.</span> Until
+            you do, we can&apos;t remind you to check in — and a missed
+            reminder can trigger the inheritance by accident.
+          </>
+        )}
       </p>
       {state.kind !== "sent" ? (
         <button
           type="button"
           onClick={() => void onResend()}
           disabled={state.kind === "sending"}
-          className="shrink-0 text-xs text-muted underline-offset-2 hover:underline disabled:opacity-50"
+          className="shrink-0 text-xs font-medium text-[var(--text)] underline underline-offset-2 disabled:opacity-50"
         >
           {state.kind === "sending" ? "Sending" : "Resend"}
         </button>
@@ -1675,12 +1694,17 @@ function HeirCard({
   onRemove?: () => void;
 }) {
   const status = vault?.status ?? "ok";
+  // T1 (#117): while the owner is alive and checking in, the heir is just
+  // standing by — they cannot take anything. Showing "Ready to claim" in
+  // success-green there is false and frightening. Green/"claim" wording is
+  // reserved for the genuinely claimable path (timelock_started, which the
+  // owner sees as an alarm).
   const pill =
     status === "claimed"
       ? { tone: "neutral" as const, label: "Claimed" }
       : status === "timelock_started"
       ? { tone: "alarm" as const, label: "Claiming" }
-      : { tone: "ok" as const, label: "Ready to claim" };
+      : { tone: "neutral" as const, label: "Standing by" };
 
   return (
     <div className="card-flat flex flex-wrap items-center gap-x-4 gap-y-2 p-5">

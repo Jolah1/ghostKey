@@ -485,12 +485,7 @@ function AlphaBanner({
         <p className="leading-tight text-muted">
           {isMainnet ? (
             <>
-              <span className="font-medium text-[var(--text)]">
-                Mainnet:
-              </span>{" "}
-              GhostKey is running on Bitcoin{" "}
-              <span className="font-mono">mainnet</span>. Real money is in
-              scope. Confirm your security review is complete.
+              You&apos;re on the live Bitcoin network. Your funds are real.
             </>
           ) : (
             <>
