@@ -453,6 +453,90 @@ fn manual_psbt_claim_is_self_contained_and_signable() -> Result<()> {
     Ok(())
 }
 
+/// The server's broadcast path (`broadcast_claim`) does NOT finalize in
+/// the heir's wallet. The heir signs in their own wallet and pastes the
+/// signed PSBT back; the *server* then assembles the witness with a
+/// **watch-only** wallet (`build_watch_only(...).finalize_psbt(...)`),
+/// which holds no keys. This split — sign in one wallet, finalize in
+/// another, key-less one — is the server-specific seam the other tests
+/// don't cover (they sign and finalize in the same wallet). Prove it end
+/// to end on regtest: heir signs without finalizing, a fresh watch-only
+/// wallet finalizes, the tx broadcasts and pays out.
+#[test]
+#[ignore]
+fn heir_signs_then_watch_only_finalizes_like_the_server() -> Result<()> {
+    let net = Network::Regtest;
+    let node = Bitcoind::spawn()?;
+    let bare = node.client()?;
+    let node_w = ensure_node_wallet(&node, "miner")?;
+    mine_blocks(&node_w, 101)?;
+
+    let (vault, _owner_m, heir_m) = build_vault_and_keys()?;
+
+    // Fund + mature the timelock.
+    let mut watch = build_watch_only(&vault)?;
+    let deposit_addr = watch.reveal_next_address(KeychainKind::External).address;
+    let deposit = Amount::from_btc(0.25)?;
+    let _fund =
+        node_w.send_to_address(&deposit_addr, deposit, None, None, None, None, None, None)?;
+    mine_blocks(&node_w, 1)?;
+    mine_blocks(&node_w, TIMELOCK_BLOCKS.into())?;
+
+    // Server's build_claim_psbt: watch-only, returns an unsigned PSBT.
+    let mut server_watch = build_watch_only(&vault)?;
+    let _ = sync_wallet(&mut server_watch, &bare)?;
+    let recipient: Address = node_w
+        .get_new_address(Some("heir-split"), Some(AddressType::Bech32))?
+        .require_network(net)
+        .map_err(|e| anyhow!("{e}"))?;
+    let built = build_heir_claim(&mut server_watch, &vault, &recipient, fee_rate())?;
+    let mut psbt: bitcoin::Psbt = built
+        .psbt
+        .to_string()
+        .parse()
+        .map_err(|e| anyhow!("parse psbt: {e}"))?;
+
+    // Heir wallet signs but does NOT finalize (what a heir's wallet hands
+    // back: signatures in the inputs, witness not yet assembled).
+    let mut heir_signer = build_signing(&vault, &heir_m)?;
+    let _ = sync_wallet(&mut heir_signer, &bare)?;
+    let heir_finalized = heir_signer
+        .sign(
+            &mut psbt,
+            bdk_wallet::SignOptions {
+                try_finalize: false,
+                ..Default::default()
+            },
+        )
+        .map_err(|e| anyhow!("heir sign: {e}"))?;
+    assert!(
+        !heir_finalized,
+        "with try_finalize=false the heir wallet must return a signed-but-not-finalized PSBT"
+    );
+
+    // Server side: a fresh, KEY-LESS watch-only wallet assembles the
+    // witness — exactly broadcast_claim's finalize_psbt step.
+    let finalizer = build_watch_only(&vault)?;
+    let assembled = finalizer
+        .finalize_psbt(&mut psbt, bdk_wallet::SignOptions::default())
+        .map_err(|e| anyhow!("watch-only finalize: {e}"))?;
+    assert!(
+        assembled,
+        "a key-less watch-only wallet must finalize a PSBT the heir already signed"
+    );
+
+    let claim_tx = psbt.extract_tx()?;
+    broadcast_tx(&bare, &claim_tx)?;
+    mine_blocks(&node_w, 1)?;
+    let recv = received_by_address(&node_w, &recipient)?;
+    assert!(
+        recv > Amount::from_btc(0.249)?,
+        "recipient should receive ~0.25 BTC minus fee via the split sign/finalize path, got {recv}"
+    );
+
+    Ok(())
+}
+
 /// Offline sweep (issue #93): prove the recovery kit's signing path.
 ///
 /// This is the same owner-spend and heir-claim as
