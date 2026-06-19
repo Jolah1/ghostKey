@@ -80,7 +80,6 @@ import {
 import { AssistChat } from "./AssistChat";
 import { VideoMessageRecorder, type RecordedClip } from "./VideoMessageRecorder";
 import { prepareVideo } from "./crypto/video";
-import { deriveHeirKey } from "./crypto/heirKey";
 import {
   MIN_LENGTH,
   checkPassword,
@@ -135,18 +134,43 @@ interface HeirDraft {
   name: string;
   contact: string;
   channel: ContactChannel;
-  /** F2: heir has no Bitcoin wallet yet. When true and `channel ===
-   *  "email"`, the server derives the heir's xpub from the email +
-   *  master key, and the heir's browser re-derives the matching
-   *  xprv at claim time. */
-  noWallet?: boolean;
   /** #98 Part 2 (item 3): optional short note from the owner, shown to
    *  this heir in the claim message ("They left you a note: ..."). */
   note?: string;
+  /** Door B (advanced): the heir holds their own key. When true, we use
+   *  `heirXpub` for the descriptor and seal no heir material server-side,
+   *  so GhostKey holds nothing that can spend. Default (false) is Door A:
+   *  we generate and seal a key for them. */
+  ownKey?: boolean;
+  /** The heir's own account xpub, origin-tagged (`[fp/86h/..]xpub...`),
+   *  required when `ownKey` is true. */
+  heirXpub?: string;
 }
 
 /** Largest number of heirs the wizard allows. Arbitrary cap. */
 const MAX_HEIRS = 5;
+
+/* ---- xpub input helpers (Door B). Mirror SetupPortal.tsx. ---- */
+
+/** True if the string looks like a (possibly origin-tagged) xpub. */
+function looksLikeXpub(s: string): boolean {
+  const t = s.trim();
+  if (!t) return false;
+  const body = t.startsWith("[") ? t.replace(/^\[[^\]]+\]/, "") : t;
+  return /^[xtvuyz]pub[1-9A-HJ-NP-Za-km-z]{50,}$/.test(body);
+}
+
+/** Extract the lowercase fingerprint from an origin tag, or null. */
+function extractFingerprint(s: string): string | null {
+  const m = s.trim().match(/^\[([0-9a-fA-F]{8})\//);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** A heir xpub is usable for Door B only if it parses AND carries an
+ *  origin tag — the server rejects a bare xpub with no fingerprint. */
+function isValidHeirXpub(s: string | undefined): boolean {
+  return Boolean(s) && looksLikeXpub(s!) && extractFingerprint(s!) !== null;
+}
 
 interface Draft {
   // Step 1 — heirs + timing
@@ -445,6 +469,19 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
       return;
     }
 
+    // Door B safety: if a heir is set to hold their own key, the xpub
+    // must be valid. Otherwise `doorB` would be false and we'd silently
+    // generate a key instead — the opposite of what the owner asked for.
+    const badHeir = draft.heirs.find(
+      (h) => h.ownKey && !isValidHeirXpub(h.heirXpub),
+    );
+    if (badHeir) {
+      setError(
+        `${badHeir.name.trim() || "Your heir"} is set to hold their own key, but the xpub is missing or isn't origin-tagged. Paste one that starts with [fingerprint/...].`,
+      );
+      return;
+    }
+
     setBusy(true);
     setError(null);
     setEmailTaken(false);
@@ -545,6 +582,14 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
         // re-seal step.
         ownerKek = sealed._owner_kek ?? ownerKek;
 
+        // Door B (advanced): the heir holds their own key. We use their
+        // pasted xpub for the descriptor and seal NO heir material —
+        // GhostKey then holds nothing that can spend. The generated
+        // `heirParty`/`claimToken` above are discarded for this heir; we
+        // still seal the owner side (the owner always uses the password
+        // flow). Door A is the default: seal the generated heir key.
+        const doorB = Boolean(heir.ownKey) && isValidHeirXpub(heir.heirXpub);
+
         const sealedBody: SealedSetup = {
           password_salt_b64: sealed.password_salt,
           password_kdf_mem_kib: sealed.password_kdf_mem_kib,
@@ -553,10 +598,17 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           owner_xprv_nonce_b64: sealed.owner_xprv.nonce,
           owner_token_ct_b64: sealed.owner_token.ct,
           owner_token_nonce_b64: sealed.owner_token.nonce,
-          heir_xprv_ct_b64: sealed.heir_xprv.ct,
-          heir_xprv_nonce_b64: sealed.heir_xprv.nonce,
           owner_email_hash: ownerEmailHash,
-          claim_token_b64: b64encode(claimToken),
+          // Door A only: the heir's sealed key + the token it's sealed
+          // under. Omitted for Door B so the server stores nothing
+          // spendable and mints a fresh claim token at trigger time.
+          ...(doorB
+            ? {}
+            : {
+                heir_xprv_ct_b64: sealed.heir_xprv.ct,
+                heir_xprv_nonce_b64: sealed.heir_xprv.nonce,
+                claim_token_b64: b64encode(claimToken),
+              }),
         };
 
         // Label disambiguates per-heir for the Dashboard list.
@@ -571,16 +623,11 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           channel: heir.channel,
         });
 
-        // F2: when the heir has no Bitcoin wallet (`noWallet` flag),
-        // tell the server to derive the heir's xpub itself. The
-        // `heir.xpub` we send in this branch is a throwaway — the
-        // server ignores it. We still seal a heir_xprv into
-        // `sealedBody.heir_xprv_ct_b64` because the password-vault
-        // path requires *some* sealed material; the heir's browser
-        // will use the F2-derivation xprv at claim time and ignore
-        // the sealed blob.
-        const useHeirDerivation =
-          Boolean(heir.noWallet) && heir.channel === "email";
+        // The heir key is always the browser-generated `heirParty`,
+        // sealed under this heir's claim token (above). We never ask
+        // the server to derive the heir key from its master key — that
+        // would make every such heir key recoverable from one secret.
+        // `heir_derivation` is therefore always null on new vaults.
         const resp = await api.createVaultFromXpub({
           label,
           network,
@@ -588,10 +635,15 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
             xpub: ownerParty.xpub,
             fingerprint: ownerParty.fingerprint,
           },
-          heir: {
-            xpub: heirParty.xpub,
-            fingerprint: heirParty.fingerprint,
-          },
+          heir: doorB
+            ? {
+                xpub: heir.heirXpub!.trim(),
+                fingerprint: extractFingerprint(heir.heirXpub!) ?? undefined,
+              }
+            : {
+                xpub: heirParty.xpub,
+                fingerprint: heirParty.fingerprint,
+              },
           timelock_blocks: timelockBlocks,
           checkin_period_secs: checkinSecs,
           grace_period_secs: graceSecs,
@@ -600,9 +652,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           heir_contact: heirContactPayload,
           heir_contact_channel: heir.channel,
           sealed: sealedBody,
-          heir_derivation: useHeirDerivation
-            ? { email: heir.contact.trim() }
-            : null,
+          heir_derivation: null,
           trusted_contact: draft.trustedContact.trim() || null,
           trusted_contact_channel: draft.trustedContact.trim()
             ? draft.trustedContactChannel
@@ -641,7 +691,12 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
         // the heir's verification). Best-effort: a failure here must
         // not abort an otherwise-good vault — the message is a nicety,
         // not the inheritance.
-        if (videoClip) {
+        //
+        // Skipped for Door B: the video is sealed under `claimToken`, but
+        // a Door B vault has the scheduler mint a *different* token at
+        // trigger, so the heir could never decrypt it. Better to not
+        // store an undeliverable clip than to promise one.
+        if (videoClip && !doorB) {
           try {
             const bytes = new Uint8Array(await videoClip.blob.arrayBuffer());
             const prepared = prepareVideo(ownerParty.xprv, claimToken, bytes);
@@ -687,26 +742,15 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
         // one-off passphrase (returned to show the owner once) so it can
         // be handed down without sharing the sign-in password.
         //
-        // The right key differs by heir type: a bring-your-own heir uses
-        // the party we minted above; an F2 (server-derived) heir's key is
-        // derived from vault_secret + their email — the server returns
-        // vault_secret only for these vaults. Best-effort throughout: a
+        // The heir key is the `heirParty` we minted above (same key the
+        // server holds sealed under the claim token). Best-effort: a
         // failure here must never abort an otherwise-good vault.
+        // Door B heirs hold their own key, so there is no envelope to
+        // build — the server never had a heir secret to seal.
         let envelope: HeirEnvelope | undefined;
-        if (resp.descriptor_external && resp.descriptor_internal) {
+        if (!doorB && resp.descriptor_external && resp.descriptor_internal) {
           try {
-            let heirXprv: string | null = null;
-            if (useHeirDerivation) {
-              if (resp.vault_secret_hex) {
-                heirXprv = deriveHeirKey(
-                  resp.vault_secret_hex,
-                  heir.contact.trim(),
-                  network,
-                ).xprvBase58;
-              }
-            } else {
-              heirXprv = heirParty.xprv;
-            }
+            const heirXprv = heirParty.xprv;
             if (heirXprv) {
               setKdfProgress(0);
               envelope = await buildHeirEnvelope({
@@ -1296,21 +1340,48 @@ function HeirCard({
         />
       </Field>
 
-      {heir.channel === "email" ? (
-        <label className="mt-1 flex items-start gap-2 text-xs text-muted">
-          <input
-            type="checkbox"
-            checked={Boolean(heir.noWallet)}
-            onChange={(e) => onChange({ noWallet: e.target.checked })}
-            className="mt-0.5"
-          />
-          <span>
-            They don't have a Bitcoin wallet yet. We'll generate one for
-            them from their email when they open the claim link. No
-            setup ahead of time.
-          </span>
-        </label>
-      ) : null}
+      <details className="mt-1 rounded-lg border border-app px-3 py-2">
+        <summary className="cursor-pointer text-xs text-muted">
+          Advanced: your heir holds their own key
+        </summary>
+        <div className="mt-3 space-y-3">
+          <label className="flex items-start gap-2 text-xs text-muted">
+            <input
+              type="checkbox"
+              checked={Boolean(heir.ownKey)}
+              onChange={(e) => onChange({ ownKey: e.target.checked })}
+              className="mt-0.5"
+            />
+            <span>
+              Use my heir's own wallet key instead. GhostKey never holds
+              anything that can spend their Bitcoin, not even during a
+              claim. The trade: your heir keeps their wallet's recovery
+              words safe, and at claim time signs with a wallet that can
+              handle the vault's timelock script (Bitcoin Core can).
+            </span>
+          </label>
+          {heir.ownKey ? (
+            <div>
+              <textarea
+                value={heir.heirXpub ?? ""}
+                onChange={(e) => onChange({ heirXpub: e.target.value })}
+                placeholder="[a1b2c3d4/86'/0'/0']xpub6..."
+                autoComplete="off"
+                spellCheck={false}
+                rows={3}
+                className="input font-mono text-xs"
+              />
+              <p className="mt-1 text-xs text-dim">
+                {!heir.heirXpub?.trim()
+                  ? "Paste your heir's account xpub. Most wallets export it under a 'key origin' or descriptor option."
+                  : isValidHeirXpub(heir.heirXpub)
+                    ? "Looks good. This vault will be non-custodial: GhostKey holds nothing that can spend it."
+                    : "This needs to include the part in [brackets] at the front (the key origin). A plain xpub on its own can't be used."}
+              </p>
+            </div>
+          ) : null}
+        </div>
+      </details>
 
       <Field label="A short note for them (optional)">
         <textarea

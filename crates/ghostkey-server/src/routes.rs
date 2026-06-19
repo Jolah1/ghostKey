@@ -753,8 +753,12 @@ pub struct SealedSetup {
     pub owner_token_ct_b64: String,
     pub owner_token_nonce_b64: String,
 
-    pub heir_xprv_ct_b64: String,
-    pub heir_xprv_nonce_b64: String,
+    /// The heir's sealed xprv. Absent for Door B vaults, where the heir
+    /// holds their own key and the server stores nothing that can spend.
+    /// When present, `claim_token_b64` must be present too (the xprv is
+    /// sealed under it); when absent, so is the claim token.
+    pub heir_xprv_ct_b64: Option<String>,
+    pub heir_xprv_nonce_b64: Option<String>,
 
     /// SHA-256 hex of the lower-cased, NFKC-normalised owner email.
     /// Used by `/vaults/find` for cross-device password recovery.
@@ -764,8 +768,10 @@ pub struct SealedSetup {
     /// key. The server stores this verbatim so that when the trigger
     /// fires it can construct the heir's URL fragment. SHA-256 hash is
     /// also computed and stored as `claim_token_hash` for the
-    /// `/claim/:token` resolver.
-    pub claim_token_b64: String,
+    /// `/claim/:token` resolver. Absent for Door B vaults — there the
+    /// scheduler mints a fresh claim token at trigger time, exactly like
+    /// a legacy vault, since no heir secret is bound to it.
+    pub claim_token_b64: Option<String>,
 }
 
 /// One *owner* per email — but an owner may have several heirs, each
@@ -1077,7 +1083,31 @@ async fn create_vault_from_xpub(
                 "owner_email_hash must be 64 hex characters".into(),
             ));
         }
-        let token_hash = crypto::hash_claim_token(&s.claim_token_b64);
+        // Heir sealed material and the claim token are coupled: the xprv
+        // is sealed under the token. They must be all-present (Door A) or
+        // all-absent (Door B). Reject a half-populated shape.
+        let heir_present = s.heir_xprv_ct_b64.is_some() && s.heir_xprv_nonce_b64.is_some();
+        if heir_present != s.claim_token_b64.is_some() {
+            return Err(ApiError::Validation(
+                "sealed heir xprv and claim token must be both present or both absent".into(),
+            ));
+        }
+        // Door B: no heir secret, no at-rest claim token. The scheduler
+        // mints a fresh token at trigger time (legacy path).
+        //
+        // Door A: we must keep the token at rest (the scheduler embeds it
+        // in the heir's link once the owner is gone), but we seal it under
+        // the per-vault AEAD instead of storing it verbatim, so a DB-only
+        // dump doesn't leak the bearer credential. The hash stays plaintext
+        // — it's a one-way digest used for the /claim/:token lookup.
+        let (at_rest, token_hash, token_issued) = match s.claim_token_b64.as_ref() {
+            Some(tok) => (
+                Some(crypto::seal_claim_token_at_rest(&id, tok)?),
+                Some(crypto::hash_claim_token(tok)),
+                Some(now_s.clone()),
+            ),
+            None => (None, None, None),
+        };
         (
             Some(s.password_salt_b64.clone()),
             Some(s.password_kdf_mem_kib),
@@ -1086,12 +1116,12 @@ async fn create_vault_from_xpub(
             Some(s.owner_xprv_nonce_b64.clone()),
             Some(s.owner_token_ct_b64.clone()),
             Some(s.owner_token_nonce_b64.clone()),
-            Some(s.heir_xprv_ct_b64.clone()),
-            Some(s.heir_xprv_nonce_b64.clone()),
+            s.heir_xprv_ct_b64.clone(),
+            s.heir_xprv_nonce_b64.clone(),
             Some(s.owner_email_hash.clone()),
-            Some(s.claim_token_b64.clone()),
-            Some(token_hash),
-            Some(now_s.clone()),
+            at_rest,
+            token_hash,
+            token_issued,
         )
     } else {
         (
@@ -3449,5 +3479,172 @@ mod tests {
             .await
             .expect("count");
         assert_eq!(n, 2);
+    }
+
+    /* ---------------- Door B: heir holds their own key ---------------- */
+
+    /// `create_vault_from_xpub` touches `seal_for_vault`, which needs a
+    /// master key. Tests share one process-wide key (the `OnceLock` in
+    /// crypto only initialises once); 32 zero bytes is fine for sealing.
+    fn ensure_test_master_key() {
+        if std::env::var("GHOSTKEY_MASTER_KEY").is_err() {
+            // 32 zero bytes, base64 (no pad) = 43 'A's.
+            let b64 = "A".repeat(43);
+            // SAFETY: tests run before any handler; we only set, never unset.
+            unsafe {
+                std::env::set_var("GHOSTKEY_MASTER_KEY", b64);
+            }
+        }
+    }
+
+    /// A minimal, shape-valid `SealedSetup`. Heir-side material and the
+    /// claim token are left to the caller so each test can pick Door A
+    /// (all present) or Door B (all absent).
+    fn sealed_setup(
+        owner_email_hash: &str,
+        heir_xprv_ct_b64: Option<String>,
+        heir_xprv_nonce_b64: Option<String>,
+        claim_token_b64: Option<String>,
+    ) -> SealedSetup {
+        SealedSetup {
+            password_salt_b64: "c2FsdA".into(),
+            password_kdf_mem_kib: 19_456,
+            password_kdf_iters: 2,
+            owner_xprv_ct_b64: "b3duZXJjdA".into(),
+            owner_xprv_nonce_b64: "b3duZXJubg".into(),
+            owner_token_ct_b64: "dG9rY3Q".into(),
+            owner_token_nonce_b64: "dG9rbm4".into(),
+            heir_xprv_ct_b64,
+            heir_xprv_nonce_b64,
+            owner_email_hash: owner_email_hash.into(),
+            claim_token_b64,
+        }
+    }
+
+    fn door_b_request(sealed: SealedSetup) -> CreateVaultFromXpubRequest {
+        let (owner_xpub, owner_fp) = xpub_for(0x77);
+        let (heir_xpub, heir_fp) = xpub_for(0x88);
+        CreateVaultFromXpubRequest {
+            label: Some("door-b".into()),
+            network: "regtest".into(),
+            owner: PartyXpub {
+                xpub: owner_xpub,
+                fingerprint: Some(owner_fp),
+            },
+            heir: PartyXpub {
+                xpub: heir_xpub,
+                fingerprint: Some(heir_fp),
+            },
+            timelock_blocks: 144,
+            checkin_period_secs: 86_400,
+            grace_period_secs: 3_600,
+            // No owner email → skip the verification-email side effect.
+            owner_contact: None,
+            owner_contact_channel: None,
+            heir_contact: Some("heir@example.com".into()),
+            heir_contact_channel: Some("email".into()),
+            sealed: Some(sealed),
+            heir_derivation: None,
+            trusted_contact: None,
+            trusted_contact_channel: None,
+            from_name: None,
+            heir_note: None,
+        }
+    }
+
+    /// The whole point of Door B: the server stores a real, spendable-by-
+    /// the-heir descriptor but holds NOTHING that can produce the heir's
+    /// key or claim token. The scheduler mints a fresh token at trigger
+    /// time, exactly like a legacy vault.
+    #[tokio::test]
+    async fn door_b_stores_no_heir_secret_or_claim_token() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let req = door_b_request(sealed_setup(&"d".repeat(64), None, None, None));
+
+        let (code, created) = create_vault_from_xpub(State(state.clone()), Json(req))
+            .await
+            .expect("Door B create should succeed");
+        assert_eq!(code, StatusCode::CREATED);
+        let id = created.vault.id.clone();
+        // Door B owners hold their own key already; no derivation secret
+        // is ever returned.
+        assert!(
+            created.vault_secret_hex.is_none(),
+            "Door B must not emit a vault secret"
+        );
+
+        // The descriptor must be a real, parseable timelock vault.
+        let (ext, heir_ct, heir_nn, at_rest, token_hash, derived): (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            i64,
+        ) = sqlx::query_as(
+            "SELECT descriptor_external, heir_xprv_sealed_ct_b64, heir_xprv_sealed_nonce, \
+                    claim_token_at_rest_b64, claim_token_hash, heir_derived \
+               FROM vaults WHERE id = ?",
+        )
+        .bind(&id)
+        .fetch_one(&state.db)
+        .await
+        .expect("vault row");
+
+        assert!(ext.starts_with("tr("), "real descriptor stored: {ext}");
+        parse_descriptor(&ext).expect("stored descriptor must parse");
+        // The crux: nothing spendable, no token, at rest.
+        assert!(heir_ct.is_none(), "Door B must seal no heir xprv");
+        assert!(heir_nn.is_none(), "Door B must seal no heir nonce");
+        assert!(
+            at_rest.is_none(),
+            "Door B must store no at-rest claim token"
+        );
+        assert!(
+            token_hash.is_none(),
+            "Door B must store no claim-token hash"
+        );
+        assert_eq!(derived, 0, "Door B is not a server-derived heir");
+    }
+
+    /// The heir xprv is sealed under the claim token, so the two are
+    /// coupled: all-present (Door A) or all-absent (Door B). A half-
+    /// populated payload is a client bug and must be rejected, not
+    /// silently persisted into an unclaimable vault.
+    #[tokio::test]
+    async fn sealed_heir_and_claim_token_must_be_coupled() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+
+        // Heir secret present, but no claim token to unseal it with.
+        let orphan_heir = door_b_request(sealed_setup(
+            &"e".repeat(64),
+            Some("aGVpcmN0".into()),
+            Some("aGVpcm5u".into()),
+            None,
+        ));
+        let err = create_vault_from_xpub(State(state.clone()), Json(orphan_heir))
+            .await
+            .expect_err("heir-without-token must be rejected");
+        assert!(
+            matches!(&err, ApiError::Validation(m) if m.contains("both present or both absent")),
+            "got {err:?}"
+        );
+
+        // Claim token present, but no heir secret it could be sealing.
+        let orphan_token = door_b_request(sealed_setup(
+            &"f".repeat(64),
+            None,
+            None,
+            Some("dG9rZW4".into()),
+        ));
+        let err = create_vault_from_xpub(State(state.clone()), Json(orphan_token))
+            .await
+            .expect_err("token-without-heir must be rejected");
+        assert!(
+            matches!(&err, ApiError::Validation(m) if m.contains("both present or both absent")),
+            "got {err:?}"
+        );
     }
 }

@@ -88,7 +88,6 @@ export function AddHeirPortal({
   const [heirName, setHeirName] = useState("");
   const [contact, setContact] = useState("");
   const [channel, setChannel] = useState<Channel>("email");
-  const [noWallet, setNoWallet] = useState(true);
   const [password, setPassword] = useState("");
   const [videoClip, setVideoClip] = useState<RecordedClip | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "form" });
@@ -178,7 +177,6 @@ export function AddHeirPortal({
       ownerKek = sealed._owner_kek;
 
       const label = `${heirName.trim()}'s share`;
-      const useHeirDerivation = noWallet && channel === "email";
       const resp = await api.createVaultFromXpub({
         label,
         network: vault.network,
@@ -208,7 +206,7 @@ export function AddHeirPortal({
           owner_email_hash: hashEmailForLookup(ownerEmail),
           claim_token_b64: b64encode(claimToken),
         },
-        heir_derivation: useHeirDerivation ? { email: contact.trim() } : null,
+        heir_derivation: null,
       });
 
       // (3) Re-seal the REAL owner token under the same password KEK so
@@ -383,22 +381,6 @@ export function AddHeirPortal({
                   />
                 </div>
               </Field>
-
-              {channel === "email" ? (
-                <label className="flex items-start gap-2 text-sm text-muted">
-                  <input
-                    type="checkbox"
-                    className="mt-0.5"
-                    checked={noWallet}
-                    onChange={(e) => setNoWallet(e.target.checked)}
-                    disabled={busy}
-                  />
-                  <span>
-                    This heir has no Bitcoin wallet yet. We'll set one up for
-                    them automatically from their email when they claim.
-                  </span>
-                </label>
-              ) : null}
 
               <div>
                 <p className="text-xs uppercase tracking-wider text-dim">

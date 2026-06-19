@@ -207,6 +207,58 @@ pub fn open_for_vault(vault_id: &str, sealed: &SealedContact) -> Result<Vec<u8>,
         .map_err(|_| CryptoError::Decrypt)
 }
 
+/// Marker prefixing an at-rest claim token that has been encrypted with
+/// the per-vault AEAD. The raw claim token is base64-**url**-safe-no-pad
+/// (`[A-Za-z0-9_-]`, see [`issue_claim_token`]), so it can never contain
+/// a `.`; this prefix therefore can't collide with a legacy plaintext
+/// row, which lets the reader tell sealed from legacy by inspection.
+const SEALED_TOKEN_PREFIX: &str = "gk1.";
+
+/// Encrypt a claim token for storage in `vaults.claim_token_at_rest_b64`.
+///
+/// Door A (password) vaults must keep the heir's claim token at rest so
+/// the scheduler can put it in the heir's link when the owner is gone.
+/// We seal it under the per-vault AEAD rather than storing it verbatim,
+/// so a DB-only dump (a leaked backup, a stolen SQLite file) doesn't
+/// hand over the bearer credential. This does **not** defend against a
+/// running-server or master-key compromise: the server must be able to
+/// decrypt to deliver the link, by construction. See the plan / PR.
+///
+/// The nonce and ciphertext are packed into the single existing column
+/// as `gk1.<nonce_b64>.<ciphertext_b64>` so no schema migration is
+/// needed; [`open_claim_token_at_rest`] reverses it and transparently
+/// passes through legacy plaintext rows.
+pub fn seal_claim_token_at_rest(vault_id: &str, token: &str) -> Result<String, CryptoError> {
+    let sealed = seal_for_vault(vault_id, token.as_bytes())?;
+    Ok(format!(
+        "{SEALED_TOKEN_PREFIX}{}.{}",
+        sealed.nonce_b64, sealed.ciphertext_b64
+    ))
+}
+
+/// Reverse of [`seal_claim_token_at_rest`], with backward compatibility.
+///
+/// Rows written before this change hold the raw token verbatim (no
+/// prefix); we return those unchanged. Rows with the `gk1.` prefix are
+/// AEAD-sealed and get decrypted with the per-vault key.
+pub fn open_claim_token_at_rest(vault_id: &str, stored: &str) -> Result<String, CryptoError> {
+    let Some(rest) = stored.strip_prefix(SEALED_TOKEN_PREFIX) else {
+        // Legacy plaintext token, stored before at-rest sealing landed.
+        return Ok(stored.to_string());
+    };
+    let (nonce_b64, ciphertext_b64) = rest
+        .split_once('.')
+        .ok_or_else(|| CryptoError::Malformed("at-rest token: missing nonce separator".into()))?;
+    let pt = open_for_vault(
+        vault_id,
+        &SealedContact {
+            ciphertext_b64: ciphertext_b64.to_string(),
+            nonce_b64: nonce_b64.to_string(),
+        },
+    )?;
+    String::from_utf8(pt).map_err(|e| CryptoError::Malformed(format!("at-rest token utf8: {e}")))
+}
+
 /* -------------------------------------------------------------------------- *
  *  Claim tokens                                                              *
  * -------------------------------------------------------------------------- */
@@ -364,6 +416,44 @@ mod tests {
         let sealed = seal_for_vault("vault-abc", pt).expect("seal");
         let opened = open_for_vault("vault-abc", &sealed).expect("open");
         assert_eq!(opened, pt);
+    }
+
+    #[test]
+    fn at_rest_token_round_trips_and_is_not_plaintext() {
+        ensure_test_master_key();
+        let token = "raw-bearer-token-the-heir-sees-0xCAFE";
+        let sealed = seal_claim_token_at_rest("vault-pw", token).expect("seal token");
+        assert!(
+            sealed.starts_with("gk1."),
+            "sealed at-rest token must carry the format marker: {sealed}"
+        );
+        assert!(
+            !sealed.contains(token),
+            "the raw token must not appear in the at-rest value: {sealed}"
+        );
+        let opened = open_claim_token_at_rest("vault-pw", &sealed).expect("open token");
+        assert_eq!(opened, token);
+    }
+
+    #[test]
+    fn at_rest_token_passes_through_legacy_plaintext_rows() {
+        ensure_test_master_key();
+        // Rows written before sealing landed hold the raw token verbatim
+        // (base64url, no `gk1.` prefix). They must round-trip unchanged.
+        let legacy = "OldRawToken_with-url-safe-chars1234567890AbC";
+        let opened = open_claim_token_at_rest("vault-legacy", legacy).expect("legacy open");
+        assert_eq!(opened, legacy);
+    }
+
+    #[test]
+    fn at_rest_token_sealed_for_one_vault_will_not_open_for_another() {
+        ensure_test_master_key();
+        let sealed = seal_claim_token_at_rest("vault-A", "tok").expect("seal");
+        let err = open_claim_token_at_rest("vault-B", &sealed);
+        assert!(
+            matches!(err, Err(CryptoError::Decrypt)),
+            "cross-vault at-rest open must fail with Decrypt, got {err:?}"
+        );
     }
 
     #[test]

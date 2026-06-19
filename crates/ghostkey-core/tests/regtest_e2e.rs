@@ -346,6 +346,197 @@ fn owner_checkin_then_heir_claim() -> Result<()> {
     Ok(())
 }
 
+/// Manual-PSBT claim path (the one a Door B / own-key heir lands in):
+/// is the unsigned PSBT the server hands out actually self-contained,
+/// and can a descriptor-aware signer holding only the heir key finish it?
+///
+/// The server's `build_claim_psbt` builds from a **watch-only** wallet
+/// (no private keys) and returns an unsigned PSBT for the heir to sign
+/// in their own wallet. This test reproduces that exact path and then:
+///
+///  1. asserts the build is **not** finalized (watch-only has no keys),
+///  2. decodes the PSBT with bitcoind and asserts the input carries the
+///     tapscript leaf (`taproot_scripts`) and the key-origin derivation
+///     (`taproot_bip32_derivs`) — i.e. the PSBT is self-contained, so the
+///     only thing a signer must bring is the heir key + the ability to
+///     satisfy our `or_d(pk,and_v(v:pk,older))` tapscript,
+///  3. signs that same unsigned PSBT with a descriptor-aware signer that
+///     holds the heir key (the model Bitcoin Core / the in-browser kit
+///     follow) and broadcasts it — proving the unsigned PSBT is valid and
+///     completable.
+///
+/// What it deliberately does NOT claim: that a wallet which refuses our
+/// descriptor (Sparrow/Liana, per the restore drill) can sign it. The
+/// barrier there is signer capability, not missing PSBT data — which is
+/// exactly what assertion (2) pins down.
+#[test]
+#[ignore]
+fn manual_psbt_claim_is_self_contained_and_signable() -> Result<()> {
+    let net = Network::Regtest;
+    let node = Bitcoind::spawn()?;
+    let bare = node.client()?;
+    let node_w = ensure_node_wallet(&node, "miner")?;
+    mine_blocks(&node_w, 101)?;
+
+    let (vault, _owner_m, heir_m) = build_vault_and_keys()?;
+
+    // Fund the vault's first deposit address.
+    let mut watch = build_watch_only(&vault)?;
+    let deposit_addr = watch.reveal_next_address(KeychainKind::External).address;
+    let deposit = Amount::from_btc(0.4)?;
+    let _fund =
+        node_w.send_to_address(&deposit_addr, deposit, None, None, None, None, None, None)?;
+    mine_blocks(&node_w, 1)?;
+    // Mature the relative timelock so the heir branch is spendable.
+    mine_blocks(&node_w, TIMELOCK_BLOCKS.into())?;
+
+    // ---- Reproduce the server's manual-PSBT build: WATCH-ONLY, no keys ----
+    let mut server_watch = build_watch_only(&vault)?;
+    let _ = sync_wallet(&mut server_watch, &bare)?;
+    let recipient: Address = node_w
+        .get_new_address(Some("heir-external"), Some(AddressType::Bech32))?
+        .require_network(net)
+        .map_err(|e| anyhow!("{e}"))?;
+    let built = build_heir_claim(&mut server_watch, &vault, &recipient, fee_rate())?;
+    assert!(
+        !built.finalized,
+        "watch-only server build must be unsigned — the heir's wallet supplies the signature"
+    );
+    // bitcoin::Psbt's Display impl is base64, matching what the server returns.
+    let unsigned_b64 = built.psbt.to_string();
+
+    // ---- (2) The PSBT must be SELF-CONTAINED ----
+    let decoded: serde_json::Value = bare.call(
+        "decodepsbt",
+        &[serde_json::Value::String(unsigned_b64.clone())],
+    )?;
+    let input0 = &decoded["inputs"][0];
+    let has_nonempty_array = |key: &str| -> bool {
+        input0
+            .get(key)
+            .and_then(|v| v.as_array())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false)
+    };
+    assert!(
+        has_nonempty_array("taproot_scripts"),
+        "unsigned PSBT input must carry the tapscript leaf (taproot_scripts); got: {input0}"
+    );
+    assert!(
+        has_nonempty_array("taproot_bip32_derivs"),
+        "unsigned PSBT input must carry key-origin derivations (taproot_bip32_derivs); got: {input0}"
+    );
+    println!("manual-psbt input is self-contained: taproot_scripts + taproot_bip32_derivs present");
+
+    // ---- (3) A descriptor-aware signer holding the heir key finishes it ----
+    let mut heir_signer = build_signing(&vault, &heir_m)?;
+    let _ = sync_wallet(&mut heir_signer, &bare)?;
+    let mut psbt: bitcoin::Psbt = unsigned_b64
+        .parse()
+        .map_err(|e| anyhow!("re-parse server psbt: {e}"))?;
+    let finalized = heir_signer
+        .sign(&mut psbt, bdk_wallet::SignOptions::default())
+        .map_err(|e| anyhow!("heir sign: {e}"))?;
+    assert!(
+        finalized,
+        "a descriptor-aware signer with the heir key must finalize the server's unsigned PSBT"
+    );
+    let claim_tx = psbt.extract_tx()?;
+    broadcast_tx(&bare, &claim_tx)?;
+    mine_blocks(&node_w, 1)?;
+    let recv = received_by_address(&node_w, &recipient)?;
+    assert!(
+        recv > Amount::from_btc(0.399)?,
+        "recipient should receive ~0.4 BTC minus fee from the externally-signed claim, got {recv}"
+    );
+
+    Ok(())
+}
+
+/// The server's broadcast path (`broadcast_claim`) does NOT finalize in
+/// the heir's wallet. The heir signs in their own wallet and pastes the
+/// signed PSBT back; the *server* then assembles the witness with a
+/// **watch-only** wallet (`build_watch_only(...).finalize_psbt(...)`),
+/// which holds no keys. This split — sign in one wallet, finalize in
+/// another, key-less one — is the server-specific seam the other tests
+/// don't cover (they sign and finalize in the same wallet). Prove it end
+/// to end on regtest: heir signs without finalizing, a fresh watch-only
+/// wallet finalizes, the tx broadcasts and pays out.
+#[test]
+#[ignore]
+fn heir_signs_then_watch_only_finalizes_like_the_server() -> Result<()> {
+    let net = Network::Regtest;
+    let node = Bitcoind::spawn()?;
+    let bare = node.client()?;
+    let node_w = ensure_node_wallet(&node, "miner")?;
+    mine_blocks(&node_w, 101)?;
+
+    let (vault, _owner_m, heir_m) = build_vault_and_keys()?;
+
+    // Fund + mature the timelock.
+    let mut watch = build_watch_only(&vault)?;
+    let deposit_addr = watch.reveal_next_address(KeychainKind::External).address;
+    let deposit = Amount::from_btc(0.25)?;
+    let _fund =
+        node_w.send_to_address(&deposit_addr, deposit, None, None, None, None, None, None)?;
+    mine_blocks(&node_w, 1)?;
+    mine_blocks(&node_w, TIMELOCK_BLOCKS.into())?;
+
+    // Server's build_claim_psbt: watch-only, returns an unsigned PSBT.
+    let mut server_watch = build_watch_only(&vault)?;
+    let _ = sync_wallet(&mut server_watch, &bare)?;
+    let recipient: Address = node_w
+        .get_new_address(Some("heir-split"), Some(AddressType::Bech32))?
+        .require_network(net)
+        .map_err(|e| anyhow!("{e}"))?;
+    let built = build_heir_claim(&mut server_watch, &vault, &recipient, fee_rate())?;
+    let mut psbt: bitcoin::Psbt = built
+        .psbt
+        .to_string()
+        .parse()
+        .map_err(|e| anyhow!("parse psbt: {e}"))?;
+
+    // Heir wallet signs but does NOT finalize (what a heir's wallet hands
+    // back: signatures in the inputs, witness not yet assembled).
+    let mut heir_signer = build_signing(&vault, &heir_m)?;
+    let _ = sync_wallet(&mut heir_signer, &bare)?;
+    let heir_finalized = heir_signer
+        .sign(
+            &mut psbt,
+            bdk_wallet::SignOptions {
+                try_finalize: false,
+                ..Default::default()
+            },
+        )
+        .map_err(|e| anyhow!("heir sign: {e}"))?;
+    assert!(
+        !heir_finalized,
+        "with try_finalize=false the heir wallet must return a signed-but-not-finalized PSBT"
+    );
+
+    // Server side: a fresh, KEY-LESS watch-only wallet assembles the
+    // witness — exactly broadcast_claim's finalize_psbt step.
+    let finalizer = build_watch_only(&vault)?;
+    let assembled = finalizer
+        .finalize_psbt(&mut psbt, bdk_wallet::SignOptions::default())
+        .map_err(|e| anyhow!("watch-only finalize: {e}"))?;
+    assert!(
+        assembled,
+        "a key-less watch-only wallet must finalize a PSBT the heir already signed"
+    );
+
+    let claim_tx = psbt.extract_tx()?;
+    broadcast_tx(&bare, &claim_tx)?;
+    mine_blocks(&node_w, 1)?;
+    let recv = received_by_address(&node_w, &recipient)?;
+    assert!(
+        recv > Amount::from_btc(0.249)?,
+        "recipient should receive ~0.25 BTC minus fee via the split sign/finalize path, got {recv}"
+    );
+
+    Ok(())
+}
+
 /// Offline sweep (issue #93): prove the recovery kit's signing path.
 ///
 /// This is the same owner-spend and heir-claim as

@@ -136,7 +136,11 @@ async fn send_claim_ready_notices(state: &AppState) -> anyhow::Result<()> {
         // the link again; legacy vaults can't (the raw token only ever
         // lived in the first email), so we point back at it.
         let link_line = match token_at_rest.as_deref().filter(|t| !t.is_empty()) {
-            Some(token) => {
+            Some(stored) => {
+                // Door A keeps the token at rest, sealed under the per-vault
+                // AEAD (legacy rows are plaintext and pass through). Decrypt
+                // it back to the bearer value for the link.
+                let token = crate::crypto::open_claim_token_at_rest(&vault_id, stored)?;
                 let base = public_base_url();
                 format!("Pick up where you left off:\n\n{base}/#/claim/{token}")
             }
@@ -964,7 +968,12 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
         // mint a fresh one.
         let (raw_token, token_hash, reused) =
             if let (Some(raw), Some(hash)) = (at_rest.as_ref(), existing_hash.as_ref()) {
-                (raw.clone(), hash.clone(), true)
+                // Door A: the token was sealed at rest at creation time
+                // (legacy rows are plaintext and pass through unchanged).
+                // Decrypt back to the bearer value before it goes in the
+                // heir's link.
+                let token = crate::crypto::open_claim_token_at_rest(&id, raw)?;
+                (token, hash.clone(), true)
             } else {
                 let t = issue_claim_token();
                 (t.token, t.hash_hex, false)
@@ -1515,6 +1524,89 @@ mod tests {
         assert!(
             detail.contains("reused_password_vault_token"),
             "event detail should record the reused-token reason; got: {detail}"
+        );
+    }
+
+    /// Step 3: the at-rest token is now sealed under the per-vault AEAD.
+    /// On trigger the scheduler must decrypt it back to the bearer value
+    /// before it goes in the heir's link — the sealed `gk1.` blob must
+    /// never reach the email.
+    #[tokio::test]
+    async fn password_vault_decrypts_sealed_at_rest_token_into_heir_link() {
+        ensure_test_master_key();
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+
+        let raw_token = "the-real-bearer-token-1234567890ABCdef";
+        let sealed_at_rest =
+            crate::crypto::seal_claim_token_at_rest("vault-sealed", raw_token).expect("seal token");
+        assert!(sealed_at_rest.starts_with("gk1."), "precondition: sealed");
+        let hash = crate::crypto::hash_claim_token(raw_token);
+
+        // Heir contact JSON, sealed exactly as the create path stores it.
+        let heir_json = serde_json::json!({
+            "name": "Sarah",
+            "contact": "sarah@example.com",
+            "channel": "email"
+        })
+        .to_string();
+        let heir_sealed =
+            crate::crypto::seal_for_vault("vault-sealed", heir_json.as_bytes()).expect("seal heir");
+
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status, claim_eligible_at,
+                heir_contact_ciphertext, heir_contact_nonce, heir_contact_channel,
+                claim_token_at_rest_b64, claim_token_hash
+            ) VALUES (?, 'regtest', 'tr(fake/vault-sealed/0/*)', 'tr(fake/vault-sealed/1/*)',
+                      144, 86400, 3600,
+                      '2026-01-01T00:00:00Z', '2026-04-01T00:00:00Z', 'alarmed',
+                      '2026-04-08T00:00:00Z', ?, ?, 'email', ?, ?)"#,
+        )
+        .bind("vault-sealed")
+        .bind(&heir_sealed.ciphertext_b64)
+        .bind(&heir_sealed.nonce_b64)
+        .bind(&sealed_at_rest)
+        .bind(&hash)
+        .execute(&pool)
+        .await
+        .expect("insert sealed-at-rest vault");
+
+        tick_once(&state).await.expect("tick");
+
+        // Read the enqueued claim-link notification body and decrypt it.
+        let (body_ct, body_nonce): (String, String) = sqlx::query_as(
+            "SELECT body_ciphertext, body_nonce FROM notifications \
+               WHERE vault_id = ? ORDER BY id DESC LIMIT 1",
+        )
+        .bind("vault-sealed")
+        .fetch_one(&pool)
+        .await
+        .expect("a claim-link notification was enqueued");
+        let body = String::from_utf8(
+            crate::crypto::open_for_vault(
+                "vault-sealed",
+                &crate::crypto::SealedContact {
+                    ciphertext_b64: body_ct,
+                    nonce_b64: body_nonce,
+                },
+            )
+            .expect("open notification body"),
+        )
+        .expect("utf8 body");
+
+        assert!(
+            body.contains(raw_token),
+            "the heir link must carry the decrypted token; body: {body}"
+        );
+        assert!(
+            !body.contains("gk1."),
+            "the sealed at-rest blob must never reach the heir; body: {body}"
         );
     }
 

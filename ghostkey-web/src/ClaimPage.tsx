@@ -24,12 +24,12 @@
  *       server builds + signs + broadcasts in one shot. No PSBT, no
  *       Sparrow, no signing in another app.
  *
- *     • Legacy PSBT-handoff flow (ManualPsbtClaim, reachable when
- *       /sealed-heir returns 422): the server hands the heir an
- *       unsigned PSBT to copy into a real Bitcoin wallet (Sparrow,
- *       Coldcard, etc.), then accepts the signed string back. This
- *       is the original flow for vaults created before the password
- *       redesign — kept for backwards compatibility.
+ *     • PSBT-handoff flow (ManualPsbtClaim, reachable when
+ *       /sealed-heir returns 422): the heir holds their own key (Door B)
+ *       or this is a legacy vault. The server hands them an unsigned
+ *       PSBT to sign in a wallet that can satisfy the Taproot timelock
+ *       script. Most phone wallets can't; Bitcoin Core is the tested
+ *       signer. The signed string is accepted back here.
  *
  * What the page does NOT do:
  *   - hold keys for the heir or persist their xprv beyond a single
@@ -1232,9 +1232,12 @@ function ManualPsbtClaim({
             Sign it in your wallet
           </h2>
           <p className="mt-2 text-sm text-soft">
-            We've prepared an unsigned transaction. GhostKey can't sign for
-            you — only your wallet can. Copy the text below into your wallet's
-            PSBT signer, sign it, then paste the result back here.
+            We've prepared an unsigned transaction. GhostKey can't sign it for
+            you. This claim spends a Bitcoin timelock, so it needs a wallet
+            that can sign Taproot scripts. Many phone wallets can't. Bitcoin
+            Core is the one we've tested. If the wallet that holds your key can
+            open and sign this, that works too. Sign it there, then paste the
+            signed transaction back.
           </p>
 
           <PsbtSummary build={build} />
@@ -1255,7 +1258,8 @@ function ManualPsbtClaim({
                 {copied ? "Copied" : "Copy PSBT"}
               </Button>
               <span className="text-xs text-muted">
-                In Sparrow: File → Open Transaction → paste, then Sign.
+                Sign it in the wallet that holds your key — open its PSBT or
+                transaction signer, paste, and sign.
               </span>
             </div>
           </div>
@@ -1377,13 +1381,6 @@ interface WalletRec {
   blurb: string;
   url: string;
   note: string;
-  /**
-   * Can this wallet sign a PSBT? Self-custody wallets can; LN-style
-   * custodial apps (Blink, Wallet of Satoshi) cannot. The legacy
-   * PSBT-handoff claim path needs `true`; the password-vault claim
-   * path only needs the wallet to receive, so any value works.
-   */
-  canSignPsbt: boolean;
 }
 
 const WALLETS_MAINNET: WalletRec[] = [
@@ -1392,28 +1389,24 @@ const WALLETS_MAINNET: WalletRec[] = [
     blurb: "Free. Popular in Nigeria. Works without ID.",
     url: "https://blink.sv/",
     note: "Tap Receive → Bitcoin → copy the address.",
-    canSignPsbt: false,
   },
   {
     name: "Wallet of Satoshi",
     blurb: "Free. Works on any phone. No setup.",
     url: "https://www.walletofsatoshi.com/",
     note: "Tap Receive → On-chain → copy the address.",
-    canSignPsbt: false,
   },
   {
     name: "Cake Wallet",
     blurb: "Free. You hold your own keys.",
     url: "https://cakewallet.com/",
     note: "Tap the QR icon top-right → copy the address.",
-    canSignPsbt: true,
   },
   {
     name: "Sparrow",
     blurb: "Desktop. Power user. Hardware wallet support.",
     url: "https://sparrowwallet.com/",
     note: "File → New Wallet → Receive tab → copy the address.",
-    canSignPsbt: true,
   },
 ];
 
@@ -1428,21 +1421,18 @@ const WALLETS_TEST: WalletRec[] = [
     blurb: "Desktop. Switch network to Signet/Testnet at first launch.",
     url: "https://sparrowwallet.com/",
     note: "File → New Wallet → set Server type to Signet/Testnet → Receive tab → copy the address.",
-    canSignPsbt: true,
   },
   {
     name: "Mutiny Wallet",
     blurb: "Web wallet. Built for signet. No install.",
     url: "https://signet.mutinywallet.com/",
     note: "Open the link → Receive → copy the tb1q… address.",
-    canSignPsbt: false,
   },
   {
     name: "BlueWallet",
     blurb: "Mobile. Long-press the + button when adding to pick Testnet.",
     url: "https://bluewallet.io/",
     note: "Add wallet → long-press Plus → Testnet → Receive → copy the address.",
-    canSignPsbt: true,
   },
 ];
 
@@ -1486,8 +1476,36 @@ function WalletGuide({
   network: string;
   requirePsbt?: boolean;
 }) {
-  const base = walletsFor(network);
-  const list = requirePsbt ? base.filter((w) => w.canSignPsbt) : base;
+  // The PSBT-signing path can't honestly recommend phone wallets: the
+  // heir branch is a Taproot timelock script, and the wallets we'd list
+  // for receiving can't satisfy it (the restore drill confirmed Sparrow
+  // and Liana refuse our descriptor). Point at the one signer we've
+  // tested instead of promising a wallet that will dead-end the claim.
+  if (requirePsbt) {
+    return (
+      <div className="mt-5 card-flat p-5">
+        <p className="text-sm text-body">
+          Signing this claim needs a wallet that can sign Bitcoin Taproot
+          timelock scripts. Most phone wallets can't. The one we've tested is
+          Bitcoin Core, on a desktop computer.
+        </p>
+        <a
+          href="https://bitcoincore.org/en/download/"
+          target="_blank"
+          rel="noreferrer noopener"
+          className="mt-3 inline-block font-display text-base font-bold tracking-tight text-[var(--text)] underline-offset-2 hover:underline"
+        >
+          Download Bitcoin Core
+          <span className="ml-1 text-xs text-dim">↗</span>
+        </a>
+        <p className="mt-2 text-xs text-soft">
+          Open the transaction below in Bitcoin Core, sign it, and paste the
+          signed version back here.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="mt-5 card-flat p-5">
       <p className="text-sm text-body">
@@ -1495,7 +1513,7 @@ function WalletGuide({
         steps inside.
       </p>
       <ul role="list" className="mt-4 space-y-3">
-        {list.map((w) => (
+        {walletsFor(network).map((w) => (
           <li key={w.name} className="flex flex-col gap-1">
             <a
               href={w.url}
