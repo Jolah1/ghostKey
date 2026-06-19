@@ -103,7 +103,17 @@ export function b64encode(bytes: Uint8Array): string {
 }
 
 export function b64decode(s: string): Uint8Array {
-  const bin = atob(s);
+  // Tolerate base64url as well as standard base64. Our own seals use
+  // standard base64 (b64encode → btoa), but a claim token can arrive in
+  // either form: browser-minted tokens are standard base64, while a
+  // server-minted token (mint_bearer_token) is base64url-no-pad. `atob`
+  // only accepts standard base64, so normalise first — otherwise a
+  // perfectly valid token crashes the claim with a cryptic atob error.
+  let norm = s.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = norm.length % 4;
+  if (pad === 2) norm += "==";
+  else if (pad === 3) norm += "=";
+  const bin = atob(norm);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;

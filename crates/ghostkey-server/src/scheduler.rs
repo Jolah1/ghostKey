@@ -966,18 +966,24 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
         // Decide whether this is a password vault or a legacy row.
         // For password vaults, reuse the existing token; for legacy,
         // mint a fresh one.
-        let (raw_token, token_hash, reused) =
-            if let (Some(raw), Some(hash)) = (at_rest.as_ref(), existing_hash.as_ref()) {
-                // Door A: the token was sealed at rest at creation time
-                // (legacy rows are plaintext and pass through unchanged).
-                // Decrypt back to the bearer value before it goes in the
-                // heir's link.
-                let token = crate::crypto::open_claim_token_at_rest(&id, raw)?;
-                (token, hash.clone(), true)
-            } else {
-                let t = issue_claim_token();
-                (t.token, t.hash_hex, false)
-            };
+        let (raw_token, token_hash, reused) = if let Some(raw) = at_rest.as_ref() {
+            // Door A: the token was sealed at rest at creation time
+            // (legacy rows are plaintext and pass through unchanged).
+            // The heir's xprv ciphertext is bound to THIS token via
+            // HKDF, so we must reuse it — even if an intervening owner
+            // check-in cleared `claim_token_hash` (the check-in handler
+            // nulls the hash but never the at-rest token). Decrypt back
+            // to the bearer value, and re-derive the hash when the
+            // stored one was wiped, so the claim resolver can match it.
+            let token = crate::crypto::open_claim_token_at_rest(&id, raw)?;
+            let hash = existing_hash
+                .clone()
+                .unwrap_or_else(|| crate::crypto::hash_claim_token(&token));
+            (token, hash, true)
+        } else {
+            let t = issue_claim_token();
+            (t.token, t.hash_hex, false)
+        };
 
         tracing::warn!(
             vault_id = %id,
@@ -992,14 +998,19 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
         // `timelock_started` without a matching `claim_token_hash`.
         let mut tx = state.db.begin().await?;
         if reused {
+            // Re-bind the hash too: a prior owner check-in may have nulled
+            // it, and the claim resolver looks the heir's link up by hash.
+            // For an untouched password vault this is a no-op (same value).
             sqlx::query(
                 r#"UPDATE vaults
                       SET status                = 'timelock_started',
+                          claim_token_hash      = ?,
                           claim_token_issued_at = ?,
                           claim_token_used_at   = NULL
                     WHERE id = ?
                       AND status = 'alarmed'"#,
             )
+            .bind(&token_hash)
             .bind(now_iso)
             .bind(&id)
             .execute(&mut *tx)
@@ -1524,6 +1535,77 @@ mod tests {
         assert!(
             detail.contains("reused_password_vault_token"),
             "event detail should record the reused-token reason; got: {detail}"
+        );
+    }
+
+    /// Regression: an owner check-in clears `claim_token_hash` (the
+    /// check-in handler nulls it so a follow-on alarm starts fresh) but
+    /// never clears `claim_token_at_rest_b64`. A password vault that
+    /// received at least one check-in before lapsing therefore reaches
+    /// the trigger with a sealed at-rest token but NO hash. The heir's
+    /// xprv is sealed under that at-rest token, so we must reuse it and
+    /// re-derive the hash — minting a fresh token here would lock the
+    /// heir out permanently. (This is the bug the signet e2e surfaced.)
+    #[tokio::test]
+    async fn password_vault_reuses_at_rest_token_after_checkin_cleared_hash() {
+        ensure_test_master_key();
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+
+        let raw_token = "browser-minted-token-bound-to-the-heir-seal";
+        let sealed_at_rest =
+            crate::crypto::seal_claim_token_at_rest("vault-pw-checked-in", raw_token)
+                .expect("seal token");
+        let expected_hash = crate::crypto::hash_claim_token(raw_token);
+
+        // Note: claim_token_hash is NULL — exactly the post-check-in state.
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status, claim_eligible_at,
+                claim_token_at_rest_b64, claim_token_hash
+            ) VALUES (?, 'regtest', 'tr(fake/0/*)', 'tr(fake/1/*)',
+                      144, 86400, 3600,
+                      '2026-01-01T00:00:00Z', '2026-04-01T00:00:00Z', 'alarmed',
+                      '2026-04-08T00:00:00Z', ?, NULL)"#,
+        )
+        .bind("vault-pw-checked-in")
+        .bind(&sealed_at_rest)
+        .execute(&pool)
+        .await
+        .expect("insert checked-in password vault");
+
+        tick_once(&state).await.expect("tick");
+
+        let (status, hash) = read_status_and_token_hash(&pool, "vault-pw-checked-in").await;
+        assert_eq!(
+            status, "timelock_started",
+            "the vault must still advance to claimable"
+        );
+        assert_eq!(
+            hash.as_deref(),
+            Some(expected_hash.as_str()),
+            "the hash must be re-derived from the reused at-rest token, \
+             not minted fresh — otherwise the heir's sealed key is orphaned"
+        );
+
+        let detail: Option<String> = sqlx::query_scalar(
+            "SELECT detail FROM events WHERE vault_id = ? AND kind = 'claim_issued'",
+        )
+        .bind("vault-pw-checked-in")
+        .fetch_optional(&pool)
+        .await
+        .expect("query")
+        .flatten();
+        assert!(
+            detail
+                .as_deref()
+                .is_some_and(|d| d.contains("reused_password_vault_token")),
+            "the trigger must record a reused (not freshly-minted) token"
         );
     }
 
