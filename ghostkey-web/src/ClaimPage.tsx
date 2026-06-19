@@ -1255,7 +1255,8 @@ function ManualPsbtClaim({
                 {copied ? "Copied" : "Copy PSBT"}
               </Button>
               <span className="text-xs text-muted">
-                In Sparrow: File → Open Transaction → paste, then Sign.
+                Sign it in the wallet that holds your key — open its PSBT or
+                transaction signer, paste, and sign.
               </span>
             </div>
           </div>
