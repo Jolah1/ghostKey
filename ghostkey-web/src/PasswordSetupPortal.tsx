@@ -865,6 +865,15 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
                 strength={strength}
               />
               <div className="mt-6">
+                {/* P4 (#120): a face+voice clip is the most identifying
+                    data in the product; say where it lives before they
+                    record. */}
+                <p className="mb-2 text-xs text-dim">
+                  If you record a message, it's encrypted like the rest of
+                  your vault and stored that way. No one at GhostKey can play
+                  it. It's released only to the heir you named, only when
+                  they claim.
+                </p>
                 <VideoMessageRecorder
                   heirName={
                     draft.heirs.length === 1 ? draft.heirs[0]?.name : undefined
@@ -873,6 +882,15 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
                   disabled={busy}
                 />
               </div>
+
+              {/* P1 (#120): the save-password attestation is the one thing
+                  that prevents permanent loss — re-affirm it as the last
+                  thing before "Create vault" (the button is also disabled
+                  until the box above is ticked). */}
+              <p className="mt-6 text-xs text-muted">
+                Last thing before you create the vault: make sure your
+                password is really saved. We can never reset it.
+              </p>
             </>
           )}
           {step === 2 && created && <StepFund created={created} />}
@@ -1487,6 +1505,9 @@ function StepPassword({
    *  Null while the password is empty or the check is in flight. */
   strength: StrengthResult | null;
 }) {
+  // P2 (#120): a password that can never be reset deserves a reveal
+  // toggle so the owner can check what they typed before committing.
+  const [showPassword, setShowPassword] = useState(false);
 
   return (
     <div>
@@ -1545,14 +1566,24 @@ function StepPassword({
           label="Password"
           hint="Three or four unrelated words make a password that's easy to remember and hard to guess."
         >
-          <input
-            type="password"
-            value={draft.password}
-            onChange={(e) => patch({ password: e.target.value })}
-            autoComplete="new-password"
-            className="input"
-            disabled={busy}
-          />
+          <div className="relative">
+            <input
+              type={showPassword ? "text" : "password"}
+              value={draft.password}
+              onChange={(e) => patch({ password: e.target.value })}
+              autoComplete="new-password"
+              className="input pr-16"
+              disabled={busy}
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((s) => !s)}
+              className="absolute inset-y-0 right-3 my-auto h-6 text-xs text-muted underline-offset-2 hover:underline"
+              aria-pressed={showPassword}
+            >
+              {showPassword ? "Hide" : "Show"}
+            </button>
+          </div>
           {draft.password && strength ? (
             <div className="mt-2" aria-live="polite">
               <div className="flex items-center gap-2">
@@ -1580,7 +1611,7 @@ function StepPassword({
 
         <Field label="Confirm password">
           <input
-            type="password"
+            type={showPassword ? "text" : "password"}
             value={draft.passwordConfirm}
             onChange={(e) => patch({ passwordConfirm: e.target.value })}
             autoComplete="new-password"
@@ -1614,20 +1645,28 @@ function StepPassword({
           </InlineAlert>
         </div>
 
-        <Field
-          label="Trusted contact (optional, for panic-stop)"
-          hint="If your wallet is ever stolen, you can pay a tiny 'panic stop' invoice from any wallet to freeze this vault for 90 days. This person is then alerted that you triggered it. Leave blank to skip."
+        {/* P3 (#120): lead with the outcome and tuck the Lightning
+            mechanics behind a disclosure — it's optional and dense. */}
+        <Disclosure
+          summary={
+            <span>Advanced: freeze this vault for 90 days from any device</span>
+          }
         >
-          <input
-            type="email"
-            value={draft.trustedContact}
-            onChange={(e) => patch({ trustedContact: e.target.value })}
-            placeholder="someone-who-can-help@example.com"
-            autoComplete="off"
-            className="input"
-            disabled={busy}
-          />
-        </Field>
+          <Field
+            label="Trusted contact (optional)"
+            hint="If your wallet is ever stolen, you can freeze this vault for 90 days from any device. Behind the scenes that's a tiny 'panic stop' payment from any wallet; this person is alerted that you triggered it. Leave blank to skip."
+          >
+            <input
+              type="email"
+              value={draft.trustedContact}
+              onChange={(e) => patch({ trustedContact: e.target.value })}
+              placeholder="someone-who-can-help@example.com"
+              autoComplete="off"
+              className="input"
+              disabled={busy}
+            />
+          </Field>
+        </Disclosure>
 
         {busy ? (
           <div className="mt-6">
