@@ -1004,7 +1004,7 @@ function SetupRail({
             </div>
             {!demoMode ? (
               <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-muted">Slack if you miss one</dt>
+                <dt className="text-muted">Grace period</dt>
                 <dd className="text-right font-medium">
                   {graceByIdAnywhere(draft.graceId).label}
                 </dd>
@@ -1020,7 +1020,7 @@ function SetupRail({
             </p>
             <p className="mt-2">
               Your heir gets no message when you finish this. We only
-              reach out on the channel you pick here if you ever stop
+              reach out the way you choose to reach them here if you ever stop
               checking in. Then they claim from a link, with no wallet
               or technical steps needed.
             </p>
@@ -1137,7 +1137,7 @@ function StepHeir({
       </h1>
       <p className="mt-2 text-muted">
         They never have to know about this until the time comes. When it does,
-        we reach them on the channel you pick and they claim from a link.
+        we reach them the way you choose to reach them and they claim from a link.
         No wallet install, no setup on their end.
       </p>
 
@@ -1244,7 +1244,7 @@ function StepHeir({
         {demoMode ? null : (
           <Field
             label="Grace period after a missed reminder"
-            hint="Extra slack before the vault enters its alarm state. The heir still cannot claim for the full waiting period above."
+            hint="Extra time before the countdown to inheritance begins. The heir still cannot claim for the full waiting period above."
           >
             <select
               className="input"
@@ -1349,7 +1349,7 @@ function HeirCard({
         label={
           heir.channel === "email" ? "Their email" : "Their phone number"
         }
-        hint="Stored encrypted. We don't message them until the alarm fires."
+        hint="Stored encrypted. We don't message them unless you stop checking in."
       >
         <input
           type={heir.channel === "email" ? "email" : "tel"}
@@ -1430,7 +1430,7 @@ function HeirCard({
 
       <p className="mt-2 text-xs text-muted">
         Tip: tell this person, with no details, that if they ever hear
-        from GhostKey it is real and from you. A quiet heads-up now makes
+        from GhostKey it is real and from you. A quiet word now makes
         the message easy to trust later.
       </p>
     </div>

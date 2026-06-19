@@ -114,7 +114,7 @@ function TrustRow() {
   const items = [
     { strong: "0",        sub: "Third parties" },
     { strong: "Your key", sub: "Never stored" },
-    { strong: "On-chain", sub: "Guaranteed" },
+    { strong: "On-chain", sub: "No company can freeze it" },
   ];
   return (
     <ul
@@ -143,7 +143,7 @@ interface Step {
 const STEPS: Step[] = [
   {
     title: "You set up your vault",
-    body: "Connect a Bitcoin wallet and choose who inherits. About five minutes. No documents, no lawyers, no terminal commands.",
+    body: "Connect a Bitcoin wallet and choose who inherits. About five minutes. No documents, no lawyers, nothing technical to install.",
   },
   {
     title: "You tap once a month",
@@ -352,7 +352,7 @@ function WhyBitcoin() {
     <section ref={ref} className="border-t border-app bg-app">
       <div className="mx-auto max-w-5xl px-5 py-14 md:px-8 md:py-28">
         <div className="max-w-2xl">
-          <Eyebrow dim>Why Bitcoin</Eyebrow>
+          <Eyebrow dim>For the technically curious</Eyebrow>
           <h2 className="mt-4 font-display text-3xl font-bold leading-[1.05] tracking-tight md:text-6xl">
             <span className="title-gradient">Built on the chain that </span>
             <span className="text-accent">doesn't break</span>
@@ -668,7 +668,7 @@ function FinalCTA({ onNavigate }: Props) {
             }}
             className="btn btn-ghost"
           >
-            Read the docs
+            How it works
           </a>
         </div>
       </div>
@@ -762,8 +762,8 @@ function Footer() {
 
         <div className="mt-12 flex flex-col gap-3 border-t border-app pt-6 text-xs text-dim md:flex-row md:items-center md:justify-between">
           <p>
-            GhostKey is not a legal will. It is programmable self-custody
-            continuity for Bitcoin.
+            GhostKey is not a legal will. It is a way to make sure your
+            family can reach your Bitcoin if you are gone.
           </p>
           <p>© {new Date().getFullYear()} GhostKey</p>
         </div>
