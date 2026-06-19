@@ -81,11 +81,11 @@ import { AssistChat } from "./AssistChat";
 import { VideoMessageRecorder, type RecordedClip } from "./VideoMessageRecorder";
 import { prepareVideo } from "./crypto/video";
 import {
-  MIN_LENGTH,
   checkPassword,
   preloadStrengthChecker,
   type StrengthResult,
 } from "./passwordStrength";
+import { passwordStepError } from "./setupGates";
 import {
   generateParty,
   wipe,
@@ -411,34 +411,15 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
       }
     }
     if (s === 1) {
-      if (!draft.ownerEmail.trim()) {
-        return "Your email lets you recover this vault on any device. We never use it for marketing.";
-      }
-      if (!/^.+@.+\..+$/.test(draft.ownerEmail.trim())) {
-        return "That email looks off. Double-check it.";
-      }
-      if (draft.password.length < MIN_LENGTH) {
-        return `Pick a password that's at least ${MIN_LENGTH} characters. Longer is better.`;
-      }
-      // Gate on the live zxcvbn verdict. `strength` can lag the
-      // keystroke by ~150 ms; if the user outraces it to the Next
-      // button, hold them for a beat rather than let an unchecked
-      // password through.
-      if (strength === null) {
-        return "One moment. Still checking that password.";
-      }
-      if (!strength.acceptable) {
-        return (
-          strength.advice ??
-          "That password would be too easy to guess. Try three or four unrelated words."
-        );
-      }
-      if (draft.password !== draft.passwordConfirm) {
-        return "The two passwords don't match.";
-      }
-      if (!draft.savedPassword) {
-        return "Save your password first, then tick the box to confirm. We can never reset it for you.";
-      }
+      // Single source of truth, shared with the "Create vault" button's
+      // disable condition and the unit tests (#116 L2).
+      return passwordStepError({
+        ownerEmail: draft.ownerEmail,
+        password: draft.password,
+        passwordConfirm: draft.passwordConfirm,
+        savedPassword: draft.savedPassword,
+        strength,
+      });
     }
     return null;
   }
@@ -832,6 +813,16 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
 
   const progress = ((step + 1) / STEPS.length) * 100;
 
+  // The password-step gate, computed once: drives both the "Create vault"
+  // disable and the inline reason below it (#116 L2).
+  const gateReason = passwordStepError({
+    ownerEmail: draft.ownerEmail,
+    password: draft.password,
+    passwordConfirm: draft.passwordConfirm,
+    savedPassword: draft.savedPassword,
+    strength,
+  });
+
   return (
     <main className="bg-app fade-in">
       {/* pb-28 keeps the wizard's Continue/Back row clear of the
@@ -884,6 +875,17 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           </div>
         ) : null}
 
+        {/* When "Create vault" is disabled, say why — a dead button with
+            no explanation is worse than the old guarded-click error. Only
+            once the owner has started filling the step, so a pristine
+            form doesn't shout. (#116 L2) */}
+        {step === 1 &&
+        !created &&
+        (draft.ownerEmail.trim() || draft.password) &&
+        gateReason ? (
+          <p className="mt-6 text-right text-xs text-muted">{gateReason}</p>
+        ) : null}
+
         <div className="mt-10 flex items-center justify-between border-t border-app pt-6">
           {step === 0 ? (
             <Button variant="quiet" onClick={onCancel} disabled={busy}>
@@ -904,7 +906,11 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
 
           {step < STEPS.length - 1 ? (
             step === 1 ? (
-              <Button onClick={activate} loading={busy}>
+              <Button
+                onClick={activate}
+                loading={busy}
+                disabled={gateReason !== null}
+              >
                 Create vault
               </Button>
             ) : (
