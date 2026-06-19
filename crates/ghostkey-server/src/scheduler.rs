@@ -1167,12 +1167,26 @@ async fn enqueue_claim_link(
         Some(n) => format!("They left you a note:\n\n  {n}\n\n"),
         None => String::new(),
     };
+    // C2 (#123): SMS and WhatsApp previews show on lock screens, the least
+    // private channel there is. Announcing "a Bitcoin inheritance" there is a
+    // physical-safety risk for a high-risk heir, so the SMS/WhatsApp opener
+    // stays label-shy: it names GhostKey (so the anti-scam "look it up"
+    // advice works) but never "Bitcoin" or "inheritance" before the link.
+    // The full picture waits behind the one-time link.
     let sms_opener = match from_name {
-        Some(n) => format!("{n} left you a Bitcoin inheritance through GhostKey"),
-        None => "someone you knew left you a Bitcoin inheritance through GhostKey".to_string(),
+        Some(n) => format!("{n} set something up for you through GhostKey"),
+        None => "someone you knew set something up for you through GhostKey".to_string(),
     };
 
-    let subject = "A message for you about something someone left you".to_string();
+    // C3 (#123): the old subject ("A message for you about something someone
+    // left you") was cryptic enough to read as spam and be discarded. A real
+    // name plus "asked us to reach you" is warmer and lands as a genuine
+    // personal matter, while still hiding the specifics (no "Bitcoin", no
+    // "inheritance") in case the subject surfaces on a lock screen.
+    let subject = match from_name {
+        Some(n) => format!("{n} asked us to reach you"),
+        None => "Someone asked us to reach you".to_string(),
+    };
     // Email carries the full explanation. SMS and WhatsApp get a short
     // message that fits a segment or two, with the same one-time link.
     // (The subject above is unused on the Twilio path — send_twilio only
