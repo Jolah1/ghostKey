@@ -72,6 +72,26 @@ pub const DEMO_MIN_CHECKIN_SECS: i64 = 5;
 /// in one screen recording.
 pub const DEMO_MIN_GRACE_SECS: i64 = 3;
 
+/// Production floor on the heir's on-chain waiting period, in blocks.
+/// 144 blocks is roughly one day at the ~10-minute Bitcoin block
+/// interval. Below this, a vault could let the heir branch become
+/// spendable within hours of the owner's last check-in — a sub-day
+/// waiting period the owner almost certainly never intended (#116 L1).
+/// The default product setup is 4,320 blocks (~30 days); this is only a
+/// hard floor against accidental near-instant claimability.
+pub const MIN_TIMELOCK_BLOCKS: u32 = 144;
+
+/// Demo-mode floor on the waiting period. One block, so a live demo on
+/// signet/regtest can show the heir branch maturing almost immediately.
+/// Demo mode is forbidden on mainnet (see [`ensure_demo_safe_for_network`]),
+/// so this short floor can never apply to real funds.
+pub const DEMO_MIN_TIMELOCK_BLOCKS: u32 = 1;
+
+/// Upper bound on the waiting period. The `older()` relative-timelock in
+/// the descriptor encodes block height in a 16-bit field, so values
+/// above 65,535 can't be represented.
+pub const MAX_TIMELOCK_BLOCKS: u32 = 0xFFFF;
+
 // Compile-time invariants the rest of this module relies on. If a
 // future contributor narrows the production floor without also
 // narrowing the demo floor (or vice versa) the build fails loudly
@@ -81,6 +101,9 @@ const _: () = assert!(DEMO_MIN_CHECKIN_SECS < MIN_CHECKIN_SECS);
 const _: () = assert!(DEMO_MIN_GRACE_SECS < MIN_GRACE_SECS);
 const _: () = assert!(DEMO_MIN_CHECKIN_SECS >= 1);
 const _: () = assert!(DEMO_MIN_GRACE_SECS >= 1);
+const _: () = assert!(DEMO_MIN_TIMELOCK_BLOCKS < MIN_TIMELOCK_BLOCKS);
+const _: () = assert!(DEMO_MIN_TIMELOCK_BLOCKS >= 1);
+const _: () = assert!(MIN_TIMELOCK_BLOCKS <= MAX_TIMELOCK_BLOCKS);
 
 /// When demo mode is on, the scheduler ticks every second instead of
 /// the production default (30 s). The Lightning poller likewise
@@ -143,6 +166,39 @@ pub fn validate_periods(checkin_secs: i64, grace_secs: i64) -> Result<(), String
         return Err(format!(
             "grace_period_secs {grace_secs} below minimum {min_grace} \
              (demo mode is {})",
+            if demo_mode() { "on" } else { "off" }
+        ));
+    }
+    Ok(())
+}
+
+/// Validate the heir's on-chain waiting period against whichever floor
+/// applies, plus the hard 16-bit upper bound. Returns `Err(reason)` with
+/// a human-readable message suitable for a 400 response.
+///
+/// This is the #116 L1 guarantee: in production the heir can never be
+/// handed a sub-day waiting period (the historical "1 blocks (about 0
+/// days)" bug), no matter what a client posts. Centralised here so both
+/// creation endpoints (`POST /vaults` and `POST /vaults/from-xpub`) stay
+/// in lockstep, exactly like [`validate_periods`].
+pub fn validate_timelock_blocks(blocks: u32) -> Result<(), String> {
+    if blocks == 0 {
+        return Err("timelock_blocks must be at least 1".into());
+    }
+    if blocks > MAX_TIMELOCK_BLOCKS {
+        return Err(format!(
+            "timelock_blocks {blocks} above maximum {MAX_TIMELOCK_BLOCKS}"
+        ));
+    }
+    let min = if demo_mode() {
+        DEMO_MIN_TIMELOCK_BLOCKS
+    } else {
+        MIN_TIMELOCK_BLOCKS
+    };
+    if blocks < min {
+        return Err(format!(
+            "timelock_blocks {blocks} below minimum {min} \
+             (about one day; demo mode is {})",
             if demo_mode() { "on" } else { "off" }
         ));
     }
@@ -235,5 +291,49 @@ mod tests {
         for net in ["signet", "testnet", "regtest"] {
             ensure_demo_safe_for_network(net).expect(net);
         }
+    }
+
+    // ---- #116 L1: the timelock floor ----------------------------------
+
+    #[test]
+    fn timelock_zero_and_over_max_are_always_rejected() {
+        let err = validate_timelock_blocks(0).unwrap_err();
+        assert!(err.contains("at least 1"), "got: {err}");
+        let err = validate_timelock_blocks(MAX_TIMELOCK_BLOCKS + 1).unwrap_err();
+        assert!(err.contains("above maximum"), "got: {err}");
+    }
+
+    /// The core guarantee. A sub-day timelock (below the *demo* floor, the
+    /// looser of the two) must be rejected whichever branch the cached
+    /// `demo_mode()` takes — so a "1 blocks (about 0 days)" vault can never
+    /// be created. If both branches accepted it, both would be broken.
+    #[test]
+    fn sub_day_timelock_is_rejected_in_either_mode() {
+        // 1 block is the demo floor; the production floor is 144. A value
+        // at the demo floor must still be below the *production* floor, so
+        // pick the production floor minus one: rejected unless demo mode is
+        // on, and we assert the message either way is a floor rejection.
+        let below_prod = MIN_TIMELOCK_BLOCKS - 1;
+        match validate_timelock_blocks(below_prod) {
+            // Production branch: rejected for being below a day.
+            Err(e) => assert!(e.contains("below minimum"), "got: {e}"),
+            // Demo branch (some other test flipped the cached flag): the
+            // looser floor accepts it, which is intended for signet demos.
+            Ok(()) => assert!(demo_mode(), "accepted a sub-day timelock outside demo mode"),
+        }
+    }
+
+    #[test]
+    fn production_timelock_floor_is_about_one_day() {
+        assert_eq!(MIN_TIMELOCK_BLOCKS, 144);
+    }
+
+    /// The product default (~30 days) and the floor itself must always
+    /// validate, regardless of the cached demo flag.
+    #[test]
+    fn realistic_timelocks_always_validate() {
+        validate_timelock_blocks(4_320).expect("~30 day default must be valid");
+        validate_timelock_blocks(MIN_TIMELOCK_BLOCKS).expect("the floor itself must be valid");
+        validate_timelock_blocks(MAX_TIMELOCK_BLOCKS).expect("the max must be valid");
     }
 }

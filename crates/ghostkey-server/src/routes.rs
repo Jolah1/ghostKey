@@ -544,12 +544,7 @@ async fn create_vault(
 ) -> Result<(StatusCode, Json<CreatedVault>), ApiError> {
     crate::demo::validate_periods(req.checkin_period_secs, req.grace_period_secs)
         .map_err(ApiError::Validation)?;
-    if req.timelock_blocks == 0 || req.timelock_blocks > 0xFFFF {
-        return Err(ApiError::Validation(format!(
-            "timelock_blocks {} out of range 1..=65535",
-            req.timelock_blocks
-        )));
-    }
+    crate::demo::validate_timelock_blocks(req.timelock_blocks).map_err(ApiError::Validation)?;
     validate_contact_channel(
         "owner_contact_channel",
         req.owner_contact_channel.as_deref(),
@@ -818,12 +813,7 @@ async fn create_vault_from_xpub(
     // ---- Validate periods + timelock ---------------------------------
     crate::demo::validate_periods(req.checkin_period_secs, req.grace_period_secs)
         .map_err(ApiError::Validation)?;
-    if req.timelock_blocks == 0 || req.timelock_blocks > 0xFFFF {
-        return Err(ApiError::Validation(format!(
-            "timelock_blocks {} out of range 1..=65535",
-            req.timelock_blocks
-        )));
-    }
+    crate::demo::validate_timelock_blocks(req.timelock_blocks).map_err(ApiError::Validation)?;
 
     // ---- Validate heir + owner contact channels ---------------------
     // The channel string is echoed back to the heir at claim time and
