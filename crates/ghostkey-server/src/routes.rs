@@ -1094,9 +1094,15 @@ async fn create_vault_from_xpub(
         }
         // Door B: no heir secret, no at-rest claim token. The scheduler
         // mints a fresh token at trigger time (legacy path).
+        //
+        // Door A: we must keep the token at rest (the scheduler embeds it
+        // in the heir's link once the owner is gone), but we seal it under
+        // the per-vault AEAD instead of storing it verbatim, so a DB-only
+        // dump doesn't leak the bearer credential. The hash stays plaintext
+        // — it's a one-way digest used for the /claim/:token lookup.
         let (at_rest, token_hash, token_issued) = match s.claim_token_b64.as_ref() {
             Some(tok) => (
-                Some(tok.clone()),
+                Some(crypto::seal_claim_token_at_rest(&id, tok)?),
                 Some(crypto::hash_claim_token(tok)),
                 Some(now_s.clone()),
             ),
