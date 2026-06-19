@@ -1316,7 +1316,13 @@ function ManualPsbtClaim({
 
           <div className="mt-5">
             <p className="text-xs uppercase tracking-wider text-dim">
-              Unsigned PSBT (base64)
+              Unsigned transaction
+            </p>
+            <p className="mt-1 text-xs text-muted">
+              This long block of letters and numbers is just your transaction
+              written out as text (its technical name is a "PSBT"). Nothing here
+              can spend your money on its own — it still has to be signed. It's
+              safe to copy.
             </p>
             <textarea
               readOnly
@@ -1327,19 +1333,19 @@ function ManualPsbtClaim({
             />
             <div className="mt-3 flex flex-wrap items-center gap-3">
               <Button onClick={() => void onCopyPsbt()} variant="ghost">
-                {copied ? "Copied" : "Copy PSBT"}
+                {copied ? "Copied" : "Copy"}
               </Button>
               <span className="text-xs text-muted">
-                Sign it in the wallet that holds your key — open its PSBT or
-                transaction signer, paste, and sign.
+                Open the wallet that holds your key, find its transaction
+                signer (sometimes called "sign PSBT"), paste this in, and sign.
               </span>
             </div>
           </div>
 
           <div className="mt-8">
             <Field
-              label="Signed PSBT (base64)"
-              hint="Paste what your wallet gives you after signing."
+              label="Signed transaction"
+              hint="Paste back what your wallet gives you after signing."
             >
               <textarea
                 rows={6}
