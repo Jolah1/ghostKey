@@ -8,7 +8,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use bitcoin::bip32::Fingerprint;
 use chrono::{DateTime, Duration, Utc};
-use ghostkey_core::descriptor::{build_descriptor_pair, parse_descriptor};
+use ghostkey_core::descriptor::{
+    build_descriptor_pair, build_guardian_descriptor_pair, parse_descriptor,
+};
 use ghostkey_core::keys::{descriptor_key_fragment, parse_xpub, vault_account_path, Chain};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -102,6 +104,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     let create_routes: Router<Arc<AppState>> = Router::new()
         .route("/vaults", post(create_vault))
         .route("/vaults/from-xpub", post(create_vault_from_xpub))
+        .route("/vaults/guardian", post(create_vault_guardian))
         .layer(axum::middleware::from_fn_with_state(
             create_limiter,
             crate::rate_limit::enforce,
@@ -1269,6 +1272,390 @@ async fn create_vault_from_xpub(
             },
             owner_token: issued_owner.token,
             vault_secret_hex,
+        }),
+    ))
+}
+
+/* -------------------------------------------------------------------------- *
+ *  POST /vaults/guardian  — guardian vaults for underage heirs (#81 P2)       *
+ *                                                                            *
+ *  Claim branch: heir AND (g1 OR g2) AND older(N). The heir reuses the        *
+ *  existing inline sealed columns; the two guardians get rows in             *
+ *  vault_guardian_keys. Every key is generated + sealed in the browser; the  *
+ *  server stores only ciphertext (post-#124, no master-key derivation).      *
+ * -------------------------------------------------------------------------- */
+
+/// One guardian's xpub + browser-sealed key material.
+#[derive(Debug, Deserialize)]
+pub struct GuardianParty {
+    /// Bare or origin-tagged xpub (the browser-generated guardian account key).
+    pub xpub: String,
+    pub fingerprint: Option<String>,
+    /// The guardian's xprv, sealed under this guardian's claim token.
+    pub xprv_ct_b64: String,
+    pub xprv_nonce_b64: String,
+    /// Claim token the xprv is sealed under; stored hashed + sealed-at-rest.
+    pub claim_token_b64: String,
+    /// Where this guardian's claim link is delivered, and on which channel.
+    pub contact: Option<String>,
+    pub contact_channel: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateGuardianVaultRequest {
+    pub label: Option<String>,
+    pub network: String,
+    pub owner: PartyXpub,
+    pub heir: PartyXpub,
+    pub guardian1: GuardianParty,
+    pub guardian2: GuardianParty,
+    pub timelock_blocks: u32,
+    pub checkin_period_secs: i64,
+    pub grace_period_secs: i64,
+    pub owner_contact: Option<String>,
+    pub owner_contact_channel: Option<String>,
+    pub heir_contact: Option<String>,
+    pub heir_contact_channel: Option<String>,
+    /// Owner + heir sealed material (password-vault flow). Required: a
+    /// guardian vault is always browser-keygen, so the heir key is sealed
+    /// here (Door B / self-xpub heir is not offered for guardian vaults).
+    pub sealed: SealedSetup,
+    pub from_name: Option<String>,
+    pub heir_note: Option<String>,
+}
+
+async fn create_vault_guardian(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateGuardianVaultRequest>,
+) -> Result<(StatusCode, Json<CreatedVault>), ApiError> {
+    // ---- Validate periods + timelock (timelock enforces the 144 floor) ---
+    crate::demo::validate_periods(req.checkin_period_secs, req.grace_period_secs)
+        .map_err(ApiError::Validation)?;
+    crate::demo::validate_timelock_blocks(req.timelock_blocks).map_err(ApiError::Validation)?;
+
+    validate_contact_channel("heir_contact_channel", req.heir_contact_channel.as_deref())?;
+    validate_contact_channel(
+        "owner_contact_channel",
+        req.owner_contact_channel.as_deref(),
+    )?;
+    validate_contact_channel(
+        "guardian1.contact_channel",
+        req.guardian1.contact_channel.as_deref(),
+    )?;
+    validate_contact_channel(
+        "guardian2.contact_channel",
+        req.guardian2.contact_channel.as_deref(),
+    )?;
+
+    let network = crate::config::parse_network(&req.network)
+        .map_err(|name| ApiError::Validation(format!("unknown network {name}")))?;
+    crate::demo::ensure_demo_safe_for_network(&req.network).map_err(ApiError::Validation)?;
+    let path = vault_account_path(network);
+
+    // ---- Resolve the four parties' xpubs -----------------------------
+    let (owner_fp, owner_xpub) =
+        resolve_party("owner", &req.owner.xpub, req.owner.fingerprint.as_deref())?;
+    let (heir_fp, heir_xpub) =
+        resolve_party("heir", &req.heir.xpub, req.heir.fingerprint.as_deref())?;
+    let (g1_fp, g1_xpub) = resolve_party(
+        "guardian1",
+        &req.guardian1.xpub,
+        req.guardian1.fingerprint.as_deref(),
+    )?;
+    let (g2_fp, g2_xpub) = resolve_party(
+        "guardian2",
+        &req.guardian2.xpub,
+        req.guardian2.fingerprint.as_deref(),
+    )?;
+
+    // All four keys must be distinct — a shared key would collapse the
+    // policy (e.g. heir == guardian would let the heir self-claim).
+    let xpubs = [&owner_xpub, &heir_xpub, &g1_xpub, &g2_xpub];
+    for i in 0..xpubs.len() {
+        for j in (i + 1)..xpubs.len() {
+            if xpubs[i] == xpubs[j] {
+                return Err(ApiError::Validation(
+                    "owner, heir, and both guardian keys must all differ".into(),
+                ));
+            }
+        }
+    }
+
+    // ---- Build the guardian descriptor pair --------------------------
+    let owner_ext = descriptor_key_fragment(owner_fp, &path, &owner_xpub, Chain::External);
+    let owner_int = descriptor_key_fragment(owner_fp, &path, &owner_xpub, Chain::Internal);
+    let heir_ext = descriptor_key_fragment(heir_fp, &path, &heir_xpub, Chain::External);
+    let heir_int = descriptor_key_fragment(heir_fp, &path, &heir_xpub, Chain::Internal);
+    let g1_ext = descriptor_key_fragment(g1_fp, &path, &g1_xpub, Chain::External);
+    let g1_int = descriptor_key_fragment(g1_fp, &path, &g1_xpub, Chain::Internal);
+    let g2_ext = descriptor_key_fragment(g2_fp, &path, &g2_xpub, Chain::External);
+    let g2_int = descriptor_key_fragment(g2_fp, &path, &g2_xpub, Chain::Internal);
+
+    let pair = build_guardian_descriptor_pair(
+        &owner_ext,
+        &owner_int,
+        &heir_ext,
+        &heir_int,
+        &g1_ext,
+        &g1_int,
+        &g2_ext,
+        &g2_int,
+        req.timelock_blocks,
+    )
+    .map_err(|e| ApiError::Validation(format!("descriptor build: {e}")))?;
+
+    // ---- Validate the sealed (heir + owner) material -----------------
+    // Guardian vaults are always Door A: the heir's sealed xprv and its
+    // claim token are mandatory (no self-xpub heir path here).
+    let s = &req.sealed;
+    if s.password_kdf_mem_kib < 1024 || s.password_kdf_iters < 1 {
+        return Err(ApiError::Validation(
+            "password KDF parameters out of range".into(),
+        ));
+    }
+    if s.owner_email_hash.len() != 64 || !s.owner_email_hash.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return Err(ApiError::Validation(
+            "owner_email_hash must be 64 hex characters".into(),
+        ));
+    }
+    let (heir_xprv_ct, heir_xprv_nonce, heir_token) = match (
+        &s.heir_xprv_ct_b64,
+        &s.heir_xprv_nonce_b64,
+        &s.claim_token_b64,
+    ) {
+        (Some(ct), Some(nn), Some(tok)) => (ct.clone(), nn.clone(), tok.clone()),
+        _ => {
+            return Err(ApiError::Validation(
+                "guardian vault requires a sealed heir xprv and its claim token".into(),
+            ))
+        }
+    };
+
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now();
+    let next_deadline = now + Duration::seconds(req.checkin_period_secs + req.grace_period_secs);
+    let now_s = now.to_rfc3339();
+    let next_s = next_deadline.to_rfc3339();
+    let timelock = req.timelock_blocks as i64;
+    let claim_eligible = next_deadline + Duration::seconds(req.grace_period_secs);
+    let claim_eligible_s = claim_eligible.to_rfc3339();
+
+    reject_conflicting_owner_email(&state.db, &s.owner_email_hash, &owner_ext).await?;
+
+    // Heir claim token: sealed at rest + hashed (mirrors create_vault_from_xpub).
+    let heir_at_rest = crypto::seal_claim_token_at_rest(&id, &heir_token)?;
+    let heir_token_hash = crypto::hash_claim_token(&heir_token);
+
+    // Seal contacts at rest.
+    let seal_opt = |v: Option<&str>| -> Result<(Option<String>, Option<String>), ApiError> {
+        match v.filter(|s| !s.is_empty()) {
+            Some(pt) => {
+                let sc = seal_for_vault(&id, pt.as_bytes())?;
+                Ok((Some(sc.ciphertext_b64), Some(sc.nonce_b64)))
+            }
+            None => Ok((None, None)),
+        }
+    };
+    let (heir_ct, heir_nn) = seal_opt(req.heir_contact.as_deref())?;
+    let (owner_ct, owner_nn) = seal_opt(req.owner_contact.as_deref())?;
+    let owner_channel = req
+        .owner_contact_channel
+        .clone()
+        .or_else(|| owner_ct.as_ref().map(|_| "email".to_string()));
+
+    // Personal opener for the heir's claim message (sealed at rest as JSON),
+    // mirroring create_vault_from_xpub.
+    let intro_from_name = req
+        .from_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let intro_note = req
+        .heir_note
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if intro_from_name.is_some_and(|s| s.chars().count() > 80) {
+        return Err(ApiError::Validation("from_name too long (max 80)".into()));
+    }
+    if intro_note.is_some_and(|s| s.chars().count() > 500) {
+        return Err(ApiError::Validation("heir_note too long (max 500)".into()));
+    }
+    let (heir_intro_ct, heir_intro_nn) = if intro_from_name.is_some() || intro_note.is_some() {
+        let blob =
+            serde_json::json!({ "from_name": intro_from_name, "note": intro_note }).to_string();
+        let sc = seal_for_vault(&id, blob.as_bytes())?;
+        (Some(sc.ciphertext_b64), Some(sc.nonce_b64))
+    } else {
+        (None, None)
+    };
+
+    let issued_owner = issue_owner_token();
+
+    // ---- Insert the vault row (heir inline, vault_kind='guardian') ---
+    sqlx::query(
+        r#"INSERT INTO vaults (
+            id, label, network,
+            descriptor_external, descriptor_internal,
+            timelock_blocks,
+            checkin_period_secs, grace_period_secs,
+            owner_contact, heir_contact,
+            created_at, next_deadline_at, status,
+            owner_xpub_fragment_external, owner_xpub_fragment_internal,
+            heir_xpub_fragment_external,  heir_xpub_fragment_internal,
+            heir_contact_channel,
+            heir_contact_ciphertext, heir_contact_nonce,
+            owner_contact_ciphertext, owner_contact_nonce, owner_contact_channel,
+            claim_eligible_at,
+            owner_token_hash,
+            password_salt_b64, password_kdf_mem_kib, password_kdf_iters,
+            owner_xprv_sealed_ct_b64, owner_xprv_sealed_nonce,
+            owner_token_sealed_ct_b64, owner_token_sealed_nonce,
+            heir_xprv_sealed_ct_b64, heir_xprv_sealed_nonce,
+            owner_email_hash,
+            claim_token_at_rest_b64, claim_token_hash, claim_token_issued_at,
+            heir_derived,
+            heir_intro_ciphertext, heir_intro_nonce,
+            vault_kind
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, 'ok',
+                  ?, ?, ?, ?, ?,
+                  ?, ?,
+                  ?, ?, ?,
+                  ?,
+                  ?,
+                  ?, ?, ?,
+                  ?, ?,
+                  ?, ?,
+                  ?, ?,
+                  ?,
+                  ?, ?, ?,
+                  0,
+                  ?, ?,
+                  'guardian')"#,
+    )
+    .bind(&id)
+    .bind(&req.label)
+    .bind(&req.network)
+    .bind(&pair.external)
+    .bind(&pair.internal)
+    .bind(timelock)
+    .bind(req.checkin_period_secs)
+    .bind(req.grace_period_secs)
+    .bind(&now_s)
+    .bind(&next_s)
+    .bind(&owner_ext)
+    .bind(&owner_int)
+    .bind(&heir_ext)
+    .bind(&heir_int)
+    .bind(&req.heir_contact_channel)
+    .bind(&heir_ct)
+    .bind(&heir_nn)
+    .bind(&owner_ct)
+    .bind(&owner_nn)
+    .bind(&owner_channel)
+    .bind(&claim_eligible_s)
+    .bind(&issued_owner.hash_hex)
+    .bind(&s.password_salt_b64)
+    .bind(s.password_kdf_mem_kib)
+    .bind(s.password_kdf_iters)
+    .bind(&s.owner_xprv_ct_b64)
+    .bind(&s.owner_xprv_nonce_b64)
+    .bind(&s.owner_token_ct_b64)
+    .bind(&s.owner_token_nonce_b64)
+    .bind(&heir_xprv_ct)
+    .bind(&heir_xprv_nonce)
+    .bind(&s.owner_email_hash)
+    .bind(&heir_at_rest)
+    .bind(&heir_token_hash)
+    .bind(&now_s)
+    .bind(&heir_intro_ct)
+    .bind(&heir_intro_nn)
+    .execute(&state.db)
+    .await?;
+
+    // ---- Insert the two guardian rows --------------------------------
+    for (slot, g, g_ext, g_int) in [
+        (1_i64, &req.guardian1, &g1_ext, &g1_int),
+        (2_i64, &req.guardian2, &g2_ext, &g2_int),
+    ] {
+        let at_rest = crypto::seal_claim_token_at_rest(&id, &g.claim_token_b64)?;
+        let token_hash = crypto::hash_claim_token(&g.claim_token_b64);
+        let (contact_ct, contact_nn) = seal_opt(g.contact.as_deref())?;
+        let channel = g
+            .contact_channel
+            .clone()
+            .or_else(|| contact_ct.as_ref().map(|_| "email".to_string()));
+        sqlx::query(
+            r#"INSERT INTO vault_guardian_keys (
+                vault_id, slot,
+                xprv_sealed_ct_b64, xprv_sealed_nonce,
+                claim_token_at_rest_b64, claim_token_hash, claim_token_issued_at,
+                contact_ciphertext, contact_nonce, contact_channel,
+                xpub_fragment_external, xpub_fragment_internal,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(&id)
+        .bind(slot)
+        .bind(&g.xprv_ct_b64)
+        .bind(&g.xprv_nonce_b64)
+        .bind(&at_rest)
+        .bind(&token_hash)
+        .bind(&now_s)
+        .bind(&contact_ct)
+        .bind(&contact_nn)
+        .bind(&channel)
+        .bind(g_ext)
+        .bind(g_int)
+        .bind(&now_s)
+        .execute(&state.db)
+        .await?;
+    }
+
+    record_event(
+        &state.db,
+        &id,
+        "registered",
+        Some(serde_json::json!({ "source": "guardian", "network": req.network })),
+    )
+    .await?;
+
+    // Owner email verification (best-effort, mirrors from-xpub).
+    let has_owner_email = owner_ct.is_some() && owner_channel.as_deref() == Some("email");
+    if has_owner_email {
+        if let Some(email) = req.owner_contact.as_deref() {
+            if let Err(e) = send_contact_verification(&state, &id, email).await {
+                tracing::warn!(vault_id = %id, error = ?e, "guardian: owner verification email");
+            }
+        }
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreatedVault {
+            vault: VaultView {
+                id,
+                label: req.label,
+                network: req.network,
+                timelock_blocks: timelock,
+                checkin_period_secs: req.checkin_period_secs,
+                grace_period_secs: req.grace_period_secs,
+                status: "ok".into(),
+                created_at: now,
+                last_checkin_at: None,
+                next_deadline_at: next_deadline,
+                claim_eligible_at: Some(claim_eligible),
+                panic_frozen_until: None,
+                lnurl_checkin: None,
+                lnurl_panic: None,
+                owner_contact_verified: if has_owner_email { Some(false) } else { None },
+                descriptor_external: Some(pair.external.clone()),
+                descriptor_internal: Some(pair.internal.clone()),
+                has_trusted_contact: None,
+            },
+            owner_token: issued_owner.token,
+            vault_secret_hex: None,
         }),
     ))
 }
@@ -3685,6 +4072,147 @@ mod tests {
             .expect_err("token-without-heir must be rejected");
         assert!(
             matches!(&err, ApiError::Validation(m) if m.contains("both present or both absent")),
+            "got {err:?}"
+        );
+    }
+
+    fn guardian_party(seed: u8, token: &str) -> GuardianParty {
+        let (xpub, fp) = xpub_for(seed);
+        GuardianParty {
+            xpub,
+            fingerprint: Some(fp),
+            xprv_ct_b64: "Z3VhcmRjdA".into(),
+            xprv_nonce_b64: "Z3VhcmRubg".into(),
+            claim_token_b64: token.into(),
+            contact: Some(format!("guardian{seed}@example.com")),
+            contact_channel: Some("email".into()),
+        }
+    }
+
+    /// A guardian vault (#81 P2) persists the heir inline plus two guardian
+    /// rows, marks the vault `guardian`, and stores a real `heir AND
+    /// (g1 OR g2)` descriptor. Each party's claim token is stored only as a
+    /// hash + sealed-at-rest, never verbatim.
+    #[tokio::test]
+    async fn guardian_vault_persists_heir_inline_and_two_guardian_rows() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+
+        let (owner_xpub, owner_fp) = xpub_for(0x21);
+        let (heir_xpub, heir_fp) = xpub_for(0x22);
+        let sealed = sealed_setup(
+            &"e".repeat(64),
+            Some("aGVpcmN0".into()),
+            Some("aGVpcm5u".into()),
+            Some("heir-token".into()),
+        );
+        let req = CreateGuardianVaultRequest {
+            label: Some("guardian".into()),
+            network: "regtest".into(),
+            owner: PartyXpub {
+                xpub: owner_xpub,
+                fingerprint: Some(owner_fp),
+            },
+            heir: PartyXpub {
+                xpub: heir_xpub,
+                fingerprint: Some(heir_fp),
+            },
+            guardian1: guardian_party(0x23, "g1-token"),
+            guardian2: guardian_party(0x24, "g2-token"),
+            timelock_blocks: 144,
+            checkin_period_secs: 86_400,
+            grace_period_secs: 3_600,
+            owner_contact: None,
+            owner_contact_channel: None,
+            heir_contact: Some("heir@example.com".into()),
+            heir_contact_channel: Some("email".into()),
+            sealed,
+            from_name: None,
+            heir_note: None,
+        };
+
+        let (code, created) = create_vault_guardian(State(state.clone()), Json(req))
+            .await
+            .expect("guardian create should succeed");
+        assert_eq!(code, StatusCode::CREATED);
+        let id = created.vault.id.clone();
+
+        // Vault row: marked guardian, heir sealed inline, real descriptor.
+        let (kind, ext, heir_ct, token_hash): (String, String, Option<String>, Option<String>) =
+            sqlx::query_as(
+                "SELECT vault_kind, descriptor_external, heir_xprv_sealed_ct_b64, claim_token_hash \
+                   FROM vaults WHERE id = ?",
+            )
+            .bind(&id)
+            .fetch_one(&state.db)
+            .await
+            .expect("vault row");
+        assert_eq!(kind, "guardian");
+        assert!(ext.contains("or_b(pk("), "guardian descriptor: {ext}");
+        parse_descriptor(&ext).expect("descriptor parses");
+        assert!(heir_ct.is_some(), "heir xprv sealed inline");
+        let heir_hash = token_hash.expect("heir claim-token hash stored");
+        assert_ne!(heir_hash, "heir-token", "token stored hashed, not verbatim");
+
+        // Two guardian rows, each with its own hashed token + sealed key.
+        let rows: Vec<(i64, String, String)> = sqlx::query_as(
+            "SELECT slot, claim_token_hash, xprv_sealed_ct_b64 \
+               FROM vault_guardian_keys WHERE vault_id = ? ORDER BY slot",
+        )
+        .bind(&id)
+        .fetch_all(&state.db)
+        .await
+        .expect("guardian rows");
+        assert_eq!(rows.len(), 2, "two guardian rows");
+        assert_eq!(rows[0].0, 1);
+        assert_eq!(rows[1].0, 2);
+        assert_eq!(rows[0].1, crate::crypto::hash_claim_token("g1-token"));
+        assert_eq!(rows[1].1, crate::crypto::hash_claim_token("g2-token"));
+        assert_ne!(rows[0].1, rows[1].1, "guardians have distinct tokens");
+    }
+
+    /// All four keys must differ — a shared key would collapse the policy.
+    #[tokio::test]
+    async fn guardian_vault_rejects_duplicate_keys() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let (owner_xpub, owner_fp) = xpub_for(0x31);
+        let (heir_xpub, heir_fp) = xpub_for(0x32);
+        let req = CreateGuardianVaultRequest {
+            label: None,
+            network: "regtest".into(),
+            owner: PartyXpub {
+                xpub: owner_xpub,
+                fingerprint: Some(owner_fp),
+            },
+            heir: PartyXpub {
+                xpub: heir_xpub,
+                fingerprint: Some(heir_fp),
+            },
+            // guardian2 reuses guardian1's key → must be rejected.
+            guardian1: guardian_party(0x33, "g1-token"),
+            guardian2: guardian_party(0x33, "g2-token"),
+            timelock_blocks: 144,
+            checkin_period_secs: 86_400,
+            grace_period_secs: 3_600,
+            owner_contact: None,
+            owner_contact_channel: None,
+            heir_contact: Some("heir@example.com".into()),
+            heir_contact_channel: Some("email".into()),
+            sealed: sealed_setup(
+                &"f".repeat(64),
+                Some("aGVpcmN0".into()),
+                Some("aGVpcm5u".into()),
+                Some("heir-token".into()),
+            ),
+            from_name: None,
+            heir_note: None,
+        };
+        let err = create_vault_guardian(State(state.clone()), Json(req))
+            .await
+            .expect_err("duplicate guardian keys must be rejected");
+        assert!(
+            matches!(&err, ApiError::Validation(m) if m.contains("must all differ")),
             "got {err:?}"
         );
     }
