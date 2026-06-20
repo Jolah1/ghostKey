@@ -156,7 +156,7 @@ const STEPS: Step[] = [
   },
   {
     title: "The rules live on Bitcoin, not on us",
-    body: "Your plan is written into Bitcoin itself, so nobody, not even us, can block or take what you left. GhostKey keeps it running: reminders for you, a guided claim for them.",
+    body: "Your plan is written into Bitcoin itself, so the rules can't be blocked, deleted, or rewritten, not even by us. The timelock means nothing moves before your waiting period is over. GhostKey just keeps it running: reminders for you, a guided claim for them.",
   },
 ];
 
