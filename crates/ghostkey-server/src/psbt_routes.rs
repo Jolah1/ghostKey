@@ -687,7 +687,9 @@ pub async fn get_sealed_heir_xprv(
  *  heir benefits from spending.                                             *
  * -------------------------------------------------------------------------- */
 
-#[derive(Debug, Deserialize)]
+// No `Debug` derive on purpose: this carries an unsealed private key
+// (`heir_xprv`). Deriving Debug would let a stray `?req` log leak it.
+#[derive(Deserialize)]
 pub struct HeirClaimRequest {
     /// Bitcoin address the heir wants the funds to land at.
     pub destination: String,
@@ -984,7 +986,9 @@ pub async fn get_sealed_guardian_xprv(
     }))
 }
 
-#[derive(Debug, Deserialize)]
+// No `Debug` derive on purpose: this carries two unsealed private keys
+// (`heir_xprv`, `guardian_xprv`). Deriving Debug would risk leaking them.
+#[derive(Deserialize)]
 pub struct GuardianClaimRequest {
     /// Bitcoin address the funds should land at.
     pub destination: String,
@@ -1202,7 +1206,9 @@ pub async fn guardian_claim(
  *  heir countdown restarts at the new confirmation, like a check-in.        *
  * -------------------------------------------------------------------------- */
 
-#[derive(Debug, Deserialize)]
+// No `Debug` derive on purpose: this carries an unsealed private key
+// (`owner_xprv`). Deriving Debug would let a stray `?req` log leak it.
+#[derive(Deserialize)]
 pub struct OwnerSendRequest {
     /// Bitcoin address to pay. Must match the vault's network.
     pub destination: String,

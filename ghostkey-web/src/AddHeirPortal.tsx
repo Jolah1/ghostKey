@@ -412,7 +412,7 @@ export function AddHeirPortal({
               {phase.kind === "unlocking" ? (
                 <div>
                   <p className="text-sm text-muted">
-                    Unwrapping your keys… {phase.pct}%
+                    Setting things up… {phase.pct}%
                   </p>
                   <div className="mt-2 h-1.5 w-full overflow-hidden rounded bg-[var(--surface-2)]">
                     <div
