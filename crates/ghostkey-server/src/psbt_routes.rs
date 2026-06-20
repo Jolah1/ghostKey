@@ -168,15 +168,40 @@ where
     Err(last_err)
 }
 
-/// `mempool.space` explorer URL for a given txid + network.
+/// Block-explorer URL for a given txid, following whatever indexer the
+/// server actually uses. Reads `GHOSTKEY_ESPLORA_URL` so a custom indexer
+/// (mutinynet, a self-hosted Esplora) gets a link that resolves, instead of
+/// always pointing at mempool.space (#152).
 fn explorer_url(network: Network, txid: &bitcoin::Txid) -> String {
-    let base = match network {
+    let esplora = std::env::var("GHOSTKEY_ESPLORA_URL").ok();
+    format!("{}/{txid}", explorer_base(esplora.as_deref(), network))
+}
+
+/// Env-independent core of [`explorer_url`], split out so tests don't have
+/// to mutate process-wide state.
+///
+/// An Esplora indexer's web explorer almost always lives at the same host
+/// with the `/api` suffix dropped (`https://mutinynet.com/api` →
+/// `https://mutinynet.com`), so when an explicit indexer is configured we
+/// derive the explorer base from it. With no indexer set we keep the
+/// per-network `mempool.space` defaults, so production is unchanged.
+fn explorer_base(esplora_url: Option<&str>, network: Network) -> String {
+    if let Some(raw) = esplora_url {
+        // A comma-separated fallback list is allowed; the first entry is the
+        // primary indexer, so base the link on it.
+        if let Some(first) = raw.split(',').map(str::trim).find(|s| !s.is_empty()) {
+            let base = first.trim_end_matches('/');
+            let base = base.strip_suffix("/api").unwrap_or(base);
+            let base = base.trim_end_matches('/');
+            return format!("{base}/tx");
+        }
+    }
+    match network {
         Network::Bitcoin => "https://mempool.space/tx".to_string(),
         Network::Testnet => "https://mempool.space/testnet/tx".to_string(),
         Network::Signet => "https://mempool.space/signet/tx".to_string(),
         _ => "https://example.invalid/tx".to_string(),
-    };
-    format!("{base}/{txid}")
+    }
 }
 
 /* -------------------------------------------------------------------------- *
@@ -1766,12 +1791,50 @@ mod tests {
     }
 
     #[test]
+    fn explorer_base_follows_configured_indexer() {
+        // No indexer configured → per-network mempool.space defaults.
+        assert_eq!(
+            explorer_base(None, Network::Bitcoin),
+            "https://mempool.space/tx"
+        );
+        assert_eq!(
+            explorer_base(None, Network::Signet),
+            "https://mempool.space/signet/tx"
+        );
+        // A custom indexer → explorer derived from it (#152): drop `/api`.
+        assert_eq!(
+            explorer_base(Some("https://mutinynet.com/api"), Network::Signet),
+            "https://mutinynet.com/tx"
+        );
+        // Trailing slash + a fallback list: use the first entry.
+        assert_eq!(
+            explorer_base(
+                Some("https://my.indexer/api/ , https://backup/api"),
+                Network::Bitcoin
+            ),
+            "https://my.indexer/tx"
+        );
+        // An indexer URL without an `/api` suffix still yields a host link.
+        assert_eq!(
+            explorer_base(Some("http://127.0.0.1:3002"), Network::Regtest),
+            "http://127.0.0.1:3002/tx"
+        );
+        // An empty/whitespace value falls back to the network default.
+        assert_eq!(
+            explorer_base(Some("   "), Network::Signet),
+            "https://mempool.space/signet/tx"
+        );
+    }
+
+    #[test]
     fn explorer_url_includes_txid() {
         let txid: bitcoin::Txid =
             "0000000000000000000000000000000000000000000000000000000000000001"
                 .parse()
                 .unwrap();
-        let url = explorer_url(Network::Signet, &txid);
+        // Use the env-independent core so this can't race the env-mutating
+        // `esplora_urls_respects_env` test running in parallel.
+        let url = format!("{}/{txid}", explorer_base(None, Network::Signet));
         assert!(url.starts_with("https://mempool.space/signet/tx/"));
         assert!(url.ends_with("0000000000000000000000000000000000000000000000000000000000000001"));
     }
