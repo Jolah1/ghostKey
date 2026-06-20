@@ -132,11 +132,13 @@
   --surface-2:    #F2F2F2;
   --surface-hi:   #E8E8E8;
 
-  --border:       #E4E7EA;
-  --border-hi:    #D2D7DC;
+  /* Darker than a hairline so cards, inputs, and dividers keep
+     definition on the white background instead of dissolving into it. */
+  --border:       #DCE0E4;
+  --border-hi:    #C2C8CE;
   --border-focus: rgba(11, 117, 104, 0.50);
 
-  --card-outline: #E5E5E5;
+  --card-outline: #D7DBDF;
   --card-grad:    linear-gradient(345deg, #FAFAFA, #FFFFFF);
 
   --text:         #070709;
@@ -368,6 +370,14 @@
     outline: 1.5px solid var(--card-outline);
     outline-offset: 0;
     position: relative;
+  }
+  /* On white, a hairline outline alone leaves cards looking edgeless, so
+     give them a soft lift in light mode. Dark mode keeps the flat look —
+     a shadow on near-black reads as muddy rather than crisp. */
+  [data-theme="light"] .card-flat {
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.04),
+      0 8px 20px -12px rgba(0, 0, 0, 0.10);
   }
   /* Simpler card variant when the amber outline would compete with
      content (e.g. inline rows in dense lists). */
