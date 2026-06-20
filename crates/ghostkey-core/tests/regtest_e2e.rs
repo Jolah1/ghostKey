@@ -916,10 +916,11 @@ fn guardian_unlock_height_gates_claim_until_reached() -> Result<()> {
     // Unlock well beyond CSV maturity so there's a window where the heir +
     // guardian are otherwise ready but the absolute lock still holds.
     let unlock_h = h0 + TIMELOCK_BLOCKS + 20;
-    let (vault, heir_m, g1_m, _g2_m) =
-        build_guardian_vault_and_keys_with_unlock(Some(unlock_h))?;
+    let (vault, heir_m, g1_m, _g2_m) = build_guardian_vault_and_keys_with_unlock(Some(unlock_h))?;
     assert!(
-        vault.descriptor_for(Chain::External).contains(&format!("after({unlock_h})")),
+        vault
+            .descriptor_for(Chain::External)
+            .contains(&format!("after({unlock_h})")),
         "descriptor carries the unlock CLTV"
     );
 

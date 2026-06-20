@@ -198,7 +198,10 @@ impl GuardianDescriptorParams {
 pub fn build_guardian_descriptor_string(params: &GuardianDescriptorParams) -> Result<String> {
     params.validate()?;
     // The guardian disjunction, optionally wrapped in the absolute unlock.
-    let guardian_or = format!("or_b(pk({}),s:pk({}))", params.guardian1_key, params.guardian2_key);
+    let guardian_or = format!(
+        "or_b(pk({}),s:pk({}))",
+        params.guardian1_key, params.guardian2_key
+    );
     let gated = match params.unlock_height {
         Some(h) => format!("and_v(v:after({h}),{guardian_or})"),
         None => guardian_or,
@@ -353,7 +356,16 @@ mod tests {
     fn builds_guardian_descriptor_with_unlock_cltv() {
         let (o, h, g1, g2) = guardian_fragments(Network::Regtest);
         let pair = build_guardian_descriptor_pair(
-            &o.0, &o.1, &h.0, &h.1, &g1.0, &g1.1, &g2.0, &g2.1, 144, Some(900_000),
+            &o.0,
+            &o.1,
+            &h.0,
+            &h.1,
+            &g1.0,
+            &g1.1,
+            &g2.0,
+            &g2.1,
+            144,
+            Some(900_000),
         )
         .unwrap();
         // The unlock adds an absolute CLTV gating the guardian disjunction.

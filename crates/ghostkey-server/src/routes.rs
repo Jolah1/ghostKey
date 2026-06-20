@@ -4364,12 +4364,11 @@ mod tests {
         let (_, created) = create_vault_guardian(State(state.clone()), Json(req))
             .await
             .expect("guardian create with unlock");
-        let ext: String =
-            sqlx::query_scalar("SELECT descriptor_external FROM vaults WHERE id = ?")
-                .bind(&created.vault.id)
-                .fetch_one(&state.db)
-                .await
-                .expect("descriptor");
+        let ext: String = sqlx::query_scalar("SELECT descriptor_external FROM vaults WHERE id = ?")
+            .bind(&created.vault.id)
+            .fetch_one(&state.db)
+            .await
+            .expect("descriptor");
         assert!(ext.contains("after(900000)"), "unlock CLTV embedded: {ext}");
         assert!(ext.contains("older(144)"), "inactivity CSV still present");
     }

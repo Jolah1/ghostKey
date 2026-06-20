@@ -221,9 +221,7 @@ pub fn build_guardian_claim(
     // once the tip has reached `H`. If the unlock has not matured (tip < H),
     // BDK cannot finalize the absolute-timelock leaf and the claim fails with
     // the usual "timelock may not have matured" error — correct behaviour.
-    let tip_height = wallet
-        .latest_checkpoint()
-        .height();
+    let tip_height = wallet.latest_checkpoint().height();
     let nlocktime = bitcoin::absolute::LockTime::from_height(tip_height)
         .unwrap_or(bitcoin::absolute::LockTime::ZERO);
 
