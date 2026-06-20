@@ -139,6 +139,14 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(crate::psbt_routes::heir_claim),
         )
         .route(
+            "/claim/:token/sealed-guardian",
+            get(crate::psbt_routes::get_sealed_guardian_xprv),
+        )
+        .route(
+            "/claim/:token/guardian-claim",
+            post(crate::psbt_routes::guardian_claim),
+        )
+        .route(
             "/claim/:token/build-psbt",
             post(crate::psbt_routes::build_claim_psbt),
         )
@@ -4215,5 +4223,109 @@ mod tests {
             matches!(&err, ApiError::Validation(m) if m.contains("must all differ")),
             "got {err:?}"
         );
+    }
+
+    /// A guardian's claim token (#81 P4) resolves through the
+    /// sealed-guardian endpoint to that guardian's sealed xprv and slot,
+    /// is refused once the vault's claim is consumed, and 404s for an
+    /// unknown token. The browser unwraps the returned ciphertext locally
+    /// with the token, exactly like the heir's sealed-heir blob.
+    #[tokio::test]
+    async fn guardian_token_resolves_to_sealed_key_then_locks_after_claim() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+
+        let (owner_xpub, owner_fp) = xpub_for(0x41);
+        let (heir_xpub, heir_fp) = xpub_for(0x42);
+        let req = CreateGuardianVaultRequest {
+            label: Some("guardian".into()),
+            network: "regtest".into(),
+            owner: PartyXpub {
+                xpub: owner_xpub,
+                fingerprint: Some(owner_fp),
+            },
+            heir: PartyXpub {
+                xpub: heir_xpub,
+                fingerprint: Some(heir_fp),
+            },
+            guardian1: guardian_party(0x43, "g1-token"),
+            guardian2: guardian_party(0x44, "g2-token"),
+            timelock_blocks: 144,
+            checkin_period_secs: 86_400,
+            grace_period_secs: 3_600,
+            owner_contact: None,
+            owner_contact_channel: None,
+            heir_contact: Some("heir@example.com".into()),
+            heir_contact_channel: Some("email".into()),
+            sealed: sealed_setup(
+                &"a".repeat(64),
+                Some("aGVpcmN0".into()),
+                Some("aGVpcm5u".into()),
+                Some("heir-token".into()),
+            ),
+            from_name: None,
+            heir_note: None,
+        };
+        let (_, created) = create_vault_guardian(State(state.clone()), Json(req))
+            .await
+            .expect("guardian create");
+        let id = created.vault.id.clone();
+
+        // Elapse the claim-challenge window so the sealed-key endpoints
+        // don't withhold on the safety wait (same gate the heir hits).
+        let long_ago = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
+        sqlx::query("UPDATE vaults SET claim_opened_at = ? WHERE id = ?")
+            .bind(&long_ago)
+            .bind(&id)
+            .execute(&state.db)
+            .await
+            .expect("stamp claim_opened_at");
+
+        // Guardian 1's token resolves to slot 1 + that guardian's sealed key.
+        let view = crate::psbt_routes::get_sealed_guardian_xprv(
+            State(state.clone()),
+            axum::extract::Path("g1-token".to_string()),
+        )
+        .await
+        .expect("g1 token resolves")
+        .0;
+        assert_eq!(view.vault_id, id);
+        assert_eq!(view.slot, 1);
+        assert_eq!(view.guardian_xprv_ct_b64, "Z3VhcmRjdA");
+        assert!(view.descriptor_external.contains("or_b(pk("));
+
+        // Guardian 2's token resolves to slot 2.
+        let view2 = crate::psbt_routes::get_sealed_guardian_xprv(
+            State(state.clone()),
+            axum::extract::Path("g2-token".to_string()),
+        )
+        .await
+        .expect("g2 token resolves")
+        .0;
+        assert_eq!(view2.slot, 2);
+
+        // Unknown token → 404.
+        let nf = crate::psbt_routes::get_sealed_guardian_xprv(
+            State(state.clone()),
+            axum::extract::Path("not-a-token".to_string()),
+        )
+        .await
+        .expect_err("unknown guardian token");
+        assert!(matches!(nf, ApiError::NotFound), "got {nf:?}");
+
+        // Once the vault claim is consumed, no guardian key is handed out.
+        sqlx::query("UPDATE vaults SET claim_token_used_at = ? WHERE id = ?")
+            .bind(&long_ago)
+            .bind(&id)
+            .execute(&state.db)
+            .await
+            .expect("mark claim used");
+        let locked = crate::psbt_routes::get_sealed_guardian_xprv(
+            State(state.clone()),
+            axum::extract::Path("g1-token".to_string()),
+        )
+        .await
+        .expect_err("claim already completed");
+        assert!(matches!(locked, ApiError::Conflict(_)), "got {locked:?}");
     }
 }

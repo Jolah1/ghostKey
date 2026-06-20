@@ -49,7 +49,7 @@ use bdk_esplora::EsploraExt;
 use bdk_wallet::SignOptions;
 use bitcoin::{Address, FeeRate, Network, Psbt};
 use chrono::Utc;
-use ghostkey_core::psbt::build_heir_claim;
+use ghostkey_core::psbt::{build_guardian_claim, build_heir_claim};
 use ghostkey_core::vault::{Vault, VaultConfig, VaultRole};
 use serde::{Deserialize, Serialize};
 
@@ -847,6 +847,302 @@ pub async fn heir_claim(
             "total_input_sats": total_in,
             "fee_sats": fee,
             "flow": "heir-claim-one-shot",
+        })),
+    )
+    .await?;
+
+    Ok((
+        StatusCode::OK,
+        Json(BroadcastClaimResponse {
+            txid: txid.to_string(),
+            explorer_url: explorer_url(network, &txid),
+        }),
+    ))
+}
+
+/* -------------------------------------------------------------------------- *
+ *  Guardian vault claim (#81)                                                 *
+ *                                                                            *
+ *  A guardian vault's spend branch is `heir AND (g1 OR g2)`. Completing it    *
+ *  needs TWO keys: the heir's and one guardian's. Each party's key is         *
+ *  sealed under its own claim token (the heir's inline on `vaults`, each      *
+ *  guardian's in `vault_guardian_keys`).                                      *
+ *                                                                            *
+ *    GET  /claim/:token/sealed-guardian                                       *
+ *        :token is a GUARDIAN token. Returns that guardian's sealed xprv      *
+ *        ct/nonce (the browser unwraps it locally with the token, like the    *
+ *        heir's sealed-heir) plus the watch-only descriptors. Gated on the    *
+ *        vault's claim-token-used flag and the challenge window.              *
+ *                                                                            *
+ *    POST /claim/:token/guardian-claim                                        *
+ *        :token is the HEIR token (the vault's inline claim token, which      *
+ *        this call consumes). Body carries BOTH unwrapped account xprvs.      *
+ *        The server splices both into the descriptor (`build_signing_guardian`*
+ *        + `build_guardian_claim`), signs, broadcasts, and discards. Same     *
+ *        in-memory-only key contract as the one-shot heir claim above.        *
+ * -------------------------------------------------------------------------- */
+
+#[derive(Debug, Serialize)]
+pub struct SealedGuardianView {
+    pub vault_id: String,
+    /// Which guardian slot (1 or 2) this token belongs to.
+    pub slot: i64,
+    pub network: String,
+    pub timelock_blocks: i64,
+    pub guardian_xprv_ct_b64: String,
+    pub guardian_xprv_nonce_b64: String,
+    pub descriptor_external: String,
+    pub descriptor_internal: String,
+}
+
+pub async fn get_sealed_guardian_xprv(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+) -> Result<Json<SealedGuardianView>, ApiError> {
+    let hash = hash_claim_token(&token);
+    // Join the guardian row to its vault: we need the guardian's sealed
+    // key + slot, and the vault's descriptors/network/timelock plus its
+    // claim-consumption flag (the whole claim is gated on the inline
+    // heir token, so once the vault claim lands no guardian key is handed
+    // out either).
+    type Row = (
+        String,         // vault_id
+        i64,            // slot
+        Option<String>, // g.claim_token_hash
+        String,         // g.xprv_sealed_ct_b64
+        String,         // g.xprv_sealed_nonce
+        String,         // v.network
+        i64,            // v.timelock_blocks
+        String,         // v.descriptor_external
+        String,         // v.descriptor_internal
+        Option<String>, // v.claim_token_used_at
+    );
+    let row: Option<Row> = sqlx::query_as(
+        r#"SELECT g.vault_id, g.slot, g.claim_token_hash,
+                  g.xprv_sealed_ct_b64, g.xprv_sealed_nonce,
+                  v.network, v.timelock_blocks,
+                  v.descriptor_external, v.descriptor_internal,
+                  v.claim_token_used_at
+             FROM vault_guardian_keys g
+             JOIN vaults v ON v.id = g.vault_id
+            WHERE g.claim_token_hash = ?"#,
+    )
+    .bind(&hash)
+    .fetch_optional(&state.db)
+    .await?;
+    let row = row.ok_or(ApiError::NotFound)?;
+    let stored_hash = row.2.ok_or(ApiError::NotFound)?;
+    if !claim_token_matches(&token, &stored_hash) {
+        return Err(ApiError::NotFound);
+    }
+    if row.9.is_some() {
+        return Err(ApiError::Conflict("claim already completed".into()));
+    }
+    // Same challenge-window gate as the heir's sealed-key endpoint: the
+    // sealed xprv is half the vault; don't hand it out before the owner's
+    // objection window closes.
+    if let Some(available) = crate::routes::ensure_claim_challenge(&state, &row.0).await? {
+        return Err(ApiError::Conflict(format!(
+            "safety waiting period — this claim can be completed after {}",
+            available.to_rfc3339()
+        )));
+    }
+    Ok(Json(SealedGuardianView {
+        vault_id: row.0,
+        slot: row.1,
+        network: row.5,
+        timelock_blocks: row.6,
+        guardian_xprv_ct_b64: row.3,
+        guardian_xprv_nonce_b64: row.4,
+        descriptor_external: row.7,
+        descriptor_internal: row.8,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GuardianClaimRequest {
+    /// Bitcoin address the funds should land at.
+    pub destination: String,
+    /// Optional fee rate in sat/vB. Defaults to 2 sat/vB.
+    #[serde(default)]
+    pub fee_rate_sat_per_vb: Option<u64>,
+    /// Heir account xprv, unwrapped by the browser from the sealed-heir
+    /// blob via the heir's claim token. Memory-only.
+    pub heir_xprv: String,
+    /// One guardian's account xprv, unwrapped by the browser from the
+    /// sealed-guardian blob via that guardian's claim token. Memory-only.
+    pub guardian_xprv: String,
+}
+
+pub async fn guardian_claim(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+    Json(req): Json<GuardianClaimRequest>,
+) -> Result<(StatusCode, Json<BroadcastClaimResponse>), ApiError> {
+    // :token is the heir (inline) token — the vault's primary claim token.
+    let row = load_vault_for_claim_token(&state, &token).await?;
+
+    let dest = req
+        .destination
+        .trim()
+        .parse::<Address<bitcoin::address::NetworkUnchecked>>()
+        .map_err(|e| ApiError::Validation(format!("destination: {e}")))?;
+    if !dest.is_valid_for_network(row.network) {
+        return Err(ApiError::Validation(format!(
+            "destination is not valid for {:?}",
+            row.network
+        )));
+    }
+    let dest = dest.assume_checked();
+    let dest_str = dest.to_string();
+
+    let fee_rate_sat_per_kwu = req.fee_rate_sat_per_vb.unwrap_or(2).max(1) * 250;
+    let fee_rate = FeeRate::from_sat_per_kwu(fee_rate_sat_per_kwu);
+
+    // Parse both account xprvs. Both must match the vault network.
+    let heir_xprv = bitcoin::bip32::Xpriv::from_str(req.heir_xprv.trim())
+        .map_err(|e| ApiError::Validation(format!("heir_xprv: {e}")))?;
+    let guardian_xprv = bitcoin::bip32::Xpriv::from_str(req.guardian_xprv.trim())
+        .map_err(|e| ApiError::Validation(format!("guardian_xprv: {e}")))?;
+    if heir_xprv.network != row.network.into() {
+        return Err(ApiError::Validation(format!(
+            "heir_xprv is for network {:?}, vault is for {:?}",
+            heir_xprv.network, row.network
+        )));
+    }
+    if guardian_xprv.network != row.network.into() {
+        return Err(ApiError::Validation(format!(
+            "guardian_xprv is for network {:?}, vault is for {:?}",
+            guardian_xprv.network, row.network
+        )));
+    }
+
+    // Atomic claim-token consumption — same gate as the heir flow. The
+    // guardian keys live under the same vault, so consuming the inline
+    // token closes the whole claim (including the sealed-guardian route).
+    let now_s = Utc::now().to_rfc3339();
+    let claimed = sqlx::query(
+        r#"UPDATE vaults
+              SET status              = 'claiming',
+                  claim_token_used_at = ?
+            WHERE id = ?
+              AND claim_token_used_at IS NULL"#,
+    )
+    .bind(&now_s)
+    .bind(&row.id)
+    .execute(&state.db)
+    .await?;
+    if claimed.rows_affected() != 1 {
+        return Err(ApiError::Conflict("claim token already used".into()));
+    }
+
+    let vault_config = VaultConfig {
+        descriptor_external: row.descriptor_external.clone(),
+        descriptor_internal: row.descriptor_internal.clone(),
+        timelock_blocks: row.timelock_blocks as u32,
+        network: row.network,
+        role: VaultRole::Heir,
+        label: row.label.clone(),
+    };
+    let vault = match Vault::from_config(vault_config) {
+        Ok(v) => v,
+        Err(e) => {
+            release_claim_token(&state, &row.id).await;
+            return Err(ApiError::Validation(format!("stored vault: {e}")));
+        }
+    };
+
+    let urls = match esplora_urls(row.network) {
+        Ok(u) => u,
+        Err(e) => {
+            release_claim_token(&state, &row.id).await;
+            return Err(e);
+        }
+    };
+    let network = row.network;
+    let vault_id = row.id.clone();
+
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<(bitcoin::Txid, u64, u64), BlockingErr> {
+            // Both keys spliced in → the loaded-key satisfier picks the
+            // heir + this-guardian path automatically (same as the offline
+            // two-key recovery flow).
+            let mut wallet =
+                ghostkey_core::wallet::build_signing_guardian(&vault, &heir_xprv, &guardian_xprv)
+                    .map_err(|e| BlockingErr::Vault(e.to_string()))?;
+
+            let update = try_each_esplora(&urls, |client| {
+                client
+                    .full_scan(wallet.start_full_scan(), 5, 1)
+                    .map_err(|e| clean_esplora_err("full_scan", &e))
+            })?;
+            wallet
+                .apply_update(update)
+                .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
+
+            let total = wallet.balance().total().to_sat();
+            if total == 0 {
+                return Err(BlockingErr::NoUtxos);
+            }
+
+            let mut built = build_guardian_claim(&mut wallet, &vault, &dest, fee_rate)
+                .map_err(|e| BlockingErr::Build(e.to_string()))?;
+            if !built.finalized {
+                let _ = wallet
+                    .sign(&mut built.psbt, SignOptions::default())
+                    .map_err(|e| BlockingErr::Build(format!("re-sign: {e}")))?;
+                let fin = wallet
+                    .finalize_psbt(&mut built.psbt, SignOptions::default())
+                    .map_err(|e| BlockingErr::Build(format!("finalize: {e}")))?;
+                if !fin {
+                    return Err(BlockingErr::Build(
+                        "PSBT could not be finalised; the timelock may not have matured yet".into(),
+                    ));
+                }
+            }
+            let tx = built
+                .psbt
+                .extract_tx()
+                .map_err(|e| BlockingErr::Build(format!("extract_tx: {e}")))?;
+            try_each_esplora(&urls, |client| {
+                client
+                    .broadcast(&tx)
+                    .map_err(|e| clean_esplora_err("broadcast", &e))
+            })?;
+            let txid = tx.compute_txid();
+            let out_sats: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
+            let fee = total.saturating_sub(out_sats);
+            Ok((txid, total, fee))
+        })
+        .await;
+
+    let (txid, total_in, fee) = match result {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            release_claim_token(&state, &vault_id).await;
+            return Err(ApiError::from(e));
+        }
+        Err(e) => {
+            release_claim_token(&state, &vault_id).await;
+            return Err(ApiError::Validation(format!("worker panic: {e}")));
+        }
+    };
+
+    sqlx::query("UPDATE vaults SET status = 'claimed' WHERE id = ?")
+        .bind(&vault_id)
+        .execute(&state.db)
+        .await?;
+
+    record_event(
+        &state.db,
+        &vault_id,
+        "claim_broadcast",
+        Some(serde_json::json!({
+            "txid": txid.to_string(),
+            "destination": dest_str,
+            "total_input_sats": total_in,
+            "fee_sats": fee,
+            "flow": "guardian-claim-two-key",
         })),
     )
     .await?;
