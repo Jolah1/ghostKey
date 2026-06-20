@@ -98,10 +98,14 @@ function Hero({ onNavigate }: Props) {
           </button>
         </div>
 
-        {/* Founding-user offer. Hand-counted cap; retire this line
+        {/* Founding-user offer. Hand-counted cap; retire these lines
             once the first 100 sign-ups are in. */}
         <p className="mt-5 text-sm font-medium text-accent">
-          Free for the first 100 founding users, locked in forever.
+          First 100 founding users get their first year free.
+        </p>
+        <p className="mt-1 text-xs text-muted">
+          No subscription for your first year. You only pay tiny network fees in
+          sats and your own check-ins.
         </p>
 
         <TrustRow />
@@ -671,11 +675,6 @@ function FinalCTA({ onNavigate }: Props) {
             How it works
           </a>
         </div>
-
-        <p className="mx-auto mt-6 max-w-md text-sm text-soft">
-          Free for the first 100 vaults. No subscription while we're in early
-          access, you only pay tiny Bitcoin network fees and your own check-ins.
-        </p>
       </div>
     </section>
   );
