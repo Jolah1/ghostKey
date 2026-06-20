@@ -33,6 +33,7 @@ import {
   type VaultBalanceView,
   type VaultAddressView,
   type OwnerSendResponse,
+  type HeirProfileView,
 } from "./api";
 import { countdown, parseRfc } from "./time";
 import { AssistChat } from "./AssistChat";
@@ -532,10 +533,12 @@ function MoneyCard({
   canManage: boolean;
 }) {
   const canSend = canManage && Boolean(ownerToken);
-  type Tab = "balance" | "add" | "send";
+  const canSeeHeir = Boolean(ownerToken);
+  type Tab = "balance" | "heir" | "add" | "send";
   const [tab, setTab] = useState<Tab>("balance");
   const tabs: Array<{ id: Tab; label: string }> = [
     { id: "balance", label: "Balance" },
+    ...(canSeeHeir ? [{ id: "heir" as Tab, label: "Heir" }] : []),
     ...(canManage ? [{ id: "add" as Tab, label: "Add" }] : []),
     ...(canSend ? [{ id: "send" as Tab, label: "Send" }] : []),
   ];
@@ -562,6 +565,9 @@ function MoneyCard({
       </div>
       <div className="mt-4">
         {tab === "balance" ? <BalanceCard vaultId={vaultId} embedded /> : null}
+        {tab === "heir" && ownerToken ? (
+          <HeirDetailsCard vaultId={vaultId} ownerToken={ownerToken} />
+        ) : null}
         {tab === "add" ? <ReceiveCard vaultId={vaultId} embedded /> : null}
         {tab === "send" && ownerToken ? (
           <SendCard
@@ -699,6 +705,111 @@ function BalanceCard({
           {error ? <p className="mt-2 text-sm text-alarm">{error}</p> : null}
         </>
       )}
+    </div>
+  );
+}
+
+/* ------------------------------- Heir card -------------------------------- */
+
+/** Owner-only view of who the vault is for: the heir's name, how they'll
+ *  be reached, their contact, and the note left for them. Fetched from
+ *  the owner-authed `/vaults/:id/heir`; the details are sealed at rest. */
+function HeirDetailsCard({
+  vaultId,
+  ownerToken,
+}: {
+  vaultId: string;
+  ownerToken: string;
+}) {
+  const [heir, setHeir] = useState<HeirProfileView | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    api
+      .getVaultHeir(vaultId, ownerToken)
+      .then((h) => {
+        if (!cancelled) setHeir(h);
+      })
+      .catch((e) => {
+        if (!cancelled)
+          setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [vaultId, ownerToken]);
+
+  if (loading) return <p className="text-sm text-muted">Loading…</p>;
+  if (error)
+    return (
+      <p className="text-sm text-alarm">
+        Couldn't load your heir's details right now. Try again in a moment.
+      </p>
+    );
+  if (!heir || (!heir.name && !heir.contact && !heir.note)) {
+    return (
+      <p className="text-sm text-muted">
+        No heir details on file for this vault.
+      </p>
+    );
+  }
+
+  const channelLabel =
+    heir.channel === "sms"
+      ? "SMS"
+      : heir.channel === "whatsapp"
+        ? "WhatsApp"
+        : heir.channel === "email"
+          ? "Email"
+          : null;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <HeirRow label="Name" value={heir.name ?? "—"} />
+      <HeirRow label="Reach them by" value={channelLabel ?? "—"} />
+      <HeirRow label="Contact" value={heir.contact ?? "—"} mono />
+      {heir.note ? (
+        <div>
+          <p className="text-xs uppercase tracking-wider text-dim">
+            Note you left for them
+          </p>
+          <p className="mt-1 whitespace-pre-wrap text-sm text-soft">
+            {heir.note}
+          </p>
+        </div>
+      ) : null}
+      <p className="text-xs text-dim">
+        Only you can see this. Your heir's details are stored encrypted and
+        shown here to the signed-in owner.
+      </p>
+    </div>
+  );
+}
+
+function HeirRow({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="text-xs uppercase tracking-wider text-dim">{label}</span>
+      <span
+        className={`break-all text-right text-sm text-[var(--text)] ${mono ? "font-mono" : ""}`}
+      >
+        {value}
+      </span>
     </div>
   );
 }
