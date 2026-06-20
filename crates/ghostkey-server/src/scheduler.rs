@@ -1073,8 +1073,120 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
         {
             tracing::warn!(vault_id = %id, error = ?e, "could not enqueue claim notification");
         }
+
+        // Guardian vaults (#81): the heir alone can't claim — at least one
+        // of two guardians must co-sign. Send each guardian their own
+        // label-shy claim link. A no-op for standard vaults (no rows).
+        if let Err(e) = enqueue_guardian_claim_links(state, &id).await {
+            tracing::warn!(vault_id = %id, error = ?e, "could not enqueue guardian notifications");
+        }
     }
 
+    Ok(())
+}
+
+/// Enqueue a claim link for each guardian of a guardian vault (#81).
+///
+/// Returns `Ok(())` for a standard vault (no `vault_guardian_keys` rows).
+/// Each guardian's token was sealed at rest at creation; we decrypt it,
+/// resolve the guardian's contact (raw string + channel column, exactly
+/// like the owner contact), and enqueue a label-shy message — it names
+/// GhostKey so the anti-scam "look it up" advice works, but never
+/// "Bitcoin"/"inheritance" before the one-time link (design-review C2).
+async fn enqueue_guardian_claim_links(state: &AppState, vault_id: &str) -> anyhow::Result<()> {
+    let rows = sqlx::query_as::<
+        _,
+        (
+            i64,            // slot
+            Option<String>, // claim_token_at_rest_b64
+            Option<String>, // contact_ciphertext
+            Option<String>, // contact_nonce
+            Option<String>, // contact_channel
+        ),
+    >(
+        r#"SELECT slot, claim_token_at_rest_b64,
+                  contact_ciphertext, contact_nonce, contact_channel
+             FROM vault_guardian_keys
+            WHERE vault_id = ?
+            ORDER BY slot"#,
+    )
+    .bind(vault_id)
+    .fetch_all(&state.db)
+    .await?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let intro = load_heir_intro(state, vault_id).await;
+    let from_name = intro
+        .as_ref()
+        .and_then(|i| i.from_name.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let base = public_base_url();
+    for (slot, at_rest, ct, nn, channel) in rows {
+        let Some(raw) = at_rest.as_ref() else {
+            tracing::info!(vault_id = %vault_id, slot, "guardian has no at-rest token; skipping");
+            continue;
+        };
+        let token = crate::crypto::open_claim_token_at_rest(vault_id, raw)?;
+        let Some(contact) =
+            parse_owner_contact(vault_id, ct.as_deref(), nn.as_deref(), channel.as_deref())?
+        else {
+            tracing::info!(vault_id = %vault_id, slot, "guardian contact missing/undeliverable; skipping");
+            continue;
+        };
+
+        let claim_url = format!("{base}/#/claim/{token}");
+        if crate::demo::demo_mode() {
+            tracing::warn!(vault_id = %vault_id, slot, "DEMO MODE guardian claim link (do not enable in production): {claim_url}");
+        }
+
+        let opener = match from_name {
+            Some(n) => format!("{n} named you as a guardian through GhostKey"),
+            None => "Someone named you as a guardian through GhostKey".to_string(),
+        };
+        let subject = match from_name {
+            Some(n) => format!("{n} asked us to reach you"),
+            None => "Someone asked us to reach you".to_string(),
+        };
+        let body = match contact.channel {
+            Channel::Email => format!(
+                "Hello,\n\n\
+                 {opener}, and asked us to reach you if they ever stopped \
+                 checking in. That has happened, and the person they set this \
+                 up for needs a guardian's help to receive it.\n\n\
+                 Before you open anything: a message like this can look like a \
+                 scam, and you are right to be careful. Look up GhostKey on \
+                 your own and make sure it is genuine first.\n\n\
+                 When you are ready, open this link on any phone or computer \
+                 to help:\n\n\
+                 {claim_url}\n\n\
+                 The link works once. You don't need an account.\n\n\
+                 If this reached you by mistake, you can ignore it.\n\n\
+                 — GhostKey\n"
+            ),
+            _ => format!(
+                "Hello, {opener} and asked us to reach you to help when the \
+                 time came. A message like this can look like a scam, so \
+                 please check GhostKey is genuine first. When you're \
+                 ready:\n\n{claim_url}\n\nThe link works once."
+            ),
+        };
+
+        notifier::enqueue(
+            &state.db,
+            vault_id,
+            NotificationKind::ClaimLink,
+            contact.channel,
+            &contact.address,
+            &subject,
+            &body,
+        )
+        .await?;
+        tracing::info!(vault_id = %vault_id, slot, "guardian claim-link notification enqueued");
+    }
     Ok(())
 }
 
@@ -1704,6 +1816,154 @@ mod tests {
             !body.contains("gk1."),
             "the sealed at-rest blob must never reach the heir; body: {body}"
         );
+    }
+
+    #[tokio::test]
+    async fn guardian_vault_trigger_enqueues_heir_plus_two_guardian_links() {
+        ensure_test_master_key();
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        let vid = "vault-guardian";
+
+        // Heir uses the existing inline sealed columns, exactly like a
+        // standard vault — its claim link is unchanged by #81.
+        let heir_token = "heir-token-AAAAAAAAAAAAAAAAAAAA";
+        let heir_at_rest =
+            crate::crypto::seal_claim_token_at_rest(vid, heir_token).expect("seal heir token");
+        let heir_hash = crate::crypto::hash_claim_token(heir_token);
+        let heir_json = serde_json::json!({
+            "name": "Ada",
+            "contact": "ada@example.com",
+            "channel": "email"
+        })
+        .to_string();
+        let heir_sealed =
+            crate::crypto::seal_for_vault(vid, heir_json.as_bytes()).expect("seal heir contact");
+
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status, claim_eligible_at,
+                heir_contact_ciphertext, heir_contact_nonce, heir_contact_channel,
+                claim_token_at_rest_b64, claim_token_hash, vault_kind
+            ) VALUES (?, 'regtest', 'tr(fake/0/*)', 'tr(fake/1/*)',
+                      144, 86400, 3600,
+                      '2026-01-01T00:00:00Z', '2026-04-01T00:00:00Z', 'alarmed',
+                      '2026-04-08T00:00:00Z', ?, ?, 'email', ?, ?, 'guardian')"#,
+        )
+        .bind(vid)
+        .bind(&heir_sealed.ciphertext_b64)
+        .bind(&heir_sealed.nonce_b64)
+        .bind(&heir_at_rest)
+        .bind(&heir_hash)
+        .execute(&pool)
+        .await
+        .expect("insert guardian vault");
+
+        // Two guardians: each with its own sealed-at-rest token and a
+        // contact sealed as a raw string (owner-contact shape, not JSON).
+        let guardians = [
+            (1_i64, "g1-token-BBBBBBBBBBBBBBBBBBBB", "g1@example.com"),
+            (2_i64, "g2-token-CCCCCCCCCCCCCCCCCCCC", "g2@example.com"),
+        ];
+        for (slot, token, contact) in guardians {
+            let at_rest =
+                crate::crypto::seal_claim_token_at_rest(vid, token).expect("seal guardian token");
+            let sealed_contact =
+                crate::crypto::seal_for_vault(vid, contact.as_bytes()).expect("seal guardian");
+            sqlx::query(
+                r#"INSERT INTO vault_guardian_keys (
+                    vault_id, slot, xprv_sealed_ct_b64, xprv_sealed_nonce,
+                    claim_token_at_rest_b64, claim_token_hash, claim_token_issued_at,
+                    contact_ciphertext, contact_nonce, contact_channel,
+                    xpub_fragment_external, xpub_fragment_internal, created_at
+                ) VALUES (?, ?, 'ct', 'nn', ?, ?, '2026-04-08T00:00:00Z',
+                          ?, ?, 'email', 'xpubext', 'xpubint', '2026-01-01T00:00:00Z')"#,
+            )
+            .bind(vid)
+            .bind(slot)
+            .bind(&at_rest)
+            .bind(crate::crypto::hash_claim_token(token))
+            .bind(&sealed_contact.ciphertext_b64)
+            .bind(&sealed_contact.nonce_b64)
+            .execute(&pool)
+            .await
+            .expect("insert guardian row");
+        }
+
+        tick_once(&state).await.expect("tick");
+
+        // Three claim-link notifications: heir + two guardians.
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE vault_id = ? AND kind = 'claim_link'",
+        )
+        .bind(vid)
+        .fetch_one(&pool)
+        .await
+        .expect("count notifications");
+        assert_eq!(
+            count, 3,
+            "guardian vault must enqueue heir + 2 guardian links, got {count}"
+        );
+
+        // Each guardian token must reach its own decrypted link; no token
+        // leaks the sealed blob, and the guardian copy stays label-shy.
+        let bodies: Vec<String> = {
+            let raw: Vec<(String, String)> = sqlx::query_as(
+                "SELECT body_ciphertext, body_nonce FROM notifications \
+                   WHERE vault_id = ? AND kind = 'claim_link'",
+            )
+            .bind(vid)
+            .fetch_all(&pool)
+            .await
+            .expect("query bodies");
+            raw.into_iter()
+                .map(|(ct, nonce)| {
+                    String::from_utf8(
+                        crate::crypto::open_for_vault(
+                            vid,
+                            &crate::crypto::SealedContact {
+                                ciphertext_b64: ct,
+                                nonce_b64: nonce,
+                            },
+                        )
+                        .expect("open body"),
+                    )
+                    .expect("utf8")
+                })
+                .collect()
+        };
+        let all = bodies.join("\n----\n");
+        for tok in [
+            heir_token,
+            "g1-token-BBBBBBBBBBBBBBBBBBBB",
+            "g2-token-CCCCCCCCCCCCCCCCCCCC",
+        ] {
+            assert!(all.contains(tok), "token {tok} missing from links");
+        }
+        assert!(
+            !all.contains("gk1."),
+            "a sealed at-rest blob leaked into a link"
+        );
+        // Guardian copy must not name Bitcoin/inheritance before the link
+        // (design-review C2). The heir body is allowed to differ; check
+        // the two guardian bodies, which name GhostKey but not the asset.
+        let guardian_bodies: Vec<&String> =
+            bodies.iter().filter(|b| b.contains("guardian")).collect();
+        assert_eq!(guardian_bodies.len(), 2, "expected two guardian bodies");
+        for b in guardian_bodies {
+            let lower = b.to_lowercase();
+            assert!(!lower.contains("bitcoin"), "guardian copy leaks 'bitcoin'");
+            assert!(
+                !lower.contains("inheritance"),
+                "guardian copy leaks 'inheritance'"
+            );
+            assert!(b.contains("GhostKey"), "guardian copy should name GhostKey");
+        }
     }
 
     /* ---------------------------------------------------------------- *
