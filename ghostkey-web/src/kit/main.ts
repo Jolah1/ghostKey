@@ -87,6 +87,11 @@ const css = `
            border-radius: 8px; border: 1px solid #3a332a; background: #14110e;
            color: #ece5da; font-size: 16px; }
   ol li { margin: 6px 0; }
+  details.expert { border: 1px solid #3a332a; border-radius: 10px;
+           padding: 10px 14px; margin: 18px 0; background: #1a1712; }
+  details.expert > summary { cursor: pointer; color: #c9bfb0;
+           font-size: 14px; font-weight: 600; }
+  details.expert[open] > summary { margin-bottom: 8px; }
   progress { width: 100%; height: 8px; }
   a { color: #e0b664; }
 `;
@@ -165,9 +170,10 @@ function render() {
         your vault. Use this file only in a true emergency, like
         losing access to your account.</p>
         <p style="margin-bottom:0"><strong>Where to keep it.</strong>
-        Anywhere you like. Email it to yourself, put it on a USB
-        stick, keep copies in several places. Without your password
-        it does not reveal your keys. It works without internet.</p>
+        Best on something offline you control: a USB stick, a printout,
+        or a second device, in a few places. You can email it to yourself
+        too, but email is the least private option. Without your password
+        it reveals nothing, and it works with no internet.</p>
       </div>
     </div>
   `,
@@ -180,10 +186,10 @@ function render() {
       <h2>${isHeir ? "Unlock with the code" : "Unlock with your password"}</h2>
       <p class="muted">${
         isHeir
-          ? `Type the secret code that was kept with this file. Unlocking
-      happens entirely inside this page. Nothing is sent anywhere. It
-      takes a few seconds on purpose; that slowness is what keeps the
-      code hard to crack.`
+          ? `Type the secret code that was kept with this file and press
+      Unlock. That's all you need to do. Unlocking happens entirely inside
+      this page. Nothing is sent anywhere. It takes a few seconds on
+      purpose; that slowness is what keeps the code hard to crack.`
           : `Type the password you chose when you set up the
       vault. Unlocking happens entirely inside this page. Nothing is
       sent anywhere. It takes a few seconds on purpose; that slowness
@@ -266,58 +272,18 @@ function render() {
     `),
     );
 
-    // Splice the xprv into the descriptors so they import into
-    // Bitcoin Core (or another miniscript-aware wallet) as spending
-    // wallets. The descriptors
-    // embed the account XPUB; deriving it from the xprv tells us the
-    // exact substring to replace. Falls back to bare-key display if
-    // the splice doesn't match (it always should).
-    let spliced = false;
-    try {
-      const versions = bip32Versions(data!.network);
-      const xpub = HDKey.fromExtendedKey(xprv, versions).publicExtendedKey;
-      if (data!.descriptor_external.includes(xpub)) {
-        result.appendChild(
-          el(`<h2>Your spending wallet (import this)</h2>`),
-        );
-        result.appendChild(
-          el(`<p class="muted">This vault uses a Taproot timelock
-          script, so it needs <strong>Bitcoin Core</strong> (version 26
-          or newer): run <code>bitcoin-cli importdescriptors</code> with
-          the line below and it can both watch and spend. Everyday
-          wallets like Sparrow, Electrum, and phone wallets cannot open
-          this vault, and <strong>Liana cannot either</strong>. It only
-          accepts its own descriptor shape. Bitcoin Core is the surest
-          tool. If you are not comfortable with it, ask a Bitcoin-savvy
-          person to help: this file is all they need.</p>`),
-        );
-        result.appendChild(
-          copyBlock(
-            "Receive descriptor (with secret key)",
-            data!.descriptor_external.split(xpub).join(xprv),
-          ),
-        );
-        result.appendChild(
-          copyBlock(
-            "Change descriptor (with secret key)",
-            data!.descriptor_internal.split(xpub).join(xprv),
-          ),
-        );
-        spliced = true;
-      }
-    } catch {
-      // fall through to bare key
+    // H3 (#118): lead the heir with the one thing they need — the in-page
+    // spend panel, which moves the money with no descriptors, no Bitcoin
+    // Core, no jargon. Everything technical goes below it in a clearly
+    // separated, collapsed "expert" layer.
+    if (isHeir) {
+      result.appendChild(
+        el(`<p class="muted">You've unlocked it. To receive your Bitcoin,
+        use the box just below — that's all you need to do. Everything
+        under "For a Bitcoin expert helping you" is optional, only if
+        you'd rather someone technical move it for you.</p>`),
+      );
     }
-
-    result.appendChild(el(`<h2>Your secret key on its own</h2>`));
-    result.appendChild(
-      el(`<p class="muted">${
-        spliced
-          ? "Only needed if a wallet asks for the key separately."
-          : "Give this and the watch-only descriptors below to the wallet. Together they restore spending."
-      } Derivation path: m/86'/${data!.network === "bitcoin" ? 0 : 1}'/0'.</p>`),
-    );
-    result.appendChild(copyBlock("Account secret key (xprv)", xprv));
 
     // Local-signing spend panel: move funds straight from here, no
     // Bitcoin Core, no GhostKey. Signing is offline (in wasm); only the
@@ -332,6 +298,64 @@ function render() {
         accountXprv: xprv,
       }),
     );
+
+    // ---- Collapsed expert layer: the raw descriptors and bare key ----
+    const expert = el(`
+      <details class="expert" style="margin-top:18px">
+        <summary>For a Bitcoin expert helping you</summary>
+        <p class="muted">Any Bitcoin expert can move your money using just
+        this file — they don't need anything else from you. The lines below
+        let them import this vault into Bitcoin Core.</p>
+      </details>
+    `);
+
+    // Splice the xprv into the descriptors so they import into Bitcoin
+    // Core (or another miniscript-aware wallet) as spending wallets. The
+    // descriptors embed the account XPUB; deriving it from the xprv tells
+    // us the exact substring to replace. Falls back to bare-key display if
+    // the splice doesn't match (it always should).
+    let spliced = false;
+    try {
+      const versions = bip32Versions(data!.network);
+      const xpub = HDKey.fromExtendedKey(xprv, versions).publicExtendedKey;
+      if (data!.descriptor_external.includes(xpub)) {
+        expert.appendChild(
+          el(`<p class="muted">This vault uses a Taproot timelock script,
+          so it needs <strong>Bitcoin Core</strong> (version 26 or newer):
+          run <code>bitcoin-cli importdescriptors</code> with the line
+          below and it can both watch and spend. Everyday wallets like
+          Sparrow, Electrum, and phone wallets cannot open this vault, and
+          <strong>Liana cannot either</strong> — it only accepts its own
+          descriptor shape.</p>`),
+        );
+        expert.appendChild(
+          copyBlock(
+            "Receive descriptor (with secret key)",
+            data!.descriptor_external.split(xpub).join(xprv),
+          ),
+        );
+        expert.appendChild(
+          copyBlock(
+            "Change descriptor (with secret key)",
+            data!.descriptor_internal.split(xpub).join(xprv),
+          ),
+        );
+        spliced = true;
+      }
+    } catch {
+      // fall through to bare key
+    }
+
+    expert.appendChild(
+      el(`<p class="muted"><strong>The secret key on its own.</strong> ${
+        spliced
+          ? "Only needed if a wallet asks for the key separately."
+          : "Give this and the watch-only descriptors below to the wallet. Together they restore spending."
+      } Derivation path: m/86'/${data!.network === "bitcoin" ? 0 : 1}'/0'.</p>`),
+    );
+    expert.appendChild(copyBlock("Account secret key (xprv)", xprv));
+
+    result.appendChild(expert);
   }
 
   /* ---- watch-only + help sections ---- */
@@ -339,18 +363,28 @@ function render() {
     el(`
     <div>
       <h2>Just want to check the money is there?</h2>
-      <p class="muted">No password needed for this part. The simplest
-      way: open a block explorer like mempool.space and search for the
-      deposit address you funded. You will see the balance and every
-      payment, with GhostKey nowhere in the loop. To watch the whole
-      vault, import a descriptor below into Bitcoin Core (version 26 or
-      newer), which understands the timelock. Ordinary wallets like
-      Sparrow, and even Liana, cannot read these.</p>
+      <p class="muted">No password needed. The easy way: open a block
+      explorer like mempool.space and search for the deposit address you
+      funded. You'll see the balance and every payment, with GhostKey
+      nowhere in the loop. One caveat — a public explorer can see which
+      address you looked up. To check privately, watch the vault in your
+      own Bitcoin Core (see the expert section just below).</p>
     </div>
   `),
   );
-  main.appendChild(copyBlock("Receive descriptor (watch-only)", data.descriptor_external));
-  main.appendChild(copyBlock("Change descriptor (watch-only)", data.descriptor_internal));
+  // H3 (#118): the raw watch-only descriptors are expert material — keep
+  // them out of the heir's default view, behind a labelled disclosure.
+  const watchExpert = el(`
+    <details class="expert">
+      <summary>For a Bitcoin expert: watch the whole vault</summary>
+      <p class="muted">Import a descriptor below into Bitcoin Core (version
+      26 or newer), which understands the timelock. Ordinary wallets like
+      Sparrow, and even Liana, cannot read these.</p>
+    </details>
+  `);
+  watchExpert.appendChild(copyBlock("Receive descriptor (watch-only)", data.descriptor_external));
+  watchExpert.appendChild(copyBlock("Change descriptor (watch-only)", data.descriptor_internal));
+  main.appendChild(watchExpert);
 
   main.appendChild(
     el(`
