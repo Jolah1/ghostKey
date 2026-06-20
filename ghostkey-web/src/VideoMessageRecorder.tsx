@@ -156,7 +156,7 @@ export function VideoMessageRecorder({
         <span className="text-app-subtle font-normal">(optional)</span>
       </h3>
       <p className="text-app-subtle mt-1 text-sm">
-        When {who} opens their link, they'll see your face and hear your voice —
+        When {who} opens their link, they'll see your face and hear your voice,
         so they know the message is really from you, not a scam. Just talk for a
         few seconds; nothing technical.
       </p>
@@ -198,7 +198,7 @@ export function VideoMessageRecorder({
         <div className="mt-3">
           <InlineAlert tone="warning">
             Camera and microphone access was blocked. You can allow it in your
-            browser's address bar and try again — or skip this; it's optional.
+            browser's address bar and try again, or skip this; it's optional.
           </InlineAlert>
         </div>
       )}
@@ -206,8 +206,8 @@ export function VideoMessageRecorder({
       {phase === "unsupported" && (
         <div className="mt-3">
           <InlineAlert tone="warning">
-            This browser can't record video. You can skip this step — it's
-            optional — or finish setup on a phone or a recent desktop browser.
+            This browser can't record video. You can skip this step; it's
+            optional. Or finish setup on a phone or a recent desktop browser.
           </InlineAlert>
         </div>
       )}
@@ -237,7 +237,7 @@ export function VideoMessageRecorder({
         {phase === "review" ? (
           <>
             <span className="text-ok text-sm font-medium">
-              ✓ Saved — {who} will see this
+              ✓ Saved. {who} will see this
             </span>
             <Button variant="quiet" onClick={start} disabled={disabled}>
               Re-record

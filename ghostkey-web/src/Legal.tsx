@@ -116,12 +116,12 @@ export function TermsPage() {
         </p>
       </Section>
 
-      <Section n={2} title="What GhostKey is — and is not">
+      <Section n={2} title="What GhostKey is, and is not">
         <p>
           GhostKey is a <strong>non-custodial</strong> scheduling and
           notification service for Bitcoin inheritance. It watches a
-          check-in schedule you set, reminds you before deadlines, and —
-          if you stop responding — sends the person you chose a link to
+          check-in schedule you set, reminds you before deadlines, and,
+          if you stop responding, sends the person you chose a link to
           claim your bitcoin. The rules that actually control your funds
           live on the Bitcoin network, not on our servers. One detail to
           be honest about: if you let us make your heir a wallet from
@@ -134,7 +134,7 @@ export function TermsPage() {
           We are <strong>not</strong> a bank, a custodian, an exchange, or
           a money transmitter. We never take possession of your bitcoin.
           We cannot move your funds, freeze them, seize them, or reverse a
-          transaction — nobody can reverse a Bitcoin transaction.
+          transaction. Nobody can reverse a Bitcoin transaction.
         </p>
         <p>
           GhostKey is also not a legal will and not legal, tax, or
@@ -178,8 +178,8 @@ export function TermsPage() {
           delivery (email providers, spam filters, Lightning
           infrastructure) that we don't control. We may change, add, or
           remove features. If we ever discontinue the service, your
-          bitcoin remains accessible without us — that is the point of the
-          recovery file — and we will give reasonable notice.
+          bitcoin remains accessible without us (that is the point of the
+          recovery file), and we will give reasonable notice.
         </p>
       </Section>
 
@@ -213,7 +213,7 @@ export function TermsPage() {
           contact details, missed or delayed notifications, third-party
           failures, or your own transactions. Our total liability for any
           claim is limited to the amount you paid us in the twelve months
-          before the claim — currently zero.
+          before the claim (currently zero).
         </p>
         <p>
           Some jurisdictions don't allow certain limitations; where that's
@@ -228,8 +228,8 @@ export function TermsPage() {
           <a className="underline" href="#/privacy">
             Privacy Policy
           </a>
-          ). Deleting your vault does not move or affect your bitcoin —
-          it only stops our reminders and the claim-link delivery.
+          ). Deleting your vault does not move or affect your bitcoin.
+          It only stops our reminders and the claim-link delivery.
         </p>
       </Section>
 
@@ -264,7 +264,7 @@ export function PrivacyPage() {
         <>
           <p>
             We store your check-in schedule and the contact details you
-            give us — encrypted. We never see your password or hold keys
+            give us, encrypted. We never see your password or hold keys
             that can spend your bitcoin. No ads, no tracking cookies, no
             selling data. Delete your vault and the data goes with it.
           </p>
@@ -286,27 +286,27 @@ export function PrivacyPage() {
       <Section n={2} title="What we store">
         <ul role="list" className="list-disc space-y-1.5 pl-5">
           <li>
-            <strong>Your vault's schedule</strong> — its label, check-in
+            <strong>Your vault's schedule</strong>: its label, check-in
             cadence, deadlines, and which Bitcoin network it's on.
           </li>
           <li>
-            <strong>Watch-only wallet data</strong> — descriptors that let
+            <strong>Watch-only wallet data</strong>: descriptors that let
             our server see the vault's balance and build transactions for
             you to authorize. They cannot spend anything.
           </li>
           <li>
-            <strong>Contact details</strong> — your email, your heir's,
+            <strong>Contact details</strong>: your email, your heir's,
             and your optional trusted contact's, stored{" "}
             <strong>encrypted at rest</strong>. Your heir receives nothing
             from us until your schedule actually triggers.
           </li>
           <li>
-            <strong>Sealed key backups</strong> — encrypted blobs that
+            <strong>Sealed key backups</strong>: encrypted blobs that
             only your password (or, after a trigger, your heir's one-time
             claim link) can open. We cannot open them.
           </li>
           <li>
-            <strong>Activity records</strong> — check-ins, reminders sent,
+            <strong>Activity records</strong>: check-ins, reminders sent,
             and Lightning check-in invoices, so your dashboard can show
             history.
           </li>
@@ -317,15 +317,15 @@ export function PrivacyPage() {
         <p>
           Your password (it never leaves your browser in readable form),
           unencrypted private keys, tracking cookies, or browsing
-          profiles. Our site analytics are anonymous daily counters —
-          "how many people visited the setup page today" — with no IP
+          profiles. Our site analytics are anonymous daily counters
+          ("how many people visited the setup page today") with no IP
           address, no cookie, and no fingerprint attached.
         </p>
       </Section>
 
       <Section n={4} title="How we use it">
         <p>
-          For exactly one purpose: running your inheritance schedule —
+          For exactly one purpose: running your inheritance schedule,
           showing your dashboard, sending your reminders, and delivering
           the claim link if the time comes. We don't sell data, share it
           for advertising, or use it for anything unrelated to the
@@ -345,16 +345,16 @@ export function PrivacyPage() {
             hosts this website.
           </li>
           <li>
-            <strong>Cloudflare</strong> stores our database backups —
+            <strong>Cloudflare</strong> stores our database backups,
             which contain only the encrypted data described above.
           </li>
           <li>
             <strong>Anthropic</strong> processes what you type into the AI
             setup guide, only if you choose to use it. Don't paste
-            passwords or keys into the chat — it will tell you the same.
+            passwords or keys into the chat. It will tell you the same.
           </li>
           <li>
-            <strong>Bitcoin and Lightning infrastructure</strong> — our
+            <strong>Bitcoin and Lightning infrastructure</strong>: our
             server queries public block explorers about vault addresses
             and processes Lightning check-in payments. Bitcoin itself is a
             public network: anyone can see transactions on it.
@@ -368,7 +368,7 @@ export function PrivacyPage() {
           from the dashboard removes it from our live database, including
           its activity history; encrypted backups age out on a rolling
           window afterwards. Deleting your vault never touches your
-          bitcoin — it stays on the Bitcoin network under your keys.
+          bitcoin. It stays on the Bitcoin network under your keys.
         </p>
         <p>
           You can also email{" "}
@@ -390,7 +390,7 @@ export function PrivacyPage() {
 
       <Section n={8} title="Children">
         <p>
-          The service is for adults. Your heir may be a minor — in that
+          The service is for adults. Your heir may be a minor. In that
           case, the heir contact details you give us should belong to a
           trusted adult (a guardian) who can act when the time comes.
         </p>

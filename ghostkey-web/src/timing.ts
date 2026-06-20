@@ -162,7 +162,7 @@ export const DEMO_CADENCE_PRESETS: readonly CadencePreset[] = [
   {
     id: "demo-10s",
     label: "Every 10 seconds",
-    sub: "Fastest — for screen recordings",
+    sub: "Fastest, for screen recordings",
     seconds: 10,
   },
   {
@@ -232,7 +232,7 @@ export const DEMO_WAITING_PRESETS: readonly WaitingPreset[] = [
   {
     id: "demo-wait-30s",
     label: "30 seconds",
-    sub: "Fastest — recording-friendly",
+    sub: "Fastest, recording-friendly",
     seconds: 30,
   },
   {
