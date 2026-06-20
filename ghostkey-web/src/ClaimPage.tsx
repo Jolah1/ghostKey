@@ -454,7 +454,17 @@ function AlreadyClaimedState({ view }: { view: ClaimView }) {
  * Detection is a single GET. We surface a small spinner during the
  * probe and pick the sub-flow once we know.
  */
-function ClaimableState({
+function ClaimableState({ view, token }: { view: ClaimView; token: string }) {
+  // Guardian vaults (#81) need the heir plus one guardian, so they have
+  // their own two-link flow rather than the heir-derivation / sealed-heir
+  // probe. Dispatch here (no hooks) so each sub-flow owns its own hooks.
+  if (view.vault_kind === "guardian") {
+    return <GuardianClaim view={view} token={token} />;
+  }
+  return <HeirClaimable view={view} token={token} />;
+}
+
+function HeirClaimable({
   view,
   token,
 }: {
@@ -546,6 +556,326 @@ function ClaimableState({
     return <DerivedHeirClaim view={view} token={token} params={flow.params} />;
   }
   return <ManualPsbtClaim view={view} token={token} />;
+}
+
+/* ---------------------- Guardian vault claim (#81) ------------------------- */
+
+/** Pull the claim token out of a pasted GhostKey link, or accept a bare
+ *  token. Links look like `{base}/#/claim/{token}`; we take everything
+ *  after `/claim/` up to the next path/query/hash separator. */
+function extractClaimToken(input: string): string | null {
+  const s = input.trim();
+  if (!s) return null;
+  const marker = "/claim/";
+  const i = s.lastIndexOf(marker);
+  const raw = i >= 0 ? s.slice(i + marker.length) : s;
+  const tok = raw.split(/[/?#\s]/)[0];
+  return tok || null;
+}
+
+/**
+ * Guardian vault claim: the heir AND one guardian must finish together
+ * (spend branch `heir AND (g1 OR g2)`). Each holds their own one-time
+ * link. This page works from either link: whichever opened it, we ask
+ * for the other party's link, unwrap both keys locally, and POST a
+ * single two-key claim to the heir token's `/guardian-claim` endpoint.
+ *
+ * Keeping both keys client-side until the one submit mirrors the heir
+ * one-shot flow: each xprv is unwrapped from its own claim token, used
+ * for a single call, and dropped.
+ */
+function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
+  const openedRole = view.token_role; // "heir" | "guardian"
+  const [otherLink, setOtherLink] = useState("");
+  const [otherToken, setOtherToken] = useState<string | null>(null);
+  const [otherErr, setOtherErr] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  const [address, setAddress] = useState("");
+  const [feeRate, setFeeRate] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState<BroadcastClaimResponse | null>(null);
+  const [error, setError] = useState<unknown>(null);
+
+  const heir = view.heir_display_name?.trim() || "your family member";
+
+  // The two-key claim always POSTs to the heir token. One of heir/guardian
+  // token is the one that opened this page; the other is pasted in.
+  const heirToken = openedRole === "heir" ? token : otherToken;
+  const guardianToken = openedRole === "guardian" ? token : otherToken;
+  const needLabel = openedRole === "heir" ? "a guardian's" : "the heir's";
+
+  const checkOtherLink = useCallback(async () => {
+    const t = extractClaimToken(otherLink);
+    if (!t) {
+      setOtherErr("That doesn't look like a GhostKey link. Paste the whole link.");
+      return;
+    }
+    if (t === token) {
+      setOtherErr("That's the link you already opened. Paste the other person's link.");
+      return;
+    }
+    setChecking(true);
+    setOtherErr(null);
+    try {
+      const other = await api.resolveClaim(t);
+      if (other.vault_id !== view.vault_id) {
+        setOtherErr("That link is for a different inheritance. Check you have the right one.");
+        setOtherToken(null);
+        return;
+      }
+      const needRole = openedRole === "heir" ? "guardian" : "heir";
+      if (other.token_role !== needRole) {
+        setOtherErr(
+          openedRole === "heir"
+            ? "That's another heir link. You need a guardian's link to finish."
+            : "That's a guardian link. You need the heir's link to finish.",
+        );
+        setOtherToken(null);
+        return;
+      }
+      setOtherToken(t);
+    } catch (e) {
+      setOtherErr(
+        e instanceof ApiError && e.status === 409
+          ? "That link has already been used."
+          : "We couldn't check that link. Try again in a moment.",
+      );
+      setOtherToken(null);
+    } finally {
+      setChecking(false);
+    }
+  }, [otherLink, token, view.vault_id, openedRole]);
+
+  const bothReady = Boolean(heirToken && guardianToken);
+  const addrShapeOk = looksLikeBitcoinAddress(address);
+  const addrNetworkOk = addressMatchesNetwork(address, view.network);
+  const validAddr = addrShapeOk && addrNetworkOk;
+  const feeRateNum = parseFeeRate(feeRate);
+  const feeRateValid = feeRate.trim() === "" || feeRateNum !== null;
+
+  const onSubmit = useCallback(async () => {
+    if (!bothReady || !validAddr || !feeRateValid) return;
+    if (!heirToken || !guardianToken) return;
+    setSubmitting(true);
+    setError(null);
+    // Both xprvs live only for this call; null the references after.
+    let heirXprv: string | null = null;
+    let guardianXprv: string | null = null;
+    try {
+      const heirSealed = await api.getSealedHeirXprv(heirToken);
+      heirXprv = unsealHeirXprv(b64decode(heirToken), {
+        v: 1,
+        ct: heirSealed.heir_xprv_ct_b64,
+        nonce: heirSealed.heir_xprv_nonce_b64,
+      });
+      const gSealed = await api.getSealedGuardianXprv(guardianToken);
+      guardianXprv = unsealHeirXprv(b64decode(guardianToken), {
+        v: 1,
+        ct: gSealed.guardian_xprv_ct_b64,
+        nonce: gSealed.guardian_xprv_nonce_b64,
+      });
+      const resp = await api.guardianClaim(heirToken, {
+        destination: address.trim(),
+        fee_rate_sat_per_vb: feeRateNum,
+        heir_xprv: heirXprv,
+        guardian_xprv: guardianXprv,
+      });
+      setResult(resp);
+    } catch (e) {
+      setError(e);
+    } finally {
+      heirXprv = null;
+      guardianXprv = null;
+      setSubmitting(false);
+    }
+  }, [
+    address,
+    feeRateNum,
+    feeRateValid,
+    validAddr,
+    bothReady,
+    heirToken,
+    guardianToken,
+  ]);
+
+  if (result) {
+    return (
+      <section>
+        <p className="eyebrow">It's done</p>
+        <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-5xl">
+          Sent.
+        </h1>
+        <BroadcastSuccess result={result} />
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <p className="eyebrow">Two of you, together</p>
+      <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-5xl">
+        {openedRole === "heir" ? `Hello ${heir}.` : `Helping ${heir}.`}
+      </h1>
+      <p className="mt-4 text-base text-body md:text-lg">
+        {openedRole === "heir"
+          ? `Someone set this up so that ${heir} and a trusted guardian finish it together. You can't do it alone, and that's on purpose. Ask one guardian to be with you now.`
+          : `${heir} was set up with a guardian's help. You're one of the guardians. To finish, ${heir} and you do this together on this page.`}
+      </p>
+
+      <div className="mt-8 card-flat p-5">
+        <p className="text-xs uppercase tracking-wider text-dim">
+          What's being passed on
+        </p>
+        <p className="mt-2 font-display text-xl font-bold tracking-tight">
+          {view.label || "A Bitcoin inheritance"}
+        </p>
+        <p className="mt-1 text-xs text-muted">
+          On the {networkLabel(view.network)}.
+        </p>
+      </div>
+
+      <div className="mt-10">
+        <p className="text-xs uppercase tracking-wider text-dim">Step 1</p>
+        <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
+          Bring in {needLabel} link
+        </h2>
+        <p className="mt-2 text-sm text-soft">
+          {openedRole === "heir"
+            ? "Each guardian got their own message with a link. Ask one guardian to open their link and paste it below, or paste it for them."
+            : "The heir got their own message with a link. Paste it below so the two halves come together."}
+        </p>
+
+        {otherToken ? (
+          <div className="mt-4">
+            <InlineAlert tone="ok">
+              Both links are here. You can finish below.
+            </InlineAlert>
+          </div>
+        ) : (
+          <div className="mt-4">
+            <Field
+              label={`Paste ${needLabel} link`}
+              hint={otherErr ?? "It's the long web link from their message."}
+            >
+              <textarea
+                rows={2}
+                value={otherLink}
+                onChange={(e) => setOtherLink(e.target.value)}
+                placeholder="https://…/#/claim/…"
+                spellCheck={false}
+                autoComplete="off"
+                className="textarea"
+                disabled={checking}
+              />
+            </Field>
+            <div className="mt-3">
+              <Button
+                onClick={() => void checkOtherLink()}
+                disabled={checking || !otherLink.trim()}
+              >
+                {checking ? "Checking…" : "Add this link"}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {bothReady && (
+        <div className="mt-10">
+          <p className="text-xs uppercase tracking-wider text-dim">Step 2</p>
+          <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
+            Where should the money go?
+          </h2>
+          <p className="mt-2 text-sm text-soft">
+            Open any Bitcoin wallet and tap <strong>Receive</strong> to get an
+            address. Copy the long address that starts with{" "}
+            <code className="font-mono">{bech32PrefixFor(view.network)}</code>{" "}
+            and paste it below.
+          </p>
+
+          <div className="mt-4">
+            <Field
+              label="Bitcoin address"
+              hint={
+                address && !addrShapeOk
+                  ? "That doesn't look like a Bitcoin address. Check the start."
+                  : address && !addrNetworkOk
+                    ? `That address is for a different network. It should start with ${bech32PrefixFor(view.network)}.`
+                    : undefined
+              }
+            >
+              <textarea
+                rows={3}
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+                placeholder={`${bech32PrefixFor(view.network)}...`}
+                spellCheck={false}
+                autoComplete="off"
+                className="textarea"
+                disabled={submitting || confirming}
+              />
+            </Field>
+          </div>
+
+          <div className="mt-4">
+            <Field
+              label="Fee rate in sat/vB (optional)"
+              hint={
+                feeRate.trim() && !feeRateValid
+                  ? "Enter a whole number between 1 and 1000, or leave blank."
+                  : "Leave blank to use 2 sat/vB."
+              }
+            >
+              <input
+                type="text"
+                inputMode="numeric"
+                value={feeRate}
+                onChange={(e) => setFeeRate(e.target.value)}
+                placeholder="2"
+                className="input"
+                disabled={submitting || confirming}
+              />
+            </Field>
+          </div>
+
+          {!confirming ? (
+            <>
+              <div className="mt-4">
+                <Button
+                  onClick={() => setConfirming(true)}
+                  disabled={!validAddr || !feeRateValid}
+                  size="lg"
+                >
+                  Review and send
+                </Button>
+              </div>
+              <p className="mt-3 text-xs text-muted">
+                We'll show you the details to check, then prepare and broadcast
+                the transaction for both of you. No app to install.
+              </p>
+            </>
+          ) : (
+            <div className="mt-4 card-flat p-4">
+              <ConfirmSend
+                destination={address.trim()}
+                amountLabel="Everything in the vault, minus the network fee"
+                networkLabel={networkLabel(view.network)}
+                feeLabel={feeRateNum ? `${feeRateNum} sat/vB` : "2 sat/vB"}
+                busy={submitting}
+                confirmLabel={submitting ? "Sending Bitcoin…" : "Send the Bitcoin"}
+                onConfirm={() => void onSubmit()}
+                onBack={() => setConfirming(false)}
+              />
+            </div>
+          )}
+
+          {error ? <ClaimErrorBlock error={error} context="send" /> : null}
+        </div>
+      )}
+    </section>
+  );
 }
 
 /* ------------------ Password-vault claim (one-shot) ------------------------ */

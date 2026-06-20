@@ -2759,6 +2759,15 @@ pub struct ClaimView {
     /// disabled or it has already elapsed. While set, the claim page
     /// shows the safety-wait screen and the key/PSBT endpoints refuse.
     pub claim_available_at: Option<DateTime<Utc>>,
+    /// "standard" or "guardian" (#81). A guardian vault needs the heir
+    /// plus one guardian to claim, so the claim page renders the
+    /// two-link flow instead of the one-shot heir flow.
+    pub vault_kind: String,
+    /// Which party opened this link: "heir" or "guardian". Lets the
+    /// claim page ask for the *other* party's link.
+    pub token_role: String,
+    /// For a guardian token, which slot (1 or 2). `None` for heir tokens.
+    pub guardian_slot: Option<i64>,
 }
 
 async fn resolve_claim(
@@ -2769,8 +2778,11 @@ async fn resolve_claim(
 
     // Look up by hash. The DB lookup itself is constant-time across
     // unknown tokens because we always index against a unique hash;
-    // the row either exists or it doesn't.
-    let row: Option<(
+    // the row either exists or it doesn't. A guardian vault has the
+    // heir token inline here AND each guardian's token in
+    // vault_guardian_keys, so we try the heir (inline) lookup first and
+    // fall back to a guardian-token lookup (#81).
+    type HeirRow = (
         String,         // id
         Option<String>, // label
         String,         // network
@@ -2782,12 +2794,14 @@ async fn resolve_claim(
         Option<String>, // heir_contact_ciphertext
         Option<String>, // heir_contact_nonce
         Option<String>, // heir_contact_channel
-    )> = sqlx::query_as(
+        String,         // vault_kind
+    );
+    let heir_row: Option<HeirRow> = sqlx::query_as(
         r#"SELECT id, label, network, status, timelock_blocks,
                   next_deadline_at,
                   claim_token_hash, claim_token_used_at,
                   heir_contact_ciphertext, heir_contact_nonce,
-                  heir_contact_channel
+                  heir_contact_channel, vault_kind
              FROM vaults
             WHERE claim_token_hash = ?"#,
     )
@@ -2795,7 +2809,9 @@ async fn resolve_claim(
     .fetch_optional(&state.db)
     .await?;
 
-    let row = row.ok_or(ApiError::NotFound)?;
+    // Resolved into the shape the rest of the function (challenge window,
+    // contact decrypt, ClaimView) consumes, with the role/slot the heir
+    // and guardian paths differ on.
     let (
         vault_id,
         label,
@@ -2808,7 +2824,76 @@ async fn resolve_claim(
         ciphertext_b64,
         nonce_b64,
         channel,
-    ) = row;
+        vault_kind,
+        token_role,
+        guardian_slot,
+    ) = match heir_row {
+        Some(r) => (
+            r.0,
+            r.1,
+            r.2,
+            r.3,
+            r.4,
+            r.5,
+            r.6,
+            r.7,
+            r.8,
+            r.9,
+            r.10,
+            r.11,
+            "heir".to_string(),
+            None,
+        ),
+        None => {
+            // Guardian token: join the guardian row to its vault. The
+            // heir contact (for the display name) lives on the vault, so
+            // a guardian still sees whose claim they're helping with.
+            type GuardianRow = (
+                String,         // vault id
+                Option<String>, // label
+                String,         // network
+                String,         // status
+                i64,            // timelock_blocks
+                String,         // next_deadline_at
+                Option<String>, // g.claim_token_hash
+                Option<String>, // v.claim_token_used_at
+                Option<String>, // heir_contact_ciphertext
+                Option<String>, // heir_contact_nonce
+                Option<String>, // heir_contact_channel
+                i64,            // g.slot
+            );
+            let g: Option<GuardianRow> = sqlx::query_as(
+                r#"SELECT v.id, v.label, v.network, v.status, v.timelock_blocks,
+                          v.next_deadline_at,
+                          g.claim_token_hash, v.claim_token_used_at,
+                          v.heir_contact_ciphertext, v.heir_contact_nonce,
+                          v.heir_contact_channel, g.slot
+                     FROM vault_guardian_keys g
+                     JOIN vaults v ON v.id = g.vault_id
+                    WHERE g.claim_token_hash = ?"#,
+            )
+            .bind(&hash)
+            .fetch_optional(&state.db)
+            .await?;
+            let g = g.ok_or(ApiError::NotFound)?;
+            (
+                g.0,
+                g.1,
+                g.2,
+                g.3,
+                g.4,
+                g.5,
+                g.6,
+                g.7,
+                g.8,
+                g.9,
+                g.10,
+                "guardian".to_string(),
+                "guardian".to_string(),
+                Some(g.11),
+            )
+        }
+    };
 
     // Defence-in-depth: constant-time compare against the stored hash.
     // (Already index-matched, but this protects against any future
@@ -2871,6 +2956,9 @@ async fn resolve_claim(
         heir_channel,
         heir_display_name,
         claim_available_at,
+        vault_kind,
+        token_role,
+        guardian_slot,
     }))
 }
 
@@ -4327,5 +4415,79 @@ mod tests {
         .await
         .expect_err("claim already completed");
         assert!(matches!(locked, ApiError::Conflict(_)), "got {locked:?}");
+    }
+
+    /// `GET /claim/:token` resolves both the heir's inline token and a
+    /// guardian's token for a guardian vault (#81 P4b), reporting the
+    /// vault kind, which party opened the link, and the guardian slot so
+    /// the claim page can ask for the other party's link.
+    #[tokio::test]
+    async fn resolve_claim_distinguishes_heir_and_guardian_tokens() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let (owner_xpub, owner_fp) = xpub_for(0x51);
+        let (heir_xpub, heir_fp) = xpub_for(0x52);
+        let req = CreateGuardianVaultRequest {
+            label: Some("guardian".into()),
+            network: "regtest".into(),
+            owner: PartyXpub {
+                xpub: owner_xpub,
+                fingerprint: Some(owner_fp),
+            },
+            heir: PartyXpub {
+                xpub: heir_xpub,
+                fingerprint: Some(heir_fp),
+            },
+            guardian1: guardian_party(0x53, "g1-token"),
+            guardian2: guardian_party(0x54, "g2-token"),
+            timelock_blocks: 144,
+            checkin_period_secs: 86_400,
+            grace_period_secs: 3_600,
+            owner_contact: None,
+            owner_contact_channel: None,
+            heir_contact: Some("heir@example.com".into()),
+            heir_contact_channel: Some("email".into()),
+            sealed: sealed_setup(
+                &"b".repeat(64),
+                Some("aGVpcmN0".into()),
+                Some("aGVpcm5u".into()),
+                Some("heir-token".into()),
+            ),
+            from_name: None,
+            heir_note: None,
+        };
+        create_vault_guardian(State(state.clone()), Json(req))
+            .await
+            .expect("guardian create");
+
+        let heir = resolve_claim(
+            State(state.clone()),
+            axum::extract::Path("heir-token".to_string()),
+        )
+        .await
+        .expect("heir token resolves")
+        .0;
+        assert_eq!(heir.vault_kind, "guardian");
+        assert_eq!(heir.token_role, "heir");
+        assert_eq!(heir.guardian_slot, None);
+
+        let g2 = resolve_claim(
+            State(state.clone()),
+            axum::extract::Path("g2-token".to_string()),
+        )
+        .await
+        .expect("guardian token resolves")
+        .0;
+        assert_eq!(g2.vault_kind, "guardian");
+        assert_eq!(g2.token_role, "guardian");
+        assert_eq!(g2.guardian_slot, Some(2));
+
+        let nf = resolve_claim(
+            State(state.clone()),
+            axum::extract::Path("nope".to_string()),
+        )
+        .await
+        .expect_err("unknown token");
+        assert!(matches!(nf, ApiError::NotFound), "got {nf:?}");
     }
 }
