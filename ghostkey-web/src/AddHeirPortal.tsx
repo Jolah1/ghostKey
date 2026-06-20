@@ -311,7 +311,7 @@ export function AddHeirPortal({
               {phase.heirName} is now an heir ✓
             </h2>
             <p className="mt-2 text-sm text-muted">
-              They share your check-in — one tap on "I'm still here" keeps
+              They share your check-in. One tap on "I'm still here" keeps
               every heir's plan alive. This heir has their own share: fund the
               address below with whatever you want them to inherit. Nothing is
               pooled with your other heirs.
@@ -387,7 +387,7 @@ export function AddHeirPortal({
                   Optional video message
                 </p>
                 <p className="mt-1 mb-2 text-xs text-muted">
-                  A short clip only this heir can unlock — proof the claim link
+                  A short clip only this heir can unlock. Proof the claim link
                   is really from you.
                 </p>
                 <VideoMessageRecorder

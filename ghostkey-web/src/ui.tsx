@@ -426,7 +426,7 @@ export function friendlyEventKind(kind: string): string {
     case "claim_psbt_built": return "Your heir prepared the transaction";
     case "claim_broadcast": return "Your heir broadcast the claim";
     case "claim_ready": return "Your heir can now claim";
-    case "claim_resolved": return "Claim stopped — you checked in";
+    case "claim_resolved": return "Claim stopped, you checked in";
     case "panic_activated": return "Emergency freeze on";
     case "panic_expired": return "Emergency freeze ended";
     default:

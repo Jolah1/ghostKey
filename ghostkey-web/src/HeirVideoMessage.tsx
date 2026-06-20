@@ -105,13 +105,13 @@ export function HeirVideoMessage({ token }: { token: string }) {
       {state.verified ? (
         <p className="text-ok mt-3 flex items-center gap-2 text-sm font-medium">
           <span aria-hidden>✓</span>
-          Verified — recorded by the owner of this vault, and untampered.
+          Verified. Recorded by the owner of this vault, and untampered.
         </p>
       ) : (
         <div className="mt-3">
           <InlineAlert tone="warning">
             This message played, but its signature did not match the vault
-            owner's key — it may have been altered. Treat it with caution.
+            owner's key. It may have been altered. Treat it with caution.
           </InlineAlert>
         </div>
       )}

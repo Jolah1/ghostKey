@@ -279,7 +279,7 @@ function render() {
     if (isHeir) {
       result.appendChild(
         el(`<p class="muted">You've unlocked it. To receive your Bitcoin,
-        use the box just below — that's all you need to do. Everything
+        use the box just below. That's all you need to do. Everything
         under "For a Bitcoin expert helping you" is optional, only if
         you'd rather someone technical move it for you.</p>`),
       );
@@ -304,7 +304,7 @@ function render() {
       <details class="expert" style="margin-top:18px">
         <summary>For a Bitcoin expert helping you</summary>
         <p class="muted">Any Bitcoin expert can move your money using just
-        this file — they don't need anything else from you. The lines below
+        this file. They don't need anything else from you. The lines below
         let them import this vault into Bitcoin Core.</p>
       </details>
     `);
@@ -325,7 +325,7 @@ function render() {
           run <code>bitcoin-cli importdescriptors</code> with the line
           below and it can both watch and spend. Everyday wallets like
           Sparrow, Electrum, and phone wallets cannot open this vault, and
-          <strong>Liana cannot either</strong> — it only accepts its own
+          <strong>Liana cannot either</strong>. It only accepts its own
           descriptor shape.</p>`),
         );
         expert.appendChild(
@@ -366,7 +366,7 @@ function render() {
       <p class="muted">No password needed. The easy way: open a block
       explorer like mempool.space and search for the deposit address you
       funded. You'll see the balance and every payment, with GhostKey
-      nowhere in the loop. One caveat — a public explorer can see which
+      nowhere in the loop. One caveat: a public explorer can see which
       address you looked up. To check privately, watch the vault in your
       own Bitcoin Core (see the expert section just below).</p>
     </div>

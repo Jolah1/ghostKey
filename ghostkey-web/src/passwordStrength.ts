@@ -95,7 +95,7 @@ function plainAdvice(warning: string | null, suggestions: string[]): string | nu
     return "This exact password shows up in lists hackers try first. Pick something only you would think of.";
   }
   if (lower.includes("dates") || lower.includes("years") || lower.includes("recent years")) {
-    return "Dates and years are easy to guess — leave them out.";
+    return "Dates and years are easy to guess. Leave them out.";
   }
   if (lower.includes("names") && lower.includes("surnames")) {
     return "Names are easy to guess. Try a few unrelated words instead.";
@@ -113,7 +113,7 @@ function plainAdvice(warning: string | null, suggestions: string[]): string | nu
     return "Sequences like abc or 123 are easy to guess.";
   }
   if (lower.includes("substitution") || lower.includes("l33t") || lower.includes("@ instead of a")) {
-    return "Swapping letters for symbols (a → @) doesn't fool anyone — add more words instead.";
+    return "Swapping letters for symbols (a → @) doesn't fool anyone. Add more words instead.";
   }
   // Unknown feedback string: pass it through rather than hide it.
   return raw;
@@ -185,6 +185,6 @@ export async function checkPassword(
     tone: "bad",
     advice:
       advice ??
-      "Try three or four unrelated words — easy for you to remember, hard for anyone to guess.",
+      "Try three or four unrelated words, easy for you to remember, hard for anyone to guess.",
   };
 }

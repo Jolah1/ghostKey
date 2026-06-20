@@ -66,7 +66,7 @@ export function buildSpendSection(params: SpendParams): HTMLElement {
       the coins, signs the payment on this device (the secret key never
       leaves this page), and sends it to a wallet address you choose. If
       this says the coins can't be spent yet, the waiting period hasn't
-      passed — try again later.`
+      passed. Try again later.`
           : `Advanced, and the only part of this page that uses the
       internet. It looks up your coins, signs the payment on this device
       (your secret key never leaves this page), and gives you a finished

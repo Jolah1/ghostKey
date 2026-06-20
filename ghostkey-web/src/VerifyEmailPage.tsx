@@ -141,7 +141,7 @@ function Stale({ onNavigate }: { onNavigate: (r: Route) => void }) {
       <h1 className="mt-6 font-serif text-3xl md:text-4xl">This link doesn&apos;t work anymore</h1>
       <p className="mt-3 max-w-md text-muted">
         It may have been replaced by a newer email. Open your dashboard
-        and tap &quot;Send it again&quot; to get a fresh one — the newest
+        and tap &quot;Send it again&quot; to get a fresh one. The newest
         link always wins.
       </p>
       <div className="mt-10 flex gap-3">

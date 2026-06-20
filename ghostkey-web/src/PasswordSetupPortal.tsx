@@ -1252,7 +1252,7 @@ function StepHeir({
               {cadenceList.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.label}
-                  {c.sub ? ` — ${c.sub.toLowerCase()}` : ""}
+                  {c.sub ? `, ${c.sub.toLowerCase()}` : ""}
                 </option>
               ))}
             </select>
@@ -1273,7 +1273,7 @@ function StepHeir({
               {graceList.map((g) => (
                 <option key={g.id} value={g.id}>
                   {g.label}
-                  {g.sub ? ` — ${g.sub.toLowerCase()}` : ""}
+                  {g.sub ? `, ${g.sub.toLowerCase()}` : ""}
                 </option>
               ))}
             </select>
@@ -1361,6 +1361,15 @@ function HeirCard({
             />
           ))}
         </div>
+        {/* #119 privacy line: SMS is the least private heir channel (the
+            nudge travels through phone carriers). Only surfaced when chosen,
+            so it informs without nagging. */}
+        {heir.channel === "sms" ? (
+          <p className="mt-2 text-xs text-dim">
+            SMS is the least private option. The reminder travels through phone
+            carriers. WhatsApp or email keep it more private.
+          </p>
+        ) : null}
       </Field>
 
       <Field
@@ -1541,7 +1550,7 @@ function StepPassword({
             trigger inheritance by accident. The dashboard enforces it too. */}
         <p className="mt-1.5 text-xs text-muted">
           After you create the vault, we'll email you a link to confirm this
-          address. Open it — your check-in reminders ride on it. If it's
+          address. Open it. Your check-in reminders ride on it. If it's
           never confirmed, a reminder could go missing and start the
           inheritance by accident.
         </p>
@@ -1806,7 +1815,7 @@ function StepFund({
             waiting period passes, so it's safe to keep for them. Save it
             somewhere they'll find it if you're gone, together with its
             secret code. Without GhostKey, this is the only way they get in
-            on their own — so if it matters to you, do it now.
+            on their own, so if it matters to you, do it now.
           </p>
           <div className="mt-6 flex flex-col gap-4">
             {created.vaults.map((v) =>
@@ -1860,7 +1869,7 @@ function HeirEnvelopeCard({
         <p className="font-serif text-lg">For {heirName || "your heir"}</p>
       )}
       <p className="text-xs uppercase tracking-wider text-dim">
-        Secret code — write it down with the file
+        Secret code, write it down with the file
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-3">
         <code className="select-all rounded bg-[var(--bg-elev)] px-3 py-2 font-mono text-sm">

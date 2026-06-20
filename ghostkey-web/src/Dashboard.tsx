@@ -1521,13 +1521,13 @@ function ConfirmEmailCard({
     >
       <p className="text-sm text-[var(--text)]">
         {state.kind === "sent" ? (
-          "Confirmation email sent. Tap the link in it — check spam too."
+          "Confirmation email sent. Tap the link in it. Check spam too."
         ) : state.kind === "error" ? (
           state.message
         ) : (
           <>
             <span className="font-semibold">Confirm your email.</span> Until
-            you do, we can&apos;t remind you to check in — and a missed
+            you do, we can&apos;t remind you to check in, and a missed
             reminder can trigger the inheritance by accident.
           </>
         )}

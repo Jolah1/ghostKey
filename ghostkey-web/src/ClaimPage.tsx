@@ -708,7 +708,7 @@ function PasswordVaultClaim({
           </h2>
           <p className="mt-2 text-sm text-soft">
             Open any Bitcoin wallet and tap <strong>Receive</strong>. A
-            Lightning wallet works too — apps like Wallet of Satoshi, Bitnob,
+            Lightning wallet works too. Apps like Wallet of Satoshi, Bitnob,
             Cash App, or Phoenix each give you a Bitcoin address that adds the
             money to your balance. Copy the long address that starts with{" "}
             <code className="font-mono">{bech32PrefixFor(sealed.network)}</code>{" "}
@@ -977,7 +977,7 @@ function DerivedHeirClaim({
         </h2>
         <p className="mt-2 text-sm text-soft">
           Paste any Bitcoin address you control on the {networkLabel(params.network)}.{" "}
-          A Lightning wallet works too — apps like Wallet of Satoshi, Bitnob,
+          A Lightning wallet works too. Apps like Wallet of Satoshi, Bitnob,
           Cash App, or Phoenix each give you a Bitcoin address that adds the
           money to your balance. {walletExamplesInline(params.network)}.
         </p>
@@ -1321,7 +1321,7 @@ function ManualPsbtClaim({
             <p className="mt-1 text-xs text-muted">
               This long block of letters and numbers is just your transaction
               written out as text (its technical name is a "PSBT"). Nothing here
-              can spend your money on its own — it still has to be signed. It's
+              can spend your money on its own. It still has to be signed. It's
               safe to copy.
             </p>
             <textarea
@@ -1396,7 +1396,7 @@ function PsbtSummary({ build }: { build: BuildClaimPsbtResponse }) {
       </dl>
       <p className="mt-3 text-xs text-muted">
         Double-check these numbers in your wallet before signing. If the
-        amount or destination looks wrong, don't sign — come back and start
+        amount or destination looks wrong, don't sign. Come back and start
         again.
       </p>
     </div>
@@ -1684,7 +1684,7 @@ function HeirRecoveryFileSection({
         <p className="text-sm text-soft">
           This downloads a file that can reach this Bitcoin{" "}
           <strong>without GhostKey</strong>, using just a code we'll show
-          you. You don't need it to receive the money above — it's a
+          you. You don't need it to receive the money above. It's a
           backup, and a way to do it yourself if you ever want to.
         </p>
 
@@ -1718,7 +1718,7 @@ function HeirRecoveryFileSection({
         {status.kind === "ready" && (
           <div className="mt-4">
             <p className="text-xs uppercase tracking-wider text-dim">
-              Your code — write it down
+              Your code, write it down
             </p>
             <code className="mt-2 inline-block select-all rounded bg-[var(--bg-elev)] px-3 py-2 font-mono text-sm">
               {status.env.passphrase}
