@@ -188,6 +188,142 @@ pub fn build_heir_claim(
     Ok(BuiltPsbt { psbt, finalized })
 }
 
+/// Build (and optionally sign) a **guardian-vault** claim (issue #81).
+///
+/// Identical to [`build_heir_claim`] in shape — drains the whole balance to
+/// `recipient`, sets `nSequence = timelock_blocks` on every input — but the
+/// claim branch is `heir AND (g1 OR g2) AND older(N)`. The supplied `wallet`
+/// must carry **two** private keys (heir + one guardian); see
+/// [`crate::wallet::build_signing_guardian`]. BDK signs immediately when both
+/// keys are present, producing the heir signature plus one guardian signature.
+pub fn build_guardian_claim(
+    wallet: &mut Wallet,
+    vault: &Vault,
+    recipient: &Address,
+    fee_rate: FeeRate,
+) -> Result<BuiltPsbt> {
+    if !recipient
+        .as_unchecked()
+        .is_valid_for_network(vault.network())
+    {
+        return Err(Error::Psbt(format!(
+            "recipient address is not valid for vault network {:?}",
+            vault.network()
+        )));
+    }
+
+    let csv = vault.timelock_blocks();
+    let nseq = bitcoin::Sequence::from_consensus(csv);
+
+    let ext_path = resolve_guardian_policy_path(wallet, KeychainKind::External)?;
+    let int_path = resolve_guardian_policy_path(wallet, KeychainKind::Internal)?;
+
+    let mut psbt = {
+        let mut b = wallet.build_tx();
+        b.drain_wallet()
+            .drain_to(recipient.script_pubkey())
+            .fee_rate(fee_rate)
+            .nlocktime(bitcoin::absolute::LockTime::ZERO)
+            .policy_path(ext_path, KeychainKind::External)
+            .policy_path(int_path, KeychainKind::Internal)
+            .set_exact_sequence(nseq);
+        b.finish().map_err(|e| Error::Psbt(e.to_string()))?
+    };
+
+    let finalized = wallet
+        .sign(&mut psbt, SignOptions::default())
+        .map_err(|e| Error::Psbt(e.to_string()))?;
+
+    Ok(BuiltPsbt { psbt, finalized })
+}
+
+/// Walk the guardian-vault policy and select the claim path:
+/// `heir AND (g1 OR g2) AND older(N)`.
+///
+/// Rules at each `Thresh`:
+/// - `threshold > 1` (an `and`): take **all** children (heir sig, the
+///   timelock, and the guardian disjunction must all be satisfied).
+/// - `threshold == 1` (an `or`): if a child contains the relative timelock,
+///   take that one (the top `or_d` claim arm); otherwise — the inner
+///   `(g1 OR g2)` — take the child the wallet can actually sign (the one
+///   guardian whose key is loaded, marked `Complete` by BDK).
+fn resolve_guardian_policy_path(
+    wallet: &Wallet,
+    keychain: KeychainKind,
+) -> Result<BTreeMap<String, Vec<usize>>> {
+    use bdk_wallet::descriptor::policy::{Policy, Satisfaction, SatisfiableItem};
+
+    let policy = wallet
+        .policies(keychain)
+        .map_err(|e| Error::InvalidDescriptor(e.to_string()))?
+        .ok_or_else(|| Error::InvalidDescriptor("wallet has no policy".into()))?;
+
+    let mut out = BTreeMap::new();
+    if !walk(&policy, &mut out) {
+        return Err(Error::Psbt(
+            "could not resolve the guardian claim path (needs the heir + one guardian)".into(),
+        ));
+    }
+    return Ok(out);
+
+    /// Returns true if the wallet's loaded keys can satisfy this subtree
+    /// (allowing the relative timelock, which we satisfy via nSequence).
+    /// Records each `Thresh`'s chosen children along the way. A signature
+    /// leaf counts only when the wallet actually contributes it, so a claim
+    /// missing the heir — or missing every guardian — fails to resolve.
+    fn walk(node: &Policy, out: &mut BTreeMap<String, Vec<usize>>) -> bool {
+        match &node.item {
+            // Satisfied by setting nSequence; no key needed.
+            SatisfiableItem::RelativeTimelock { .. } => true,
+
+            // A signature is usable only if the wallet can complete it.
+            SatisfiableItem::SchnorrSignature(_)
+            | SatisfiableItem::EcdsaSignature(_)
+            | SatisfiableItem::Multisig { .. } => is_satisfiable(node),
+
+            // Absolute timelocks / hash preimages are not part of the
+            // guardian claim path.
+            SatisfiableItem::AbsoluteTimelock { .. }
+            | SatisfiableItem::Sha256Preimage { .. }
+            | SatisfiableItem::Hash256Preimage { .. }
+            | SatisfiableItem::Ripemd160Preimage { .. }
+            | SatisfiableItem::Hash160Preimage { .. } => false,
+
+            SatisfiableItem::Thresh { items, threshold } => {
+                if *threshold > 1 {
+                    // Conjunction (heir AND timelock AND guardian-or): every
+                    // child must be satisfiable.
+                    for child in items {
+                        if !walk(child, out) {
+                            return false;
+                        }
+                    }
+                    out.insert(node.id.clone(), (0..items.len()).collect());
+                    true
+                } else {
+                    // Disjunction (owner-or-claim; g1-or-g2): any one
+                    // satisfiable child suffices. Try each speculatively and
+                    // commit the first that resolves.
+                    for (i, child) in items.iter().enumerate() {
+                        let mut scratch = out.clone();
+                        if walk(child, &mut scratch) {
+                            *out = scratch;
+                            out.insert(node.id.clone(), vec![i]);
+                            return true;
+                        }
+                    }
+                    false
+                }
+            }
+        }
+    }
+
+    /// True if the wallet can fully contribute this leaf (its key is loaded).
+    fn is_satisfiable(node: &Policy) -> bool {
+        matches!(&node.contribution, Satisfaction::Complete { .. })
+    }
+}
+
 /// Walk the policy for `keychain` and produce a `policy_path` map that
 /// selects every branch leading to a `RelativeTimelock` item — i.e. the
 /// heir's path through the tapscript.

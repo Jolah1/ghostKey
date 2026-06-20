@@ -36,10 +36,12 @@ use bitcoincore_rpc::{Auth, Client, RpcApi};
 
 use bitcoin::secp256k1::Secp256k1;
 use ghostkey_core::keys::{account_xpub, descriptor_key_fragment, vault_account_path, Chain};
-use ghostkey_core::psbt::{build_check_in, build_heir_claim};
-use ghostkey_core::sweep::{sign_heir_sweep, sign_owner_sweep, ConfirmedTx};
+use ghostkey_core::psbt::{build_check_in, build_guardian_claim, build_heir_claim};
+use ghostkey_core::sweep::{sign_guardian_sweep, sign_heir_sweep, sign_owner_sweep, ConfirmedTx};
 use ghostkey_core::vault::{Vault, VaultRole};
-use ghostkey_core::wallet::{build_signing, build_watch_only};
+use ghostkey_core::wallet::{
+    build_signing, build_signing_from_account, build_signing_guardian, build_watch_only,
+};
 
 const TIMELOCK_BLOCKS: u32 = 5;
 const FEERATE_SAT_VB: u64 = 2;
@@ -738,6 +740,155 @@ fn emit_wasm_owner_fixture() -> Result<()> {
     println!("WASM_FIXTURE_BEGIN");
     println!("{}", serde_json::to_string(&req)?);
     println!("WASM_FIXTURE_END");
+    Ok(())
+}
+
+/// Guardian vault (issue #81): owner + heir + two guardians, claim branch
+/// `heir AND (g1 OR g2) AND older(N)`. Returns the vault plus the heir and
+/// two guardian master keys (owner key isn't needed for claim tests).
+fn build_guardian_vault_and_keys() -> Result<(Vault, Xpriv, Xpriv, Xpriv)> {
+    let net = Network::Regtest;
+    let owner_m = Xpriv::new_master(net, &[0xC1; 32])?;
+    let heir_m = Xpriv::new_master(net, &[0xC2; 32])?;
+    let g1_m = Xpriv::new_master(net, &[0xC3; 32])?;
+    let g2_m = Xpriv::new_master(net, &[0xC4; 32])?;
+    let (ofp, op, ox) = account_xpub(&owner_m, net)?;
+    let (hfp, hp, hx) = account_xpub(&heir_m, net)?;
+    let (g1fp, g1p, g1x) = account_xpub(&g1_m, net)?;
+    let (g2fp, g2p, g2x) = account_xpub(&g2_m, net)?;
+    let vault = Vault::new_guardian(
+        &descriptor_key_fragment(ofp, &op, &ox, Chain::External),
+        &descriptor_key_fragment(ofp, &op, &ox, Chain::Internal),
+        &descriptor_key_fragment(hfp, &hp, &hx, Chain::External),
+        &descriptor_key_fragment(hfp, &hp, &hx, Chain::Internal),
+        &descriptor_key_fragment(g1fp, &g1p, &g1x, Chain::External),
+        &descriptor_key_fragment(g1fp, &g1p, &g1x, Chain::Internal),
+        &descriptor_key_fragment(g2fp, &g2p, &g2x, Chain::External),
+        &descriptor_key_fragment(g2fp, &g2p, &g2x, Chain::Internal),
+        TIMELOCK_BLOCKS,
+        net,
+        VaultRole::Owner,
+        Some("regtest-guardian".into()),
+    )?;
+    Ok((vault, heir_m, g1_m, g2_m))
+}
+
+/// The heart of issue #81: prove the `heir AND (g1 OR g2)` policy holds.
+///
+/// - heir + guardian1  → spends (after timelock).
+/// - heir + guardian2  → spends (after timelock).
+/// - heir alone        → cannot even resolve a claim path.
+/// - guardians alone   → builds but can never finalize (heir sig mandatory).
+#[test]
+#[ignore]
+fn guardian_claim_requires_heir_plus_one_guardian() -> Result<()> {
+    let net = Network::Regtest;
+    let node = Bitcoind::spawn()?;
+    let bare = node.client()?;
+    let node_w = ensure_node_wallet(&node, "miner")?;
+    mine_blocks(&node_w, 101)?;
+
+    let (vault, heir_m, g1_m, g2_m) = build_guardian_vault_and_keys()?;
+    let secp = Secp256k1::new();
+    let acct = |m: &Xpriv| -> Result<Xpriv> { Ok(m.derive_priv(&secp, &vault_account_path(net))?) };
+    let heir_acct = acct(&heir_m)?;
+    let g1_acct = acct(&g1_m)?;
+    let g2_acct = acct(&g2_m)?;
+
+    let mut watch = build_watch_only(&vault)?;
+
+    // Fund a fresh vault address, mature the timelock, return its ConfirmedTx.
+    let mut fund = |btc: f64| -> Result<ConfirmedTx> {
+        let addr = watch.reveal_next_address(KeychainKind::External).address;
+        let txid = node_w.send_to_address(
+            &addr,
+            Amount::from_btc(btc)?,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        let height = mine_blocks(&node_w, 1)?;
+        let tx: bitcoin::Transaction = node_w.get_transaction(&txid, None)?.transaction()?;
+        Ok(ConfirmedTx {
+            tx,
+            confirmation_height: height,
+        })
+    };
+
+    let dest = |label: &str| -> Result<Address> {
+        node_w
+            .get_new_address(Some(label), Some(AddressType::Bech32))?
+            .require_network(net)
+            .map_err(|e| anyhow!("{e}"))
+    };
+
+    let f_g1 = fund(0.20)?;
+    let f_g2 = fund(0.20)?;
+    let _f_neg = fund(0.20)?; // stays unspent; used by the negative cases
+    let tip = mine_blocks(&node_w, TIMELOCK_BLOCKS.into())?;
+
+    // ---- Positive: heir + guardian1 spends ----
+    let dest1 = dest("g-heir-g1")?;
+    let claim1 = sign_guardian_sweep(
+        &vault,
+        &heir_acct,
+        &g1_acct,
+        vec![f_g1],
+        tip,
+        &dest1,
+        fee_rate(),
+    )?;
+    broadcast_tx(&bare, &claim1.tx)?;
+    mine_blocks(&node_w, 1)?;
+    assert!(
+        received_by_address(&node_w, &dest1)? > Amount::from_btc(0.199)?,
+        "heir + guardian1 must be able to claim"
+    );
+
+    // ---- Positive: heir + guardian2 spends ----
+    let dest2 = dest("g-heir-g2")?;
+    let claim2 = sign_guardian_sweep(
+        &vault,
+        &heir_acct,
+        &g2_acct,
+        vec![f_g2],
+        tip,
+        &dest2,
+        fee_rate(),
+    )?;
+    broadcast_tx(&bare, &claim2.tx)?;
+    mine_blocks(&node_w, 1)?;
+    assert!(
+        received_by_address(&node_w, &dest2)? > Amount::from_btc(0.199)?,
+        "heir + guardian2 must be able to claim"
+    );
+
+    // ---- Negative: heir alone cannot resolve a claim path ----
+    let mut heir_only = build_signing_from_account(&vault, &heir_acct)?;
+    let _ = sync_wallet(&mut heir_only, &bare)?;
+    let r = build_guardian_claim(&mut heir_only, &vault, &dest("g-heir-alone")?, fee_rate());
+    assert!(
+        r.is_err(),
+        "heir alone must NOT resolve a guardian claim path (a guardian is mandatory)"
+    );
+
+    // ---- Negative: both guardians, no heir — cannot resolve a claim path ----
+    let mut guardians_only = build_signing_guardian(&vault, &g1_acct, &g2_acct)?;
+    let _ = sync_wallet(&mut guardians_only, &bare)?;
+    let r2 = build_guardian_claim(
+        &mut guardians_only,
+        &vault,
+        &dest("g-guardians-alone")?,
+        fee_rate(),
+    );
+    assert!(
+        r2.is_err(),
+        "guardians alone must NOT resolve a claim path (the heir signature is mandatory)"
+    );
+
     Ok(())
 }
 

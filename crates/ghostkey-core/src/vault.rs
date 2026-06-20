@@ -87,6 +87,46 @@ impl Vault {
         })
     }
 
+    /// Construct a **guardian vault** (issue #81) whose claim branch is
+    /// `heir AND (g1 OR g2) AND older(N)`. The owner branch is unchanged.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_guardian(
+        owner_external: &str,
+        owner_internal: &str,
+        heir_external: &str,
+        heir_internal: &str,
+        guardian1_external: &str,
+        guardian1_internal: &str,
+        guardian2_external: &str,
+        guardian2_internal: &str,
+        timelock_blocks: u32,
+        network: bitcoin::Network,
+        role: VaultRole,
+        label: Option<String>,
+    ) -> Result<Self> {
+        let pair = crate::descriptor::build_guardian_descriptor_pair(
+            owner_external,
+            owner_internal,
+            heir_external,
+            heir_internal,
+            guardian1_external,
+            guardian1_internal,
+            guardian2_external,
+            guardian2_internal,
+            timelock_blocks,
+        )?;
+        Ok(Self {
+            config: VaultConfig {
+                descriptor_external: pair.external,
+                descriptor_internal: pair.internal,
+                timelock_blocks,
+                network,
+                role,
+                label,
+            },
+        })
+    }
+
     /// Reconstruct a vault from a previously stored configuration.
     pub fn from_config(config: VaultConfig) -> Result<Self> {
         // Validate both descriptors parse.

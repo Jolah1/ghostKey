@@ -122,26 +122,49 @@ pub fn peek_addresses(vault: &Vault, count: u32) -> Result<(Vec<String>, Vec<Str
 /// matching xpub. BDK accepts a tprv/xprv at the same origin as the
 /// xpub it replaces, and produces identical pubkeys.
 pub fn build_signing_from_account(vault: &Vault, account_xpriv: &Xpriv) -> Result<Wallet> {
+    let ext = splice_account_into(vault.descriptor_for(Chain::External), account_xpriv, vault)?;
+    let int_ = splice_account_into(vault.descriptor_for(Chain::Internal), account_xpriv, vault)?;
+
+    Wallet::create(ext, int_)
+        .network(vault.network())
+        .create_wallet_no_persist()
+        .map_err(|e| Error::InvalidDescriptor(e.to_string()))
+}
+
+/// Splice a single account xprv into one descriptor string, matching it by
+/// the xpub it derives to (so the correct origin tag is preserved). Shared
+/// by [`build_signing_from_account`] and [`build_signing_guardian`].
+fn splice_account_into(descriptor: &str, account_xpriv: &Xpriv, vault: &Vault) -> Result<String> {
     let path = vault_account_path(vault.network());
-    // The account xprv carries no parent fingerprint of its own (it's
-    // the root of its own subtree from BDK's perspective). We need
-    // the *original* fingerprint that was baked into the descriptor
-    // origin tag at vault creation. We recover it by parsing the
-    // descriptor and locating the bracketed origin whose xpub matches
-    // the one this xprv neuters into.
-    let neutered = account_xpriv.to_priv().public_key(&Secp256k1::new());
-    // The xpub embedded in the descriptor is the account xpub; we
-    // derive it locally so we can find it textually.
+    // The account xprv carries no parent fingerprint of its own. We need
+    // the *original* fingerprint baked into the descriptor origin tag at
+    // creation, recovered by locating the bracketed origin whose xpub
+    // matches the one this xprv neuters into.
     let account_xpub_str =
         bitcoin::bip32::Xpub::from_priv(&Secp256k1::new(), account_xpriv).to_string();
-    let _ = neutered; // silence unused warning; we kept it for documentation
-
-    let fp =
-        find_origin_fingerprint_for_xpub(vault.descriptor_for(Chain::External), &account_xpub_str)?;
-
+    let fp = find_origin_fingerprint_for_xpub(descriptor, &account_xpub_str)?;
     let xpriv_str = account_xpriv.to_string();
-    let ext = splice_xpriv(vault.descriptor_for(Chain::External), fp, &path, &xpriv_str)?;
-    let int_ = splice_xpriv(vault.descriptor_for(Chain::Internal), fp, &path, &xpriv_str)?;
+    splice_xpriv(descriptor, fp, &path, &xpriv_str)
+}
+
+/// Build a signing wallet for a **guardian vault** (issue #81) claim.
+///
+/// The claim branch is `heir AND (g1 OR g2) AND older(N)`, so two private
+/// keys must be present: the heir's account xprv plus **one** of the two
+/// guardians' account xprvs. Both are spliced into the descriptor in place
+/// of their xpubs; the owner and the unused guardian remain watch-only.
+/// BDK's satisfier then produces both required signatures.
+pub fn build_signing_guardian(
+    vault: &Vault,
+    heir_account_xpriv: &Xpriv,
+    guardian_account_xpriv: &Xpriv,
+) -> Result<Wallet> {
+    let splice_both = |chain: Chain| -> Result<String> {
+        let d = splice_account_into(vault.descriptor_for(chain), heir_account_xpriv, vault)?;
+        splice_account_into(&d, guardian_account_xpriv, vault)
+    };
+    let ext = splice_both(Chain::External)?;
+    let int_ = splice_both(Chain::Internal)?;
 
     Wallet::create(ext, int_)
         .network(vault.network())
