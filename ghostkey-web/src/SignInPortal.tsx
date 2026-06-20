@@ -176,7 +176,7 @@ export function SignInPortal({ onNavigate }: Props) {
         // has the real owner_token in localStorage and the next
         // check-in will keep that working.
         setError(
-          "We can unwrap your keys but the sign-in credentials aren't " +
+          "We can open your vault but the sign-in credentials aren't " +
             "ready yet for this device. Check in once from the device " +
             "you used to set up the vault, then try again here.",
         );
@@ -367,7 +367,7 @@ export function SignInPortal({ onNavigate }: Props) {
           {phase.kind === "unsealing" ? (
             <div className="mt-4">
               <p className="text-sm text-muted">
-                Unwrapping your keys… {phase.progress}%
+                Signing you in… {phase.progress}%
               </p>
               <div className="mt-2 h-1.5 w-full overflow-hidden rounded bg-[var(--surface-2)]">
                 <div
