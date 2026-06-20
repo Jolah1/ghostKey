@@ -878,4 +878,12 @@ export const api = {
     }).catch(() => {
       /* analytics failures are silent on purpose */
     }),
+  /** Early-access waitlist signup. Resolves on success; throws ApiError
+   *  on a bad email (400) so the form can show a message. `source` is an
+   *  optional CTA/page label (lowercase/digits/_/. only). */
+  joinWaitlist: (email: string, source?: string) =>
+    request<void>("/waitlist", {
+      method: "POST",
+      body: JSON.stringify(source ? { email, source } : { email }),
+    }),
 };
