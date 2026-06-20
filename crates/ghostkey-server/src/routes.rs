@@ -189,6 +189,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/health/lightning", get(health_lightning))
         .route("/vaults", get(list_vaults))
         .route("/vaults/:id", get(get_vault).delete(delete_vault))
+        .route("/vaults/:id/heir", get(get_vault_heir))
         .route("/vaults/:id/address", get(get_vault_address))
         .route(
             "/vaults/:id/balance",
@@ -1987,6 +1988,93 @@ async fn list_vaults(
         })
         .collect();
     Ok(Json(out))
+}
+
+/// The heir's details, decrypted for the authenticated owner. Lets the
+/// dashboard show who the vault is for (name, how they'll be reached,
+/// and the note left for them). Owner-only: the heir contact is sealed
+/// at rest and only the vault's owner token unlocks this view.
+#[derive(Debug, Serialize)]
+pub struct HeirProfileView {
+    pub name: Option<String>,
+    pub contact: Option<String>,
+    pub channel: Option<String>,
+    pub note: Option<String>,
+}
+
+async fn get_vault_heir(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<HeirProfileView>, ApiError> {
+    let id = auth.vault_id;
+    let row: (
+        Option<String>, // heir_contact_ciphertext
+        Option<String>, // heir_contact_nonce
+        Option<String>, // heir_contact_channel
+        Option<String>, // heir_intro_ciphertext
+        Option<String>, // heir_intro_nonce
+    ) = sqlx::query_as(
+        r#"SELECT heir_contact_ciphertext, heir_contact_nonce, heir_contact_channel,
+                  heir_intro_ciphertext, heir_intro_nonce
+             FROM vaults WHERE id = ?"#,
+    )
+    .bind(&id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+
+    let (contact_ct, contact_nn, channel, intro_ct, intro_nn) = row;
+
+    // Heir contact is a sealed JSON blob {name, contact, channel}.
+    let (mut name, mut contact) = (None, None);
+    if let (Some(ct), Some(nn)) = (contact_ct, contact_nn) {
+        let bytes = open_for_vault(
+            &id,
+            &SealedContact {
+                ciphertext_b64: ct,
+                nonce_b64: nn,
+            },
+        )?;
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            name = v
+                .get("name")
+                .and_then(|n| n.as_str())
+                .map(str::to_string)
+                .filter(|s| !s.is_empty());
+            contact = v
+                .get("contact")
+                .and_then(|c| c.as_str())
+                .map(str::to_string)
+                .filter(|s| !s.is_empty());
+        }
+    }
+
+    // Heir intro is a separate sealed JSON blob {from_name, note}; we
+    // surface only the note the owner left for the heir.
+    let mut note = None;
+    if let (Some(ct), Some(nn)) = (intro_ct, intro_nn) {
+        let bytes = open_for_vault(
+            &id,
+            &SealedContact {
+                ciphertext_b64: ct,
+                nonce_b64: nn,
+            },
+        )?;
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            note = v
+                .get("note")
+                .and_then(|n| n.as_str())
+                .map(str::to_string)
+                .filter(|s| !s.is_empty());
+        }
+    }
+
+    Ok(Json(HeirProfileView {
+        name,
+        contact,
+        channel,
+        note,
+    }))
 }
 
 async fn get_vault(
@@ -4556,6 +4644,66 @@ mod tests {
         )
         .await
         .expect_err("unknown token");
+        assert!(matches!(nf, ApiError::NotFound), "got {nf:?}");
+    }
+
+    /// The owner-only heir endpoint decrypts the sealed heir contact and
+    /// intro into a profile (name, contact, channel, note).
+    #[tokio::test]
+    async fn get_vault_heir_returns_decrypted_profile() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let id = "heir-profile-vault";
+        let contact = seal_for_vault(
+            id,
+            br#"{"name":"Ada","contact":"ada@example.com","channel":"email"}"#,
+        )
+        .expect("seal contact");
+        let intro = seal_for_vault(id, br#"{"from_name":"Mum","note":"For your school fees."}"#)
+            .expect("seal intro");
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status,
+                heir_contact_ciphertext, heir_contact_nonce, heir_contact_channel,
+                heir_intro_ciphertext, heir_intro_nonce
+            ) VALUES (?, 'regtest', 'tr(a)', 'tr(b)', 144, 86400, 3600,
+                      '2026-01-01T00:00:00Z', '2026-04-01T00:00:00Z', 'ok',
+                      ?, ?, 'email', ?, ?)"#,
+        )
+        .bind(id)
+        .bind(&contact.ciphertext_b64)
+        .bind(&contact.nonce_b64)
+        .bind(&intro.ciphertext_b64)
+        .bind(&intro.nonce_b64)
+        .execute(&state.db)
+        .await
+        .expect("insert vault");
+
+        let view = get_vault_heir(
+            OwnerAuth {
+                vault_id: id.to_string(),
+            },
+            State(state.clone()),
+        )
+        .await
+        .expect("heir profile")
+        .0;
+        assert_eq!(view.name.as_deref(), Some("Ada"));
+        assert_eq!(view.contact.as_deref(), Some("ada@example.com"));
+        assert_eq!(view.channel.as_deref(), Some("email"));
+        assert_eq!(view.note.as_deref(), Some("For your school fees."));
+
+        // Unknown vault → 404.
+        let nf = get_vault_heir(
+            OwnerAuth {
+                vault_id: "nope".to_string(),
+            },
+            State(state.clone()),
+        )
+        .await
+        .expect_err("unknown vault");
         assert!(matches!(nf, ApiError::NotFound), "got {nf:?}");
     }
 }

@@ -23,6 +23,15 @@ export interface VaultListItem {
   next_deadline_at: string; // RFC3339
 }
 
+/** The heir's decrypted details for the owner's dashboard. Backed by
+ *  `crates/ghostkey-server/src/routes.rs::HeirProfileView`. */
+export interface HeirProfileView {
+  name: string | null;
+  contact: string | null;
+  channel: string | null;
+  note: string | null;
+}
+
 export interface VaultView {
   id: string;
   label: string | null;
@@ -618,6 +627,10 @@ export const api = {
     }>("/health/lightning"),
   getVault: (id: string, ownerToken: string | null) =>
     request<VaultView>(`/vaults/${id}`, {}, ownerToken),
+  /** Owner-only: the heir's decrypted details (name, contact, channel,
+   *  and the note left for them) for the dashboard heir panel. */
+  getVaultHeir: (id: string, ownerToken: string | null) =>
+    request<HeirProfileView>(`/vaults/${id}/heir`, {}, ownerToken),
   /** Owner-initiated vault deletion. The server clears its metadata
    *  (vault row + cascaded events/notifications/lightning invoices).
    *  On-chain funds remain spendable by the owner — GhostKey never
