@@ -309,6 +309,13 @@ export interface ClaimView {
    *  already elapsed). While set in the future, the claim page shows
    *  the wait screen and the claim endpoints answer 409. */
   claim_available_at?: string | null;
+  /** "standard" or "guardian" (#81). A guardian vault needs the heir
+   *  plus one guardian, so the claim page renders the two-link flow. */
+  vault_kind: "standard" | "guardian";
+  /** Which party opened this link: "heir" or "guardian". */
+  token_role: "heir" | "guardian";
+  /** For a guardian token, which slot (1 or 2). Null for heir tokens. */
+  guardian_slot?: number | null;
 }
 
 /** Encrypted owner video message returned by `GET /claim/:token/video`
@@ -428,6 +435,42 @@ export interface HeirClaimRequest {
    *  the URL-fragment claim token; the server uses it once and
    *  discards. */
   heir_xprv: string;
+}
+
+/**
+ * Returned by `GET /claim/:token/sealed-guardian` for a guardian vault
+ * (#81). Same shape as `SealedHeirView` but for one guardian's key; the
+ * browser unwraps `guardian_xprv_ct_b64` locally with the guardian's
+ * claim token. `slot` is which guardian (1 or 2) the token belongs to.
+ *
+ * Backed by `crates/ghostkey-server/src/psbt_routes.rs::SealedGuardianView`.
+ */
+export interface SealedGuardianView {
+  vault_id: string;
+  slot: number;
+  network: string;
+  timelock_blocks: number;
+  guardian_xprv_ct_b64: string;
+  guardian_xprv_nonce_b64: string;
+  descriptor_external: string;
+  descriptor_internal: string;
+}
+
+/**
+ * Two-key guardian claim (#81). The browser unwraps the heir key (from
+ * the heir's sealed-heir blob) and one guardian key (from a
+ * sealed-guardian blob), then ships both here. Posted to the HEIR
+ * token's endpoint (the vault's primary claim token, which this call
+ * consumes). The server splices both keys, signs, broadcasts, and
+ * discards them.
+ *
+ * Backed by `crates/ghostkey-server/src/psbt_routes.rs::GuardianClaimRequest`.
+ */
+export interface GuardianClaimRequest {
+  destination: string;
+  fee_rate_sat_per_vb?: number | null;
+  heir_xprv: string;
+  guardian_xprv: string;
 }
 
 /** Response shape from `POST /vaults/:id/lightning-checkin/invoice`. */
@@ -794,6 +837,21 @@ export const api = {
   heirClaim: (token: string, req: HeirClaimRequest) =>
     request<BroadcastClaimResponse>(
       `/claim/${encodeURIComponent(token)}/heir-claim`,
+      { method: "POST", body: JSON.stringify(req) },
+    ),
+  /** Guardian vault (#81): fetch one guardian's sealed xprv blob. The
+   *  browser unwraps it locally with the guardian's claim token. */
+  getSealedGuardianXprv: (token: string) =>
+    request<SealedGuardianView>(
+      `/claim/${encodeURIComponent(token)}/sealed-guardian`,
+    ),
+  /** Guardian vault (#81): two-key claim. `token` is the heir token (the
+   *  vault's primary claim token, consumed here). Body carries both the
+   *  unwrapped heir and guardian account xprvs; the server signs with
+   *  both in memory and discards them. */
+  guardianClaim: (token: string, req: GuardianClaimRequest) =>
+    request<BroadcastClaimResponse>(
+      `/claim/${encodeURIComponent(token)}/guardian-claim`,
       { method: "POST", body: JSON.stringify(req) },
     ),
   /**
