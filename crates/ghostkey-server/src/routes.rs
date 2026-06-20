@@ -1318,6 +1318,13 @@ pub struct CreateGuardianVaultRequest {
     pub guardian1: GuardianParty,
     pub guardian2: GuardianParty,
     pub timelock_blocks: u32,
+    /// Optional absolute unlock height (#81 P5). When set, the claim branch
+    /// gains an `after(H)` CLTV so the heir + guardian cannot spend before
+    /// block `H` (e.g. until a child reaches a chosen age), regardless of
+    /// owner inactivity. The web computes this height from the owner's
+    /// chosen unlock year. The owner branch is unaffected.
+    #[serde(default)]
+    pub unlock_height: Option<u32>,
     pub checkin_period_secs: i64,
     pub grace_period_secs: i64,
     pub owner_contact: Option<String>,
@@ -1409,6 +1416,7 @@ async fn create_vault_guardian(
         &g2_ext,
         &g2_int,
         req.timelock_blocks,
+        req.unlock_height,
     )
     .map_err(|e| ApiError::Validation(format!("descriptor build: {e}")))?;
 
@@ -4216,6 +4224,7 @@ mod tests {
             guardian1: guardian_party(0x23, "g1-token"),
             guardian2: guardian_party(0x24, "g2-token"),
             timelock_blocks: 144,
+            unlock_height: None,
             checkin_period_secs: 86_400,
             grace_period_secs: 3_600,
             owner_contact: None,
@@ -4289,6 +4298,7 @@ mod tests {
             guardian1: guardian_party(0x33, "g1-token"),
             guardian2: guardian_party(0x33, "g2-token"),
             timelock_blocks: 144,
+            unlock_height: None,
             checkin_period_secs: 86_400,
             grace_period_secs: 3_600,
             owner_contact: None,
@@ -4311,6 +4321,57 @@ mod tests {
             matches!(&err, ApiError::Validation(m) if m.contains("must all differ")),
             "got {err:?}"
         );
+    }
+
+    /// #81 P5: an `unlock_height` on the create request embeds an absolute
+    /// `after(H)` CLTV in the stored guardian descriptor.
+    #[tokio::test]
+    async fn guardian_vault_unlock_height_embeds_cltv() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let (owner_xpub, owner_fp) = xpub_for(0x61);
+        let (heir_xpub, heir_fp) = xpub_for(0x62);
+        let req = CreateGuardianVaultRequest {
+            label: Some("guardian".into()),
+            network: "regtest".into(),
+            owner: PartyXpub {
+                xpub: owner_xpub,
+                fingerprint: Some(owner_fp),
+            },
+            heir: PartyXpub {
+                xpub: heir_xpub,
+                fingerprint: Some(heir_fp),
+            },
+            guardian1: guardian_party(0x63, "g1-token"),
+            guardian2: guardian_party(0x64, "g2-token"),
+            timelock_blocks: 144,
+            unlock_height: Some(900_000),
+            checkin_period_secs: 86_400,
+            grace_period_secs: 3_600,
+            owner_contact: None,
+            owner_contact_channel: None,
+            heir_contact: Some("heir@example.com".into()),
+            heir_contact_channel: Some("email".into()),
+            sealed: sealed_setup(
+                &"c".repeat(64),
+                Some("aGVpcmN0".into()),
+                Some("aGVpcm5u".into()),
+                Some("heir-token".into()),
+            ),
+            from_name: None,
+            heir_note: None,
+        };
+        let (_, created) = create_vault_guardian(State(state.clone()), Json(req))
+            .await
+            .expect("guardian create with unlock");
+        let ext: String =
+            sqlx::query_scalar("SELECT descriptor_external FROM vaults WHERE id = ?")
+                .bind(&created.vault.id)
+                .fetch_one(&state.db)
+                .await
+                .expect("descriptor");
+        assert!(ext.contains("after(900000)"), "unlock CLTV embedded: {ext}");
+        assert!(ext.contains("older(144)"), "inactivity CSV still present");
     }
 
     /// A guardian's claim token (#81 P4) resolves through the
@@ -4339,6 +4400,7 @@ mod tests {
             guardian1: guardian_party(0x43, "g1-token"),
             guardian2: guardian_party(0x44, "g2-token"),
             timelock_blocks: 144,
+            unlock_height: None,
             checkin_period_secs: 86_400,
             grace_period_secs: 3_600,
             owner_contact: None,
@@ -4441,6 +4503,7 @@ mod tests {
             guardian1: guardian_party(0x53, "g1-token"),
             guardian2: guardian_party(0x54, "g2-token"),
             timelock_blocks: 144,
+            unlock_height: None,
             checkin_period_secs: 86_400,
             grace_period_secs: 3_600,
             owner_contact: None,

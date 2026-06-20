@@ -158,12 +158,29 @@ pub struct GuardianDescriptorParams {
     pub guardian2_key: String,
     /// Inactivity timelock in blocks. Must be in `1..=MAX_CSV_BLOCKS`.
     pub timelock_blocks: u32,
+    /// Optional absolute unlock height (#81 P5). When `Some(H)`, the claim
+    /// branch also requires `after(H)` — an absolute block-height CLTV — so
+    /// the heir + guardian cannot spend before block `H`, even if the owner
+    /// goes inactive earlier. Used to hold funds until a child reaches a
+    /// chosen age. `None` keeps the original inactivity-only branch.
+    pub unlock_height: Option<u32>,
 }
+
+/// Absolute locktimes below this value are interpreted as block heights;
+/// at or above, as Unix timestamps (BIP65 / `LOCKTIME_THRESHOLD`). We only
+/// support the block-height form for the unlock CLTV, so a valid unlock
+/// height must stay under it.
+pub const MAX_CLTV_HEIGHT: u32 = 500_000_000;
 
 impl GuardianDescriptorParams {
     pub fn validate(&self) -> Result<()> {
         if self.timelock_blocks == 0 || self.timelock_blocks > MAX_CSV_BLOCKS {
             return Err(Error::InvalidTimelock(self.timelock_blocks));
+        }
+        if let Some(h) = self.unlock_height {
+            if h == 0 || h >= MAX_CLTV_HEIGHT {
+                return Err(Error::InvalidUnlockHeight(h));
+            }
         }
         Ok(())
     }
@@ -172,18 +189,26 @@ impl GuardianDescriptorParams {
 /// Render a single guardian-vault descriptor string from chain-specialized
 /// key fragments.
 ///
-/// Leaf miniscript:
+/// Leaf miniscript (no unlock):
 /// `or_d(pk(OWNER),and_v(v:pk(HEIR),and_v(v:older(N),or_b(pk(G1),s:pk(G2)))))`
+///
+/// With an unlock height `H`, the guardian disjunction is gated by an
+/// absolute CLTV as well:
+/// `or_d(pk(OWNER),and_v(v:pk(HEIR),and_v(v:older(N),and_v(v:after(H),or_b(pk(G1),s:pk(G2))))))`
 pub fn build_guardian_descriptor_string(params: &GuardianDescriptorParams) -> Result<String> {
     params.validate()?;
+    // The guardian disjunction, optionally wrapped in the absolute unlock.
+    let guardian_or = format!("or_b(pk({}),s:pk({}))", params.guardian1_key, params.guardian2_key);
+    let gated = match params.unlock_height {
+        Some(h) => format!("and_v(v:after({h}),{guardian_or})"),
+        None => guardian_or,
+    };
     Ok(format!(
-        "tr({nums},or_d(pk({owner}),and_v(v:pk({heir}),and_v(v:older({n}),or_b(pk({g1}),s:pk({g2}))))))",
+        "tr({nums},or_d(pk({owner}),and_v(v:pk({heir}),and_v(v:older({n}),{gated}))))",
         nums = UNSPENDABLE_NUMS_XONLY,
         owner = params.owner_key,
         heir = params.heir_key,
         n = params.timelock_blocks,
-        g1 = params.guardian1_key,
-        g2 = params.guardian2_key,
     ))
 }
 
@@ -199,6 +224,7 @@ pub fn build_guardian_descriptor_pair(
     guardian2_external: &str,
     guardian2_internal: &str,
     timelock_blocks: u32,
+    unlock_height: Option<u32>,
 ) -> Result<DescriptorPair> {
     let ext = build_guardian_descriptor_string(&GuardianDescriptorParams {
         owner_key: owner_external.to_string(),
@@ -206,6 +232,7 @@ pub fn build_guardian_descriptor_pair(
         guardian1_key: guardian1_external.to_string(),
         guardian2_key: guardian2_external.to_string(),
         timelock_blocks,
+        unlock_height,
     })?;
     let int_ = build_guardian_descriptor_string(&GuardianDescriptorParams {
         owner_key: owner_internal.to_string(),
@@ -213,6 +240,7 @@ pub fn build_guardian_descriptor_pair(
         guardian1_key: guardian1_internal.to_string(),
         guardian2_key: guardian2_internal.to_string(),
         timelock_blocks,
+        unlock_height,
     })?;
     // Validate both parse.
     let _ = parse_descriptor(&ext)?;
@@ -304,16 +332,36 @@ mod tests {
     fn builds_and_parses_guardian_descriptor_pair() {
         let (o, h, g1, g2) = guardian_fragments(Network::Regtest);
         let pair = build_guardian_descriptor_pair(
-            &o.0, &o.1, &h.0, &h.1, &g1.0, &g1.1, &g2.0, &g2.1, 52_560,
+            &o.0, &o.1, &h.0, &h.1, &g1.0, &g1.1, &g2.0, &g2.1, 52_560, None,
         )
         .unwrap();
         assert!(pair.external.starts_with("tr("));
         assert!(pair.external.contains("older(52560)"));
         assert!(pair.external.contains("or_b(pk("));
+        assert!(!pair.external.contains("after("), "no unlock -> no CLTV");
         assert!(pair.external.contains("/0/*"));
         assert!(pair.internal.contains("/1/*"));
         // Both must parse as valid Taproot miniscript (proves the
         // `heir AND (g1 OR g2) AND older(N)` leaf is type-correct).
+        let ext = parse_descriptor(&pair.external).unwrap();
+        let int_ = parse_descriptor(&pair.internal).unwrap();
+        assert!(matches!(ext, Descriptor::Tr(_)));
+        assert!(matches!(int_, Descriptor::Tr(_)));
+    }
+
+    #[test]
+    fn builds_guardian_descriptor_with_unlock_cltv() {
+        let (o, h, g1, g2) = guardian_fragments(Network::Regtest);
+        let pair = build_guardian_descriptor_pair(
+            &o.0, &o.1, &h.0, &h.1, &g1.0, &g1.1, &g2.0, &g2.1, 144, Some(900_000),
+        )
+        .unwrap();
+        // The unlock adds an absolute CLTV gating the guardian disjunction.
+        assert!(pair.external.contains("older(144)"));
+        assert!(pair.external.contains("after(900000)"));
+        assert!(pair.external.contains("or_b(pk("));
+        // Must still parse as type-correct Taproot miniscript with both the
+        // relative (CSV) and absolute (CLTV) timelocks present.
         let ext = parse_descriptor(&pair.external).unwrap();
         let int_ = parse_descriptor(&pair.internal).unwrap();
         assert!(matches!(ext, Descriptor::Tr(_)));
@@ -329,11 +377,19 @@ mod tests {
             guardian1_key: g1.0,
             guardian2_key: g2.0,
             timelock_blocks: 0,
+            unlock_height: None,
         };
         assert!(p.validate().is_err());
         p.timelock_blocks = MAX_CSV_BLOCKS + 1;
         assert!(p.validate().is_err());
         p.timelock_blocks = 144;
+        assert!(p.validate().is_ok());
+        // Unlock height must be a block height (1..500000000).
+        p.unlock_height = Some(0);
+        assert!(p.validate().is_err());
+        p.unlock_height = Some(MAX_CLTV_HEIGHT);
+        assert!(p.validate().is_err());
+        p.unlock_height = Some(900_000);
         assert!(p.validate().is_ok());
     }
 }
