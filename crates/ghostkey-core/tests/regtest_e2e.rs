@@ -746,7 +746,9 @@ fn emit_wasm_owner_fixture() -> Result<()> {
 /// Guardian vault (issue #81): owner + heir + two guardians, claim branch
 /// `heir AND (g1 OR g2) AND older(N)`. Returns the vault plus the heir and
 /// two guardian master keys (owner key isn't needed for claim tests).
-fn build_guardian_vault_and_keys() -> Result<(Vault, Xpriv, Xpriv, Xpriv)> {
+fn build_guardian_vault_and_keys_with_unlock(
+    unlock_height: Option<u32>,
+) -> Result<(Vault, Xpriv, Xpriv, Xpriv)> {
     let net = Network::Regtest;
     let owner_m = Xpriv::new_master(net, &[0xC1; 32])?;
     let heir_m = Xpriv::new_master(net, &[0xC2; 32])?;
@@ -766,11 +768,17 @@ fn build_guardian_vault_and_keys() -> Result<(Vault, Xpriv, Xpriv, Xpriv)> {
         &descriptor_key_fragment(g2fp, &g2p, &g2x, Chain::External),
         &descriptor_key_fragment(g2fp, &g2p, &g2x, Chain::Internal),
         TIMELOCK_BLOCKS,
+        unlock_height,
         net,
         VaultRole::Owner,
         Some("regtest-guardian".into()),
     )?;
     Ok((vault, heir_m, g1_m, g2_m))
+}
+
+/// Convenience: a guardian vault with no absolute unlock (the common case).
+fn build_guardian_vault_and_keys() -> Result<(Vault, Xpriv, Xpriv, Xpriv)> {
+    build_guardian_vault_and_keys_with_unlock(None)
 }
 
 /// The heart of issue #81: prove the `heir AND (g1 OR g2)` policy holds.
@@ -887,6 +895,101 @@ fn guardian_claim_requires_heir_plus_one_guardian() -> Result<()> {
     assert!(
         r2.is_err(),
         "guardians alone must NOT resolve a claim path (the heir signature is mandatory)"
+    );
+
+    Ok(())
+}
+
+/// #81 P5: a guardian vault with an absolute unlock height cannot be claimed
+/// (even by heir + guardian, even after the inactivity CSV matures) until the
+/// chain reaches that height. Proves the `after(H)` CLTV gates the claim and
+/// then releases it.
+#[test]
+#[ignore]
+fn guardian_unlock_height_gates_claim_until_reached() -> Result<()> {
+    let net = Network::Regtest;
+    let node = Bitcoind::spawn()?;
+    let bare = node.client()?;
+    let node_w = ensure_node_wallet(&node, "miner")?;
+    let h0 = mine_blocks(&node_w, 101)?;
+
+    // Unlock well beyond CSV maturity so there's a window where the heir +
+    // guardian are otherwise ready but the absolute lock still holds.
+    let unlock_h = h0 + TIMELOCK_BLOCKS + 20;
+    let (vault, heir_m, g1_m, _g2_m) = build_guardian_vault_and_keys_with_unlock(Some(unlock_h))?;
+    assert!(
+        vault
+            .descriptor_for(Chain::External)
+            .contains(&format!("after({unlock_h})")),
+        "descriptor carries the unlock CLTV"
+    );
+
+    let secp = Secp256k1::new();
+    let acct = |m: &Xpriv| -> Result<Xpriv> { Ok(m.derive_priv(&secp, &vault_account_path(net))?) };
+    let heir_acct = acct(&heir_m)?;
+    let g1_acct = acct(&g1_m)?;
+
+    let mut watch = build_watch_only(&vault)?;
+    let addr = watch.reveal_next_address(KeychainKind::External).address;
+    let txid = node_w.send_to_address(
+        &addr,
+        Amount::from_btc(0.20)?,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )?;
+    let conf_height = mine_blocks(&node_w, 1)?;
+    let tx: bitcoin::Transaction = node_w.get_transaction(&txid, None)?.transaction()?;
+    let funding = ConfirmedTx {
+        tx,
+        confirmation_height: conf_height,
+    };
+
+    let dest = |label: &str| -> Result<Address> {
+        node_w
+            .get_new_address(Some(label), Some(AddressType::Bech32))?
+            .require_network(net)
+            .map_err(|e| anyhow!("{e}"))
+    };
+
+    // CSV is now mature, but we are still below the unlock height.
+    let tip_early = mine_blocks(&node_w, TIMELOCK_BLOCKS.into())?;
+    assert!(tip_early < unlock_h, "precondition: still before unlock");
+    let r_early = sign_guardian_sweep(
+        &vault,
+        &heir_acct,
+        &g1_acct,
+        vec![funding.clone()],
+        tip_early,
+        &dest("g-unlock-early")?,
+        fee_rate(),
+    );
+    assert!(
+        r_early.is_err(),
+        "claim before the unlock height must fail even for heir + guardian"
+    );
+
+    // Mine up to (and past) the unlock height; now the claim goes through.
+    let tip_now = mine_blocks(&node_w, (unlock_h - tip_early).into())?;
+    assert!(tip_now >= unlock_h, "precondition: unlock reached");
+    let dest_late = dest("g-unlock-late")?;
+    let claim = sign_guardian_sweep(
+        &vault,
+        &heir_acct,
+        &g1_acct,
+        vec![funding],
+        tip_now,
+        &dest_late,
+        fee_rate(),
+    )?;
+    broadcast_tx(&bare, &claim.tx)?;
+    mine_blocks(&node_w, 1)?;
+    assert!(
+        received_by_address(&node_w, &dest_late)? > Amount::from_btc(0.199)?,
+        "after the unlock height, heir + guardian must be able to claim"
     );
 
     Ok(())

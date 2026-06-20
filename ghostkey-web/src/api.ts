@@ -184,6 +184,11 @@ export interface CreateVaultGuardianRequest {
   sealed: SealedSetup;
   from_name?: string | null;
   heir_note?: string | null;
+  /** Optional absolute unlock height (#81 P5). When set, the claim branch
+   *  gains an `after(H)` CLTV so the heir + guardian can't spend before
+   *  block `H` (e.g. until a child reaches a chosen age). The browser
+   *  computes this height from the owner's chosen unlock year. */
+  unlock_height?: number | null;
 }
 
 /** Snake-cased to match the Rust struct exactly; the server is the

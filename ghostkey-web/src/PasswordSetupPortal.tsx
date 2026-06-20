@@ -116,6 +116,7 @@ import {
   b64encode,
 } from "./crypto/sealing";
 import { randomBytes } from "@noble/hashes/utils.js";
+import { unlockYearToHeight, minUnlockYear } from "./unlockHeight";
 import {
   DEFAULT_CADENCE_ID,
   DEFAULT_GRACE_ID,
@@ -208,6 +209,10 @@ interface Draft {
   heirs: HeirDraft[];
   /** Exactly two, used only when `vaultKind === "guardian"`. */
   guardians: GuardianDraft[];
+  /** Optional guardian-vault unlock year (#81 P5): hold the funds until
+   *  around 1 Jan of this year (e.g. until a child reaches an age), on top
+   *  of the inactivity wait. `null` = no extra lock. */
+  unlockYear: number | null;
   waitingMonths: number;
   // Replaces the legacy `reminderEveryTwoWeeks: boolean`. Holds the
   // string id of a CADENCE_PRESETS entry. See ./timing.ts for the
@@ -259,6 +264,7 @@ const EMPTY: Draft = {
   vaultKind: "standard",
   heirs: [{ ...EMPTY_HEIR }],
   guardians: [{ ...EMPTY_GUARDIAN }, { ...EMPTY_GUARDIAN }],
+  unlockYear: null,
   waitingMonths: 3,
   cadenceId: DEFAULT_CADENCE_ID,
   graceId: DEFAULT_GRACE_ID,
@@ -665,6 +671,10 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           sealed: sealedBody,
           from_name: draft.ownerName.trim() || null,
           heir_note: heir.note?.trim() || null,
+          // P5: optional absolute unlock. demoMode pins the on-chain
+          // timelock to the minimum, so we skip the multi-year CLTV there
+          // (the off-chain demo can't wait years of blocks anyway).
+          unlock_height: demoMode ? null : unlockYearToHeight(draft.unlockYear),
         });
 
         // Re-seal the REAL owner_token under the password KEK (the server
@@ -1502,6 +1512,40 @@ function StepHeir({
                 onChange={(p) => updateGuardian(i, p)}
               />
             ))}
+
+            {/* Optional unlock year (#81 P5). On top of the inactivity
+                wait, hold the funds until around a chosen year, e.g. when
+                the child reaches an age. Hidden in demo mode, where the
+                on-chain timelock is pinned to the minimum. */}
+            {!demoMode && (
+              <Field label="Hold until a certain year (optional)">
+                <select
+                  className="input"
+                  value={draft.unlockYear ?? ""}
+                  onChange={(e) =>
+                    patch({
+                      unlockYear: e.target.value ? Number(e.target.value) : null,
+                    })
+                  }
+                  aria-label="Unlock year"
+                >
+                  <option value="">No extra hold</option>
+                  {Array.from({ length: 25 }, (_, i) => minUnlockYear() + i).map(
+                    (y) => (
+                      <option key={y} value={y}>
+                        {y}
+                      </option>
+                    ),
+                  )}
+                </select>
+                <p className="mt-2 text-xs text-dim">
+                  {draft.unlockYear
+                    ? `${draft.heirs[0]?.name.trim() || "Your heir"} and a guardian can only claim from around ${draft.unlockYear}, even if your check-ins stop sooner. The date is approximate (Bitcoin counts blocks, not calendars). You can always recover the funds yourself earlier with your recovery file.`
+                    : "Leave as is to let them claim once the waiting period passes. Pick a year to hold the funds until a child is older."}
+                </p>
+              </Field>
+            )}
+
             {/* Honest independence note (design-review Move 1). A
                 guardian vault works through GhostKey: the heir + guardian
                 links are how the keys come out. If GhostKey is ever gone,

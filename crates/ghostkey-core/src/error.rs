@@ -7,6 +7,9 @@ pub enum Error {
     #[error("invalid timelock: {0} (must be 1..=65535 blocks for CSV)")]
     InvalidTimelock(u32),
 
+    #[error("invalid unlock height: {0} (must be 1..500000000 for an absolute block-height CLTV)")]
+    InvalidUnlockHeight(u32),
+
     #[error("invalid descriptor: {0}")]
     InvalidDescriptor(String),
 

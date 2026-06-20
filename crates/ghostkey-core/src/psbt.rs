@@ -215,6 +215,16 @@ pub fn build_guardian_claim(
     let csv = vault.timelock_blocks();
     let nseq = bitcoin::Sequence::from_consensus(csv);
 
+    // An optional unlock CLTV (#81 P5) is satisfied by the tx nLockTime.
+    // We set it to the wallet's current tip height: standard anti-fee-sniping
+    // for vaults without an unlock, and exactly what satisfies `after(H)`
+    // once the tip has reached `H`. If the unlock has not matured (tip < H),
+    // BDK cannot finalize the absolute-timelock leaf and the claim fails with
+    // the usual "timelock may not have matured" error — correct behaviour.
+    let tip_height = wallet.latest_checkpoint().height();
+    let nlocktime = bitcoin::absolute::LockTime::from_height(tip_height)
+        .unwrap_or(bitcoin::absolute::LockTime::ZERO);
+
     let ext_path = resolve_guardian_policy_path(wallet, KeychainKind::External)?;
     let int_path = resolve_guardian_policy_path(wallet, KeychainKind::Internal)?;
 
@@ -223,7 +233,7 @@ pub fn build_guardian_claim(
         b.drain_wallet()
             .drain_to(recipient.script_pubkey())
             .fee_rate(fee_rate)
-            .nlocktime(bitcoin::absolute::LockTime::ZERO)
+            .nlocktime(nlocktime)
             .policy_path(ext_path, KeychainKind::External)
             .policy_path(int_path, KeychainKind::Internal)
             .set_exact_sequence(nseq);
@@ -275,16 +285,18 @@ fn resolve_guardian_policy_path(
         match &node.item {
             // Satisfied by setting nSequence; no key needed.
             SatisfiableItem::RelativeTimelock { .. } => true,
+            // Optional unlock CLTV (#81 P5): satisfied by the tx nLockTime
+            // (set to the tip height in `build_guardian_claim`), no key
+            // needed. Part of the claim path when an unlock is configured.
+            SatisfiableItem::AbsoluteTimelock { .. } => true,
 
             // A signature is usable only if the wallet can complete it.
             SatisfiableItem::SchnorrSignature(_)
             | SatisfiableItem::EcdsaSignature(_)
             | SatisfiableItem::Multisig { .. } => is_satisfiable(node),
 
-            // Absolute timelocks / hash preimages are not part of the
-            // guardian claim path.
-            SatisfiableItem::AbsoluteTimelock { .. }
-            | SatisfiableItem::Sha256Preimage { .. }
+            // Hash preimages are not part of the guardian claim path.
+            SatisfiableItem::Sha256Preimage { .. }
             | SatisfiableItem::Hash256Preimage { .. }
             | SatisfiableItem::Ripemd160Preimage { .. }
             | SatisfiableItem::Hash160Preimage { .. } => false,

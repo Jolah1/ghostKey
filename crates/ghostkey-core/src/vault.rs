@@ -100,6 +100,7 @@ impl Vault {
         guardian2_external: &str,
         guardian2_internal: &str,
         timelock_blocks: u32,
+        unlock_height: Option<u32>,
         network: bitcoin::Network,
         role: VaultRole,
         label: Option<String>,
@@ -114,6 +115,7 @@ impl Vault {
             guardian2_external,
             guardian2_internal,
             timelock_blocks,
+            unlock_height,
         )?;
         Ok(Self {
             config: VaultConfig {
