@@ -4456,7 +4456,7 @@ mod tests {
             from_name: None,
             heir_note: None,
         };
-        create_vault_guardian(State(state.clone()), Json(req))
+        let _ = create_vault_guardian(State(state.clone()), Json(req))
             .await
             .expect("guardian create");
 
