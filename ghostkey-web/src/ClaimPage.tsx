@@ -60,7 +60,9 @@ import {
   type ClaimView,
   type HeirDerivationParamsView,
   type SealedHeirView,
+  type VaultBalanceView,
 } from "./api";
+import { usePrice, btcAndUsd } from "./fiat";
 import { countdown, parseRfc } from "./time";
 import { HeirVideoMessage } from "./HeirVideoMessage";
 import { ConfirmSend } from "./ConfirmSend";
@@ -734,6 +736,7 @@ function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
         <p className="mt-1 text-xs text-muted">
           On the {networkLabel(view.network)}.
         </p>
+        <VaultValueLine vaultId={view.vault_id} />
       </div>
 
       <div className="mt-10">
@@ -999,6 +1002,7 @@ function PasswordVaultClaim({
         <p className="mt-1 text-xs text-muted">
           On the {networkLabel(sealed.network)}.
         </p>
+        <VaultValueLine vaultId={view.vault_id} />
       </div>
 
       <div className="mt-10">
@@ -1502,6 +1506,7 @@ function ManualPsbtClaim({
         <p className="mt-1 text-xs text-muted">
           On the {networkLabel(view.network)}.
         </p>
+        <VaultValueLine vaultId={view.vault_id} />
       </div>
 
       {/* ---- Step 1: do you have a Bitcoin wallet? ---- */}
@@ -2125,6 +2130,35 @@ function parseFeeRate(s: string): number | null | undefined {
  * from the browser so this works in en-NG, en-US, fr-FR, etc. without
  * any extra plumbing.
  */
+/** Shows the vault's current value (sats · BTC · ≈ $USD) inside the
+ *  "what's being passed on" card, so the heir sees roughly what they're
+ *  about to receive. Balance is public on-chain info; renders nothing
+ *  while loading, empty, or if the lookup fails. */
+function VaultValueLine({ vaultId }: { vaultId: string }) {
+  const [balance, setBalance] = useState<VaultBalanceView | null>(null);
+  const usdPerBtc = usePrice();
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getVaultBalance(vaultId)
+      .then((b) => {
+        if (!cancelled) setBalance(b);
+      })
+      .catch(() => {
+        /* balance is a nicety here; hide on failure */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [vaultId]);
+  if (!balance || balance.total_sat <= 0) return null;
+  return (
+    <p className="mt-2 text-sm text-soft">
+      {formatSats(balance.total_sat)} sat · {btcAndUsd(balance.total_sat, usdPerBtc)}
+    </p>
+  );
+}
+
 function formatSats(n: number): string {
   return n.toLocaleString();
 }
