@@ -478,6 +478,16 @@ export interface GuardianClaimRequest {
   guardian_xprv: string;
 }
 
+/** Cached BTC/USD spot price for fiat display. Backed by
+ *  `crates/ghostkey-server/src/price.rs::PriceView`. */
+export interface PriceView {
+  usd_per_btc: number;
+  fetched_at: string;
+  /** True when the server is serving a stale cached value (a refresh
+   *  failed). The UI can show the estimate more cautiously. */
+  stale: boolean;
+}
+
 /** Response shape from `POST /vaults/:id/lightning-checkin/invoice`. */
 export interface LightningInvoiceView {
   bolt11: string;
@@ -878,4 +888,7 @@ export const api = {
     }).catch(() => {
       /* analytics failures are silent on purpose */
     }),
+  /** Cached BTC/USD spot price for fiat display. Resolves to the rate or
+   *  throws (503) when unavailable; callers hide the fiat line on error. */
+  getPrice: () => request<PriceView>("/price"),
 };

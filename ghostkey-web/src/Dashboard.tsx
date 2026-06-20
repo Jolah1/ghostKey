@@ -59,6 +59,7 @@ import {
   subscribeToPush,
 } from "./push";
 import { unsealOwner } from "./crypto/sealing";
+import { usePrice, btcAndUsd } from "./fiat";
 import type { Route } from "./App";
 
 interface Props {
@@ -600,6 +601,7 @@ function BalanceCard({
   const [balance, setBalance] = useState<VaultBalanceView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const usdPerBtc = usePrice();
   const [hidden, setHidden] = useState<boolean>(() => {
     try {
       return localStorage.getItem(BALANCE_HIDDEN_KEY) === "1";
@@ -683,6 +685,11 @@ function BalanceCard({
           <div className="mt-2 font-display text-2xl font-bold tracking-tight">
             {balance ? formatSats(balance.total_sat) : loading ? "…" : "—"}
           </div>
+          {balance ? (
+            <p className="mt-1 text-sm text-muted">
+              {btcAndUsd(balance.total_sat, usdPerBtc)}
+            </p>
+          ) : null}
           {balance && balance.unconfirmed_sat > 0 ? (
             <p className="mt-1.5 text-sm text-muted">
               {formatSats(balance.confirmed_sat)} confirmed,{" "}

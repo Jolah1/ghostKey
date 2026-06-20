@@ -117,6 +117,7 @@ import {
 } from "./crypto/sealing";
 import { randomBytes } from "@noble/hashes/utils.js";
 import { unlockYearToHeight, minUnlockYear } from "./unlockHeight";
+import { usePrice, btcAndUsd } from "./fiat";
 import {
   DEFAULT_CADENCE_ID,
   DEFAULT_GRACE_ID,
@@ -2260,6 +2261,13 @@ function StepFund({
         ))}
       </div>
 
+      <p className="mt-3 px-1 text-xs text-dim">
+        Tip: send at least a few thousand sats so there's plenty left for
+        {isGroup ? " your heirs" : " your heir"} after the small network fee at
+        claim time. You can add more any time by sending again to the same
+        address.
+      </p>
+
       <div className="mt-6">
         <InlineAlert tone="neutral">
           {isGroup ? (
@@ -2468,6 +2476,7 @@ function FundingBalanceLine({ vaultId }: { vaultId: string }) {
   const [balance, setBalance] = useState<VaultBalanceView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const usdPerBtc = usePrice();
 
   async function load() {
     setLoading(true);
@@ -2499,6 +2508,9 @@ function FundingBalanceLine({ vaultId }: { vaultId: string }) {
         <span className="font-mono text-[var(--text)]">
           {balance ? `${balance.total_sat.toLocaleString()} sat` : loading ? "…" : "—"}
         </span>
+        {balance && balance.total_sat > 0 ? (
+          <span className="ml-1 text-dim">{btcAndUsd(balance.total_sat, usdPerBtc)}</span>
+        ) : null}
         {balance && balance.unconfirmed_sat > 0 ? (
           <span className="ml-1 text-dim">
             ({balance.unconfirmed_sat.toLocaleString()} pending)
