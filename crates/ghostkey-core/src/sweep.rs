@@ -26,9 +26,9 @@ use bitcoin::hashes::Hash;
 use bitcoin::{Address, BlockHash, FeeRate, Transaction};
 
 use crate::error::{Error, Result};
-use crate::psbt::{build_heir_claim, build_owner_send, BuiltPsbt};
+use crate::psbt::{build_guardian_claim, build_heir_claim, build_owner_send, BuiltPsbt};
 use crate::vault::Vault;
-use crate::wallet::build_signing_from_account;
+use crate::wallet::{build_signing_from_account, build_signing_guardian};
 
 /// How many addresses to reveal on each keychain before matching UTXOs.
 ///
@@ -97,6 +97,29 @@ pub fn sign_heir_sweep(
     let mut w = build_signing_from_account(vault, account_xpriv)?;
     load_utxos(&mut w, funding, chain_tip_height)?;
     let built = build_heir_claim(&mut w, vault, recipient, fee_rate)?;
+    finalize(built)
+}
+
+/// Build and fully sign a sweep using the **guardian-vault claim** branch
+/// (issue #81): `heir AND (g1 OR g2) AND older(N)`.
+///
+/// Requires the heir's account xprv plus **one** guardian's account xprv.
+/// Like [`sign_heir_sweep`], the transaction is only valid once each input
+/// has aged past the vault's relative timelock. Always drains the full
+/// balance to `recipient`.
+#[allow(clippy::too_many_arguments)]
+pub fn sign_guardian_sweep(
+    vault: &Vault,
+    heir_account_xpriv: &bitcoin::bip32::Xpriv,
+    guardian_account_xpriv: &bitcoin::bip32::Xpriv,
+    funding: Vec<ConfirmedTx>,
+    chain_tip_height: u32,
+    recipient: &Address,
+    fee_rate: FeeRate,
+) -> Result<SweepResult> {
+    let mut w = build_signing_guardian(vault, heir_account_xpriv, guardian_account_xpriv)?;
+    load_utxos(&mut w, funding, chain_tip_height)?;
+    let built = build_guardian_claim(&mut w, vault, recipient, fee_rate)?;
     finalize(built)
 }
 

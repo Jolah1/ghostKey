@@ -130,6 +130,99 @@ pub fn build_descriptor_pair(
     })
 }
 
+/// Inputs for building a **guardian** vault descriptor (issue #81).
+///
+/// The claim branch requires the heir plus at least one of two guardians,
+/// gated by the same inactivity timelock as the default vault:
+///
+/// ```text
+/// heir AND (guardian1 OR guardian2) AND older(N)
+/// ```
+///
+/// so that:
+/// - the child (heir) alone cannot spend — a guardian must co-sign;
+/// - the guardians alone cannot spend — the heir's key is mandatory;
+/// - either guardian being unavailable does not strand the funds.
+///
+/// The owner branch is unchanged (`pk(OWNER)`, spendable anytime), so the
+/// owner recovery file remains the backstop if every claim link is lost.
+#[derive(Debug, Clone)]
+pub struct GuardianDescriptorParams {
+    /// Owner key fragment, same chain as the others.
+    pub owner_key: String,
+    /// Heir key fragment.
+    pub heir_key: String,
+    /// First guardian key fragment.
+    pub guardian1_key: String,
+    /// Second guardian key fragment.
+    pub guardian2_key: String,
+    /// Inactivity timelock in blocks. Must be in `1..=MAX_CSV_BLOCKS`.
+    pub timelock_blocks: u32,
+}
+
+impl GuardianDescriptorParams {
+    pub fn validate(&self) -> Result<()> {
+        if self.timelock_blocks == 0 || self.timelock_blocks > MAX_CSV_BLOCKS {
+            return Err(Error::InvalidTimelock(self.timelock_blocks));
+        }
+        Ok(())
+    }
+}
+
+/// Render a single guardian-vault descriptor string from chain-specialized
+/// key fragments.
+///
+/// Leaf miniscript:
+/// `or_d(pk(OWNER),and_v(v:pk(HEIR),and_v(v:older(N),or_b(pk(G1),s:pk(G2)))))`
+pub fn build_guardian_descriptor_string(params: &GuardianDescriptorParams) -> Result<String> {
+    params.validate()?;
+    Ok(format!(
+        "tr({nums},or_d(pk({owner}),and_v(v:pk({heir}),and_v(v:older({n}),or_b(pk({g1}),s:pk({g2}))))))",
+        nums = UNSPENDABLE_NUMS_XONLY,
+        owner = params.owner_key,
+        heir = params.heir_key,
+        n = params.timelock_blocks,
+        g1 = params.guardian1_key,
+        g2 = params.guardian2_key,
+    ))
+}
+
+/// Build a receive+change descriptor pair for a guardian vault.
+#[allow(clippy::too_many_arguments)]
+pub fn build_guardian_descriptor_pair(
+    owner_external: &str,
+    owner_internal: &str,
+    heir_external: &str,
+    heir_internal: &str,
+    guardian1_external: &str,
+    guardian1_internal: &str,
+    guardian2_external: &str,
+    guardian2_internal: &str,
+    timelock_blocks: u32,
+) -> Result<DescriptorPair> {
+    let ext = build_guardian_descriptor_string(&GuardianDescriptorParams {
+        owner_key: owner_external.to_string(),
+        heir_key: heir_external.to_string(),
+        guardian1_key: guardian1_external.to_string(),
+        guardian2_key: guardian2_external.to_string(),
+        timelock_blocks,
+    })?;
+    let int_ = build_guardian_descriptor_string(&GuardianDescriptorParams {
+        owner_key: owner_internal.to_string(),
+        heir_key: heir_internal.to_string(),
+        guardian1_key: guardian1_internal.to_string(),
+        guardian2_key: guardian2_internal.to_string(),
+        timelock_blocks,
+    })?;
+    // Validate both parse.
+    let _ = parse_descriptor(&ext)?;
+    let _ = parse_descriptor(&int_)?;
+    Ok(DescriptorPair {
+        external: ext,
+        internal: int_,
+    })
+}
+
 /// Parse + validate a descriptor string.
 pub fn parse_descriptor(s: &str) -> Result<Descriptor<miniscript::DescriptorPublicKey>> {
     Descriptor::<miniscript::DescriptorPublicKey>::from_str(s)
@@ -154,6 +247,27 @@ mod tests {
             descriptor_key_fragment(hfp, &hp, &hx, Chain::External),
             descriptor_key_fragment(hfp, &hp, &hx, Chain::Internal),
         )
+    }
+
+    /// Owner, heir, guardian1, guardian2 fragment tuples (external, internal).
+    #[allow(clippy::type_complexity)]
+    fn guardian_fragments(
+        net: Network,
+    ) -> (
+        (String, String),
+        (String, String),
+        (String, String),
+        (String, String),
+    ) {
+        let frag = |seed: u8| {
+            let m = Xpriv::new_master(net, &[seed; 32]).unwrap();
+            let (fp, p, x) = account_xpub(&m, net).unwrap();
+            (
+                descriptor_key_fragment(fp, &p, &x, Chain::External),
+                descriptor_key_fragment(fp, &p, &x, Chain::Internal),
+            )
+        };
+        (frag(0x11), frag(0x22), frag(0x33), frag(0x44))
     }
 
     #[test]
@@ -184,5 +298,42 @@ mod tests {
         let int_ = parse_descriptor(&pair.internal).unwrap();
         assert!(matches!(ext, Descriptor::Tr(_)));
         assert!(matches!(int_, Descriptor::Tr(_)));
+    }
+
+    #[test]
+    fn builds_and_parses_guardian_descriptor_pair() {
+        let (o, h, g1, g2) = guardian_fragments(Network::Regtest);
+        let pair = build_guardian_descriptor_pair(
+            &o.0, &o.1, &h.0, &h.1, &g1.0, &g1.1, &g2.0, &g2.1, 52_560,
+        )
+        .unwrap();
+        assert!(pair.external.starts_with("tr("));
+        assert!(pair.external.contains("older(52560)"));
+        assert!(pair.external.contains("or_b(pk("));
+        assert!(pair.external.contains("/0/*"));
+        assert!(pair.internal.contains("/1/*"));
+        // Both must parse as valid Taproot miniscript (proves the
+        // `heir AND (g1 OR g2) AND older(N)` leaf is type-correct).
+        let ext = parse_descriptor(&pair.external).unwrap();
+        let int_ = parse_descriptor(&pair.internal).unwrap();
+        assert!(matches!(ext, Descriptor::Tr(_)));
+        assert!(matches!(int_, Descriptor::Tr(_)));
+    }
+
+    #[test]
+    fn guardian_rejects_bad_timelock() {
+        let (o, h, g1, g2) = guardian_fragments(Network::Regtest);
+        let mut p = GuardianDescriptorParams {
+            owner_key: o.0,
+            heir_key: h.0,
+            guardian1_key: g1.0,
+            guardian2_key: g2.0,
+            timelock_blocks: 0,
+        };
+        assert!(p.validate().is_err());
+        p.timelock_blocks = MAX_CSV_BLOCKS + 1;
+        assert!(p.validate().is_err());
+        p.timelock_blocks = 144;
+        assert!(p.validate().is_ok());
     }
 }
