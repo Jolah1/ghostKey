@@ -33,6 +33,7 @@ mod rate_limit;
 mod routes;
 mod scheduler;
 mod video_routes;
+mod waitlist;
 
 #[derive(Debug, Parser)]
 #[command(name = "ghostkey-server", version, about)]

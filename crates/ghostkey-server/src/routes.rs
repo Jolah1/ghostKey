@@ -117,8 +117,12 @@ pub fn router(state: Arc<AppState>) -> Router {
             crate::rate_limit::enforce,
         ));
 
+    // /events (aggregate analytics) and /waitlist (early-access signups)
+    // share the same posture — public, unauthenticated, low-volume POSTs —
+    // so they ride the same per-IP rate-limit bucket.
     let analytics_routes: Router<Arc<AppState>> = Router::new()
         .route("/events", post(crate::analytics::track))
+        .route("/waitlist", post(crate::waitlist::join))
         .layer(axum::middleware::from_fn_with_state(
             analytics_limiter,
             crate::rate_limit::enforce,

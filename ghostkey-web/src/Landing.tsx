@@ -15,10 +15,11 @@
  * the orange accent picked out on the punchline word. Tando-inspired.
  * Tone: emotional, no jargon, no AI tells.
  */
+import { useState } from "react";
 import { Disclosure, Eyebrow } from "./ui";
 import { brand } from "./vocab";
 import type { Route } from "./App";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { useTrackInView } from "./useTrackInView";
 
 interface Props {
@@ -671,8 +672,92 @@ function FinalCTA({ onNavigate }: Props) {
             How it works
           </a>
         </div>
+
+        <WaitlistForm source="final_cta" />
       </div>
     </section>
+  );
+}
+
+/**
+ * Early-access waitlist signup. Not everyone is ready to set up a vault
+ * on the spot, so we offer a low-commitment way to stay in the loop and
+ * to gauge demand. The address is sealed at rest server-side.
+ */
+function WaitlistForm({ source }: { source: string }) {
+  const [email, setEmail] = useState("");
+  const [state, setState] = useState<"idle" | "sending" | "done" | "error">(
+    "idle",
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (state === "sending" || !email.trim()) return;
+    setState("sending");
+    setError(null);
+    try {
+      await api.joinWaitlist(email.trim(), source);
+      void api.trackEvent("landing.waitlist_joined", source);
+      setState("done");
+    } catch (err) {
+      setState("error");
+      setError(
+        err instanceof ApiError && err.status === 400
+          ? "That doesn't look like an email. Mind checking it?"
+          : "Something went wrong. Please try again in a moment.",
+      );
+    }
+  };
+
+  if (state === "done") {
+    return (
+      <div className="mx-auto mt-10 max-w-md rounded-xl border border-app bg-app px-5 py-4 text-center text-sm text-soft">
+        You're on the list. We'll reach out when early access opens. No spam,
+        no sharing your address.
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-auto mt-10 max-w-md">
+      <p className="text-sm text-muted">
+        Not ready yet? Join the early-access list and we'll let you know when
+        it's time.
+      </p>
+      <form
+        onSubmit={onSubmit}
+        className="mt-3 flex flex-col gap-2 sm:flex-row"
+        noValidate
+      >
+        <input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@example.com"
+          autoComplete="email"
+          inputMode="email"
+          aria-label="Email address"
+          className="input flex-1"
+          disabled={state === "sending"}
+        />
+        <button
+          type="submit"
+          className="btn btn-primary"
+          disabled={state === "sending" || !email.trim()}
+        >
+          {state === "sending" ? "Joining…" : "Join the list"}
+        </button>
+      </form>
+      {error ? (
+        <p className="mt-2 text-left text-xs text-alarm">{error}</p>
+      ) : (
+        <p className="mt-2 text-left text-xs text-dim">
+          We'll only email you about early access. Your address is stored
+          encrypted.
+        </p>
+      )}
+    </div>
   );
 }
 
