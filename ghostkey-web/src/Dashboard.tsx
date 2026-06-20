@@ -60,7 +60,7 @@ import {
   subscribeToPush,
 } from "./push";
 import { unsealOwner } from "./crypto/sealing";
-import { usePrice, btcAndUsd } from "./fiat";
+import { usePrice, btcAndUsd, satsToUsd, formatUsd } from "./fiat";
 import type { Route } from "./App";
 
 interface Props {
@@ -962,9 +962,17 @@ function SendCard({
   const [unlockPct, setUnlockPct] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<OwnerSendResponse | null>(null);
+  const usdPerBtc = usePrice();
 
   const busy = phase !== "idle";
   const amountSat = sendAll ? null : Number.parseInt(amountStr, 10);
+  const amountUsd =
+    !sendAll &&
+    Number.isFinite(amountSat) &&
+    (amountSat as number) > 0 &&
+    usdPerBtc != null
+      ? formatUsd(satsToUsd(amountSat as number, usdPerBtc))
+      : null;
   const addrShapeOk = looksLikeBitcoinAddress(destination);
   const addrNetworkOk = addressMatchesNetwork(destination, network);
   const addrOk = addrShapeOk && addrNetworkOk;
@@ -1147,6 +1155,9 @@ function SendCard({
               Send everything
             </label>
           </div>
+          {amountUsd ? (
+            <p className="-mt-1 text-xs text-dim">≈ {amountUsd}</p>
+          ) : null}
           <label className="block">
             <span className="text-xs text-muted">Your password</span>
             <input
@@ -1169,7 +1180,7 @@ function SendCard({
                 amountLabel={
                   sendAll
                     ? "Everything in your vault"
-                    : formatSats(amountSat as number)
+                    : `${formatSats(amountSat as number)}${amountUsd ? ` (≈ ${amountUsd})` : ""}`
                 }
                 networkLabel={network === "bitcoin" ? "Bitcoin" : `${network} network`}
                 busy={busy}
