@@ -27,6 +27,7 @@ mod demo;
 mod lightning;
 mod lnurl;
 mod notifier;
+mod price;
 mod psbt_routes;
 mod push;
 mod rate_limit;
