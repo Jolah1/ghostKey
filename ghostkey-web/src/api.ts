@@ -138,6 +138,54 @@ export interface CreateVaultFromXpubRequest {
   heir_note?: string | null;
 }
 
+/**
+ * One guardian's xpub + browser-sealed key material for a guardian
+ * vault (#81). Mirrors `routes.rs::GuardianParty`. The guardian key is
+ * generated and sealed in the owner's browser under this guardian's
+ * own claim token, exactly like the heir key; the server stores only
+ * ciphertext and the token hash.
+ */
+export interface GuardianParty {
+  xpub: string;
+  fingerprint?: string | null;
+  xprv_ct_b64: string;
+  xprv_nonce_b64: string;
+  claim_token_b64: string;
+  contact?: string | null;
+  contact_channel?: "sms" | "email" | "whatsapp" | null;
+}
+
+/**
+ * Guardian-vault setup request (#81): an heir who needs a guardian's
+ * help to claim. The spend branch is `heir AND (g1 OR g2)`, so the
+ * child alone can't move the funds and one missing guardian doesn't
+ * strand them. Always browser-keygen (no Door B): the heir key is
+ * sealed in `sealed`, each guardian key in its `GuardianParty`.
+ *
+ * Mirrors `crates/ghostkey-server/src/routes.rs::CreateGuardianVaultRequest`.
+ */
+export interface CreateVaultGuardianRequest {
+  label: string | null;
+  network: string;
+  owner: PartyXpub;
+  heir: PartyXpub;
+  guardian1: GuardianParty;
+  guardian2: GuardianParty;
+  timelock_blocks: number;
+  checkin_period_secs: number;
+  grace_period_secs: number;
+  owner_contact?: string | null;
+  owner_contact_channel?: "sms" | "email" | "whatsapp" | null;
+  heir_contact?: string | null;
+  heir_contact_channel?: "sms" | "email" | "whatsapp" | null;
+  /** Required: a guardian vault always seals the owner + heir keys in
+   *  the browser. Unlike `CreateVaultFromXpubRequest`, this is not
+   *  optional. */
+  sealed: SealedSetup;
+  from_name?: string | null;
+  heir_note?: string | null;
+}
+
 /** Snake-cased to match the Rust struct exactly; the server is the
  *  source of truth for this shape. See sealing.ts for how each blob
  *  is produced in the browser. */
@@ -546,6 +594,13 @@ export const api = {
     }),
   createVaultFromXpub: (req: CreateVaultFromXpubRequest) =>
     request<CreatedVault>("/vaults/from-xpub", {
+      method: "POST",
+      body: JSON.stringify(req),
+    }),
+  /** Guardian vault (#81): heir + two guardians, spend branch
+   *  `heir AND (g1 OR g2)`. See `CreateVaultGuardianRequest`. */
+  createVaultGuardian: (req: CreateVaultGuardianRequest) =>
+    request<CreatedVault>("/vaults/guardian", {
       method: "POST",
       body: JSON.stringify(req),
     }),
