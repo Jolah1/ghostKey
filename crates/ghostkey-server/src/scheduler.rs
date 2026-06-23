@@ -625,7 +625,7 @@ async fn enqueue_pre_deadline_reminder(
              Tap this link to check in. One tap. Nothing else.\n\n\
              {one_tap_url}\n\n\
              If you can't tap from this email, open the dashboard on any \
-             device and tap \"I'm still here\":\n\n\
+             device and check in:\n\n\
              {base}/#/checkin\n\n\
              If we don't hear from you by the deadline, you'll get one more \
              email, and then your heir will be contacted after the \
@@ -855,8 +855,8 @@ async fn enqueue_alarm_owner(
              {display_label} just missed its check-in deadline. This is the \
              last reminder before the next step.\n\n\
              {one_tap_block}\
-             You can also open the dashboard on any device and tap \
-             \"I'm still here\" to reset the clock:\n\n\
+             You can also open the dashboard on any device and check in \
+             to reset the clock:\n\n\
              {base}/#/checkin\n\n\
              If we don't hear from you by {claim_friendly}, your heir will \
              receive their claim link automatically. You can stop that at \
