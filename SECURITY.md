@@ -10,12 +10,10 @@ users can update.
 
 To report a vulnerability, use GitHub's **private vulnerability
 reporting** — the "Report a vulnerability" button under this
-repository's **Security** tab. It opens a private channel with the
-maintainers; nothing is public until a fix ships.
-
-If you can't use that, email:
-
-> **security@ghostkeyapp.com**
+repository's **Security** tab
+([github.com/Jolah1/ghostKey/security](https://github.com/Jolah1/ghostKey/security)).
+It opens a private channel with the maintainers; nothing is public until
+a fix ships, and you don't need anyone's email.
 
 Include:
 

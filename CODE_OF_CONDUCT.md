@@ -59,10 +59,10 @@ event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement at
-**conduct@ghostkeyapp.com**, or through GitHub's private reporting on this
-repository. All complaints will be reviewed and investigated promptly and
-fairly.
+reported privately to the maintainers through GitHub's private reporting
+on this repository (the **Security** tab → "Report a vulnerability",
+which reaches the maintainers privately). All complaints will be reviewed
+and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the
 reporter of any incident.
