@@ -320,6 +320,37 @@ but the server can no longer email the heir when the alarm fires. Treat
 it the way you'd treat your database backup key — back it up to a
 second location.
 
+**Loading the key from a KMS instead of an env var (recommended for
+production).** The plaintext key in `GHOSTKEY_MASTER_KEY` sits in the
+process environment, readable by anything that can read the env. To keep
+it out of the environment, the server resolves the key at boot from the
+first of these that is set, fail-closed (if a higher-priority source is
+set but fails, the server refuses to boot rather than fall through):
+
+1. `GHOSTKEY_MASTER_KEY_CMD` — a shell command whose stdout is the key.
+   This is the KMS / secrets-manager hook. Examples:
+   ```bash
+   # AWS KMS: decrypt a wrapped key blob baked into the image/secret
+   GHOSTKEY_MASTER_KEY_CMD="aws kms decrypt --ciphertext-blob fileb:///run/key.enc \
+     --query Plaintext --output text"
+   # HashiCorp Vault
+   GHOSTKEY_MASTER_KEY_CMD="vault kv get -field=master_key secret/ghostkey"
+   # 1Password
+   GHOSTKEY_MASTER_KEY_CMD="op read op://vault/ghostkey/master_key"
+   ```
+   The command runs once at boot; its stdout is parsed as the 32-byte
+   base64 key. Errors carry the exit status and stderr, never stdout, so
+   the key can't leak into logs.
+2. `GHOSTKEY_MASTER_KEY_FILE` — a path whose contents are the key (a
+   mounted secret, or a KMS sidecar's decrypted output).
+3. `GHOSTKEY_MASTER_KEY` — the key directly in the env (simplest; fine
+   for dev and current deploys, weakest for production).
+
+The key still lives in process memory while the server runs (it has to,
+to do the AEAD); these sources keep it out of the *environment* and let a
+real KMS own decryption, audit logging, and rotation. See
+[#184](https://github.com/Jolah1/ghostKey/issues/184).
+
 **About `GHOSTKEY_ALLOWED_ORIGINS`:** add new origins as a
 comma-separated list (`fly secrets set GHOSTKEY_ALLOWED_ORIGINS="a,b,c"`).
 The list is exact-match; subdomain wildcards are not supported. If you

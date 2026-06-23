@@ -2,8 +2,12 @@
 //!
 //! ## Encryption model
 //!
-//! There is a single server-wide **master key** (32 bytes, base64 in the
-//! `GHOSTKEY_MASTER_KEY` env var). For each vault we derive a distinct
+//! There is a single server-wide **master key** (32 bytes, base64).
+//! It is resolved at boot from the first configured source: a command
+//! (`GHOSTKEY_MASTER_KEY_CMD`, for decrypting it from a KMS / fetching
+//! from a secrets manager), a file (`GHOSTKEY_MASTER_KEY_FILE`), or
+//! directly in the env (`GHOSTKEY_MASTER_KEY`). For each vault we derive a
+//! distinct
 //! per-vault key via HKDF-SHA256, using the vault id as the salt and a
 //! fixed context string as the info. This means:
 //!
@@ -56,10 +60,19 @@ const CONTACT_KEY_INFO: &[u8] = b"ghostkey:contact:v1";
 
 #[derive(Debug, thiserror::Error)]
 pub enum CryptoError {
-    #[error("server master key missing: set GHOSTKEY_MASTER_KEY (32 bytes, base64)")]
+    #[error(
+        "server master key missing: set GHOSTKEY_MASTER_KEY (32 bytes, base64), \
+         or GHOSTKEY_MASTER_KEY_FILE / GHOSTKEY_MASTER_KEY_CMD to load it from a \
+         file or KMS at boot"
+    )]
     MasterKeyMissing,
     #[error("server master key malformed: {0}")]
     MasterKeyMalformed(String),
+    /// The configured key source (file or command) could not be read or
+    /// run. Distinct from `MasterKeyMalformed`: the source failed, not the
+    /// contents. The message never contains key material.
+    #[error("server master key source failed: {0}")]
+    MasterKeyUnavailable(String),
     #[error("encryption failed: {0}")]
     Encrypt(String),
     #[error("decryption failed (wrong key or tampered ciphertext)")]
@@ -70,21 +83,75 @@ pub enum CryptoError {
 
 /// Lazily-loaded process-wide master key.
 ///
-/// We resolve from env once and keep the result so individual requests
-/// don't pay env-lookup cost. Tests can override by setting the env var
-/// before any handler runs.
+/// We resolve from the configured source once and keep the result so
+/// individual requests don't pay the lookup cost. Tests can override by
+/// setting `GHOSTKEY_MASTER_KEY` before any handler runs.
 static MASTER_KEY: OnceLock<Result<[u8; 32], CryptoError>> = OnceLock::new();
 
 fn master_key() -> Result<&'static [u8; 32], CryptoError> {
-    let entry = MASTER_KEY.get_or_init(load_master_key_from_env);
+    let entry = MASTER_KEY.get_or_init(load_master_key);
     match entry {
         Ok(k) => Ok(k),
         Err(e) => Err(clone_err(e)),
     }
 }
 
-fn load_master_key_from_env() -> Result<[u8; 32], CryptoError> {
+/// Resolve the master key from the first configured source, in priority
+/// order, fail-closed: if a higher-priority source is configured but
+/// fails, we error rather than silently fall through to a different key.
+///
+///   1. `GHOSTKEY_MASTER_KEY_CMD` — a shell command whose stdout is the
+///      key. This is the KMS/secrets-manager hook: point it at
+///      `aws kms decrypt ...`, a Vault read, `op read ...`, etc., so the
+///      plaintext key is fetched/decrypted at boot and never has to live
+///      in the process environment.
+///   2. `GHOSTKEY_MASTER_KEY_FILE` — a path whose contents are the key
+///      (e.g. a mounted secret or a KMS sidecar's output file).
+///   3. `GHOSTKEY_MASTER_KEY` — the key directly in the environment
+///      (simplest; fine for dev, weakest for prod).
+fn load_master_key() -> Result<[u8; 32], CryptoError> {
+    if let Some(cmd) = non_empty_env("GHOSTKEY_MASTER_KEY_CMD") {
+        return load_master_key_from_cmd(&cmd);
+    }
+    if let Some(path) = non_empty_env("GHOSTKEY_MASTER_KEY_FILE") {
+        let raw = std::fs::read_to_string(&path).map_err(|e| {
+            // Never include the file contents; the path is safe to show.
+            CryptoError::MasterKeyUnavailable(format!("reading {path}: {e}"))
+        })?;
+        return parse_master_key(&raw);
+    }
     let raw = std::env::var("GHOSTKEY_MASTER_KEY").map_err(|_| CryptoError::MasterKeyMissing)?;
+    parse_master_key(&raw)
+}
+
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Run the configured command via `sh -c` and parse its stdout as the
+/// master key. Used to decrypt the key from a KMS / fetch it from a
+/// secrets manager at boot. Errors carry the exit status and stderr but
+/// never stdout, so key material can't leak into logs.
+fn load_master_key_from_cmd(cmd: &str) -> Result<[u8; 32], CryptoError> {
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .output()
+        .map_err(|e| CryptoError::MasterKeyUnavailable(format!("spawning key command: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(CryptoError::MasterKeyUnavailable(format!(
+            "key command exited with {}: {}",
+            output.status,
+            stderr.trim()
+        )));
+    }
+    let raw = String::from_utf8(output.stdout).map_err(|_| {
+        CryptoError::MasterKeyUnavailable("key command output was not UTF-8".into())
+    })?;
     parse_master_key(&raw)
 }
 
@@ -113,6 +180,7 @@ fn clone_err(e: &CryptoError) -> CryptoError {
     match e {
         CryptoError::MasterKeyMissing => CryptoError::MasterKeyMissing,
         CryptoError::MasterKeyMalformed(s) => CryptoError::MasterKeyMalformed(s.clone()),
+        CryptoError::MasterKeyUnavailable(s) => CryptoError::MasterKeyUnavailable(s.clone()),
         CryptoError::Encrypt(s) => CryptoError::Encrypt(s.clone()),
         CryptoError::Decrypt => CryptoError::Decrypt,
         CryptoError::Malformed(s) => CryptoError::Malformed(s.clone()),
@@ -501,6 +569,29 @@ mod tests {
             parse_master_key("too-short"),
             Err(CryptoError::MasterKeyMalformed(_))
         ));
+    }
+
+    #[test]
+    fn master_key_from_cmd_runs_and_parses_stdout() {
+        // The KMS hook: a command whose stdout is the key. `printf` keeps
+        // it to the exact bytes (no trailing newline to worry about).
+        let key = [9u8; 32];
+        let b64 = B64.encode(key);
+        let got = load_master_key_from_cmd(&format!("printf %s {b64}")).expect("cmd key");
+        assert_eq!(got, key);
+    }
+
+    #[test]
+    fn master_key_from_cmd_fails_closed_on_nonzero_exit() {
+        let err = load_master_key_from_cmd("exit 3").expect_err("nonzero exit must fail");
+        assert!(matches!(err, CryptoError::MasterKeyUnavailable(_)));
+    }
+
+    #[test]
+    fn master_key_from_cmd_rejects_malformed_output() {
+        let err =
+            load_master_key_from_cmd("printf not-a-valid-key").expect_err("bad output must fail");
+        assert!(matches!(err, CryptoError::MasterKeyMalformed(_)));
     }
 
     #[test]
