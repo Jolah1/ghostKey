@@ -31,8 +31,8 @@ We'll acknowledge receipt within 72 hours. From there, expect:
    public, you can publish your write-up, we'll credit you in the
    release notes (unless you prefer to stay anonymous).
 
-If you don't get a response within seven days, please follow up — the
-email may have been filtered.
+If you don't get a response within seven days, please follow up on the
+report; it may have been missed.
 
 ## Scope
 
