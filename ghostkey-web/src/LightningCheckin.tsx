@@ -33,6 +33,10 @@ import { ApiError, api, type LightningInvoiceView } from "./api";
 interface Props {
   vaultId: string;
   ownerToken: string | null;
+  /** When set, the invoice is minted and polled using a one-tap check-in
+   *  link token instead of `ownerToken`, so this same modal works on the
+   *  email-link page for someone who isn't signed in. */
+  linkToken?: string;
   /** Called when the invoice is confirmed paid. The parent typically
    *  refreshes the vault state so the dashboard reflects the new
    *  deadline + cleared alarm. */
@@ -61,6 +65,7 @@ const POLL_INTERVAL_MS = 3_000;
 export function LightningCheckin({
   vaultId,
   ownerToken,
+  linkToken,
   onPaid,
   onClose,
   onFreeCheckin,
@@ -81,7 +86,9 @@ export function LightningCheckin({
     let alive = true;
     (async () => {
       try {
-        const inv = await api.lightningCreateInvoice(vaultId, ownerToken);
+        const inv = linkToken
+          ? await api.lightningCreateInvoiceFromLink(vaultId, linkToken)
+          : await api.lightningCreateInvoice(vaultId, ownerToken);
         if (!alive) return;
         setState({ kind: "ready", invoice: inv, paying: false });
       } catch (e) {
@@ -101,7 +108,7 @@ export function LightningCheckin({
       alive = false;
       cancelled.current = true;
     };
-  }, [vaultId, ownerToken]);
+  }, [vaultId, ownerToken, linkToken]);
 
   // Polling loop. Triggered once the invoice is ready and continues
   // until paid / expired / timed out / cancelled.
@@ -121,7 +128,9 @@ export function LightningCheckin({
       }
 
       try {
-        const s = await api.lightningInvoiceStatus(vaultId, hash, ownerToken);
+        const s = linkToken
+          ? await api.lightningInvoiceStatusFromLink(vaultId, linkToken, hash)
+          : await api.lightningInvoiceStatus(vaultId, hash, ownerToken);
         if (cancelledLocal || cancelled.current) return;
         if (s.status === "paid") {
           clearInterval(timer);
@@ -150,7 +159,7 @@ export function LightningCheckin({
       cancelledLocal = true;
       clearInterval(timer);
     };
-  }, [state.kind, vaultId, ownerToken, onPaid, state]);
+  }, [state.kind, vaultId, ownerToken, linkToken, onPaid, state]);
 
   const copy = useCallback((s: string) => {
     void navigator.clipboard.writeText(s).then(() => {

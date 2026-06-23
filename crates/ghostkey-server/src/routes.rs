@@ -2611,9 +2611,11 @@ async fn checkin_from_link(
         i64,            // checkin_period_secs
         i64,            // grace_period_secs
         Option<String>, // last_checkin_at
+        Option<String>, // claim_eligible_at
     )> = sqlx::query_as(
         r#"SELECT checkin_link_token_hash, checkin_link_token_used_at,
-                  checkin_period_secs, grace_period_secs, last_checkin_at
+                  checkin_period_secs, grace_period_secs, last_checkin_at,
+                  claim_eligible_at
              FROM vaults
             WHERE id = ?
               AND checkin_link_token_hash = ?"#,
@@ -2623,7 +2625,7 @@ async fn checkin_from_link(
     .fetch_optional(&state.db)
     .await?;
 
-    let (stored_hash, used_at, checkin_secs, grace_secs, last_checkin_at) =
+    let (stored_hash, used_at, checkin_secs, grace_secs, last_checkin_at, claim_eligible_at) =
         row.ok_or(ApiError::NotFound)?;
     let stored_hash = stored_hash.ok_or(ApiError::NotFound)?;
     if !crypto::claim_token_matches(&token, &stored_hash) {
@@ -2634,6 +2636,26 @@ async fn checkin_from_link(
         // tapped this link. Don't silently re-check-in; tell the caller
         // so they can show "already used" rather than "success".
         return Err(ApiError::Conflict("check-in link already used".into()));
+    }
+
+    // Free check-in via the link is a last resort: only allowed inside the
+    // final 24h before the heir would be contacted (claim_eligible_at).
+    // Outside that window Lightning is the only way to check in, so the
+    // free path is refused (the Lightning-from-link route has no gate).
+    // The matching UI only surfaces the free option after a Lightning
+    // payment has actually failed, so both halves of the rule hold.
+    let last_resort_window = Duration::seconds(24 * 60 * 60);
+    let in_last_resort_window = claim_eligible_at
+        .as_deref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|eligible| eligible.with_timezone(&Utc) - Utc::now() <= last_resort_window)
+        .unwrap_or(false);
+    if !in_last_resort_window {
+        return Err(ApiError::Conflict(
+            "free check-in is only available in the final 24 hours; \
+             check in with Lightning instead"
+                .into(),
+        ));
     }
     // Once-per-period guard mirrors the button check-in path.
     if let Some(last_s) = last_checkin_at.as_deref() {
