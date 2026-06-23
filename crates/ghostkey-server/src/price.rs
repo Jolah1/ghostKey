@@ -19,9 +19,40 @@ use axum::Json;
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-const SOURCE: &str = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd";
+/// Price sources, tried in order until one returns a sane value. Several
+/// upstreams (CoinGecko in particular) block or rate-limit datacenter IPs,
+/// so a single source is not reliable from a host like Fly. Coinbase and
+/// mempool.space answer datacenter requests without a key; CoinGecko stays
+/// last as a fallback. Each entry is (url, parser).
+const SOURCES: &[(&str, fn(&serde_json::Value) -> Option<f64>)] = &[
+    (
+        "https://api.coinbase.com/v2/prices/BTC-USD/spot",
+        parse_coinbase,
+    ),
+    ("https://mempool.space/api/v1/prices", parse_mempool),
+    (
+        "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
+        parse_coingecko,
+    ),
+];
 const TTL: Duration = Duration::from_secs(300);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Coinbase: `{"data":{"amount":"62000.00","base":"BTC","currency":"USD"}}`
+/// (amount is a string).
+fn parse_coinbase(v: &serde_json::Value) -> Option<f64> {
+    v.get("data")?.get("amount")?.as_str()?.parse().ok()
+}
+
+/// mempool.space: `{"time":..,"USD":62000,"EUR":..,..}`.
+fn parse_mempool(v: &serde_json::Value) -> Option<f64> {
+    v.get("USD")?.as_f64()
+}
+
+/// CoinGecko: `{"bitcoin":{"usd":62326}}`.
+fn parse_coingecko(v: &serde_json::Value) -> Option<f64> {
+    v.get("bitcoin")?.get("usd")?.as_f64()
+}
 
 struct Cached {
     usd_per_btc: f64,
@@ -96,10 +127,28 @@ pub async fn get_price() -> Result<Json<PriceView>, (StatusCode, String)> {
 async fn fetch() -> Result<f64, String> {
     let client = reqwest::Client::builder()
         .timeout(FETCH_TIMEOUT)
+        // Some upstreams reject requests without a browser-ish UA.
+        .user_agent("ghostkey/0.1 (+https://www.ghostkeyapp.com)")
         .build()
         .map_err(|e| format!("http client: {e}"))?;
+
+    let mut errors = Vec::new();
+    for (url, parse) in SOURCES {
+        match fetch_one(&client, url, *parse).await {
+            Ok(usd) => return Ok(usd),
+            Err(e) => errors.push(format!("{url}: {e}")),
+        }
+    }
+    Err(format!("all price sources failed [{}]", errors.join("; ")))
+}
+
+async fn fetch_one(
+    client: &reqwest::Client,
+    url: &str,
+    parse: fn(&serde_json::Value) -> Option<f64>,
+) -> Result<f64, String> {
     let resp = client
-        .get(SOURCE)
+        .get(url)
         .header("accept", "application/json")
         .send()
         .await
@@ -108,11 +157,7 @@ async fn fetch() -> Result<f64, String> {
         return Err(format!("upstream HTTP {}", resp.status()));
     }
     let v: serde_json::Value = resp.json().await.map_err(|e| format!("decode: {e}"))?;
-    let usd = v
-        .get("bitcoin")
-        .and_then(|b| b.get("usd"))
-        .and_then(|u| u.as_f64())
-        .ok_or_else(|| "unexpected price response shape".to_string())?;
+    let usd = parse(&v).ok_or_else(|| "unexpected price response shape".to_string())?;
     if !usd.is_finite() || usd <= 0.0 {
         return Err(format!("nonsensical price {usd}"));
     }
