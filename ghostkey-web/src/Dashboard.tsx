@@ -1248,8 +1248,8 @@ function Greeting({
     headline = "Check-in overdue";
     const missedAgo = deadline ? humanAgo(deadline, now) : null;
     sub = missedAgo
-      ? `Your check-in was due ${missedAgo}. Tap "I'm still here" to reset the clock, or your heir will be contacted.`
-      : `Tap "I'm still here" to reset the clock before your heir is contacted.`;
+      ? `Your check-in was due ${missedAgo}. Check in to reset the clock, or your heir will be contacted.`
+      : `Check in to reset the clock before your heir is contacted.`;
   } else {
     headline = "You're still here";
     const next = deadline ? countdown(deadline, now).friendly : null;
@@ -1945,7 +1945,7 @@ function HeirGroupList({
         );
       })}
       <p className="mt-1.5 text-xs text-dim">
-        One tap on "I'm still here" checks in for all {groupVaults.length}{" "}
+        One check-in covers all {groupVaults.length}{" "}
         heirs at once.
       </p>
     </div>
@@ -2072,8 +2072,8 @@ function AlarmBanner({ vault, now }: { vault: VaultView; now: Date }) {
       </p>
       <p className="mt-1 text-xs text-red-200/80">
         {daysLeft != null
-          ? `${daysLeft} day${daysLeft === 1 ? "" : "s"} left before your heir is notified. Tap "I'm still here" to reset the clock.`
-          : "Tap \"I'm still here\" to reset the clock."}
+          ? `${daysLeft} day${daysLeft === 1 ? "" : "s"} left before your heir is notified. Check in to reset the clock.`
+          : "Check in to reset the clock."}
       </p>
     </section>
   );
