@@ -128,15 +128,27 @@ This is the most important section in the document. If you read one thing and re
 ### The server CANNOT
 
 - See the owner's seed phrase. Ever.
-- See the heir's seed phrase. Ever.
-- Sign a Bitcoin transaction
-- Move coins on its own — even if every operator turned malicious simultaneously, the on-chain script requires a valid signature from the owner or heir
-- Reset the on-chain timelock — Bitcoin blocks cannot be rewound from off-chain
+- See the heir's seed phrase, in the default password-vault and CLI flows. (One exception: the optional F2 "heir has no wallet" flow derives the heir's key from the master key, so an operator holding the master key can reconstruct it. See "What about F2 vaults?" below.)
+- Sign a Bitcoin transaction in the steady state
+- Move coins on its own while a vault is checking in. The on-chain timelock blocks every spend path, and outside the F2 exception the script also requires a signature from a key the server never holds.
+- Reset the on-chain timelock. Bitcoin blocks cannot be rewound from off-chain.
 - Decrypt heir contact details if the master key environment variable is absent
+
+**What about F2 vaults?** The "heir has no Bitcoin wallet" option trades some of this away for convenience. The heir's key is derived from `(master_key, heir_email, vault_id)`, so an operator who holds the master key can reconstruct the heir's key and, once the timelock has matured, sign with it. Two things still hold: the owner's key is never reconstructable, and the timelock blocks any movement while the owner is checking in. This is an eyes-open tradeoff, written up as accepted risk R1 in the threat model. The default password-vault flow does not have this property.
 
 ### Why this boundary matters
 
 This is not a promise — it is a structural property of the software. The server binary has no code path that touches a private key. Anything that touches keys lives in `ghostkey-core` (descriptors) or `ghostkey-cli` (signing) or the heir's own wallet (the actual signature). If this boundary is ever blurred in a pull request, it should be treated as a security defect.
+
+### Guardian vaults (underage heirs)
+
+A normal vault leaves everything to one heir. That assumes the heir can safely hold a key. For a young child that is not true, so GhostKey has a second vault shape built for it.
+
+The spending policy becomes `heir AND (g1 OR g2) AND older(N)`: a claim needs the child-heir's key plus exactly one of two guardian keys, and only after the relative timelock. No single guardian can ever act alone, and losing one guardian key does not strand the heir, because either guardian can stand in. The owner can still move the funds at any time while alive.
+
+An optional unlock-year adds an absolute timelock, `after(H)`, so the funds cannot move before a chosen block height no matter what the guardians do. This is how an owner says "not before my child turns 18" in a way the Bitcoin network enforces rather than a person.
+
+The honest limit: the guardian quorum raises the bar from one key to two cooperating people, but it cannot stop a guardian who already holds the child's key from claiming once the timelock matures. Picking two guardians who do not trust each other is the load-bearing decision, the same way master-key custody is for F2. The full write-up is accepted risk R10 in the threat model.
 
 ---
 
