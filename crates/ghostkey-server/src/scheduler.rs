@@ -15,7 +15,7 @@
 //! in via the CLI's chain sync today, and will live in this crate behind
 //! a `chain-sync` feature.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -55,14 +55,103 @@ async fn record_heartbeat(db: &sqlx::SqlitePool) {
     }
 }
 
+/// Cap on the recovery grace granted after a Lightning outage ends. A long
+/// outage shouldn't postpone every heir forever; 24h is enough for an owner
+/// to notice Lightning is back and check in.
+const MAX_RECOVERY_GRACE_SECS: i64 = 24 * 60 * 60;
+
+/// Process-level tracker for Lightning availability. Lets the scheduler
+/// pause the heir-contact transitions during our own Lightning outage (an
+/// owner who can't pay a check-in must never be treated as gone) and grant
+/// a short grace once Lightning recovers. In-memory only: a restart loses
+/// the recovery grace but never the core "don't contact during an outage"
+/// guarantee, which is recomputed from a live probe every tick.
+#[derive(Default)]
+struct LnGate {
+    unhealthy_since: Option<chrono::DateTime<Utc>>,
+    suppress_until: Option<chrono::DateTime<Utc>>,
+}
+
+fn ln_gate() -> &'static Mutex<LnGate> {
+    static G: OnceLock<Mutex<LnGate>> = OnceLock::new();
+    G.get_or_init(|| Mutex::new(LnGate::default()))
+}
+
+/// Decide whether the heir-contact transitions should be paused this tick,
+/// updating the gate. Returns true to suppress. Time is injected so this is
+/// unit-testable without a real clock or Lightning provider.
+fn update_ln_gate(
+    gate: &mut LnGate,
+    ln_healthy: bool,
+    now: chrono::DateTime<Utc>,
+    max_grace: chrono::Duration,
+) -> bool {
+    if !ln_healthy {
+        if gate.unhealthy_since.is_none() {
+            gate.unhealthy_since = Some(now);
+        }
+        return true;
+    }
+    // Healthy. Coming out of an outage, grant a recovery grace equal to the
+    // outage length (capped) before any heir can be contacted.
+    if let Some(since) = gate.unhealthy_since.take() {
+        let outage = now - since;
+        let grace = if outage < max_grace {
+            outage
+        } else {
+            max_grace
+        };
+        gate.suppress_until = Some(now + grace);
+    }
+    match gate.suppress_until {
+        Some(until) if now < until => true,
+        _ => {
+            gate.suppress_until = None;
+            false
+        }
+    }
+}
+
 async fn tick_once(state: &AppState) -> anyhow::Result<()> {
     let now = Utc::now().to_rfc3339();
     unfreeze_expired_panics(state, &now).await?;
     issue_pre_deadline_reminders(state, &now).await?;
     transition_ok_to_alarmed(state, &now).await?;
     send_alarm_escalations(state, &now).await?;
-    transition_alarmed_to_claimable(state, &now).await?;
-    send_claim_ready_notices(state).await?;
+
+    // Fail-safe: if Lightning is the check-in but our provider is down, an
+    // owner can't prove liveness, so we must not advance any vault to
+    // claimable (which contacts the heir). Probe with a short timeout and
+    // treat a timeout or error as unhealthy. With no Lightning provider
+    // (NoopProvider) we're always "healthy" here, because the free
+    // check-in still works.
+    let ln_healthy = if state.lightning.is_enabled() {
+        matches!(
+            tokio::time::timeout(Duration::from_secs(5), state.lightning.probe()).await,
+            Ok(Ok(true))
+        )
+    } else {
+        true
+    };
+    let suppress_heir_contact = {
+        let mut gate = ln_gate().lock().expect("ln gate poisoned");
+        update_ln_gate(
+            &mut gate,
+            ln_healthy,
+            Utc::now(),
+            chrono::Duration::seconds(MAX_RECOVERY_GRACE_SECS),
+        )
+    };
+
+    if suppress_heir_contact {
+        tracing::warn!(
+            "lightning unavailable or recently recovered; pausing heir-contact \
+             transitions this tick"
+        );
+    } else {
+        transition_alarmed_to_claimable(state, &now).await?;
+        send_claim_ready_notices(state).await?;
+    }
     Ok(())
 }
 
@@ -1406,6 +1495,56 @@ mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
     use sqlx::SqlitePool;
+
+    #[test]
+    fn ln_gate_pauses_during_outage_and_grants_capped_recovery_grace() {
+        let mut gate = LnGate::default();
+        let t0 = Utc::now();
+        let cap = chrono::Duration::seconds(MAX_RECOVERY_GRACE_SECS);
+        let at = |secs: i64| t0 + chrono::Duration::seconds(secs);
+
+        // Healthy from the start: never suppress.
+        assert!(!update_ln_gate(&mut gate, true, at(0), cap));
+
+        // Outage: suppress immediately and keep suppressing.
+        assert!(update_ln_gate(&mut gate, false, at(10), cap));
+        assert!(update_ln_gate(&mut gate, false, at(70), cap));
+
+        // Recovers after a 60s outage (started at t+10): grace ~60s, so
+        // heir contact stays paused through the grace window.
+        assert!(update_ln_gate(&mut gate, true, at(70), cap));
+        assert!(update_ln_gate(&mut gate, true, at(100), cap));
+
+        // Past the grace: resume normal heir-contact transitions.
+        assert!(!update_ln_gate(&mut gate, true, at(200), cap));
+    }
+
+    #[test]
+    fn ln_gate_recovery_grace_is_capped() {
+        let mut gate = LnGate::default();
+        let t0 = Utc::now();
+        let cap = chrono::Duration::seconds(MAX_RECOVERY_GRACE_SECS);
+        let at = |secs: i64| t0 + chrono::Duration::seconds(secs);
+
+        // A very long outage (2 days), then recovery.
+        assert!(update_ln_gate(&mut gate, false, at(0), cap));
+        let recover = at(2 * 24 * 60 * 60);
+        assert!(update_ln_gate(&mut gate, true, recover, cap));
+        // Still paused 23h after recovery (within the 24h cap)...
+        assert!(update_ln_gate(
+            &mut gate,
+            true,
+            recover + chrono::Duration::seconds(23 * 60 * 60),
+            cap
+        ));
+        // ...but resumed 25h after recovery (cap is 24h, not 2 days).
+        assert!(!update_ln_gate(
+            &mut gate,
+            true,
+            recover + chrono::Duration::seconds(25 * 60 * 60),
+            cap
+        ));
+    }
 
     /// Bring up a fresh SQLite in memory with all migrations applied.
     async fn fresh_db() -> SqlitePool {
