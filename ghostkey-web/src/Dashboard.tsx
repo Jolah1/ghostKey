@@ -1245,11 +1245,11 @@ function Greeting({
     headline = "Your heir is claiming";
     sub = `${meta.heir.name || "Your heir"} has the claim link. The check-in loop is over for this vault.`;
   } else if (isPastDeadline) {
-    headline = "Deadline missed";
+    headline = "Check-in overdue";
     const missedAgo = deadline ? humanAgo(deadline, now) : null;
     sub = missedAgo
-      ? `Check-in was due ${missedAgo}. Tap below to recover, or your heir will be contacted.`
-      : "Tap below to recover before your heir is contacted.";
+      ? `Your check-in was due ${missedAgo}. Tap "I'm still here" to reset the clock, or your heir will be contacted.`
+      : `Tap "I'm still here" to reset the clock before your heir is contacted.`;
   } else {
     headline = "You're still here";
     const next = deadline ? countdown(deadline, now).friendly : null;
@@ -2072,8 +2072,8 @@ function AlarmBanner({ vault, now }: { vault: VaultView; now: Date }) {
       </p>
       <p className="mt-1 text-xs text-red-200/80">
         {daysLeft != null
-          ? `${daysLeft} day${daysLeft === 1 ? "" : "s"} left before your heir is notified. Tap "I'm still here" above to reset.`
-          : "Tap \"I'm still here\" above to reset the clock."}
+          ? `${daysLeft} day${daysLeft === 1 ? "" : "s"} left before your heir is notified. Tap "I'm still here" to reset the clock.`
+          : "Tap \"I'm still here\" to reset the clock."}
       </p>
     </section>
   );

@@ -32,7 +32,6 @@ import {
   clearSession,
   getActiveVaultId,
   sessionExpired,
-  SESSION_TIMEOUT_MS,
   touchSession,
 } from "./vaultStore";
 
@@ -424,14 +423,11 @@ function RouteLoading() {
  * itself on the next successful sign-in.
  */
 function SessionExpiredNotice({ onDismiss }: { onDismiss: () => void }) {
-  const minutes = Math.round(SESSION_TIMEOUT_MS / 60_000);
   return (
     <div role="status" className="border-b border-app bg-surface-2">
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-5 py-2 md:px-8">
         <p className="text-xs text-muted">
-          For your security, you were signed out after {minutes} minutes of
-          inactivity. Sign in with your email and password to open your
-          dashboard again.
+          You were signed out after a while away. Sign in to continue.
         </p>
         <button
           type="button"
