@@ -318,7 +318,30 @@ struct Health {
     /// will never fire an alarm, so the inheritance trigger silently
     /// stops working. This is the failure we most need to surface.
     scheduler_healthy: bool,
+
+    /// Monitoring: notifications that are due to send (status pending or
+    /// retrying, scheduled time reached) but haven't yet. A small,
+    /// transient number is normal; a number that only grows means the
+    /// notifier worker is stuck and reminders / alarm / claim emails are
+    /// not going out.
+    notifications_due: i64,
+    /// Age in seconds of the oldest due-but-unsent notification, null
+    /// when there are none. The clearest "notifier is stuck" signal.
+    notifications_oldest_due_secs: Option<i64>,
+    /// Notifications that exhausted their retries and will never send.
+    /// Non-zero warrants an operator look (bad address, dead SMTP creds).
+    notifications_failed: i64,
+    /// False when the oldest due notification has been waiting past the
+    /// stuck threshold (15 min). Alert on this alongside
+    /// `scheduler_healthy`: a stalled notifier silently stops contacting
+    /// owners and heirs.
+    notifier_healthy: bool,
 }
+
+/// A due notification older than this is treated as evidence the notifier
+/// worker is stuck (retries already push `scheduled_at` out, so a due row
+/// this old is not just normal backoff).
+const NOTIFIER_STUCK_SECS: i64 = 15 * 60;
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
     let assist_enabled = std::env::var("ANTHROPIC_API_KEY")
@@ -350,6 +373,29 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         .map(|s| (Utc::now() - crate::config::parse_rfc(s)).num_seconds());
     let scheduler_healthy = scheduler_age_secs.is_some_and(|a| a >= 0 && a <= stale_after);
 
+    // Notifier-queue health. A due notification is one that should have
+    // been sent by now (pending/retrying with its scheduled time reached).
+    // Best-effort: a query error must not fail the health probe.
+    let now_iso = Utc::now().to_rfc3339();
+    let (notifications_due, oldest_due_iso, notifications_failed): (i64, Option<String>, i64) =
+        sqlx::query_as(
+            r#"SELECT
+                 COALESCE(SUM(CASE WHEN status IN ('pending','failed_retrying')
+                                    AND scheduled_at <= ?1 THEN 1 ELSE 0 END), 0),
+                 MIN(CASE WHEN status IN ('pending','failed_retrying')
+                           AND scheduled_at <= ?1 THEN scheduled_at END),
+                 COALESCE(SUM(CASE WHEN status = 'failed_permanent' THEN 1 ELSE 0 END), 0)
+               FROM notifications"#,
+        )
+        .bind(&now_iso)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or((0, None, 0));
+    let notifications_oldest_due_secs = oldest_due_iso
+        .as_deref()
+        .map(|s| (Utc::now() - crate::config::parse_rfc(s)).num_seconds());
+    let notifier_healthy = notifications_oldest_due_secs.is_none_or(|a| a <= NOTIFIER_STUCK_SECS);
+
     Json(Health {
         ok: true,
         version: env!("CARGO_PKG_VERSION"),
@@ -361,6 +407,10 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         scheduler_last_tick_at,
         scheduler_age_secs,
         scheduler_healthy,
+        notifications_due,
+        notifications_oldest_due_secs,
+        notifications_failed,
+        notifier_healthy,
     })
 }
 
@@ -4389,6 +4439,51 @@ mod tests {
         assert!(
             matches!(&err, ApiError::Validation(m) if m.contains("lightning provider not configured"))
         );
+    }
+
+    #[tokio::test]
+    async fn health_reports_notifier_queue_health() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+
+        // Empty queue: healthy, nothing due or failed.
+        let h = health(State(state.clone())).await.0;
+        assert!(h.notifier_healthy);
+        assert_eq!(h.notifications_due, 0);
+        assert_eq!(h.notifications_failed, 0);
+        assert!(h.notifications_oldest_due_secs.is_none());
+
+        // A vault to satisfy the notifications foreign key.
+        sqlx::query(
+            r#"INSERT INTO vaults (id, network, descriptor_external, descriptor_internal,
+                 timelock_blocks, checkin_period_secs, grace_period_secs,
+                 created_at, next_deadline_at, status, claim_eligible_at)
+               VALUES ('v-health','regtest','tr(fake/0/*)','tr(fake/1/*)',144,86400,3600,
+                 '2026-01-01T00:00:00Z','2099-01-01T00:00:00Z','ok','2099-01-02T00:00:00Z')"#,
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        // A long-overdue pending notification: the notifier looks stuck.
+        let overdue = (Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+        sqlx::query(
+            r#"INSERT INTO notifications (vault_id, kind, channel, recipient_ciphertext,
+                 recipient_nonce, body_ciphertext, body_nonce, status, created_at, scheduled_at)
+               VALUES ('v-health','reminder','email','x','x','x','x','pending', ?1, ?1)"#,
+        )
+        .bind(&overdue)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let h = health(State(state.clone())).await.0;
+        assert_eq!(h.notifications_due, 1);
+        assert!(
+            !h.notifier_healthy,
+            "an hour-overdue notification is past the stuck threshold"
+        );
+        assert!(h.notifications_oldest_due_secs.unwrap() >= 3000);
     }
 
     /// The heir xprv is sealed under the claim token, so the two are

@@ -773,6 +773,33 @@ Most monitors support a JSON/keyword assertion for the second case. Set
 the alert to reach you on a channel you actually watch — a missed alarm
 is the one failure with no user-visible warning.
 
+`/health` also reports notifier-queue health, so you can catch the other
+silent failure: the scheduler decides to send, but the emails/SMS never
+go out.
+
+```json
+{
+  "notifications_due": 0,
+  "notifications_oldest_due_secs": null,
+  "notifications_failed": 0,
+  "notifier_healthy": true
+}
+```
+
+- `notifier_healthy` goes `false` when the oldest due-but-unsent
+  notification has been waiting more than 15 minutes — the notifier
+  worker is stuck (dead SMTP/Twilio creds, a crash loop in the drain).
+- `notifications_failed` counts messages that exhausted their retries;
+  a non-zero value warrants a look (bad recipient, expired creds).
+
+Alert on `notifier_healthy == false` alongside `scheduler_healthy`. Both
+are "up but not doing its job" failures that a port check misses.
+
+For the Lightning rail (when check-in runs over it), poll
+`GET /health/lightning` and alert if it reports unhealthy: while it's
+down the scheduler pauses heir contact (by design), but you want to know
+and fix it rather than leave owners unable to check in.
+
 ### Backups & disaster recovery (mandatory)
 
 The Fly volume is single-host. A corrupted block, an accidental
