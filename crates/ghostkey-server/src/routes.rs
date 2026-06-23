@@ -1719,8 +1719,8 @@ async fn send_contact_verification(
          This link works for 7 days. If it expires, open your dashboard \
          and resend.\n\n\
          If you didn't set up a GhostKey vault, you can ignore this \
-         email — nothing is linked to your address until you tap.\n\n\
-         — GhostKey"
+         email. Nothing is linked to your address until you tap.\n\n\
+         From GhostKey"
     );
     crate::notifier::enqueue(
         &state.db,
@@ -1857,15 +1857,15 @@ async fn notify_claim_opened(
         let body = format!(
             "Someone just opened the claim link for your vault.\n\n\
              If you stopped checking in on purpose, you don't need to do \
-             anything — the person you chose is collecting what you left \
+             anything. The person you chose is collecting what you left \
              them.\n\n\
              If you're reading this and you're fine, your vault thinks \
-             you're gone — or someone else got hold of the claim link. \
+             you're gone, or someone else got hold of the claim link. \
              One check-in stops the claim immediately:\n\n\
              {cancel_url}\n\n\
              Nothing can leave the vault before {until}. After checking \
              in, have a look at your dashboard.\n\n\
-             — GhostKey"
+             From GhostKey"
         );
         crate::notifier::enqueue(
             &state.db,
@@ -1873,7 +1873,7 @@ async fn notify_claim_opened(
             crate::notifier::NotificationKind::ClaimOpened,
             owner.channel,
             &owner.address,
-            "A claim on your vault has started — check in if you're fine",
+            "A claim on your vault has started. Check in if you're fine",
             &body,
         )
         .await?;
@@ -1894,10 +1894,10 @@ async fn notify_claim_opened(
              A claim on their account has just started. That usually \
              means they have passed away.\n\n\
              If you know they're alive and well, please tell them to \
-             check their email and sign in to GhostKey right away — \
-             nothing moves for at least {hours} hours, and one check-in \
+             check their email and sign in to GhostKey right away. \
+             Nothing moves for at least {hours} hours, and one check-in \
              from them stops the claim.\n\n\
-             — GhostKey"
+             From GhostKey"
         );
         crate::notifier::enqueue(
             &state.db,
@@ -1905,7 +1905,7 @@ async fn notify_claim_opened(
             crate::notifier::NotificationKind::ClaimOpened,
             trusted.channel,
             &trusted.address,
-            "You're someone's emergency contact — please check on them",
+            "You're someone's emergency contact. Please check on them",
             &body,
         )
         .await?;
@@ -2213,7 +2213,7 @@ async fn delete_vault(
     if claim_is_live(&status) {
         return Err(ApiError::Conflict(
             "this heir's claim is already underway and can no longer be \
-             removed. To stop it, check in — that cancels the claim while \
+             removed. To stop it, check in. That cancels the claim while \
              you're still within the waiting window."
                 .into(),
         ));
@@ -2458,7 +2458,7 @@ async fn resend_verification(
             let elapsed = Utc::now() - sent.with_timezone(&Utc);
             if elapsed.num_seconds() < VERIFY_RESEND_COOLDOWN_SECS {
                 return Err(ApiError::Conflict(
-                    "a confirmation email was just sent — give it a minute, then check spam".into(),
+                    "a confirmation email was just sent. Give it a minute, then check spam".into(),
                 ));
             }
         }
