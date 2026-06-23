@@ -211,6 +211,17 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/vaults/:id/lightning-checkin/status/:payment_hash",
             get(lightning_invoice_status),
         )
+        // One-tap-link Lightning check-in: same mint/poll flow as above
+        // but gated by the email link token instead of owner auth, so the
+        // owner can pay the check-in straight from a reminder email.
+        .route(
+            "/vaults/:id/checkin-link/:token/lightning-invoice",
+            post(lightning_create_invoice_from_link),
+        )
+        .route(
+            "/vaults/:id/checkin-link/:token/lightning-status/:payment_hash",
+            get(lightning_invoice_status_from_link),
+        )
         // Static LNURL-pay endpoints. No auth — the vault UUID is the
         // access control (1-sat invoices are cheap; a stolen UUID lets
         // a stranger help the owner stay alive, which is harmless).
@@ -3403,6 +3414,19 @@ async fn lightning_create_invoice(
     auth: OwnerAuth,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<LightningInvoiceView>, ApiError> {
+    Ok(Json(create_checkin_invoice(&state, &auth.vault_id).await?))
+}
+
+/// Mint a check-in invoice for a vault. Shared by the owner-authenticated
+/// route and the one-tap-link route below. Enforces "lightning enabled"
+/// and the once-per-period guard, writes the `lightning_invoices` row,
+/// records the event, and returns the view. The actual check-in happens
+/// when the invoice is paid (see `lightning::mark_paid_and_checkin` in the
+/// poller), not here.
+async fn create_checkin_invoice(
+    state: &Arc<AppState>,
+    vault_id: &str,
+) -> Result<LightningInvoiceView, ApiError> {
     if !state.lightning.is_enabled() {
         return Err(ApiError::Validation(
             "lightning provider not configured on this server".into(),
@@ -3415,7 +3439,7 @@ async fn lightning_create_invoice(
     // count.
     let cad: Option<(i64, Option<String>)> =
         sqlx::query_as("SELECT checkin_period_secs, last_checkin_at FROM vaults WHERE id = ?")
-            .bind(&auth.vault_id)
+            .bind(vault_id)
             .fetch_optional(&state.db)
             .await?;
     if let Some((period, Some(last_s))) = cad {
@@ -3430,7 +3454,7 @@ async fn lightning_create_invoice(
         }
     }
 
-    let description = format!("ghostkey:checkin:{}", auth.vault_id);
+    let description = format!("ghostkey:checkin:{vault_id}");
     let invoice = state
         .lightning
         .create_invoice(crate::lightning::heartbeat_amount_sat(), &description)
@@ -3448,7 +3472,7 @@ async fn lightning_create_invoice(
 
     let rec = crate::lightning::insert_invoice(
         &state.db,
-        &auth.vault_id,
+        vault_id,
         &invoice,
         crate::lightning::INVOICE_TYPE_CHECKIN,
     )
@@ -3456,7 +3480,7 @@ async fn lightning_create_invoice(
 
     record_event(
         &state.db,
-        &auth.vault_id,
+        vault_id,
         "lightning_invoice_issued",
         Some(serde_json::json!({
             "payment_hash": invoice.payment_hash,
@@ -3465,13 +3489,26 @@ async fn lightning_create_invoice(
     )
     .await?;
 
-    Ok(Json(LightningInvoiceView {
+    Ok(LightningInvoiceView {
         bolt11: rec.bolt11,
         payment_hash: rec.payment_hash,
         amount_sat: rec.amount_sat as u64,
         expires_at: rec.expires_at,
         status: rec.status,
-    }))
+    })
+}
+
+/// Owner-free variant of the Lightning check-in mint, gated by a one-tap
+/// check-in link token instead of the owner bearer. Lets the owner pay
+/// the check-in invoice straight from the link in a reminder email,
+/// without signing in. The token is verified but NOT consumed here: the
+/// check-in (and token clearing) happens when the invoice is paid.
+async fn lightning_create_invoice_from_link(
+    State(state): State<Arc<AppState>>,
+    Path((vault_id, token)): Path<(String, String)>,
+) -> Result<Json<LightningInvoiceView>, ApiError> {
+    verify_checkin_link_token(&state, &vault_id, &token).await?;
+    Ok(Json(create_checkin_invoice(&state, &vault_id).await?))
 }
 
 #[derive(Debug, Serialize)]
@@ -3490,24 +3527,79 @@ async fn lightning_invoice_status(
     // Two-param route so we can't use the OwnerAuth extractor (it
     // assumes a single :id path param). Inline the same check.
     inline_owner_auth(&state, &vault_id, &headers).await?;
+    Ok(Json(
+        read_invoice_status(&state, &vault_id, &payment_hash).await?,
+    ))
+}
 
-    let rec = crate::lightning::fetch_invoice_by_hash(&state.db, &payment_hash)
+/// Read an invoice's status for a vault. Shared by the owner-authenticated
+/// route and the one-tap-link route. Cross-vault lookups are flattened to
+/// NotFound so the relationship can't be probed.
+async fn read_invoice_status(
+    state: &Arc<AppState>,
+    vault_id: &str,
+    payment_hash: &str,
+) -> Result<LightningInvoiceStatusView, ApiError> {
+    let rec = crate::lightning::fetch_invoice_by_hash(&state.db, payment_hash)
         .await?
         .ok_or(ApiError::NotFound)?;
 
     if rec.vault_id != vault_id {
-        // Caller authenticated for vault A but is asking about an
-        // invoice that belongs to vault B. Treat as 404 to avoid
-        // leaking the cross-vault relationship.
         return Err(ApiError::NotFound);
     }
 
-    Ok(Json(LightningInvoiceStatusView {
+    Ok(LightningInvoiceStatusView {
         payment_hash: rec.payment_hash,
         status: rec.status,
         paid_at: rec.paid_at,
         expires_at: rec.expires_at,
-    }))
+    })
+}
+
+/// Poll an invoice's status using a one-tap link token instead of the
+/// owner bearer. Pairs with `lightning_create_invoice_from_link` so the
+/// email-link Lightning flow can wait for payment without signing in.
+async fn lightning_invoice_status_from_link(
+    State(state): State<Arc<AppState>>,
+    Path((vault_id, token, payment_hash)): Path<(String, String, String)>,
+) -> Result<Json<LightningInvoiceStatusView>, ApiError> {
+    verify_checkin_link_token(&state, &vault_id, &token).await?;
+    Ok(Json(
+        read_invoice_status(&state, &vault_id, &payment_hash).await?,
+    ))
+}
+
+/// Verify a one-tap check-in link token WITHOUT consuming it. Used by the
+/// Lightning-from-link routes, where the token only authorises minting and
+/// polling an invoice; the check-in (and token clearing) happens when the
+/// invoice is paid. Mirrors the validation in `checkin_from_link`:
+/// NotFound for an unknown or already-cleared token, Conflict for one that
+/// has been used.
+async fn verify_checkin_link_token(
+    state: &Arc<AppState>,
+    vault_id: &str,
+    token: &str,
+) -> Result<(), ApiError> {
+    let hash = hash_claim_token(token);
+    let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        r#"SELECT checkin_link_token_hash, checkin_link_token_used_at
+             FROM vaults
+            WHERE id = ?
+              AND checkin_link_token_hash = ?"#,
+    )
+    .bind(vault_id)
+    .bind(&hash)
+    .fetch_optional(&state.db)
+    .await?;
+    let (stored_hash, used_at) = row.ok_or(ApiError::NotFound)?;
+    let stored_hash = stored_hash.ok_or(ApiError::NotFound)?;
+    if !crypto::claim_token_matches(token, &stored_hash) {
+        return Err(ApiError::NotFound);
+    }
+    if used_at.is_some() {
+        return Err(ApiError::Conflict("check-in link already used".into()));
+    }
+    Ok(())
 }
 
 /// Inline equivalent of the `OwnerAuth` extractor for routes that
@@ -4232,6 +4324,49 @@ mod tests {
             "Door B must store no claim-token hash"
         );
         assert_eq!(derived, 0, "Door B is not a server-derived heir");
+    }
+
+    /// The one-tap-link Lightning route must verify the link token (a bad
+    /// token is NotFound, never reaching the provider) and then defer to
+    /// the Lightning provider (NoopProvider in tests reports "not
+    /// configured"). This proves the token gate without a real backend.
+    #[tokio::test]
+    async fn lightning_from_link_verifies_token_then_defers_to_provider() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let req = door_b_request(sealed_setup(&"e".repeat(64), None, None, None));
+        let (_, created) = create_vault_from_xpub(State(state.clone()), Json(req))
+            .await
+            .expect("Door B create should succeed");
+        let id = created.vault.id.clone();
+
+        // Attach a one-tap check-in link token to the vault.
+        let token = "a".repeat(64);
+        let hash = hash_claim_token(&token);
+        sqlx::query("UPDATE vaults SET checkin_link_token_hash = ? WHERE id = ?")
+            .bind(&hash)
+            .bind(&id)
+            .execute(&state.db)
+            .await
+            .expect("set link token");
+
+        // Wrong token: rejected as NotFound, never reaching the provider.
+        let err = lightning_create_invoice_from_link(
+            State(state.clone()),
+            Path((id.clone(), "b".repeat(64))),
+        )
+        .await
+        .expect_err("wrong token must be rejected");
+        assert!(matches!(err, ApiError::NotFound));
+
+        // Right token: passes the gate, then fails on the absent provider.
+        let err =
+            lightning_create_invoice_from_link(State(state.clone()), Path((id.clone(), token)))
+                .await
+                .expect_err("no provider in tests");
+        assert!(
+            matches!(&err, ApiError::Validation(m) if m.contains("lightning provider not configured"))
+        );
     }
 
     /// The heir xprv is sealed under the claim token, so the two are
