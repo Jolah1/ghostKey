@@ -264,9 +264,12 @@ export function PrivacyPage() {
         <>
           <p>
             We store your check-in schedule and the contact details you
-            give us, encrypted. We never see your password or hold keys
-            that can spend your bitcoin. No ads, no tracking cookies, no
-            selling data. Delete your vault and the data goes with it.
+            give us, encrypted. We never see your password, and we don't
+            hold your own spending key. One exception: on the easy heir
+            setup we hold your heir's key, locked, so we can deliver their
+            claim after the waiting period; the advanced setup removes even
+            that. No ads, no tracking cookies, no selling data. Delete your
+            vault and the data goes with it.
           </p>
         </>
       }
