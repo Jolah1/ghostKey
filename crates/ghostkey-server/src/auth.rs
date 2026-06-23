@@ -574,6 +574,10 @@ mod http_tests {
     /// when the scheduler enqueued the reminder; tests get to play
     /// the role of the owner clicking the email.
     async fn insert_vault_with_one_tap_token(pool: &SqlitePool, id: &str, token_hash: &str) {
+        // claim_eligible_at sits inside the final-24h window so the
+        // last-resort free check-in via the link is allowed (the free path
+        // is gated to that window in checkin_from_link).
+        let claim_eligible = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
         sqlx::query(
             r#"INSERT INTO vaults (
                 id, network,
@@ -586,12 +590,13 @@ mod http_tests {
             ) VALUES (?, 'regtest', ?, ?, 144, 86400, 3600,
                       '2026-01-01T00:00:00Z',
                       '2099-01-01T00:00:00Z', 'ok',
-                      '2099-01-02T00:00:00Z',
+                      ?,
                       ?, '2026-01-02T00:00:00Z')"#,
         )
         .bind(id)
         .bind(format!("tr(fake/{id}/0/*)"))
         .bind(format!("tr(fake/{id}/1/*)"))
+        .bind(&claim_eligible)
         .bind(token_hash)
         .execute(pool)
         .await
@@ -648,6 +653,56 @@ mod http_tests {
         assert!(link_hash.is_none(), "token hash must be scrubbed");
         assert!(link_used.is_none(), "token used_at must be scrubbed");
         assert_eq!(status, "ok");
+    }
+
+    #[tokio::test]
+    async fn one_tap_free_checkin_outside_last_resort_window_is_409() {
+        // The free link check-in is a last resort: only allowed inside the
+        // final 24h before the heir would be contacted. With
+        // claim_eligible_at far in the future it must be refused, and the
+        // token must survive so Lightning can still be used.
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_claim_token();
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status, claim_eligible_at,
+                checkin_link_token_hash, checkin_link_token_issued_at
+            ) VALUES ('vault-link-W', 'regtest', 'tr(fake/0/*)', 'tr(fake/1/*)',
+                      144, 86400, 3600, '2026-01-01T00:00:00Z',
+                      '2099-01-01T00:00:00Z', 'ok', '2099-01-02T00:00:00Z',
+                      ?, '2026-01-02T00:00:00Z')"#,
+        )
+        .bind(&issued.hash_hex)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let app = routes::router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/vaults/vault-link-W/checkin-from-link/{}",
+                        issued.token
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        // A refused attempt must not consume the token.
+        let hash: Option<String> = sqlx::query_scalar(
+            "SELECT checkin_link_token_hash FROM vaults WHERE id = 'vault-link-W'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(hash.as_deref(), Some(issued.hash_hex.as_str()));
     }
 
     #[tokio::test]

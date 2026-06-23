@@ -827,6 +827,23 @@ export const api = {
       {},
       ownerToken,
     ),
+  /** Same as lightningCreateInvoice, but authenticated by a one-tap
+   *  check-in link token instead of the owner bearer, so the owner can
+   *  pay the check-in straight from a reminder email without signing in.
+   *  Mirrors `lightning_create_invoice_from_link`. */
+  lightningCreateInvoiceFromLink: (id: string, token: string) =>
+    request<LightningInvoiceView>(
+      `/vaults/${id}/checkin-link/${encodeURIComponent(token)}/lightning-invoice`,
+      { method: "POST" },
+      null,
+    ),
+  /** Poll a link-minted invoice's status (token-gated, no owner auth). */
+  lightningInvoiceStatusFromLink: (id: string, token: string, paymentHash: string) =>
+    request<LightningInvoiceStatusView>(
+      `/vaults/${id}/checkin-link/${encodeURIComponent(token)}/lightning-status/${encodeURIComponent(paymentHash)}`,
+      {},
+      null,
+    ),
   listEvents: (id: string, ownerToken: string | null) =>
     request<VaultEvent[]>(`/vaults/${id}/events`, {}, ownerToken),
   resolveClaim: (token: string) =>
