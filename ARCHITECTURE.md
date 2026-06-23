@@ -176,11 +176,32 @@ Heir claim page (`/claim/:token`): five states — loading, not found, already u
 | Heir's key (timelock active) | Nothing useful | Spend — mempool rejects as non-BIP68-final |
 | Heir's key (timelock expired, owner gone) | Claim — as intended | — |
 | Owner's key | Spend or move funds — as the owner always could | — |
+| A colluding guardian (guardian vaults) | Co-sign a claim together with the child-heir's key once the timelock matures | Claim alone (the policy requires the heir's signature and only one of two guardians); act while the timelock is active or before the optional `after(H)` unlock height |
 | Network observer | See broadcasts after they're public | See script structure before first spend (Taproot hides it) |
 
 The guarantee everything else rests on:
 
 > The heir cannot move the UTXO sooner than N blocks after its last confirmation. The owner can move it any time.
+
+### Guardian vaults
+
+A guardian vault is a second descriptor shape for an heir too young to hold a key alone. The single-heir leaf `and_v(v:pk(HEIR),older(N))` is replaced by:
+
+```
+or_d(pk(OWNER),and_v(v:pk(HEIR),and_v(v:older(N),or_b(pk(G1),s:pk(G2)))))
+```
+
+A claim spend therefore needs the heir's signature plus exactly one of the two guardian signatures, after the relative timelock `older(N)`. No single guardian can spend, and either guardian can stand in for the other, so losing one guardian key does not strand the heir. The owner branch (`pk(OWNER)`) is unchanged, so the owner can still move funds at any time.
+
+An optional unlock-year wraps the guardian quorum in an absolute timelock:
+
+```
+or_d(pk(OWNER),and_v(v:pk(HEIR),and_v(v:older(N),and_v(v:after(H),or_b(pk(G1),s:pk(G2))))))
+```
+
+Here `after(H)` is a `nLockTime` block-height CLTV (validated below `MAX_CLTV_HEIGHT` = 500,000,000 so it is always read as a height, never a timestamp). The claim PSBT sets `nLockTime` to the current tip height. Both descriptors live in `crates/ghostkey-core/src/descriptor.rs` (`build_guardian_descriptor_string` / `build_guardian_descriptor_pair`); the two-signature claim path is in `crates/ghostkey-core/src/psbt.rs` (`build_guardian_claim`). The server creates these vaults via `POST /vaults/guardian` and, on trigger, the scheduler delivers three claim links: one to the heir and one to each guardian.
+
+The new trust surface is guardian collusion, covered in the threat model (asset A2, attacker Att-9, accepted risk R10).
 
 ### Server-side signing exception
 

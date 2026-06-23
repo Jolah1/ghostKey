@@ -70,6 +70,7 @@ What works today:
 - Full vault setup from xpub (legacy / CLI flow) **and** in-browser password setup (no seed phrase shown to the user; owner xprv sealed with Argon2id-derived KEK)
 - Cross-device sign-in: email + password unlocks any vault on any browser
 - Multi-heir vaults (N parallel single-heir vaults grouped client-side; the dashboard fans out one tap to all of them)
+- Guardian vaults for underage heirs: the claim policy is `heir AND (g1 OR g2) AND older(N)`, so it needs the child-heir plus one of two guardians and the timelock; no single guardian can act alone. An optional unlock-year (`after(H)` CLTV) holds the funds until a chosen block height. The owner can spend at any time. Verified end-to-end on signet.
 - Owner check-in via tap-button, one-tap email link, or Lightning (requires the optional Breez SDK Liquid sidecar; see DESIGN.md "Lightning check-ins")
 - Configurable check-in cadence (weekly / 2-weekly / monthly / quarterly) and grace period (3 days / 1 week / 2 weeks / 1 month)
 - Scheduler with pre-deadline reminders, daily alarm escalation, panic-stop freeze, and per-cycle one-tap tokens

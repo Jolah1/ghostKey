@@ -72,6 +72,18 @@ Same shape as A1, owned by the heir.
   → `derive_heir_seed`,
   [`ghostkey-web/src/crypto/heirKey.ts`](../ghostkey-web/src/crypto/heirKey.ts).
 
+In a **guardian vault** (for an underage heir) the policy is
+`heir AND (g1 OR g2) AND older(N)`, optionally gated by an absolute
+`after(H)` unlock height. The two guardians each hold their own key;
+GhostKey never holds it. A claim needs the heir's signature plus
+exactly one of the two guardian signatures, so no guardian can act
+alone and the loss of one guardian key does not strand the heir.
+Source:
+[`crates/ghostkey-core/src/descriptor.rs`](../crates/ghostkey-core/src/descriptor.rs)
+→ `build_guardian_descriptor_pair`,
+[`crates/ghostkey-core/src/psbt.rs`](../crates/ghostkey-core/src/psbt.rs)
+→ `build_guardian_claim`.
+
 ### A3. The server's master key (`GHOSTKEY_MASTER_KEY`)
 Process environment variable. Required at startup; the server
 refuses to boot without it
@@ -193,6 +205,13 @@ a misconfigured reverse proxy.
 The claim link is a bearer credential. An attacker who reads the
 heir's email or SMS history (e.g. an in-house messaging-platform
 admin) can replay it.
+
+### Att-9. A colluding guardian (guardian vaults)
+A guardian who keeps a copy of the underage heir's key, or who can
+coerce the heir, after the timelock matures. One guardian plus the
+heir's key is a valid claim by design, so this is a trust the owner
+places in the guardians they pick, not a flaw the script can remove.
+Bounded under [R10](#r10-guardian-collusion-is-bounded-not-eliminated).
 
 ---
 
@@ -437,6 +456,28 @@ Owners signing check-ins must run the CLI on a machine with the
 seed-derived xprv. PSBT export / import for air-gapped or hardware
 signing is on the roadmap but not built. Until it is, the CLI is
 the trust anchor for owners who chose the CLI path.
+
+### R10. Guardian collusion is bounded, not eliminated
+The guardian policy `heir AND (g1 OR g2) AND older(N)` raises the bar
+from one key to two cooperating parties (the heir plus one guardian),
+but it cannot stop a guardian who already holds the underage heir's
+key from claiming once the timelock matures (Att-9). What the design
+does guarantee:
+
+- No single guardian can ever spend alone; the heir's signature and
+  one of two guardians are both required.
+- The owner can move the funds at any time while alive (the
+  `pk(OWNER)` branch is unchanged).
+- The optional unlock-year (`after(H)`) holds the funds past a chosen
+  block height no matter what the guardians do, so an owner can keep
+  the money locked until the child reaches majority.
+- Every claim is public on-chain and therefore detectable.
+
+Choosing two guardians who do not trust each other is the
+load-bearing user decision here, the same way master-key custody
+(R1) is for F2 vaults. Source:
+[`descriptor.rs`](../crates/ghostkey-core/src/descriptor.rs),
+[`psbt.rs`](../crates/ghostkey-core/src/psbt.rs).
 
 ---
 
