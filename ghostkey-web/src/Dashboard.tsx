@@ -61,6 +61,7 @@ import {
 } from "./push";
 import { unsealOwner } from "./crypto/sealing";
 import { usePrice, btcAndUsd, satsToUsd, formatUsd } from "./fiat";
+import { lastResortCheckinOpen } from "./checkin";
 import type { Route } from "./App";
 
 interface Props {
@@ -500,10 +501,18 @@ export function Dashboard({ onNavigate }: Props) {
             void refresh();
           }}
           onClose={() => setLightningOpen(false)}
-          onFreeCheckin={() => {
-            setLightningOpen(false);
-            onCheckin();
-          }}
+          onFreeCheckin={
+            // Last resort only: the free tap is offered inside the
+            // Lightning modal's error state, but only within the final
+            // 24h before the heir would be contacted. Outside that
+            // window Lightning is the only way to check in.
+            lastResortCheckinOpen(vault?.claim_eligible_at, now)
+              ? () => {
+                  setLightningOpen(false);
+                  onCheckin();
+                }
+              : undefined
+          }
         />
       ) : null}
 
