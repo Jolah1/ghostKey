@@ -17,9 +17,9 @@ export function Brand({
     : size === "sm" ? "text-base"
     : "text-lg";
   const mark =
-    size === "lg" ? "h-9 w-9"
-    : size === "sm" ? "h-6 w-6"
-    : "h-7 w-7";
+    size === "lg" ? "h-9"
+    : size === "sm" ? "h-6"
+    : "h-7";
   return (
     <a
       href="#/landing"
@@ -29,9 +29,9 @@ export function Brand({
       className="inline-flex items-center gap-2.5 focus:outline-none"
       aria-label={`${brand.name} home`}
     >
-      {/* The mark keeps its native navy ground (the shield interior is
-          navy too), so it reads as an app-icon tile on both themes. */}
-      <img src="/brand-mark.png" alt="" className={`${mark} rounded-lg`} />
+      {/* Transparent shield + key logo, height-fit (width auto) so the
+          key isn't cropped. Reads on both themes. */}
+      <img src="/brand-mark.png" alt="" className={`${mark} w-auto`} />
       <span className={`font-display font-bold tracking-tight text-[var(--text)] ${fs}`}>
         ghost<span className="text-accent">Key</span>
       </span>
