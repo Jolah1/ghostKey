@@ -78,5 +78,5 @@ body:
       options:
         - label: I searched existing issues and didn't find a duplicate.
           required: true
-        - label: This is not a security vulnerability (if it is, I'll email security@ghostkey.app instead).
+        - label: This is not a security vulnerability (if it is, I'll report it privately per SECURITY.md instead).
           required: true

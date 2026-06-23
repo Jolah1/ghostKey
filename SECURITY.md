@@ -8,9 +8,14 @@ GhostKey guards Bitcoin inheritance. A vulnerability disclosed in
 public — before a fix is ready — gives attackers time to act before
 users can update.
 
-To report a vulnerability, please email:
+To report a vulnerability, use GitHub's **private vulnerability
+reporting** — the "Report a vulnerability" button under this
+repository's **Security** tab. It opens a private channel with the
+maintainers; nothing is public until a fix ships.
 
-> **security@ghostkey.app** (also: jokunlade@gmail.com)
+If you can't use that, email:
+
+> **security@ghostkeyapp.com**
 
 Include:
 

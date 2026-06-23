@@ -76,8 +76,8 @@ notes below cover only what's new on top of it.
 
 Two gotchas baked into the steps:
 
-- **Signet email is test-mode** — only `jokunlade@gmail.com` actually
-  receives mail. Use that address for both owner and heir so you see the
+- **Signet email is test-mode** — only the operator's own verified test
+  address actually receives mail. Use that address for both owner and heir so you see the
   claim link land.
 - **SMS/WhatsApp won't send** until `TWILIO_*` secrets are set. Until
   then those rows sit `pending` (no failure, just no send). Use email for
