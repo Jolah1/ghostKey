@@ -651,17 +651,17 @@ pub(crate) async fn notify_trusted_contact_of_panic(
                 GhostKey, a service that protects their Bitcoin.\n\n\
                 They just triggered an emergency freeze on their account. \
                 People usually do this when they think a password or device \
-                of theirs has been compromised — or when something feels \
+                of theirs has been compromised, or when something feels \
                 wrong.\n\n\
                 Please check on them.\n\n\
-                — GhostKey";
+                From GhostKey";
     crate::notifier::enqueue(
         db,
         vault_id,
         crate::notifier::NotificationKind::PanicAlert,
         trusted.channel,
         &trusted.address,
-        "Someone named you as their emergency contact — please check on them",
+        "Someone named you as their emergency contact. Please check on them",
         body,
     )
     .await?;

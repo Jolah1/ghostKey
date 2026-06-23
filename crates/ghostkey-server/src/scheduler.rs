@@ -151,10 +151,10 @@ async fn send_claim_ready_notices(state: &AppState) -> anyhow::Result<()> {
         let heir_name = contact.name.as_deref().unwrap_or("there");
         let body = format!(
             "Hello {heir_name},\n\n\
-             The short safety wait on your claim is over — you can now \
+             The short safety wait on your claim is over. You can now \
              finish receiving what was left for you.\n\n\
              {link_line}\n\n\
-             — GhostKey"
+             From GhostKey"
         );
         if let Err(e) = notifier::enqueue(
             &state.db,
@@ -311,7 +311,7 @@ async fn enqueue_alarm_escalation(
 
     let (subject, lead) = match count_so_far {
         0 => (
-            format!("You missed a check-in — {days_left} days until your heir is notified"),
+            format!("You missed a check-in. {days_left} days until your heir is notified"),
             "This is the first daily reminder.".to_string(),
         ),
         n if n < 7 => (
@@ -335,7 +335,7 @@ async fn enqueue_alarm_escalation(
          If we don't hear from you within {days_left} day(s), your heir \
          will receive a claim link for this vault. You can stop that \
          instantly by checking in.\n\n\
-         — GhostKey\n"
+         From GhostKey\n"
     );
 
     notifier::enqueue(
@@ -628,10 +628,10 @@ async fn enqueue_pre_deadline_reminder(
              device and tap \"I'm still here\":\n\n\
              {base}/#/checkin\n\n\
              If we don't hear from you by the deadline, you'll get one more \
-             email — and then your heir will be contacted after the \
+             email, and then your heir will be contacted after the \
              grace period.\n\n\
              If this email reached you by mistake, you can ignore it.\n\n\
-             — GhostKey\n"
+             From GhostKey\n"
         );
 
         notifier::enqueue(
@@ -852,9 +852,8 @@ async fn enqueue_alarm_owner(
         let subject = "You missed your GhostKey check-in".to_string();
         let body = format!(
             "Hello,\n\n\
-             {display_label} just missed its check-in deadline. We'd usually \
-             remind you sooner — this is the last reminder before the \
-             next step.\n\n\
+             {display_label} just missed its check-in deadline. This is the \
+             last reminder before the next step.\n\n\
              {one_tap_block}\
              You can also open the dashboard on any device and tap \
              \"I'm still here\" to reset the clock:\n\n\
@@ -864,7 +863,7 @@ async fn enqueue_alarm_owner(
              any moment up to then by checking in.\n\n\
              If this email reached you by mistake, you can ignore it. \
              Nothing happens until the deadline above.\n\n\
-             — GhostKey\n"
+             From GhostKey\n"
         );
 
         notifier::enqueue(
@@ -1165,7 +1164,7 @@ async fn enqueue_guardian_claim_links(state: &AppState, vault_id: &str) -> anyho
                  {claim_url}\n\n\
                  The link works once. You don't need an account.\n\n\
                  If this reached you by mistake, you can ignore it.\n\n\
-                 — GhostKey\n"
+                 From GhostKey\n"
             ),
             _ => format!(
                 "Hello, {opener} and asked us to reach you to help when the \
@@ -1319,7 +1318,7 @@ async fn enqueue_claim_link(
              The link works once. You don't need an account.\n\n\
              If this message reached you by mistake, you can ignore it. \
              Nothing happens until you open the link.\n\n\
-             — GhostKey\n"
+             From GhostKey\n"
         ),
         _ => format!(
             "Hello {heir_name}, {sms_opener} and asked us to reach you if \
