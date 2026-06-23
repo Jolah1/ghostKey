@@ -59,14 +59,19 @@
  *   - Door A (default, no-wallet heir): the heir's key is generated in
  *     THIS browser and sealed under a random claim token via HKDF. Only
  *     the ciphertext leaves the browser; the server stores the sealed
- *     blob and the claim token sealed at rest (so it can email the link
- *     once the owner is gone). The server never derives or sees the heir
- *     xprv in spendable form — the earlier master-key derivation (which
- *     a server/master-key breach could have reconstructed) was removed.
- *     Residual: at claim time the server momentarily handles the
- *     unsealed key to build+sign the one-shot send (the impossibility
- *     theorem for a zero-knowledge heir with no third party). Misuse is
- *     gated on the timelock and visible on-chain.
+ *     blob and the claim token sealed at rest under the per-vault master
+ *     key (so it can email the link once the owner is gone). The earlier
+ *     direct master-key DERIVATION of the heir key (F2) was removed, but
+ *     be precise about what remains: the at-rest token is sealed under
+ *     the master key, and the heir blob is sealed under that token, so a
+ *     holder of the master key CAN reconstruct the heir xprv. The server
+ *     in fact opens the at-rest token routinely, to send the link. Door A
+ *     is therefore NOT reconstruction-proof — never claim it is. The
+ *     guards are the on-chain timelock (nothing moves while the owner
+ *     checks in), public on-chain visibility, and keeping the master key
+ *     in a KMS (#184). At claim time the server also momentarily handles
+ *     the unsealed key to build+sign the one-shot send. Door B below is
+ *     the only fully non-custodial option.
  *   - Door B (heir holds own key): the owner pastes the heir's xpub; the
  *     server stores only that public key and never anything spendable.
  *     Strictly non-custodial; the residual above does not apply.
@@ -1785,16 +1790,24 @@ function HeirCard({
 
       {/* L4 (#116): say plainly how the heir's key comes to exist on the
           default path, so the owner chooses knowingly. The key is made in
-          this browser and sealed so only the one-time claim link can open
-          it; GhostKey never stores it in a form it could spend. */}
+          this browser and sealed under the claim link; GhostKey holds the
+          locked pieces and, with its master key, could reconstruct it (see
+          the Door A note in this file's header). Disclose that honestly. */}
       <p className="text-xs text-dim">
         By default, GhostKey makes a key for your heir right here in your
         browser and locks it so only their one-time claim link can open it,
-        and only after the waiting period. We never keep it in a form we
-        could spend.
+        and only after the waiting period. Nothing can move it while you're
+        checking in.{" "}
+        <span className="text-muted">
+          Honest trade-off: so we can send your heir that link if you're
+          gone, GhostKey stores the locked pieces, which means it could in
+          principle rebuild their key. The waiting-period timelock still
+          blocks any move while you check in, and every move shows on the
+          public Bitcoin chain.
+        </span>
         {hideOwnKey
           ? ""
-          : " Want your heir to hold their own key instead? Use the advanced option below."}
+          : " For full self-custody, where GhostKey holds nothing that can ever spend, have your heir hold their own key (advanced option below)."}
       </p>
 
       <details
