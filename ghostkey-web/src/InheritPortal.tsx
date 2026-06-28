@@ -73,7 +73,7 @@ export function InheritPortal() {
         <form onSubmit={submit} className="mt-8">
           <Field
             label="Already have your link?"
-            hint="Paste the whole URL, or just the token at the end."
+            hint="Paste the whole link, or just the code at the end."
           >
             <div className="flex flex-col gap-2 sm:flex-row">
               <input
