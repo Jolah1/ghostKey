@@ -1501,7 +1501,7 @@ struct BlockingBuilt {
 /// 400-class (the operator/heir can fix them); `Esplora` and `NoUtxos`
 /// are also 400-class but operationally distinct.
 #[derive(Debug, thiserror::Error)]
-enum BlockingErr {
+pub(crate) enum BlockingErr {
     #[error("vault: {0}")]
     Vault(String),
     #[error("esplora: {0}")]
@@ -1562,6 +1562,100 @@ fn truncate_explorer_msg(s: &str, max_chars: usize) -> String {
         out.push('…');
         out
     }
+}
+
+/* -------------------------------------------------------------------------- *
+ *  On-chain unlock-maturity estimate                                          *
+ *                                                                            *
+ *  The heir spends the vault via the `older(N)` (OP_CSV) branch, so every    *
+ *  vault UTXO must be at least `timelock_blocks` deep before the network     *
+ *  accepts the claim. A full drain is gated by the *youngest* coin:          *
+ *                                                                            *
+ *      unlock_height = max(utxo.confirmation_height) + timelock_blocks       *
+ *                                                                            *
+ *  This is the on-chain truth the server must respect before contacting the  *
+ *  heir (Fix A) — the server's own check-in clock is independent of it.      *
+ * -------------------------------------------------------------------------- */
+
+/// Result of scanning a vault's UTXOs to find when the heir can spend.
+///
+/// Phase 1 needs only the tip and the unlock height; the richer
+/// heir-facing fields (matured / unconfirmed / blocks remaining) land in
+/// Phase 2 when the claim page consumes them.
+#[derive(Debug, Clone)]
+pub(crate) struct UnlockEstimate {
+    /// Chain tip height observed during the scan.
+    pub tip_height: u32,
+    /// Block height at/after which the heir's `older(N)` spend becomes
+    /// valid, or `None` when there are no confirmed UTXOs to anchor the
+    /// timelock yet. Based on the youngest *confirmed* coin.
+    pub unlock_height: Option<u32>,
+}
+
+/// Scan a vault's addresses via Esplora and compute its on-chain
+/// unlock-maturity estimate. Blocking BDK + HTTP work runs on a
+/// dedicated thread. Esplora failures surface as `BlockingErr::Esplora`
+/// so callers can treat "couldn't reach the chain" as "not ready yet".
+pub(crate) async fn scan_unlock_estimate(
+    descriptor_external: String,
+    descriptor_internal: String,
+    network: Network,
+    timelock_blocks: u32,
+    label: Option<String>,
+) -> Result<UnlockEstimate, BlockingErr> {
+    let urls = esplora_urls(network).map_err(|e| match e {
+        ApiError::Validation(s) => BlockingErr::Esplora(s),
+        _ => BlockingErr::Esplora("esplora endpoints unavailable".into()),
+    })?;
+
+    let vault_config = VaultConfig {
+        descriptor_external,
+        descriptor_internal,
+        timelock_blocks,
+        network,
+        role: VaultRole::Watchonly,
+        label,
+    };
+    let vault = Vault::from_config(vault_config).map_err(|e| BlockingErr::Vault(e.to_string()))?;
+
+    tokio::task::spawn_blocking(move || -> Result<UnlockEstimate, BlockingErr> {
+        let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
+            .map_err(|e| BlockingErr::Vault(e.to_string()))?;
+
+        let update = try_each_esplora(&urls, |client| {
+            client
+                .full_scan(wallet.start_full_scan(), 5, 1)
+                .map_err(|e| clean_esplora_err("full_scan", &e))
+        })?;
+        wallet
+            .apply_update(update)
+            .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
+
+        let tip_height = wallet.latest_checkpoint().height();
+        let csv = vault.timelock_blocks();
+
+        // The youngest confirmed coin gates a full drain. Unconfirmed
+        // coins have no started timelock, so they don't lower the unlock
+        // height (issuing the link slightly early is harmless — the heir
+        // still can't spend until the chain matures).
+        let mut youngest_conf: Option<u32> = None;
+        for utxo in wallet.list_unspent() {
+            if let bdk_wallet::chain::ChainPosition::Confirmed { anchor, .. } = utxo.chain_position
+            {
+                let h = anchor.block_id.height;
+                youngest_conf = Some(youngest_conf.map_or(h, |y| y.max(h)));
+            }
+        }
+
+        let unlock_height = youngest_conf.map(|h| h.saturating_add(csv));
+
+        Ok(UnlockEstimate {
+            tip_height,
+            unlock_height,
+        })
+    })
+    .await
+    .map_err(|e| BlockingErr::Esplora(format!("scan worker panic: {e}")))?
 }
 
 /* -------------------------------------------------------------------------- *
