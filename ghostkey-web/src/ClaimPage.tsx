@@ -351,6 +351,10 @@ function MaturityGate({
 }) {
   const [est, setEst] = useState<UnlockEstimateView | null>(null);
   const [failed, setFailed] = useState(false);
+  // The first lookup can do a cold chain scan that takes up to ~a minute.
+  // After a few seconds with no answer we reassure the heir rather than
+  // leave them on a bare spinner that reads as "broken".
+  const [slow, setSlow] = useState(false);
   // Re-check periodically so a heir who leaves the tab open rolls
   // straight into the claim flow the moment the timelock matures (and
   // the same ticker advances the safety-wait clock below).
@@ -359,12 +363,17 @@ function MaturityGate({
   useEffect(() => {
     let alive = true;
     setFailed(false);
+    setSlow(false);
+    const slowTimer = setTimeout(() => {
+      if (alive) setSlow(true);
+    }, 6000);
     api
       .claimUnlockEstimate(token)
       .then((e) => alive && setEst(e))
       .catch(() => alive && setFailed(true));
     return () => {
       alive = false;
+      clearTimeout(slowTimer);
     };
   }, [token, tick]);
 
@@ -401,7 +410,11 @@ function MaturityGate({
   return (
     <section>
       <Eyebrow>One moment</Eyebrow>
-      <p className="mt-4 text-muted">Checking when your funds are ready…</p>
+      <p className="mt-4 text-muted">
+        {slow
+          ? "This can take up to a minute the first time. You can leave this page open and it will update on its own."
+          : "Checking when your funds are ready…"}
+      </p>
     </section>
   );
 }
