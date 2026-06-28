@@ -421,25 +421,26 @@ function TimelockWaitState({ est }: { est: UnlockEstimateView }) {
     : null;
   return (
     <section>
-      <Eyebrow>Almost there</Eyebrow>
+      <Eyebrow>Your inheritance</Eyebrow>
       <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
-        Your funds are nearly ready
+        Your funds are on the way
       </h1>
       {friendly ? (
         <p className="mt-4 text-muted">
           What was left for you unlocks on the Bitcoin network around{" "}
-          <strong>{friendly}</strong>. Nothing for you to do — we'll email
-          you when it's ready, and you can come back using this same link.
+          <strong>{friendly}</strong>. There's nothing for you to do. We'll
+          email you when it's ready, and you can come back using this same
+          link.
         </p>
       ) : (
         <p className="mt-4 text-muted">
-          We're still confirming the funds on the Bitcoin network. Nothing
-          for you to do — check back shortly using this same link.
+          We're still confirming the funds on the Bitcoin network. There's
+          nothing for you to do. Check back shortly using this same link.
         </p>
       )}
       <p className="mt-3 text-sm text-dim">
         Bitcoin holds an inheritance for a set time before it can be
-        collected. That time is almost up.
+        collected.
       </p>
     </section>
   );

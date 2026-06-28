@@ -429,7 +429,7 @@ export function friendlyEventKind(kind: string): string {
     // Legacy event: older builds recorded this on every heir page
     // load. It never meant the owner checked in (that's "checkin").
     // It marks the heir being active on the claim. No longer emitted.
-    case "claim_resolved": return "Your heir is working on the claim";
+    case "claim_resolved": return "Your heir opened the claim page";
     case "panic_activated": return "Emergency freeze on";
     case "panic_expired": return "Emergency freeze ended";
     default:
