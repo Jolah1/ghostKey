@@ -1058,6 +1058,52 @@ fn disable_onchain_gate_for_test() {
     ONCHAIN_GATE_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Health of the on-chain maturity scans that gate heir contact. When
+/// Esplora is unreachable these scans fail and heir contact silently
+/// pauses (the safe direction), so an operator needs a signal. We track
+/// the most recent scheduler scan outcome; `/health` surfaces it.
+#[derive(Clone, Default)]
+pub struct ChainScanHealth {
+    pub last_ok_at: Option<chrono::DateTime<Utc>>,
+    pub last_err: Option<String>,
+    pub consecutive_failures: u32,
+}
+
+/// Consecutive failed scans before `/health` flips `chain_scan_healthy`
+/// to false. Scans are cached (~10 min TTL), so this is ~30 min of an
+/// unreachable Esplora — past a transient blip, into "go look".
+pub const CHAIN_SCAN_UNHEALTHY_THRESHOLD: u32 = 3;
+
+fn chain_scan_health() -> &'static Mutex<ChainScanHealth> {
+    static H: OnceLock<Mutex<ChainScanHealth>> = OnceLock::new();
+    H.get_or_init(|| Mutex::new(ChainScanHealth::default()))
+}
+
+/// Record a scheduler maturity-scan outcome. A success (including a cache
+/// hit) clears the failure streak; a failure extends it and keeps the
+/// error for `/health`.
+fn record_chain_scan(ok: bool, err: Option<String>, now: chrono::DateTime<Utc>) {
+    let mut h = chain_scan_health()
+        .lock()
+        .expect("chain scan health poisoned");
+    if ok {
+        h.last_ok_at = Some(now);
+        h.last_err = None;
+        h.consecutive_failures = 0;
+    } else {
+        h.last_err = err;
+        h.consecutive_failures = h.consecutive_failures.saturating_add(1);
+    }
+}
+
+/// Snapshot the maturity-scan health for `/health`.
+pub fn chain_scan_health_snapshot() -> ChainScanHealth {
+    chain_scan_health()
+        .lock()
+        .expect("chain scan health poisoned")
+        .clone()
+}
+
 /// The on-chain fields a maturity decision needs, pulled alongside the
 /// claim-eligibility query so we don't round-trip the DB again.
 struct VaultChainRow {
@@ -1096,8 +1142,14 @@ async fn onchain_funds_ready(
     }
     match crate::psbt_routes::unlock_estimate_with_cache(&state.db, input, now).await {
         // lead_blocks = 0: matured exactly when tip has reached the unlock.
-        Ok(est) => issue_ready(est.unlock_height, est.tip_height, 0),
-        Err(_) => false,
+        Ok(est) => {
+            record_chain_scan(true, None, now);
+            issue_ready(est.unlock_height, est.tip_height, 0)
+        }
+        Err(e) => {
+            record_chain_scan(false, Some(e.to_string()), now);
+            false
+        }
     }
 }
 
@@ -1134,12 +1186,14 @@ async fn heir_contact_ready(
     };
     match crate::psbt_routes::unlock_estimate_with_cache(&state.db, &input, now).await {
         Ok(est) => {
+            record_chain_scan(true, None, now);
             let lead_blocks = (crate::config::claim_challenge_window_secs()
                 / crate::config::TARGET_BLOCK_SECS)
                 .max(0) as u32;
             issue_ready(est.unlock_height, est.tip_height, lead_blocks)
         }
         Err(e) => {
+            record_chain_scan(false, Some(e.to_string()), now);
             tracing::warn!(
                 vault_id = %row.id, error = %e,
                 "on-chain maturity scan failed; not advancing this tick"
@@ -1682,6 +1736,28 @@ mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
     use sqlx::SqlitePool;
+
+    #[test]
+    fn chain_scan_health_tracks_failure_streak() {
+        let now = Utc::now();
+        // Success clears the streak and any error.
+        record_chain_scan(true, None, now);
+        let h = chain_scan_health_snapshot();
+        assert_eq!(h.consecutive_failures, 0);
+        assert!(h.last_err.is_none());
+        assert!(h.last_ok_at.is_some());
+        // Failures accumulate and keep the latest error.
+        record_chain_scan(false, Some("esplora down".into()), now);
+        record_chain_scan(false, Some("still down".into()), now);
+        let h = chain_scan_health_snapshot();
+        assert_eq!(h.consecutive_failures, 2);
+        assert_eq!(h.last_err.as_deref(), Some("still down"));
+        // A success resets again.
+        record_chain_scan(true, None, now);
+        let h = chain_scan_health_snapshot();
+        assert_eq!(h.consecutive_failures, 0);
+        assert!(h.last_err.is_none());
+    }
 
     #[test]
     fn issue_ready_gates_on_onchain_maturity() {

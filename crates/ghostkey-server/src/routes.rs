@@ -340,6 +340,22 @@ struct Health {
     /// `scheduler_healthy`: a stalled notifier silently stops contacting
     /// owners and heirs.
     notifier_healthy: bool,
+
+    /// Monitoring: on-chain maturity scans gate heir contact (Fix A).
+    /// When Esplora is unreachable these scans fail and heir contact
+    /// silently pauses (the safe direction). False after several
+    /// consecutive scan failures — on mainnet a persistently failing
+    /// scan means no claim ever advances, so alert on this. True when
+    /// healthy or simply idle (no vault waiting on a timelock).
+    chain_scan_healthy: bool,
+    /// Consecutive failed maturity scans (0 when healthy or idle).
+    chain_scan_consecutive_failures: i64,
+    /// Last maturity-scan error, null when the most recent scan (or no
+    /// scan at all) succeeded.
+    chain_scan_last_error: Option<String>,
+    /// RFC3339 time of the last successful maturity scan, null if none
+    /// has run since boot.
+    chain_scan_last_ok_at: Option<String>,
 }
 
 /// A due notification older than this is treated as evidence the notifier
@@ -400,6 +416,11 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         .map(|s| (Utc::now() - crate::config::parse_rfc(s)).num_seconds());
     let notifier_healthy = notifications_oldest_due_secs.is_none_or(|a| a <= NOTIFIER_STUCK_SECS);
 
+    // On-chain maturity-scan health (Fix A heir-contact gate).
+    let scan = crate::scheduler::chain_scan_health_snapshot();
+    let chain_scan_healthy =
+        scan.consecutive_failures < crate::scheduler::CHAIN_SCAN_UNHEALTHY_THRESHOLD;
+
     Json(Health {
         ok: true,
         version: env!("CARGO_PKG_VERSION"),
@@ -415,6 +436,10 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         notifications_oldest_due_secs,
         notifications_failed,
         notifier_healthy,
+        chain_scan_healthy,
+        chain_scan_consecutive_failures: scan.consecutive_failures as i64,
+        chain_scan_last_error: scan.last_err,
+        chain_scan_last_ok_at: scan.last_ok_at.map(|t| t.to_rfc3339()),
     })
 }
 
