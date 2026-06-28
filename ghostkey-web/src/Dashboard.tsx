@@ -2037,11 +2037,12 @@ function HeirGroupList({
 /* ----------------------------- Activity list ------------------------------ */
 
 function ActivityList({ events }: { events: VaultEvent[] }) {
-  // Newest first, cap to 6.
-  const items = useMemo(
-    () => events.slice().reverse().slice(0, 6),
-    [events],
-  );
+  // Newest first. Show a compact 6 by default, expand to the full
+  // history on demand so older events (vault creation, early sends)
+  // aren't lost below the fold.
+  const [expanded, setExpanded] = useState(false);
+  const all = useMemo(() => events.slice().reverse(), [events]);
+  const items = expanded ? all : all.slice(0, 6);
   return (
     <section aria-label="Recent activity">
       <p className="text-xs uppercase tracking-wider text-dim">
@@ -2074,6 +2075,15 @@ function ActivityList({ events }: { events: VaultEvent[] }) {
             </li>
           ))}
         </ul>
+      )}
+      {all.length > 6 && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-3 text-xs text-dim underline hover:text-[var(--text)]"
+        >
+          {expanded ? "Show less" : `Show all ${all.length}`}
+        </button>
       )}
     </section>
   );
