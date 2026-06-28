@@ -1289,8 +1289,16 @@ function Greeting({
     headline = "Vault closed";
     sub = `${meta.heir.name || "Your heir"} claimed the funds.`;
   } else if (isClaiming) {
-    headline = "Your heir is claiming";
-    sub = `${meta.heir.name || "Your heir"} has the claim link. The check-in loop is over for this vault.`;
+    const heirName = meta.heir.name || "Your heir";
+    if (vault?.status === "claiming") {
+      headline = "Your heir is claiming";
+      sub = `${heirName} is finalising the claim. The check-in loop is over for this vault.`;
+    } else {
+      // timelock_started: the link is out, but Bitcoin's timelock has to
+      // run before the funds can move. The heir is waiting, not claiming.
+      headline = "Your heir is waiting to claim";
+      sub = `${heirName} has the claim link. Bitcoin holds the funds for a set time before they can be collected.`;
+    }
   } else if (isPastDeadline) {
     headline = "Check-in overdue";
     const missedAgo = deadline ? humanAgo(deadline, now) : null;
@@ -1377,12 +1385,12 @@ function ClaimInProgressCard({
           ⏳
         </div>
         <h2 className="mt-6 font-serif text-2xl">
-          {broadcasting ? "Heir is broadcasting" : "Heir was sent the claim link"}
+          {broadcasting ? "Heir is broadcasting" : "Heir is waiting to claim"}
         </h2>
         <p className="mt-2 max-w-md text-sm text-muted">
           {broadcasting
             ? `${heirName} is finalising the claim transaction.`
-            : `${heirName} can open the link any time. The check-in loop is over for this vault.`}
+            : `${heirName} has the claim link. Bitcoin holds the funds for a set time before they can be collected.`}
         </p>
       </div>
     </section>
@@ -1872,14 +1880,17 @@ function HeirCard({
   const status = vault?.status ?? "ok";
   // T1 (#117): while the owner is alive and checking in, the heir is just
   // standing by — they cannot take anything. Showing "Ready to claim" in
-  // success-green there is false and frightening. Green/"claim" wording is
-  // reserved for the genuinely claimable path (timelock_started, which the
-  // owner sees as an alarm).
+  // success-green there is false and frightening. We also separate the two
+  // end states: `timelock_started` means the link is out but Bitcoin's
+  // timelock is still running (the heir is waiting, not claiming), while
+  // `claiming` is an actual broadcast in flight.
   const pill =
     status === "claimed"
       ? { tone: "neutral" as const, label: "Claimed" }
-      : status === "timelock_started"
+      : status === "claiming"
       ? { tone: "alarm" as const, label: "Claiming" }
+      : status === "timelock_started"
+      ? { tone: "warning" as const, label: "Waiting to claim" }
       : { tone: "neutral" as const, label: "Standing by" };
 
   return (
