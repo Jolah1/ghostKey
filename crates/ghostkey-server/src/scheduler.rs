@@ -174,11 +174,21 @@ async fn send_claim_ready_notices(state: &AppState) -> anyhow::Result<()> {
         Option<String>, // heir_contact_ciphertext
         Option<String>, // heir_contact_nonce
         Option<String>, // claim_token_at_rest_b64
+        String,         // descriptor_external
+        String,         // descriptor_internal
+        String,         // network
+        i64,            // timelock_blocks
+        Option<i64>,    // chain_unlock_height
+        Option<i64>,    // chain_tip_height
+        Option<String>, // chain_scanned_at
     );
     let rows: Vec<ReadyRow> = sqlx::query_as(
         r#"SELECT id, claim_opened_at,
                   heir_contact_ciphertext, heir_contact_nonce,
-                  claim_token_at_rest_b64
+                  claim_token_at_rest_b64,
+                  descriptor_external, descriptor_internal,
+                  network, timelock_blocks,
+                  chain_unlock_height, chain_tip_height, chain_scanned_at
              FROM vaults
             WHERE claim_opened_at IS NOT NULL
               AND claim_ready_notified_at IS NULL
@@ -189,9 +199,40 @@ async fn send_claim_ready_notices(state: &AppState) -> anyhow::Result<()> {
     .await?;
 
     let now = Utc::now();
-    for (vault_id, opened_s, heir_ct, heir_nn, token_at_rest) in rows {
+    for (
+        vault_id,
+        opened_s,
+        heir_ct,
+        heir_nn,
+        token_at_rest,
+        descriptor_external,
+        descriptor_internal,
+        network,
+        timelock_blocks,
+        chain_unlock_height,
+        chain_tip_height,
+        chain_scanned_at,
+    ) in rows
+    {
         let ready_at = crate::config::parse_rfc(&opened_s) + chrono::Duration::seconds(window);
         if now < ready_at {
+            continue;
+        }
+
+        // Fix A: the safety wait is over, but don't tell the heir "ready"
+        // until the on-chain timelock has actually matured. Otherwise the
+        // email promises collection the funds can't yet allow.
+        let input = crate::psbt_routes::EstimateInput {
+            vault_id: vault_id.clone(),
+            descriptor_external,
+            descriptor_internal,
+            network,
+            timelock_blocks,
+            cached_unlock_height: chain_unlock_height,
+            cached_tip_height: chain_tip_height,
+            cached_scanned_at: chain_scanned_at,
+        };
+        if !onchain_funds_ready(state, &input, now).await {
             continue;
         }
 
@@ -1037,6 +1078,26 @@ fn issue_ready(unlock_height: Option<u32>, tip_height: u32, lead_blocks: u32) ->
     match unlock_height {
         Some(unlock) => unlock.saturating_sub(tip_height) <= lead_blocks,
         None => false,
+    }
+}
+
+/// True once the on-chain timelock has fully matured (or the gate is
+/// bypassed for tests/demo). Used to hold the heir's "ready to collect"
+/// email until the funds can actually move. A chain we can't read is
+/// treated as not-ready, so the email waits rather than misleads.
+async fn onchain_funds_ready(
+    state: &AppState,
+    input: &crate::psbt_routes::EstimateInput,
+    now: chrono::DateTime<Utc>,
+) -> bool {
+    if !ONCHAIN_GATE_ENABLED.load(std::sync::atomic::Ordering::Relaxed) || crate::demo::demo_mode()
+    {
+        return true;
+    }
+    match crate::psbt_routes::unlock_estimate_with_cache(&state.db, input, now).await {
+        // lead_blocks = 0: matured exactly when tip has reached the unlock.
+        Ok(est) => issue_ready(est.unlock_height, est.tip_height, 0),
+        Err(_) => false,
     }
 }
 

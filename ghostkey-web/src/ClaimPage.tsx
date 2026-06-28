@@ -479,9 +479,9 @@ function SafetyWaitState({ availableAt, now }: { availableAt: Date; now: Date })
         waiting period before anything can be collected.
       </p>
       <p className="mt-3 text-muted">
-        Come back <strong>{friendly}</strong> ({cd.friendly}) using this
-        same link. We'll also email you when it's time, so you don't have
-        to remember.
+        We'll email you the moment everything's ready, so you don't have to
+        remember or keep checking. You can also come back{" "}
+        <strong>{friendly}</strong> ({cd.friendly}) using this same link.
       </p>
       <p className="mt-3 text-sm text-dim">
         Why the wait? It gives the person who set this up one last chance

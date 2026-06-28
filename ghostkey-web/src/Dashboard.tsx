@@ -402,13 +402,15 @@ export function Dashboard({ onNavigate }: Props) {
           <div className="min-w-0">
             {vault ? (
               <p className="text-sm text-muted lg:mt-0 mt-5">
-                If you miss a check-in, your heir waits{" "}
+                If you stop checking in, your heir can claim once your
+                Bitcoin has sat untouched for about{" "}
                 <span className="text-[var(--text)]">
                   {demoMode
                     ? prettySeconds(vault.grace_period_secs)
                     : prettyBlocks(vault.timelock_blocks)}
-                </span>{" "}
-                before they can claim.
+                </span>
+                . Only moving or adding money resets that timer; checking
+                in keeps your vault active but doesn&apos;t.
               </p>
             ) : null}
 
