@@ -300,22 +300,20 @@ function Resolved({ view, token }: { view: ClaimView; token: string }) {
         // This is rare but possible if an operator runs issue-claim manually.
         return <NotReadyState view={view} />;
       case "alarmed":
-      case "timelock_started": {
-        // Claim-challenge window: the first open of this link alerted
-        // the vault's owner, and the claim can only be completed once
-        // the safety wait ends. Render the wait screen instead of
-        // probing the (gated) claim endpoints.
-        if (view.claim_available_at) {
-          return (
-            <ChallengeGate
-              availableAt={new Date(view.claim_available_at)}
-              view={view}
-              token={token}
-            />
-          );
-        }
-        return <MaturityGate view={view} token={token} />;
-      }
+      case "timelock_started":
+        // Two waits gate a claim: the on-chain CSV timelock (Bitcoin
+        // itself) and the 48h claim-challenge window (our safety net).
+        // MaturityGate owns both so it can always show the later, binding
+        // date — the on-chain unlock wins even while the challenge runs.
+        return (
+          <MaturityGate
+            view={view}
+            token={token}
+            availableAt={
+              view.claim_available_at ? new Date(view.claim_available_at) : null
+            }
+          />
+        );
       case "claimed":
         return <AlreadyClaimedState view={view} />;
       default:
@@ -335,39 +333,27 @@ function Resolved({ view, token }: { view: ClaimView; token: string }) {
 }
 
 /**
- * Wraps the claimable flow in the challenge-window clock: while the
- * safety wait is running we show the wait screen, and the ticker
- * flips the page into the real claim flow the minute it ends — no
- * reload needed if the heir leaves the tab open.
+ * The dominant gate: the on-chain CSV timelock. The funds can't move
+ * until the coins are `timelock_blocks` deep, no matter what the server
+ * allows. Until then we show an honest "unlocks around <date>" screen —
+ * even during the 48h claim-challenge window, because the on-chain date
+ * is the later, binding one. Only once the coins can actually move do we
+ * fall to the safety wait (if it's still running) and then the claim form.
  */
-function ChallengeGate({
-  availableAt,
+function MaturityGate({
   view,
   token,
+  availableAt,
 }: {
-  availableAt: Date;
   view: ClaimView;
   token: string;
+  availableAt: Date | null;
 }) {
-  const now = useTicker(30_000);
-  if (now.getTime() >= availableAt.getTime()) {
-    return <MaturityGate view={view} token={token} />;
-  }
-  return <SafetyWaitState availableAt={availableAt} now={now} />;
-}
-
-/**
- * Second gate, behind the safety wait: the on-chain CSV timelock. The
- * funds can't move until the coins are `timelock_blocks` deep, no matter
- * what the server allows, so before we drop the heir into the claim form
- * we check the real unlock estimate. If it hasn't matured we show an
- * honest "unlocks around <date>" screen instead of a dead-end broadcast.
- */
-function MaturityGate({ view, token }: { view: ClaimView; token: string }) {
   const [est, setEst] = useState<UnlockEstimateView | null>(null);
   const [failed, setFailed] = useState(false);
   // Re-check periodically so a heir who leaves the tab open rolls
-  // straight into the claim flow the moment the timelock matures.
+  // straight into the claim flow the moment the timelock matures (and
+  // the same ticker advances the safety-wait clock below).
   const tick = useTicker(60_000);
 
   useEffect(() => {
@@ -382,11 +368,18 @@ function MaturityGate({ view, token }: { view: ClaimView; token: string }) {
     };
   }, [token, tick]);
 
-  if (est?.matured) {
-    return <ClaimableState view={view} token={token} />;
-  }
+  // On-chain maturity comes first: until the coins can move, show the
+  // on-chain date even if the 48h safety wait is still running.
   if (est && !est.matured) {
     return <TimelockWaitState est={est} />;
+  }
+  if (est?.matured) {
+    // Coins can move. Honor the claim-challenge safety wait if it hasn't
+    // elapsed yet, otherwise drop into the claim form.
+    if (availableAt && tick.getTime() < availableAt.getTime()) {
+      return <SafetyWaitState availableAt={availableAt} now={tick} />;
+    }
+    return <ClaimableState view={view} token={token} />;
   }
   if (failed) {
     // Couldn't reach the chain. Don't pretend it's ready — the claim
