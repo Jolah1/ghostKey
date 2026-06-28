@@ -433,7 +433,7 @@ function SessionExpiredNotice({ onDismiss }: { onDismiss: () => void }) {
     <div role="status" className="border-b border-app bg-surface-2">
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-5 py-2 md:px-8">
         <p className="text-xs text-muted">
-          You were signed out after a while away. Sign in to continue.
+          Session timed out. Sign in to continue.
         </p>
         <button
           type="button"

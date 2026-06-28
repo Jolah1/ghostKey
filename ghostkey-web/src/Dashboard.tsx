@@ -134,8 +134,7 @@ export function Dashboard({ onNavigate }: Props) {
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         setError(
-          "This browser doesn't have the credentials for this vault. " +
-            "Sign in with your email and password, or create a new vault.",
+          "Sign in with your email and password to open this vault.",
         );
         return;
       }
