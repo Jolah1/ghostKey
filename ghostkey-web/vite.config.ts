@@ -6,6 +6,15 @@ import { VitePWA } from "vite-plugin-pwa";
 // ghostkey-server bound on 127.0.0.1:8787. In production we expect the
 // server to be reverse-proxied at the same origin (or CORS-allowed,
 // which the server already does in dev).
+//
+// Set DEV_PROXY_TARGET to point dev at a remote backend (e.g. the signet
+// app for the live e2e) without hitting CORS — the browser still talks
+// same-origin to localhost and Vite proxies server-side.
+//
+// Local `process` declaration so this typechecks without pulling in
+// @types/node for the whole web project; Vite evaluates this file in Node.
+declare const process: { env: Record<string, string | undefined> };
+const DEV_PROXY_TARGET = process.env.DEV_PROXY_TARGET ?? "http://127.0.0.1:8787";
 export default defineConfig({
   plugins: [
     react(),
@@ -131,8 +140,9 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8787",
+        target: DEV_PROXY_TARGET,
         changeOrigin: true,
+        secure: true,
         rewrite: (p) => p.replace(/^\/api/, ""),
       },
     },
