@@ -332,6 +332,25 @@ export interface ClaimView {
   guardian_slot?: number | null;
 }
 
+/** On-chain unlock estimate, from `GET /claim/:token/unlock-estimate`.
+ *  The CSV timelock is separate from the server's safety wait: the funds
+ *  can't move until the coins are `timelock_blocks` deep, regardless of
+ *  what the server allows. */
+export interface UnlockEstimateView {
+  /** True once the timelock has elapsed — the claim can complete now. */
+  matured: boolean;
+  /** Chain tip height at the estimate. */
+  tip_height: number;
+  /** Block at/after which the heir can spend, or null when no confirmed
+   *  coin yet anchors the timelock. */
+  unlock_height: number | null;
+  /** Blocks left until maturity (0 once reached). */
+  blocks_remaining: number;
+  /** Rough wall-clock unlock time (RFC3339), or null when matured or not
+   *  yet anchored. "Around": block spacing drifts. */
+  unlock_eta: string | null;
+}
+
 /** Encrypted owner video message returned by `GET /claim/:token/video`
  *  (#85). The clip is sealed under the claim-token KEK; the signature is
  *  verified client-side against `owner_xpub`. */
@@ -848,6 +867,13 @@ export const api = {
     request<VaultEvent[]>(`/vaults/${id}/events`, {}, ownerToken),
   resolveClaim: (token: string) =>
     request<ClaimView>(`/claim/${encodeURIComponent(token)}`),
+  /** On-chain unlock estimate for this claim. Tells the heir when the
+   *  funds actually become spendable (the CSV timelock), separate from
+   *  the server's safety wait. Drives the "unlocks around <date>" screen. */
+  claimUnlockEstimate: (token: string) =>
+    request<UnlockEstimateView>(
+      `/claim/${encodeURIComponent(token)}/unlock-estimate`,
+    ),
   /** Fetch the owner's encrypted video message for this claim (#85).
    *  404 when the vault has no video. The browser decrypts it with the
    *  claim token and verifies `owner_sig_b64` against `owner_xpub`. */

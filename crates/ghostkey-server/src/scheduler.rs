@@ -174,11 +174,21 @@ async fn send_claim_ready_notices(state: &AppState) -> anyhow::Result<()> {
         Option<String>, // heir_contact_ciphertext
         Option<String>, // heir_contact_nonce
         Option<String>, // claim_token_at_rest_b64
+        String,         // descriptor_external
+        String,         // descriptor_internal
+        String,         // network
+        i64,            // timelock_blocks
+        Option<i64>,    // chain_unlock_height
+        Option<i64>,    // chain_tip_height
+        Option<String>, // chain_scanned_at
     );
     let rows: Vec<ReadyRow> = sqlx::query_as(
         r#"SELECT id, claim_opened_at,
                   heir_contact_ciphertext, heir_contact_nonce,
-                  claim_token_at_rest_b64
+                  claim_token_at_rest_b64,
+                  descriptor_external, descriptor_internal,
+                  network, timelock_blocks,
+                  chain_unlock_height, chain_tip_height, chain_scanned_at
              FROM vaults
             WHERE claim_opened_at IS NOT NULL
               AND claim_ready_notified_at IS NULL
@@ -189,9 +199,40 @@ async fn send_claim_ready_notices(state: &AppState) -> anyhow::Result<()> {
     .await?;
 
     let now = Utc::now();
-    for (vault_id, opened_s, heir_ct, heir_nn, token_at_rest) in rows {
+    for (
+        vault_id,
+        opened_s,
+        heir_ct,
+        heir_nn,
+        token_at_rest,
+        descriptor_external,
+        descriptor_internal,
+        network,
+        timelock_blocks,
+        chain_unlock_height,
+        chain_tip_height,
+        chain_scanned_at,
+    ) in rows
+    {
         let ready_at = crate::config::parse_rfc(&opened_s) + chrono::Duration::seconds(window);
         if now < ready_at {
+            continue;
+        }
+
+        // Fix A: the safety wait is over, but don't tell the heir "ready"
+        // until the on-chain timelock has actually matured. Otherwise the
+        // email promises collection the funds can't yet allow.
+        let input = crate::psbt_routes::EstimateInput {
+            vault_id: vault_id.clone(),
+            descriptor_external,
+            descriptor_internal,
+            network,
+            timelock_blocks,
+            cached_unlock_height: chain_unlock_height,
+            cached_tip_height: chain_tip_height,
+            cached_scanned_at: chain_scanned_at,
+        };
+        if !onchain_funds_ready(state, &input, now).await {
             continue;
         }
 
@@ -1005,9 +1046,167 @@ async fn enqueue_alarm_owner(
     Ok(())
 }
 
+/// On-chain maturity gating for heir contact (Fix A). On by default in
+/// production. The scheduler's own unit tests drive the server-clock
+/// state machine with fake descriptors and no Esplora, so `fresh_db`
+/// flips this off for them; see `disable_onchain_gate_for_test`.
+static ONCHAIN_GATE_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+#[cfg(test)]
+fn disable_onchain_gate_for_test() {
+    ONCHAIN_GATE_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Health of the on-chain maturity scans that gate heir contact. When
+/// Esplora is unreachable these scans fail and heir contact silently
+/// pauses (the safe direction), so an operator needs a signal. We track
+/// the most recent scheduler scan outcome; `/health` surfaces it.
+#[derive(Clone, Default)]
+pub struct ChainScanHealth {
+    pub last_ok_at: Option<chrono::DateTime<Utc>>,
+    pub last_err: Option<String>,
+    pub consecutive_failures: u32,
+}
+
+/// Consecutive failed scans before `/health` flips `chain_scan_healthy`
+/// to false. Scans are cached (~10 min TTL), so this is ~30 min of an
+/// unreachable Esplora — past a transient blip, into "go look".
+pub const CHAIN_SCAN_UNHEALTHY_THRESHOLD: u32 = 3;
+
+fn chain_scan_health() -> &'static Mutex<ChainScanHealth> {
+    static H: OnceLock<Mutex<ChainScanHealth>> = OnceLock::new();
+    H.get_or_init(|| Mutex::new(ChainScanHealth::default()))
+}
+
+/// Record a scheduler maturity-scan outcome. A success (including a cache
+/// hit) clears the failure streak; a failure extends it and keeps the
+/// error for `/health`.
+fn record_chain_scan(ok: bool, err: Option<String>, now: chrono::DateTime<Utc>) {
+    let mut h = chain_scan_health()
+        .lock()
+        .expect("chain scan health poisoned");
+    if ok {
+        h.last_ok_at = Some(now);
+        h.last_err = None;
+        h.consecutive_failures = 0;
+    } else {
+        h.last_err = err;
+        h.consecutive_failures = h.consecutive_failures.saturating_add(1);
+    }
+}
+
+/// Snapshot the maturity-scan health for `/health`.
+pub fn chain_scan_health_snapshot() -> ChainScanHealth {
+    chain_scan_health()
+        .lock()
+        .expect("chain scan health poisoned")
+        .clone()
+}
+
+/// The on-chain fields a maturity decision needs, pulled alongside the
+/// claim-eligibility query so we don't round-trip the DB again.
+struct VaultChainRow {
+    id: String,
+    descriptor_external: String,
+    descriptor_internal: String,
+    network: String,
+    timelock_blocks: i64,
+    chain_unlock_height: Option<i64>,
+    chain_tip_height: Option<i64>,
+    chain_scanned_at: Option<String>,
+}
+
+/// Pure decision: are the coins within `lead_blocks` of being spendable?
+/// `unlock_height` is `None` when no confirmed UTXO anchors the timelock,
+/// which is never ready.
+fn issue_ready(unlock_height: Option<u32>, tip_height: u32, lead_blocks: u32) -> bool {
+    match unlock_height {
+        Some(unlock) => unlock.saturating_sub(tip_height) <= lead_blocks,
+        None => false,
+    }
+}
+
+/// True once the on-chain timelock has fully matured (or the gate is
+/// bypassed for tests/demo). Used to hold the heir's "ready to collect"
+/// email until the funds can actually move. A chain we can't read is
+/// treated as not-ready, so the email waits rather than misleads.
+async fn onchain_funds_ready(
+    state: &AppState,
+    input: &crate::psbt_routes::EstimateInput,
+    now: chrono::DateTime<Utc>,
+) -> bool {
+    if !ONCHAIN_GATE_ENABLED.load(std::sync::atomic::Ordering::Relaxed) || crate::demo::demo_mode()
+    {
+        return true;
+    }
+    match crate::psbt_routes::unlock_estimate_with_cache(&state.db, input, now).await {
+        // lead_blocks = 0: matured exactly when tip has reached the unlock.
+        Ok(est) => {
+            record_chain_scan(true, None, now);
+            issue_ready(est.unlock_height, est.tip_height, 0)
+        }
+        Err(e) => {
+            record_chain_scan(false, Some(e.to_string()), now);
+            false
+        }
+    }
+}
+
+/// Fix A gate: a vault can be server-eligible for a claim long before its
+/// on-chain `older(N)` timelock matures. Returns true only once the coins
+/// are within the claim-challenge window of being spendable, so the heir
+/// is contacted near real maturity and the safety wait runs during the
+/// final approach (then the heir can spend the moment it matures).
+///
+/// Reuses the cached estimate while fresh; otherwise rescans Esplora and
+/// refreshes the cache. Any failure to read the chain returns false — we
+/// never contact the heir on an unverified chain state.
+async fn heir_contact_ready(
+    state: &AppState,
+    row: &VaultChainRow,
+    now: chrono::DateTime<Utc>,
+) -> bool {
+    // Tests and live demos run the server-clock machine without a real
+    // chain; let them through unchanged.
+    if !ONCHAIN_GATE_ENABLED.load(std::sync::atomic::Ordering::Relaxed) || crate::demo::demo_mode()
+    {
+        return true;
+    }
+
+    let input = crate::psbt_routes::EstimateInput {
+        vault_id: row.id.clone(),
+        descriptor_external: row.descriptor_external.clone(),
+        descriptor_internal: row.descriptor_internal.clone(),
+        network: row.network.clone(),
+        timelock_blocks: row.timelock_blocks,
+        cached_unlock_height: row.chain_unlock_height,
+        cached_tip_height: row.chain_tip_height,
+        cached_scanned_at: row.chain_scanned_at.clone(),
+    };
+    match crate::psbt_routes::unlock_estimate_with_cache(&state.db, &input, now).await {
+        Ok(est) => {
+            record_chain_scan(true, None, now);
+            let lead_blocks = (crate::config::claim_challenge_window_secs()
+                / crate::config::TARGET_BLOCK_SECS)
+                .max(0) as u32;
+            issue_ready(est.unlock_height, est.tip_height, lead_blocks)
+        }
+        Err(e) => {
+            record_chain_scan(false, Some(e.to_string()), now);
+            tracing::warn!(
+                vault_id = %row.id, error = %e,
+                "on-chain maturity scan failed; not advancing this tick"
+            );
+            false
+        }
+    }
+}
+
 /// Move every vault that has been `alarmed` long enough (past its
-/// `claim_eligible_at`) to `timelock_started`, and issue a one-time
-/// claim token for the heir.
+/// `claim_eligible_at`) AND whose coins are within reach of on-chain
+/// maturity (Fix A) to `timelock_started`, and issue a one-time claim
+/// token for the heir.
 ///
 /// Idempotent: a row that already has a `claim_token_hash` is skipped.
 /// This means a follow-on owner check-in that fails to clear the row's
@@ -1037,11 +1236,21 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
             Option<String>, // heir_contact_nonce
             Option<String>, // claim_token_at_rest_b64 (password vaults only)
             Option<String>, // claim_token_hash (already set on password vaults)
+            String,         // descriptor_external
+            String,         // descriptor_internal
+            String,         // network
+            i64,            // timelock_blocks
+            Option<i64>,    // chain_unlock_height (cache)
+            Option<i64>,    // chain_tip_height (cache)
+            Option<String>, // chain_scanned_at (cache)
         ),
     >(
         r#"SELECT id, label,
                   heir_contact_ciphertext, heir_contact_nonce,
-                  claim_token_at_rest_b64, claim_token_hash
+                  claim_token_at_rest_b64, claim_token_hash,
+                  descriptor_external, descriptor_internal,
+                  network, timelock_blocks,
+                  chain_unlock_height, chain_tip_height, chain_scanned_at
              FROM vaults
             WHERE status = 'alarmed'
               AND claim_eligible_at IS NOT NULL
@@ -1059,7 +1268,39 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
     .fetch_all(&state.db)
     .await?;
 
-    for (id, label, ct, nn, at_rest, existing_hash) in due {
+    for (
+        id,
+        label,
+        ct,
+        nn,
+        at_rest,
+        existing_hash,
+        descriptor_external,
+        descriptor_internal,
+        network,
+        timelock_blocks,
+        chain_unlock_height,
+        chain_tip_height,
+        chain_scanned_at,
+    ) in due
+    {
+        // Fix A: server-eligible is not enough. Only contact the heir
+        // once the coins are within reach of on-chain maturity. A vault
+        // that isn't ready stays `alarmed` and is re-checked next tick.
+        let chain_row = VaultChainRow {
+            id: id.clone(),
+            descriptor_external,
+            descriptor_internal,
+            network,
+            timelock_blocks,
+            chain_unlock_height,
+            chain_tip_height,
+            chain_scanned_at,
+        };
+        if !heir_contact_ready(state, &chain_row, Utc::now()).await {
+            continue;
+        }
+
         // Decide whether this is a password vault or a legacy row.
         // For password vaults, reuse the existing token; for legacy,
         // mint a fresh one.
@@ -1497,6 +1738,45 @@ mod tests {
     use sqlx::SqlitePool;
 
     #[test]
+    fn chain_scan_health_tracks_failure_streak() {
+        let now = Utc::now();
+        // Success clears the streak and any error.
+        record_chain_scan(true, None, now);
+        let h = chain_scan_health_snapshot();
+        assert_eq!(h.consecutive_failures, 0);
+        assert!(h.last_err.is_none());
+        assert!(h.last_ok_at.is_some());
+        // Failures accumulate and keep the latest error.
+        record_chain_scan(false, Some("esplora down".into()), now);
+        record_chain_scan(false, Some("still down".into()), now);
+        let h = chain_scan_health_snapshot();
+        assert_eq!(h.consecutive_failures, 2);
+        assert_eq!(h.last_err.as_deref(), Some("still down"));
+        // A success resets again.
+        record_chain_scan(true, None, now);
+        let h = chain_scan_health_snapshot();
+        assert_eq!(h.consecutive_failures, 0);
+        assert!(h.last_err.is_none());
+    }
+
+    #[test]
+    fn issue_ready_gates_on_onchain_maturity() {
+        // No confirmed coin to anchor the timelock: never ready.
+        assert!(!issue_ready(None, 1000, 288));
+        // Unlock far in the future, outside the lead window: not ready.
+        assert!(!issue_ready(Some(2000), 1000, 288));
+        // Exactly at the lead edge (~48h ≈ 288 blocks out): ready.
+        assert!(issue_ready(Some(1288), 1000, 288));
+        // Within the lead window: ready.
+        assert!(issue_ready(Some(1100), 1000, 288));
+        // Tip already past the unlock height (matured): ready.
+        assert!(issue_ready(Some(900), 1000, 288));
+        // Zero lead (challenge window disabled): only ready at maturity.
+        assert!(!issue_ready(Some(1001), 1000, 0));
+        assert!(issue_ready(Some(1000), 1000, 0));
+    }
+
+    #[test]
     fn ln_gate_pauses_during_outage_and_grants_capped_recovery_grace() {
         let mut gate = LnGate::default();
         let t0 = Utc::now();
@@ -1547,7 +1827,13 @@ mod tests {
     }
 
     /// Bring up a fresh SQLite in memory with all migrations applied.
+    ///
+    /// Also disables the Fix-A on-chain maturity gate: these tests drive
+    /// the server-clock state machine with fake descriptors and no
+    /// Esplora, so the gate (which would fail closed) must be off. Only
+    /// the scheduler tests use `fresh_db`, and all of them want it off.
     async fn fresh_db() -> SqlitePool {
+        disable_onchain_gate_for_test();
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")

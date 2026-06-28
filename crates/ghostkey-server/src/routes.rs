@@ -137,6 +137,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(crate::psbt_routes::get_sealed_heir_xprv),
         )
         .route(
+            "/claim/:token/unlock-estimate",
+            get(crate::psbt_routes::claim_unlock_estimate),
+        )
+        .route(
             "/claim/:token/heir-derivation-params",
             get(crate::psbt_routes::get_heir_derivation_params),
         )
@@ -336,6 +340,22 @@ struct Health {
     /// `scheduler_healthy`: a stalled notifier silently stops contacting
     /// owners and heirs.
     notifier_healthy: bool,
+
+    /// Monitoring: on-chain maturity scans gate heir contact (Fix A).
+    /// When Esplora is unreachable these scans fail and heir contact
+    /// silently pauses (the safe direction). False after several
+    /// consecutive scan failures — on mainnet a persistently failing
+    /// scan means no claim ever advances, so alert on this. True when
+    /// healthy or simply idle (no vault waiting on a timelock).
+    chain_scan_healthy: bool,
+    /// Consecutive failed maturity scans (0 when healthy or idle).
+    chain_scan_consecutive_failures: i64,
+    /// Last maturity-scan error, null when the most recent scan (or no
+    /// scan at all) succeeded.
+    chain_scan_last_error: Option<String>,
+    /// RFC3339 time of the last successful maturity scan, null if none
+    /// has run since boot.
+    chain_scan_last_ok_at: Option<String>,
 }
 
 /// A due notification older than this is treated as evidence the notifier
@@ -396,6 +416,11 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         .map(|s| (Utc::now() - crate::config::parse_rfc(s)).num_seconds());
     let notifier_healthy = notifications_oldest_due_secs.is_none_or(|a| a <= NOTIFIER_STUCK_SECS);
 
+    // On-chain maturity-scan health (Fix A heir-contact gate).
+    let scan = crate::scheduler::chain_scan_health_snapshot();
+    let chain_scan_healthy =
+        scan.consecutive_failures < crate::scheduler::CHAIN_SCAN_UNHEALTHY_THRESHOLD;
+
     Json(Health {
         ok: true,
         version: env!("CARGO_PKG_VERSION"),
@@ -411,6 +436,10 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         notifications_oldest_due_secs,
         notifications_failed,
         notifier_healthy,
+        chain_scan_healthy,
+        chain_scan_consecutive_failures: scan.consecutive_failures as i64,
+        chain_scan_last_error: scan.last_err,
+        chain_scan_last_ok_at: scan.last_ok_at.map(|t| t.to_rfc3339()),
     })
 }
 
@@ -3122,14 +3151,13 @@ async fn resolve_claim(
     // (to build a PSBT, then to broadcast a signed one). The token
     // becomes "used" only when /claim/:token/broadcast lands a tx on
     // the network; see psbt_routes::broadcast_claim.
-
-    record_event(
-        &state.db,
-        &vault_id,
-        "claim_resolved",
-        Some(serde_json::json!({ "channel": heir_channel })),
-    )
-    .await?;
+    //
+    // We also do NOT record an event per resolve. The meaningful
+    // "heir opened the claim link" moment is logged exactly once,
+    // idempotently, by `ensure_claim_challenge` (the `claim_opened`
+    // event). Recording on every GET here spammed the owner's
+    // activity feed with one row per heir page refresh, mislabelled
+    // as "Claim stopped, you checked in" — the opposite of the truth.
 
     Ok(Json(ClaimView {
         vault_id,

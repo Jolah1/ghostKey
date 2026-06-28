@@ -131,6 +131,12 @@ pub fn api_base_url() -> Option<String> {
         .map(|s| s.trim_end_matches('/').to_string())
 }
 
+/// Assumed mainnet block spacing, seconds. Used only to translate a
+/// remaining-block count into a rough wall-clock unlock estimate (and the
+/// challenge window into an issue-lead). Real spacing drifts, so anything
+/// user-facing built on this says "around".
+pub const TARGET_BLOCK_SECS: i64 = 600;
+
 /// How long the claim-challenge window holds a freshly-opened claim,
 /// in seconds. During the window the heir's key material and the
 /// claim endpoints stay locked while the owner (and trusted contact)
