@@ -853,21 +853,21 @@ One-time setup with Cloudflare R2 (free tier covers this many times
 over):
 
 ```sh
-# 1. Cloudflare dashboard → R2 → create bucket "ghostkey-backups"
+# 1. Cloudflare dashboard → R2 → create bucket "ghostkey-backup"
 #    (location hint: Europe, to sit near the ams machine).
 # 2. R2 → Manage API tokens → Create token, permission
 #    "Object Read & Write", scoped to that bucket only.
 # 3. Wire the secrets (endpoint is shown on the token page):
 fly secrets set \
   LITESTREAM_ENDPOINT=https://<ACCOUNT_ID>.r2.cloudflarestorage.com \
-  LITESTREAM_BUCKET=ghostkey-backups \
+  LITESTREAM_BUCKET=ghostkey-backup \
   LITESTREAM_ACCESS_KEY_ID=<access-key-id> \
   LITESTREAM_SECRET_ACCESS_KEY=<secret-access-key> \
   -a ghostkey
 
 # 4. Deploy, then confirm in the logs:
 fly logs -a ghostkey | grep -i litestream
-# expect: "[entrypoint] litestream replication enabled (bucket: ghostkey-backups)"
+# expect: "[entrypoint] litestream replication enabled (bucket: ghostkey-backup)"
 ```
 
 Without the secrets the server still boots (local dev, CI), but logs
@@ -890,7 +890,7 @@ export LITESTREAM_ACCESS_KEY_ID=<access-key-id>
 export LITESTREAM_SECRET_ACCESS_KEY=<secret-access-key>
 litestream restore \
   -o /tmp/ghostkey-restored.sqlite \
-  "s3://ghostkey-backups/ghostkey?endpoint=https://<ACCOUNT_ID>.r2.cloudflarestorage.com"
+  "s3://ghostkey-backup/ghostkey?endpoint=https://<ACCOUNT_ID>.r2.cloudflarestorage.com"
 
 # Verify it's a real, current database:
 sqlite3 /tmp/ghostkey-restored.sqlite \

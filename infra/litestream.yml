@@ -13,7 +13,7 @@
 # environment at runtime:
 #
 #   LITESTREAM_ENDPOINT          e.g. https://<account-id>.r2.cloudflarestorage.com
-#   LITESTREAM_BUCKET            e.g. ghostkey-backups
+#   LITESTREAM_BUCKET            e.g. ghostkey-backup
 #   LITESTREAM_ACCESS_KEY_ID     R2/B2 access key id
 #   LITESTREAM_SECRET_ACCESS_KEY R2/B2 secret key
 #
