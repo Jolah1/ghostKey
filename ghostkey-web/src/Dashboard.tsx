@@ -355,7 +355,11 @@ export function Dashboard({ onNavigate }: Props) {
                   }}
                 />
               ) : isClaiming ? (
-                <ClaimInProgressCard meta={meta} status={vault!.status} />
+                <ClaimInProgressCard
+                  meta={meta}
+                  status={vault!.status}
+                  unlockEta={vault?.unlock_eta ?? null}
+                />
               ) : (
                 <HeartbeatCard
                   meta={meta}
@@ -1297,7 +1301,16 @@ function Greeting({
       // timelock_started: the link is out, but Bitcoin's timelock has to
       // run before the funds can move. The heir is waiting, not claiming.
       headline = "Your heir is waiting to claim";
-      sub = `${heirName} has the claim link. Bitcoin holds the funds for a set time before they can be collected.`;
+      const eta = vault?.unlock_eta
+        ? parseRfc(vault.unlock_eta).toLocaleDateString(undefined, {
+            weekday: "long",
+            month: "long",
+            day: "numeric",
+          })
+        : null;
+      sub = eta
+        ? `${heirName} has the claim link. The funds unlock on the Bitcoin network around ${eta}.`
+        : `${heirName} has the claim link. Bitcoin holds the funds for a set time before they can be collected.`;
     }
   } else if (isPastDeadline) {
     headline = "Check-in overdue";
@@ -1369,12 +1382,24 @@ function VaultClosedCard({
 function ClaimInProgressCard({
   meta,
   status,
+  unlockEta,
 }: {
   meta: VaultMeta;
   status: string;
+  unlockEta: string | null;
 }) {
   const broadcasting = status === "claiming";
   const heirName = meta.heir.name || "Your heir";
+  const eta = unlockEta
+    ? parseRfc(unlockEta).toLocaleDateString(undefined, {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+      })
+    : null;
+  const waitingSub = eta
+    ? `${heirName} has the claim link. The funds unlock on the Bitcoin network around ${eta}.`
+    : `${heirName} has the claim link. Bitcoin holds the funds for a set time before they can be collected.`;
   return (
     <section className="card relative overflow-hidden p-5 text-center md:p-8">
       <div className="flex flex-col items-center">
@@ -1390,7 +1415,7 @@ function ClaimInProgressCard({
         <p className="mt-2 max-w-md text-sm text-muted">
           {broadcasting
             ? `${heirName} is finalising the claim transaction.`
-            : `${heirName} has the claim link. Bitcoin holds the funds for a set time before they can be collected.`}
+            : waitingSub}
         </p>
       </div>
     </section>

@@ -558,6 +558,15 @@ pub struct VaultView {
     /// populated on owner-authenticated `GET /vaults/:id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_trusted_contact: Option<bool>,
+    /// Rough wall-clock time the on-chain CSV timelock matures, derived
+    /// from the cached maturity scan (the scheduler refreshes it; a
+    /// dashboard read never triggers a scan). Lets the owner dashboard
+    /// show "unlocks around <date>" while the heir is waiting to claim.
+    /// RFC3339; absent when the vault has never been scanned, has no
+    /// confirmed coin anchoring the timelock, or has already matured.
+    /// Only populated on owner-authenticated `GET /vaults/:id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unlock_eta: Option<String>,
 }
 
 /// Response shape from a successful vault creation.
@@ -736,6 +745,7 @@ async fn create_vault(
                 descriptor_external: None,
                 descriptor_internal: None,
                 has_trusted_contact: None,
+                unlock_eta: None,
             },
             owner_token: issued_owner.token,
             vault_secret_hex: None,
@@ -1374,6 +1384,7 @@ async fn create_vault_from_xpub(
                 descriptor_external: Some(pair.external.clone()),
                 descriptor_internal: Some(pair.internal.clone()),
                 has_trusted_contact: None,
+                unlock_eta: None,
             },
             owner_token: issued_owner.token,
             vault_secret_hex,
@@ -1766,6 +1777,7 @@ async fn create_vault_guardian(
                 descriptor_external: Some(pair.external.clone()),
                 descriptor_internal: Some(pair.internal.clone()),
                 has_trusted_contact: None,
+                unlock_eta: None,
             },
             owner_token: issued_owner.token,
             vault_secret_hex: None,
@@ -2197,6 +2209,9 @@ async fn get_vault(
         descriptor_internal: String,
         /// Has a sealed trusted contact (0/1).
         has_trusted_contact: i64,
+        /// Cached on-chain maturity scan (refreshed by the scheduler).
+        chain_unlock_height: Option<i64>,
+        chain_tip_height: Option<i64>,
     }
     let row = sqlx::query_as::<_, VaultRow>(
         r#"SELECT id, label, network, timelock_blocks,
@@ -2207,7 +2222,8 @@ async fn get_vault(
                   owner_contact_ciphertext IS NOT NULL AS has_owner_contact,
                   owner_contact_verified_at,
                   descriptor_external, descriptor_internal,
-                  trusted_contact_ciphertext IS NOT NULL AS has_trusted_contact
+                  trusted_contact_ciphertext IS NOT NULL AS has_trusted_contact,
+                  chain_unlock_height, chain_tip_height
            FROM vaults WHERE id = ?"#,
     )
     .bind(&id)
@@ -2230,6 +2246,18 @@ async fn get_vault(
     } else {
         (None, None)
     };
+
+    // Derive the on-chain unlock date from the cached maturity scan. We
+    // never scan here — a dashboard poll reads whatever the scheduler last
+    // wrote. `None` tip means we've never scanned (or it matured), so the
+    // dashboard falls back to generic "set time" copy.
+    let unlock_eta = row.chain_tip_height.and_then(|tip| {
+        let est = crate::psbt_routes::UnlockEstimate {
+            tip_height: tip as u32,
+            unlock_height: row.chain_unlock_height.map(|h| h as u32),
+        };
+        crate::psbt_routes::UnlockEstimateView::from_estimate(&est, Utc::now()).unlock_eta
+    });
 
     Ok(Json(VaultView {
         id: row.id,
@@ -2259,6 +2287,7 @@ async fn get_vault(
         descriptor_external: Some(row.descriptor_external),
         descriptor_internal: Some(row.descriptor_internal),
         has_trusted_contact: Some(row.has_trusted_contact == 1),
+        unlock_eta,
     }))
 }
 

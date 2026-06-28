@@ -68,6 +68,11 @@ export interface VaultView {
    *  proof so the owner can reconstruct the wallet without GhostKey. */
   descriptor_external?: string | null;
   descriptor_internal?: string | null;
+  /** Rough wall-clock time the on-chain timelock matures (RFC3339), from
+   *  the server's cached maturity scan. Present only on the owner
+   *  `GET /vaults/:id` when the vault has been scanned and hasn't matured.
+   *  Drives the "waiting to claim — unlocks around <date>" copy. */
+  unlock_eta?: string | null;
 }
 
 export interface CreateVaultRequest {
