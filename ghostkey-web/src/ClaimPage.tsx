@@ -60,6 +60,7 @@ import {
   type ClaimView,
   type HeirDerivationParamsView,
   type SealedHeirView,
+  type UnlockEstimateView,
   type VaultBalanceView,
 } from "./api";
 import { usePrice, btcAndUsd } from "./fiat";
@@ -313,7 +314,7 @@ function Resolved({ view, token }: { view: ClaimView; token: string }) {
             />
           );
         }
-        return <ClaimableState view={view} token={token} />;
+        return <MaturityGate view={view} token={token} />;
       }
       case "claimed":
         return <AlreadyClaimedState view={view} />;
@@ -350,9 +351,105 @@ function ChallengeGate({
 }) {
   const now = useTicker(30_000);
   if (now.getTime() >= availableAt.getTime()) {
-    return <ClaimableState view={view} token={token} />;
+    return <MaturityGate view={view} token={token} />;
   }
   return <SafetyWaitState availableAt={availableAt} now={now} />;
+}
+
+/**
+ * Second gate, behind the safety wait: the on-chain CSV timelock. The
+ * funds can't move until the coins are `timelock_blocks` deep, no matter
+ * what the server allows, so before we drop the heir into the claim form
+ * we check the real unlock estimate. If it hasn't matured we show an
+ * honest "unlocks around <date>" screen instead of a dead-end broadcast.
+ */
+function MaturityGate({ view, token }: { view: ClaimView; token: string }) {
+  const [est, setEst] = useState<UnlockEstimateView | null>(null);
+  const [failed, setFailed] = useState(false);
+  // Re-check periodically so a heir who leaves the tab open rolls
+  // straight into the claim flow the moment the timelock matures.
+  const tick = useTicker(60_000);
+
+  useEffect(() => {
+    let alive = true;
+    setFailed(false);
+    api
+      .claimUnlockEstimate(token)
+      .then((e) => alive && setEst(e))
+      .catch(() => alive && setFailed(true));
+    return () => {
+      alive = false;
+    };
+  }, [token, tick]);
+
+  if (est?.matured) {
+    return <ClaimableState view={view} token={token} />;
+  }
+  if (est && !est.matured) {
+    return <TimelockWaitState est={est} />;
+  }
+  if (failed) {
+    // Couldn't reach the chain. Don't pretend it's ready — the claim
+    // endpoints would only fail anyway. Keep it calm and self-healing.
+    return (
+      <section>
+        <Eyebrow>One moment</Eyebrow>
+        <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
+          We're checking the Bitcoin network
+        </h1>
+        <p className="mt-4 text-muted">
+          This is taking a moment. Leave this page open, or come back using
+          the same link in a little while.
+        </p>
+      </section>
+    );
+  }
+  // First load, estimate not back yet.
+  return (
+    <section>
+      <Eyebrow>One moment</Eyebrow>
+      <p className="mt-4 text-muted">Checking when your funds are ready…</p>
+    </section>
+  );
+}
+
+/**
+ * On-chain timelock wait. Distinct from the safety wait: this is Bitcoin
+ * itself holding the funds until the coins are old enough to move. Calm,
+ * dated, nothing for the heir to do.
+ */
+function TimelockWaitState({ est }: { est: UnlockEstimateView }) {
+  const friendly = est.unlock_eta
+    ? new Date(est.unlock_eta).toLocaleString(undefined, {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+      })
+    : null;
+  return (
+    <section>
+      <Eyebrow>Almost there</Eyebrow>
+      <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
+        Your funds are nearly ready
+      </h1>
+      {friendly ? (
+        <p className="mt-4 text-muted">
+          What was left for you unlocks on the Bitcoin network around{" "}
+          <strong>{friendly}</strong>. Nothing for you to do — we'll email
+          you when it's ready, and you can come back using this same link.
+        </p>
+      ) : (
+        <p className="mt-4 text-muted">
+          We're still confirming the funds on the Bitcoin network. Nothing
+          for you to do — check back shortly using this same link.
+        </p>
+      )}
+      <p className="mt-3 text-sm text-dim">
+        Bitcoin holds an inheritance for a set time before it can be
+        collected. That time is almost up.
+      </p>
+    </section>
+  );
 }
 
 /**

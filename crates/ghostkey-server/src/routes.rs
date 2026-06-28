@@ -137,6 +137,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(crate::psbt_routes::get_sealed_heir_xprv),
         )
         .route(
+            "/claim/:token/unlock-estimate",
+            get(crate::psbt_routes::claim_unlock_estimate),
+        )
+        .route(
             "/claim/:token/heir-derivation-params",
             get(crate::psbt_routes::get_heir_derivation_params),
         )

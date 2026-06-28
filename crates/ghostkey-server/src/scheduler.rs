@@ -1005,17 +1005,6 @@ async fn enqueue_alarm_owner(
     Ok(())
 }
 
-/// Assumed mainnet block spacing, seconds. Only used to convert the
-/// claim-challenge window into an issue-lead measured in blocks; real
-/// spacing drifts, so nothing exact hangs off it.
-const TARGET_BLOCK_SECS: i64 = 600;
-
-/// How long a cached on-chain maturity estimate stays usable before the
-/// scheduler rescans. ~1 block: finer granularity is wasted when the
-/// chain only advances every ~10 min, and it caps Esplora load to a few
-/// scans per hour for each vault waiting out its timelock.
-const MATURITY_CACHE_TTL_SECS: i64 = 600;
-
 /// On-chain maturity gating for heir contact (Fix A). On by default in
 /// production. The scheduler's own unit tests drive the server-clock
 /// state machine with fake descriptors and no Esplora, so `fresh_db`
@@ -1072,75 +1061,31 @@ async fn heir_contact_ready(
         return true;
     }
 
-    let net = match crate::config::parse_network(&row.network) {
-        Ok(n) => n,
-        Err(_) => {
+    let input = crate::psbt_routes::EstimateInput {
+        vault_id: row.id.clone(),
+        descriptor_external: row.descriptor_external.clone(),
+        descriptor_internal: row.descriptor_internal.clone(),
+        network: row.network.clone(),
+        timelock_blocks: row.timelock_blocks,
+        cached_unlock_height: row.chain_unlock_height,
+        cached_tip_height: row.chain_tip_height,
+        cached_scanned_at: row.chain_scanned_at.clone(),
+    };
+    match crate::psbt_routes::unlock_estimate_with_cache(&state.db, &input, now).await {
+        Ok(est) => {
+            let lead_blocks = (crate::config::claim_challenge_window_secs()
+                / crate::config::TARGET_BLOCK_SECS)
+                .max(0) as u32;
+            issue_ready(est.unlock_height, est.tip_height, lead_blocks)
+        }
+        Err(e) => {
             tracing::warn!(
-                vault_id = %row.id, network = %row.network,
-                "unparseable vault network; not advancing"
+                vault_id = %row.id, error = %e,
+                "on-chain maturity scan failed; not advancing this tick"
             );
-            return false;
+            false
         }
-    };
-
-    let cache_fresh = row
-        .chain_scanned_at
-        .as_deref()
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|t| (now - t.with_timezone(&Utc)).num_seconds() < MATURITY_CACHE_TTL_SECS)
-        .unwrap_or(false);
-
-    let (unlock_height, tip_height) = if cache_fresh {
-        match (row.chain_unlock_height, row.chain_tip_height) {
-            (Some(u), Some(t)) => (Some(u as u32), t as u32),
-            // Cache fresh but no confirmed coin recorded: not ready.
-            _ => return false,
-        }
-    } else {
-        match crate::psbt_routes::scan_unlock_estimate(
-            row.descriptor_external.clone(),
-            row.descriptor_internal.clone(),
-            net,
-            row.timelock_blocks.max(0) as u32,
-            None,
-        )
-        .await
-        {
-            Ok(est) => {
-                if let Err(e) = sqlx::query(
-                    r#"UPDATE vaults
-                          SET chain_unlock_height = ?,
-                              chain_tip_height    = ?,
-                              chain_scanned_at    = ?
-                        WHERE id = ?"#,
-                )
-                .bind(est.unlock_height.map(|h| h as i64))
-                .bind(est.tip_height as i64)
-                .bind(now.to_rfc3339())
-                .bind(&row.id)
-                .execute(&state.db)
-                .await
-                {
-                    tracing::warn!(
-                        vault_id = %row.id, error = ?e,
-                        "could not cache on-chain maturity estimate"
-                    );
-                }
-                (est.unlock_height, est.tip_height)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    vault_id = %row.id, error = %e,
-                    "on-chain maturity scan failed; not advancing this tick"
-                );
-                return false;
-            }
-        }
-    };
-
-    let lead_blocks =
-        (crate::config::claim_challenge_window_secs() / TARGET_BLOCK_SECS).max(0) as u32;
-    issue_ready(unlock_height, tip_height, lead_blocks)
+    }
 }
 
 /// Move every vault that has been `alarmed` long enough (past its

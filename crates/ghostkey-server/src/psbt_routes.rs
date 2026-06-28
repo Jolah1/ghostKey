@@ -600,6 +600,78 @@ pub struct SealedHeirView {
     pub descriptor_internal: String,
 }
 
+/// Friendly, plain-text wait message for a not-yet-matured claim. The
+/// claim page renders its own dated screen from the estimate; this is the
+/// backstop for anyone (or any tooling) hitting the API directly.
+fn unlock_wait_message(view: &UnlockEstimateView) -> String {
+    match &view.unlock_eta {
+        Some(eta) => format!(
+            "These funds unlock on the Bitcoin network around {eta}. \
+             Come back then — we'll email you when it's ready."
+        ),
+        None => "We're still confirming your funds on the Bitcoin network. \
+             Check back shortly."
+            .into(),
+    }
+}
+
+/// GET /claim/:token/unlock-estimate
+///
+/// Heir-facing: when can these funds actually move? The claim page reads
+/// this once past the safety window so it can show an honest "unlocks
+/// around <date>" screen instead of letting the heir hit a dead-end
+/// broadcast. Token-gated like the other claim routes; no key material.
+pub async fn claim_unlock_estimate(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+) -> Result<Json<UnlockEstimateView>, ApiError> {
+    let hash = hash_claim_token(&token);
+    type Row = (
+        String,         // id
+        String,         // network
+        i64,            // timelock_blocks
+        Option<String>, // claim_token_hash
+        Option<String>, // claim_token_used_at
+        String,         // descriptor_external
+        String,         // descriptor_internal
+        Option<i64>,    // chain_unlock_height
+        Option<i64>,    // chain_tip_height
+        Option<String>, // chain_scanned_at
+    );
+    let row: Option<Row> = sqlx::query_as(
+        r#"SELECT id, network, timelock_blocks,
+                  claim_token_hash, claim_token_used_at,
+                  descriptor_external, descriptor_internal,
+                  chain_unlock_height, chain_tip_height, chain_scanned_at
+             FROM vaults
+            WHERE claim_token_hash = ?"#,
+    )
+    .bind(&hash)
+    .fetch_optional(&state.db)
+    .await?;
+    let row = row.ok_or(ApiError::NotFound)?;
+    let stored_hash = row.3.clone().ok_or(ApiError::NotFound)?;
+    if !claim_token_matches(&token, &stored_hash) {
+        return Err(ApiError::NotFound);
+    }
+    if row.4.is_some() {
+        return Err(ApiError::Conflict("claim token already used".into()));
+    }
+    let now = Utc::now();
+    let input = EstimateInput {
+        vault_id: row.0,
+        descriptor_external: row.5,
+        descriptor_internal: row.6,
+        network: row.1,
+        timelock_blocks: row.2,
+        cached_unlock_height: row.7,
+        cached_tip_height: row.8,
+        cached_scanned_at: row.9,
+    };
+    let est = unlock_estimate_with_cache(&state.db, &input, now).await?;
+    Ok(Json(UnlockEstimateView::from_estimate(&est, now)))
+}
+
 pub async fn get_sealed_heir_xprv(
     State(state): State<Arc<AppState>>,
     Path(token): Path<String>,
@@ -615,12 +687,16 @@ pub async fn get_sealed_heir_xprv(
         Option<String>, // heir_xprv_nonce
         String,         // descriptor_external
         String,         // descriptor_internal
+        Option<i64>,    // chain_unlock_height
+        Option<i64>,    // chain_tip_height
+        Option<String>, // chain_scanned_at
     );
     let row: Option<Row> = sqlx::query_as(
         r#"SELECT id, network, timelock_blocks,
                   claim_token_hash, claim_token_used_at,
                   heir_xprv_sealed_ct_b64, heir_xprv_sealed_nonce,
-                  descriptor_external, descriptor_internal
+                  descriptor_external, descriptor_internal,
+                  chain_unlock_height, chain_tip_height, chain_scanned_at
              FROM vaults
             WHERE claim_token_hash = ?"#,
     )
@@ -644,6 +720,37 @@ pub async fn get_sealed_heir_xprv(
             "safety waiting period — this claim can be completed after {}",
             available.to_rfc3339()
         )));
+    }
+    // On-chain maturity (Fix A): even past the challenge window the funds
+    // can't move until the CSV timelock matures. Don't release the key
+    // on a false "go" — return the real unlock date instead. If the chain
+    // can't be reached, withhold the key rather than guess.
+    {
+        let now = Utc::now();
+        let input = EstimateInput {
+            vault_id: row.0.clone(),
+            descriptor_external: row.7.clone(),
+            descriptor_internal: row.8.clone(),
+            network: row.1.clone(),
+            timelock_blocks: row.2,
+            cached_unlock_height: row.9,
+            cached_tip_height: row.10,
+            cached_scanned_at: row.11.clone(),
+        };
+        match unlock_estimate_with_cache(&state.db, &input, now).await {
+            Ok(est) => {
+                let view = UnlockEstimateView::from_estimate(&est, now);
+                if !view.matured {
+                    return Err(ApiError::Conflict(unlock_wait_message(&view)));
+                }
+            }
+            Err(e) => {
+                return Err(ApiError::Validation(format!(
+                    "couldn't reach the Bitcoin network to check the timelock; \
+                     please try again shortly ({e})"
+                )));
+            }
+        }
     }
     let ct = row.5.ok_or_else(|| {
         ApiError::Validation(
@@ -1656,6 +1763,134 @@ pub(crate) async fn scan_unlock_estimate(
     })
     .await
     .map_err(|e| BlockingErr::Esplora(format!("scan worker panic: {e}")))?
+}
+
+/// How long a cached on-chain maturity estimate stays usable before a
+/// rescan (~1 block): finer granularity is wasted when the chain only
+/// advances every ~10 min, and it caps Esplora load per waiting vault.
+pub(crate) const MATURITY_CACHE_TTL_SECS: i64 = 600;
+
+/// A vault's descriptors plus whatever maturity estimate is already
+/// cached on its row — enough to answer "when can the heir spend?"
+/// without always hitting Esplora.
+pub(crate) struct EstimateInput {
+    pub vault_id: String,
+    pub descriptor_external: String,
+    pub descriptor_internal: String,
+    pub network: String,
+    pub timelock_blocks: i64,
+    pub cached_unlock_height: Option<i64>,
+    pub cached_tip_height: Option<i64>,
+    pub cached_scanned_at: Option<String>,
+}
+
+/// Return the vault's unlock estimate, reusing the cached value while it
+/// is fresh and otherwise rescanning Esplora and writing the cache back.
+/// Shared by the scheduler's heir-contact gate and the heir-facing
+/// `/claim/:token/unlock-estimate` endpoint so both see one source.
+pub(crate) async fn unlock_estimate_with_cache(
+    db: &sqlx::SqlitePool,
+    input: &EstimateInput,
+    now: chrono::DateTime<Utc>,
+) -> Result<UnlockEstimate, BlockingErr> {
+    let cache_fresh = input
+        .cached_scanned_at
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| (now - t.with_timezone(&Utc)).num_seconds() < MATURITY_CACHE_TTL_SECS)
+        .unwrap_or(false);
+
+    // A fresh cache with a recorded tip answers directly. A fresh row
+    // with no tip means we have never scanned; fall through and do so.
+    if cache_fresh {
+        if let Some(tip) = input.cached_tip_height {
+            return Ok(UnlockEstimate {
+                tip_height: tip as u32,
+                unlock_height: input.cached_unlock_height.map(|h| h as u32),
+            });
+        }
+    }
+
+    let net = crate::config::parse_network(&input.network)
+        .map_err(|e| BlockingErr::Vault(format!("unknown vault network: {e}")))?;
+    let est = scan_unlock_estimate(
+        input.descriptor_external.clone(),
+        input.descriptor_internal.clone(),
+        net,
+        input.timelock_blocks.max(0) as u32,
+        None,
+    )
+    .await?;
+
+    if let Err(e) = sqlx::query(
+        r#"UPDATE vaults
+              SET chain_unlock_height = ?,
+                  chain_tip_height    = ?,
+                  chain_scanned_at    = ?
+            WHERE id = ?"#,
+    )
+    .bind(est.unlock_height.map(|h| h as i64))
+    .bind(est.tip_height as i64)
+    .bind(now.to_rfc3339())
+    .bind(&input.vault_id)
+    .execute(db)
+    .await
+    {
+        tracing::warn!(vault_id = %input.vault_id, error = ?e,
+            "could not cache on-chain maturity estimate");
+    }
+    Ok(est)
+}
+
+/// Heir-facing view of `UnlockEstimate`: the derived fields the claim
+/// page needs to render an honest "funds unlock around <date>" screen.
+#[derive(Debug, Serialize)]
+pub struct UnlockEstimateView {
+    /// True once the funds are confirmed and the timelock has elapsed —
+    /// the heir can complete the claim now.
+    pub matured: bool,
+    /// Chain tip height at the estimate.
+    pub tip_height: u32,
+    /// Block height at/after which the heir can spend, or null when no
+    /// confirmed coin yet anchors the timelock.
+    pub unlock_height: Option<u32>,
+    /// Blocks left until the timelock matures (0 once reached).
+    pub blocks_remaining: u32,
+    /// Rough wall-clock unlock time (RFC3339), or null when matured or
+    /// not yet anchored. "Around": block spacing drifts.
+    pub unlock_eta: Option<String>,
+}
+
+impl UnlockEstimateView {
+    pub(crate) fn from_estimate(est: &UnlockEstimate, now: chrono::DateTime<Utc>) -> Self {
+        match est.unlock_height {
+            Some(unlock) => {
+                let blocks_remaining = unlock.saturating_sub(est.tip_height);
+                let matured = blocks_remaining == 0;
+                let unlock_eta = (blocks_remaining > 0).then(|| {
+                    (now + chrono::Duration::seconds(
+                        blocks_remaining as i64 * crate::config::TARGET_BLOCK_SECS,
+                    ))
+                    .to_rfc3339()
+                });
+                UnlockEstimateView {
+                    matured,
+                    tip_height: est.tip_height,
+                    unlock_height: Some(unlock),
+                    blocks_remaining,
+                    unlock_eta,
+                }
+            }
+            // No confirmed coin to anchor the timelock yet.
+            None => UnlockEstimateView {
+                matured: false,
+                tip_height: est.tip_height,
+                unlock_height: None,
+                blocks_remaining: 0,
+                unlock_eta: None,
+            },
+        }
+    }
 }
 
 /* -------------------------------------------------------------------------- *
