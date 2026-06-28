@@ -303,7 +303,9 @@ export function Dashboard({ onNavigate }: Props) {
 
   return (
     <main className="bg-app fade-in">
-      <div className="mx-auto max-w-2xl px-5 py-10 md:py-14 lg:max-w-5xl">
+      {/* pb-28 reserves space for the fixed GhostKey AI button
+          (bottom-5) so it never overlaps the last activity rows. */}
+      <div className="mx-auto max-w-2xl px-5 py-10 pb-28 md:py-14 md:pb-28 lg:max-w-5xl">
         <Greeting
           meta={meta}
           vault={vault}

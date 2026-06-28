@@ -3122,14 +3122,13 @@ async fn resolve_claim(
     // (to build a PSBT, then to broadcast a signed one). The token
     // becomes "used" only when /claim/:token/broadcast lands a tx on
     // the network; see psbt_routes::broadcast_claim.
-
-    record_event(
-        &state.db,
-        &vault_id,
-        "claim_resolved",
-        Some(serde_json::json!({ "channel": heir_channel })),
-    )
-    .await?;
+    //
+    // We also do NOT record an event per resolve. The meaningful
+    // "heir opened the claim link" moment is logged exactly once,
+    // idempotently, by `ensure_claim_challenge` (the `claim_opened`
+    // event). Recording on every GET here spammed the owner's
+    // activity feed with one row per heir page refresh, mislabelled
+    // as "Claim stopped, you checked in" — the opposite of the truth.
 
     Ok(Json(ClaimView {
         vault_id,

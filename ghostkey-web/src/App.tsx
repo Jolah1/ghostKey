@@ -324,7 +324,13 @@ export default function App() {
       <a href="#main" className="skip-link">
         Skip to content
       </a>
-      <AlphaBanner network={network} />
+      {/* Wait for the first /health probe before showing the network
+          banner. `network` defaults to "testnet", so rendering early
+          flashed an "Alpha: testnet, don't use real money" warning on
+          every reload of a mainnet vault before flipping to the live
+          banner. A wrong-network safety warning, even for a moment,
+          is worse than a brief absence. */}
+      {health !== "unknown" && <AlphaBanner network={network} />}
       {demoMode && <DemoBanner />}
       {health === "offline" && <ServerOfflineBanner />}
       {/*

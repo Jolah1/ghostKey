@@ -426,7 +426,10 @@ export function friendlyEventKind(kind: string): string {
     case "claim_psbt_built": return "Your heir prepared the transaction";
     case "claim_broadcast": return "Your heir broadcast the claim";
     case "claim_ready": return "Your heir can now claim";
-    case "claim_resolved": return "Claim stopped, you checked in";
+    // Legacy event: older builds recorded this on every heir page
+    // load. It never meant the owner checked in (that's "checkin").
+    // It marks the heir being active on the claim. No longer emitted.
+    case "claim_resolved": return "Your heir is working on the claim";
     case "panic_activated": return "Emergency freeze on";
     case "panic_expired": return "Emergency freeze ended";
     default:
