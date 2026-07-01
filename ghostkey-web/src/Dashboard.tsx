@@ -293,8 +293,12 @@ export function Dashboard({ onNavigate }: Props) {
   const isClaiming =
     vault?.status === "timelock_started" || vault?.status === "claiming";
   const isClosed = vault?.status === "claimed";
+  // Not funded yet: the check-in clock hasn't started, so no deadline
+  // is "past" and none of the check-in affordances apply.
+  const isUnfunded = vault?.status === "unfunded";
   const isPastDeadline =
     vault != null &&
+    !isUnfunded &&
     (vault.status === "alarmed" ||
       isClaiming ||
       isClosed ||
@@ -311,6 +315,7 @@ export function Dashboard({ onNavigate }: Props) {
           now={now}
           isClaiming={isClaiming}
           isClosed={isClosed}
+          isUnfunded={isUnfunded}
           isPastDeadline={isPastDeadline}
         />
 
@@ -359,6 +364,8 @@ export function Dashboard({ onNavigate }: Props) {
                   status={vault!.status}
                   unlockEta={vault?.unlock_eta ?? null}
                 />
+              ) : isUnfunded ? (
+                <AwaitingFundingCard meta={meta} />
               ) : (
                 <HeartbeatCard
                   meta={meta}
@@ -385,13 +392,13 @@ export function Dashboard({ onNavigate }: Props) {
               </div>
             ) : null}
 
-            {vault?.lnurl_checkin && !isClosed && !isClaiming ? (
+            {vault?.lnurl_checkin && !isClosed && !isClaiming && !isUnfunded ? (
               <div className="mt-5">
                 <LnurlCard lnurl={vault.lnurl_checkin} />
               </div>
             ) : null}
 
-            {vault && !isClosed && !isClaiming && pushKey && ownerToken ? (
+            {vault && !isClosed && !isClaiming && !isUnfunded && pushKey && ownerToken ? (
               <div className="mt-5">
                 <PushOptInCard
                   vaultId={vault.id}
@@ -1266,6 +1273,7 @@ function Greeting({
   now,
   isClaiming,
   isClosed,
+  isUnfunded,
   isPastDeadline,
 }: {
   meta: VaultMeta;
@@ -1273,6 +1281,7 @@ function Greeting({
   now: Date;
   isClaiming: boolean;
   isClosed: boolean;
+  isUnfunded: boolean;
   isPastDeadline: boolean;
 }) {
   const last = vault?.last_checkin_at
@@ -1288,7 +1297,10 @@ function Greeting({
   // this dashboard.
   let headline: string;
   let sub: string;
-  if (isClosed) {
+  if (isUnfunded) {
+    headline = "Fund your vault to start";
+    sub = `Send Bitcoin to your vault to activate it. Check-ins begin once the funds arrive, not before.`;
+  } else if (isClosed) {
     headline = "Vault closed";
     sub = `${meta.heir.name || "Your heir"} claimed the funds.`;
   } else if (isClaiming) {
@@ -1335,6 +1347,36 @@ function Greeting({
 }
 
 /* --------------------------- Heartbeat card ------------------------------- */
+
+/**
+ * Pre-funding replacement for the HeartbeatCard. Shown while the vault
+ * is `unfunded`: the check-in clock only starts once Bitcoin actually
+ * lands on-chain, so there's nothing to check in on yet. We point the
+ * owner at the balance card below (their deposit address) and reassure
+ * them the countdown hasn't begun.
+ */
+function AwaitingFundingCard({ meta }: { meta: VaultMeta }) {
+  return (
+    <section className="card relative overflow-hidden p-5 text-center md:p-8">
+      <div className="flex flex-col items-center">
+        <div
+          aria-hidden="true"
+          className="flex h-16 w-16 items-center justify-center rounded-full bg-[var(--surface-2,var(--surface))] text-3xl"
+        >
+          ₿
+        </div>
+        <h2 className="mt-6 font-serif text-2xl">Fund your vault to start</h2>
+        <p className="mt-2 max-w-md text-sm text-muted">
+          Send Bitcoin to your vault using the balance card below. Nothing
+          starts until the funds arrive: no check-in clock, no reminders, and
+          {" "}
+          {meta.heir.name || "your heir"} can't be contacted. Once it's funded,
+          your monthly check-ins begin.
+        </p>
+      </div>
+    </section>
+  );
+}
 
 /**
  * Terminal-state replacement for the HeartbeatCard. Shown when the

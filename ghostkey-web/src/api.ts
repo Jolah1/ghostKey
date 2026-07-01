@@ -8,6 +8,7 @@
  */
 
 export type VaultStatus =
+  | "unfunded"
   | "ok"
   | "warning"
   | "alarmed"

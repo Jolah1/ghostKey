@@ -655,6 +655,24 @@ fn validate_contact_channel(field: &str, ch: Option<&str>) -> Result<(), ApiErro
     Ok(())
 }
 
+/// Status a freshly created vault starts in.
+///
+/// New vaults are `unfunded` until coins actually land on-chain: their
+/// check-in clock does not run, no reminders fire, and the check-in
+/// routes refuse them, so owners aren't nagged about (or asked to pay
+/// Lightning to check in on) an empty vault. The scheduler flips them to
+/// `ok` on first funding (see `scheduler::activate_funded_vaults`).
+///
+/// Demo deployments have no real chain to detect funding on, so vaults
+/// start active.
+fn initial_vault_status() -> &'static str {
+    if crate::demo::demo_mode() {
+        "ok"
+    } else {
+        "unfunded"
+    }
+}
+
 async fn create_vault(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateVaultRequest>,
@@ -719,6 +737,16 @@ async fn create_vault(
     .execute(&state.db)
     .await?;
 
+    // Hold the clock until the vault is funded (no-op in demo mode).
+    let initial_status = initial_vault_status();
+    if initial_status != "ok" {
+        sqlx::query("UPDATE vaults SET status = ? WHERE id = ?")
+            .bind(initial_status)
+            .bind(&id)
+            .execute(&state.db)
+            .await?;
+    }
+
     record_event(&state.db, &id, "registered", None).await?;
 
     Ok((
@@ -731,7 +759,7 @@ async fn create_vault(
                 timelock_blocks: timelock,
                 checkin_period_secs: req.checkin_period_secs,
                 grace_period_secs: req.grace_period_secs,
-                status: "ok".into(),
+                status: initial_status.into(),
                 created_at: now,
                 last_checkin_at: None,
                 next_deadline_at: next_deadline,
@@ -1329,6 +1357,16 @@ async fn create_vault_from_xpub(
     .execute(&state.db)
     .await?;
 
+    // Hold the clock until the vault is funded (no-op in demo mode).
+    let initial_status = initial_vault_status();
+    if initial_status != "ok" {
+        sqlx::query("UPDATE vaults SET status = ? WHERE id = ?")
+            .bind(initial_status)
+            .bind(&id)
+            .execute(&state.db)
+            .await?;
+    }
+
     record_event(
         &state.db,
         &id,
@@ -1369,7 +1407,7 @@ async fn create_vault_from_xpub(
                 timelock_blocks: timelock,
                 checkin_period_secs: req.checkin_period_secs,
                 grace_period_secs: req.grace_period_secs,
-                status: "ok".into(),
+                status: initial_status.into(),
                 created_at: now,
                 last_checkin_at: None,
                 next_deadline_at: next_deadline,
@@ -1737,6 +1775,16 @@ async fn create_vault_guardian(
         .await?;
     }
 
+    // Hold the clock until the vault is funded (no-op in demo mode).
+    let initial_status = initial_vault_status();
+    if initial_status != "ok" {
+        sqlx::query("UPDATE vaults SET status = ? WHERE id = ?")
+            .bind(initial_status)
+            .bind(&id)
+            .execute(&state.db)
+            .await?;
+    }
+
     record_event(
         &state.db,
         &id,
@@ -1765,7 +1813,7 @@ async fn create_vault_guardian(
                 timelock_blocks: timelock,
                 checkin_period_secs: req.checkin_period_secs,
                 grace_period_secs: req.grace_period_secs,
-                status: "ok".into(),
+                status: initial_status.into(),
                 created_at: now,
                 last_checkin_at: None,
                 next_deadline_at: next_deadline,
@@ -2608,14 +2656,22 @@ async fn checkin(
     let id = auth.vault_id;
     // Fetch the cadence + last_checkin so we can both recompute the
     // deadline and enforce once-per-period.
-    let row = sqlx::query_as::<_, (i64, i64, Option<String>)>(
-        "SELECT checkin_period_secs, grace_period_secs, last_checkin_at \
+    let row = sqlx::query_as::<_, (i64, i64, Option<String>, String)>(
+        "SELECT checkin_period_secs, grace_period_secs, last_checkin_at, status \
            FROM vaults WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.db)
     .await?
     .ok_or(ApiError::NotFound)?;
+
+    // Check-ins don't start until the vault is funded. There's no clock
+    // to reset yet, so refuse rather than silently no-op.
+    if row.3 == "unfunded" {
+        return Err(ApiError::Conflict(
+            "Fund your vault first. Check-ins begin once your Bitcoin is in the vault.".into(),
+        ));
+    }
 
     let now = Utc::now();
     // Once-per-period guard: if the owner already checked in inside
@@ -3566,12 +3622,22 @@ async fn create_checkin_invoice(
     // period. Spec: at most one successful check-in per period. We
     // catch it at mint time so the owner doesn't pay sats that won't
     // count.
-    let cad: Option<(i64, Option<String>)> =
-        sqlx::query_as("SELECT checkin_period_secs, last_checkin_at FROM vaults WHERE id = ?")
-            .bind(vault_id)
-            .fetch_optional(&state.db)
-            .await?;
-    if let Some((period, Some(last_s))) = cad {
+    let cad: Option<(i64, Option<String>, String)> = sqlx::query_as(
+        "SELECT checkin_period_secs, last_checkin_at, status FROM vaults WHERE id = ?",
+    )
+    .bind(vault_id)
+    .fetch_optional(&state.db)
+    .await?;
+
+    // Don't let an owner pay a Lightning invoice to "check in" on a vault
+    // that isn't funded yet — there's no clock to reset.
+    if matches!(&cad, Some((_, _, status)) if status == "unfunded") {
+        return Err(ApiError::Conflict(
+            "Fund your vault first. Check-ins begin once your Bitcoin is in the vault.".into(),
+        ));
+    }
+
+    if let Some((period, Some(last_s), _)) = cad {
         if let Ok(last) = DateTime::parse_from_rfc3339(&last_s) {
             let next_open = last.with_timezone(&Utc) + Duration::seconds(period);
             if Utc::now() < next_open {
