@@ -606,6 +606,7 @@ const FOOTER_COLS: FooterCol[] = [
   {
     title: "Protocol",
     links: [
+      { label: "How recovery works", href: "#/recovery-guide" },
       { label: "GitHub",          href: "https://github.com/Jolah1/ghostKey",                       external: true },
       { label: "System status",   href: "#/status" },
     ],

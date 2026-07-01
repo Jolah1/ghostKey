@@ -61,6 +61,9 @@ const Dashboard = lazy(() =>
 const RecoveryKitPage = lazy(() =>
   import("./RecoveryKitPage").then((m) => ({ default: m.RecoveryKitPage })),
 );
+const RecoveryGuide = lazy(() =>
+  import("./RecoveryGuide").then((m) => ({ default: m.RecoveryGuide })),
+);
 const ClaimPage = lazy(() =>
   import("./ClaimPage").then((m) => ({ default: m.ClaimPage })),
 );
@@ -103,6 +106,7 @@ export type Route =
   | "success"
   | "dashboard"
   | "recovery"
+  | "recovery-guide"
   | "checkin"
   | "checkin-legacy"
   | "inherit"
@@ -118,6 +122,7 @@ const VALID: Route[] = [
   "success",
   "dashboard",
   "recovery",
+  "recovery-guide",
   "checkin",
   "checkin-legacy",
   "inherit",
@@ -375,6 +380,7 @@ export default function App() {
       {location.kind === "route" && location.route === "success"   && <Success onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "dashboard" && <Dashboard onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "recovery"  && <RecoveryKitPage onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "recovery-guide" && <RecoveryGuide onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "checkin"   && <SignInPortal onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "checkin-legacy" && (
         <CheckinPortal initialId={getActiveVaultId() ?? undefined} />
