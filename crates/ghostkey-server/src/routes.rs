@@ -192,6 +192,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/health", get(health))
         .route("/health/lightning", get(health_lightning))
         .route("/vaults", get(list_vaults))
+        // Operator-only read endpoints (AdminAuth-gated; closed unless
+        // GHOSTKEY_ADMIN_TOKEN_HASH is set). See admin.rs.
+        .route("/admin/newsletter", get(crate::admin::list_newsletter))
+        .route("/admin/analytics", get(crate::admin::analytics_summary))
         .route("/vaults/:id", get(get_vault).delete(delete_vault))
         .route("/vaults/:id/heir", get(get_vault_heir))
         .route("/vaults/:id/address", get(get_vault_address))
