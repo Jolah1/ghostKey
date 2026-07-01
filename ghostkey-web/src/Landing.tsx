@@ -14,10 +14,11 @@
  * the orange accent picked out on the punchline word. Tando-inspired.
  * Tone: emotional, no jargon, no AI tells.
  */
+import { useState } from "react";
 import { Disclosure, Eyebrow } from "./ui";
 import { brand } from "./vocab";
 import type { Route } from "./App";
-import { api } from "./api";
+import { ApiError, api } from "./api";
 import { useTrackInView } from "./useTrackInView";
 
 interface Props {
@@ -636,6 +637,78 @@ const FOOTER_COLS: FooterCol[] = [
   },
 ];
 
+/**
+ * Email capture for product updates. Posts to the server's sealed-at-rest
+ * email list (see `api.subscribeNewsletter`). Deliberately quiet: one
+ * field, one button, and a single confirmation line. We never reveal
+ * whether an address was already subscribed.
+ */
+function NewsletterSignup() {
+  const [email, setEmail] = useState("");
+  const [state, setState] = useState<"idle" | "busy" | "done" | "error">("idle");
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (state === "busy") return;
+    setState("busy");
+    setMessage(null);
+    try {
+      await api.subscribeNewsletter(email.trim(), "footer");
+      void api.trackEvent("newsletter.subscribed", "footer");
+      setState("done");
+      setEmail("");
+    } catch (err) {
+      setState("error");
+      setMessage(
+        err instanceof ApiError && err.status === 400
+          ? "That doesn't look like an email. Try again."
+          : "Something went wrong. Please try again.",
+      );
+    }
+  }
+
+  if (state === "done") {
+    return (
+      <p className="mt-6 text-sm text-soft">
+        You're on the list. We'll only email now and then.
+      </p>
+    );
+  }
+
+  return (
+    <form onSubmit={onSubmit} className="mt-6 max-w-sm">
+      <label htmlFor="newsletter-email" className="text-sm text-muted">
+        Get occasional updates. No spam.
+      </label>
+      <div className="mt-2 flex gap-2">
+        <input
+          id="newsletter-email"
+          type="email"
+          required
+          autoComplete="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@example.com"
+          className="min-w-0 flex-1 rounded-lg border border-app bg-surface px-3 py-2 text-sm outline-none focus:border-[var(--border-hi)]"
+        />
+        <button
+          type="submit"
+          disabled={state === "busy"}
+          className="btn btn-primary shrink-0 disabled:opacity-60"
+        >
+          {state === "busy" ? "..." : "Subscribe"}
+        </button>
+      </div>
+      {message ? (
+        <p className="mt-2 text-xs text-alarm" role="alert">
+          {message}
+        </p>
+      ) : null}
+    </form>
+  );
+}
+
 function Footer() {
   return (
     <footer className="border-t border-app">
@@ -650,6 +723,7 @@ function Footer() {
               Heartbeat-based Bitcoin inheritance. Your Bitcoin doesn't die with
               you. The rules live on the chain, not on us.
             </p>
+            <NewsletterSignup />
           </div>
           {FOOTER_COLS.map((col) => (
             <div key={col.title} className="md:col-span-2 lg:col-span-2">

@@ -953,4 +953,16 @@ export const api = {
   /** Cached BTC/USD spot price for fiat display. Resolves to the rate or
    *  throws (503) when unavailable; callers hide the fiat line on error. */
   getPrice: () => request<PriceView>("/price"),
+  /**
+   * Subscribe an email to product updates. Backed by the server's
+   * sealed-at-rest email list (`/newsletter` in `newsletter.rs`). The
+   * server always answers 200 on a well-formed address whether or not
+   * it was already on the list, so we never leak membership; a
+   * malformed address throws a 400 the form can surface.
+   */
+  subscribeNewsletter: (email: string, source?: string) =>
+    request<void>("/newsletter", {
+      method: "POST",
+      body: JSON.stringify(source ? { email, source } : { email }),
+    }),
 };

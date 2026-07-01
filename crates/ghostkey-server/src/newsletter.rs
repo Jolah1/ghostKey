@@ -1,10 +1,17 @@
-//! Early-access waitlist signups from the landing page.
+//! Newsletter / product-update signups from the landing page.
 //!
-//! POST /waitlist  { email: "<addr>", source?: "<label>" }
+//! POST /newsletter  { email: "<addr>", source?: "<label>" }
 //!
-//! Stores the address sealed at rest (master-key XChaCha20-Poly1305,
-//! context "waitlist") plus a SHA-256 hash for dedupe. See the
-//! `20260620000002_waitlist.sql` migration for the privacy rationale.
+//! Started life as the early-access waitlist; kept and renamed now that
+//! the app is open, since the storage (a sealed email list) is exactly
+//! what product-update signups need.
+//!
+//! Stores the address sealed at rest (master-key XChaCha20-Poly1305)
+//! plus a SHA-256 hash for dedupe. See the `20260620000002_waitlist.sql`
+//! and `..._rename_waitlist_to_newsletter.sql` migrations for the
+//! privacy rationale. NOTE: the seal context string stays "waitlist" on
+//! purpose — it's an internal key-derivation label, and keeping it
+//! stable means addresses collected before the rename still decrypt.
 //!
 //! Always answers 200 on a well-formed request, whether or not the
 //! address was already on the list: the page should say "you're on the
@@ -23,7 +30,7 @@ use crate::routes::ApiError;
 use crate::AppState;
 
 #[derive(Debug, Deserialize)]
-pub struct JoinRequest {
+pub struct SubscribeRequest {
     pub email: String,
     /// Optional: which CTA/page the signup came from (e.g. "hero",
     /// "final_cta"). Same character class as analytics labels.
@@ -70,9 +77,9 @@ fn email_hash(normalized: &str) -> String {
     hex::encode(digest)
 }
 
-pub async fn join(
+pub async fn subscribe(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<JoinRequest>,
+    Json(req): Json<SubscribeRequest>,
 ) -> Result<StatusCode, ApiError> {
     if !looks_like_email(&req.email) {
         return Err(ApiError::Validation(
@@ -91,7 +98,7 @@ pub async fn join(
     // INSERT OR IGNORE on the unique hash: a repeat signup is a no-op,
     // so we never leak "already joined" and never duplicate a person.
     sqlx::query(
-        r#"INSERT OR IGNORE INTO waitlist
+        r#"INSERT OR IGNORE INTO newsletter_subscribers
                (email_hash, email_ciphertext, email_nonce, source, created_at)
            VALUES (?, ?, ?, ?, ?)"#,
     )
@@ -173,14 +180,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn join_seals_dedupes_and_validates() {
+    async fn subscribe_seals_dedupes_and_validates() {
         ensure_test_master_key();
         let state = fresh_state().await;
 
         // Bad email is rejected (400 Validation).
-        let bad = join(
+        let bad = subscribe(
             State(state.clone()),
-            Json(JoinRequest {
+            Json(SubscribeRequest {
                 email: "not-an-email".into(),
                 source: None,
             }),
@@ -189,32 +196,32 @@ mod tests {
         assert!(matches!(bad, Err(ApiError::Validation(_))), "got {bad:?}");
 
         // First signup persists one sealed row.
-        let ok = join(
+        let ok = subscribe(
             State(state.clone()),
-            Json(JoinRequest {
+            Json(SubscribeRequest {
                 email: "  Sarah@Example.com ".into(),
                 source: Some("final_cta".into()),
             }),
         )
         .await
-        .expect("first join ok");
+        .expect("first subscribe ok");
         assert_eq!(ok, StatusCode::OK);
 
         // A repeat (different case/whitespace) is a no-op: still one row.
-        let dup = join(
+        let dup = subscribe(
             State(state.clone()),
-            Json(JoinRequest {
+            Json(SubscribeRequest {
                 email: "sarah@example.com".into(),
                 source: None,
             }),
         )
         .await
-        .expect("dup join ok");
+        .expect("dup subscribe ok");
         assert_eq!(dup, StatusCode::OK);
 
         let (count, ct, nonce, source): (i64, String, String, Option<String>) = sqlx::query_as(
             "SELECT COUNT(*) OVER (), email_ciphertext, email_nonce, source \
-               FROM waitlist LIMIT 1",
+               FROM newsletter_subscribers LIMIT 1",
         )
         .fetch_one(&state.db)
         .await
