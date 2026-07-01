@@ -17,6 +17,7 @@ use clap::Parser;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+mod admin;
 mod analytics;
 mod assist;
 mod auth;
