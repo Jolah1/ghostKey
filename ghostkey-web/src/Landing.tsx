@@ -569,17 +569,21 @@ function FinalCTA({ onNavigate }: Props) {
             Set up your vault
             <ArrowRight />
           </button>
-          <a
-            href="https://github.com/Jolah1/ghostKey"
-            target="_blank"
-            rel="noreferrer noopener"
+          <button
+            type="button"
             onClick={() => {
-              void api.trackEvent("landing.cta_clicked", "final_docs");
+              void api.trackEvent("landing.cta_clicked", "final_how");
+              // Scroll to the on-page "How it works" section rather than
+              // bouncing the reader out to GitHub. A bare `#how` anchor
+              // would be swallowed by the hash router, so scroll directly.
+              document
+                .getElementById("how")
+                ?.scrollIntoView({ behavior: "smooth" });
             }}
             className="btn btn-ghost"
           >
             How it works
-          </a>
+          </button>
         </div>
       </div>
     </section>
@@ -602,7 +606,6 @@ const FOOTER_COLS: FooterCol[] = [
   {
     title: "Protocol",
     links: [
-      { label: "Documentation",   href: "https://github.com/Jolah1/ghostKey#readme",                external: true },
       { label: "GitHub",          href: "https://github.com/Jolah1/ghostKey",                       external: true },
       { label: "System status",   href: "#/status" },
     ],
