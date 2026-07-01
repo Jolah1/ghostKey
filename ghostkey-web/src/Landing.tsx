@@ -3,13 +3,12 @@
  *
  * Sections (top to bottom):
  *   1. Hero            — headline, CTA, trust row
- *   2. How it works    — 4 numbered steps
- *   3. Vault lifecycle — 5 stages of a vault, plus emergency withdraw note
- *   4. Why Bitcoin     — 6 reason cards
- *   5. Comparison      — small table positioning GhostKey vs alternatives
- *   6. FAQ             — accordion of common questions
- *   7. Final CTA       — one-liner + buttons
- *   8. Footer          — sitemap + legal disclaimer
+ *   2. How it works    — 4 numbered steps, plus the always-in-control note
+ *   3. Why Bitcoin     — 3 reason cards
+ *   4. Comparison      — small table positioning GhostKey vs alternatives
+ *   5. FAQ             — accordion of common questions
+ *   6. Final CTA       — one-liner + buttons
+ *   7. Footer          — sitemap + legal disclaimer
  *
  * Style: Inter Tight headings with the silver-gradient title fill and
  * the orange accent picked out on the punchline word. Tando-inspired.
@@ -30,7 +29,6 @@ export function Landing({ onNavigate }: Props) {
     <main>
       <Hero onNavigate={onNavigate} />
       <HowItWorks onNavigate={onNavigate} />
-      <Lifecycle />
       <WhyBitcoin />
       <Comparison />
       <FAQ />
@@ -194,94 +192,8 @@ function HowItWorks({ onNavigate }: Props) {
           })}
         </ol>
 
-        <div className="flex justify-start">
-          <button
-            type="button"
-            onClick={() => {
-              void api.trackEvent("landing.cta_clicked", "how_it_works_setup");
-              onNavigate("setup");
-            }}
-            className="btn btn-primary"
-          >
-            Set up your vault
-            <ArrowRight />
-          </button>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-/* -------------------------- Vault lifecycle ------------------------------- */
-
-interface Stage {
-  tag: string;
-  title: string;
-  body: string;
-}
-
-const STAGES: Stage[] = [
-  {
-    tag: "Created",
-    title: "Deposit and name your people",
-    body: "You set the rules and decide who inherits. Nothing happens on-chain until you fund the vault.",
-  },
-  {
-    tag: "Active",
-    title: "Heartbeat running",
-    body: "You tap once a month. Each tap resets the clock. The Bitcoin sits in your wallet, untouched.",
-  },
-  {
-    tag: "Grace",
-    title: "A reminder is missed",
-    body: "A short grace period kicks in. You can still tap to reset everything. Nothing moves yet.",
-  },
-  {
-    tag: "Claimable",
-    title: "Heirs can claim",
-    body: "Once the waiting time has fully passed, the person you named can spend what's theirs.",
-  },
-  {
-    tag: "Closed",
-    title: "Passed on",
-    body: "The Bitcoin has moved to your heir. The vault is done.",
-  },
-];
-
-function Lifecycle() {
-  const ref = useTrackInView("landing.section_viewed", "lifecycle");
-  return (
-    <section ref={ref} className="border-t border-app bg-app">
-      <div className="mx-auto max-w-5xl px-5 py-14 md:px-8 md:py-28">
-        <div className="max-w-2xl">
-          <Eyebrow dim>Vault lifecycle</Eyebrow>
-          <h2 className="mt-4 font-display text-3xl font-bold leading-[1.05] tracking-tight md:text-6xl">
-            <span className="title-gradient">From heartbeat to </span>
-            <span className="text-accent">inheritance</span>
-          </h2>
-        </div>
-
-        <ol
-          role="list"
-          className="mt-12 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5"
-        >
-          {STAGES.map((s, i) => (
-            <li key={s.tag} className="card-flat relative p-5">
-              <span
-                aria-hidden="true"
-                className="absolute right-4 top-4 text-[10px] font-mono text-dim"
-              >
-                {String(i + 1).padStart(2, "0")}
-              </span>
-              <p className="eyebrow-tag text-[10px]">{s.tag}</p>
-              <h3 className="mt-3 font-display text-xl font-bold leading-tight tracking-tight">{s.title}</h3>
-              <p className="mt-2 text-[13px] text-soft leading-relaxed">{s.body}</p>
-            </li>
-          ))}
-        </ol>
-
         <aside
-          className="mt-8 flex items-start gap-4 rounded-2xl border border-app p-5"
+          className="mb-12 flex items-start gap-4 rounded-2xl border border-app p-5"
           style={{ background: "var(--accent-tint)" }}
         >
           <span
@@ -299,6 +211,20 @@ function Lifecycle() {
             </p>
           </div>
         </aside>
+
+        <div className="flex justify-start">
+          <button
+            type="button"
+            onClick={() => {
+              void api.trackEvent("landing.cta_clicked", "how_it_works_setup");
+              onNavigate("setup");
+            }}
+            className="btn btn-primary"
+          >
+            Set up your vault
+            <ArrowRight />
+          </button>
+        </div>
       </div>
     </section>
   );
@@ -324,24 +250,9 @@ const REASONS: Reason[] = [
     body: "Waiting periods are enforced by Bitcoin itself using OP_CSV. Once set, no one can move funds before the timer runs out. Not us, not them, not anyone.",
   },
   {
-    tag: "Private",
-    title: "Taproot by default",
-    body: "Vaults use Taproot scripts so the inheritance rules stay hidden on-chain. A casual observer sees an ordinary Bitcoin transaction.",
-  },
-  {
-    tag: "Portable",
-    title: "PSBT under the hood",
-    body: "Funding uses ordinary Bitcoin transactions, and claiming works in any browser with nothing to install. Recovering on your own, without GhostKey, uses Bitcoin Core, which understands the vault's timelock script.",
-  },
-  {
     tag: "Trustless",
     title: "Self-custodied keys",
     body: "Your own key never sits on our servers, so no one can move your Bitcoin while you keep checking in. For the strictest setup, give your heir their own key too, and GhostKey holds nothing that can spend it.",
-  },
-  {
-    tag: "Durable",
-    title: "Can't be lost",
-    body: "The rules live on the Bitcoin chain, where they can't be deleted or tampered with. GhostKey gives you and your heir the easy way to use them: check-ins, reminders, and a guided claim.",
   },
 ];
 
