@@ -955,14 +955,13 @@ export const api = {
   getPrice: () => request<PriceView>("/price"),
   /**
    * Subscribe an email to product updates. Backed by the server's
-   * sealed-at-rest email list (`/waitlist` in `waitlist.rs`, kept from
-   * the early-access days and reused now that the app is open). The
+   * sealed-at-rest email list (`/newsletter` in `newsletter.rs`). The
    * server always answers 200 on a well-formed address whether or not
    * it was already on the list, so we never leak membership; a
    * malformed address throws a 400 the form can surface.
    */
   subscribeNewsletter: (email: string, source?: string) =>
-    request<void>("/waitlist", {
+    request<void>("/newsletter", {
       method: "POST",
       body: JSON.stringify(source ? { email, source } : { email }),
     }),
