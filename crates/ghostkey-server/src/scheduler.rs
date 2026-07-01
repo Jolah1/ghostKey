@@ -2054,6 +2054,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn funded_unfunded_vault_activates_and_starts_clock() {
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        // Seed an unfunded vault whose maturity cache is fresh and records
+        // a tip. That's exactly the state right after a scan finds coins:
+        // `unlock_estimate_with_cache` answers Ok straight from cache (no
+        // network), which is the "funded" signal `activate_funded_vaults`
+        // acts on. The cache is only ever written after a scan that found
+        // UTXOs, so Ok-from-cache faithfully stands in for real funding.
+        let now = Utc::now();
+        // A stale placeholder deadline (far in the past) proves the clock
+        // is genuinely (re)started from activation, not left as-is.
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status, claim_eligible_at,
+                chain_unlock_height, chain_tip_height, chain_scanned_at
+            ) VALUES ('v-fund','regtest','tr(fake/v-fund/0/*)','tr(fake/v-fund/1/*)',
+                144, 86400, 3600, '2026-01-01T00:00:00Z',
+                '2026-01-01T00:00:00Z', 'unfunded', '2026-01-01T00:00:00Z',
+                200, 150, ?)"#,
+        )
+        .bind(now.to_rfc3339())
+        .execute(&pool)
+        .await
+        .expect("insert");
+
+        activate_funded_vaults(&state, &now.to_rfc3339())
+            .await
+            .expect("activate");
+
+        let (status, next_deadline): (String, String) =
+            sqlx::query_as("SELECT status, next_deadline_at FROM vaults WHERE id = 'v-fund'")
+                .fetch_one(&pool)
+                .await
+                .expect("read");
+        assert_eq!(status, "ok", "a funded vault must activate to ok");
+        let nd = chrono::DateTime::parse_from_rfc3339(&next_deadline)
+            .expect("parse deadline")
+            .with_timezone(&Utc);
+        assert!(
+            nd > now,
+            "check-in clock must be (re)started into the future on activation, got {nd}"
+        );
+    }
+
+    #[tokio::test]
     async fn alarmed_past_eligibility_transitions_and_issues_token() {
         let pool = fresh_db().await;
         let state = AppState {
