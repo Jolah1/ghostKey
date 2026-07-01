@@ -115,6 +115,7 @@ fn update_ln_gate(
 async fn tick_once(state: &AppState) -> anyhow::Result<()> {
     let now = Utc::now().to_rfc3339();
     unfreeze_expired_panics(state, &now).await?;
+    activate_funded_vaults(state, &now).await?;
     issue_pre_deadline_reminders(state, &now).await?;
     transition_ok_to_alarmed(state, &now).await?;
     send_alarm_escalations(state, &now).await?;
@@ -842,6 +843,117 @@ async fn enqueue_pre_deadline_reminder(
 /// the status transition has already committed, and the next
 /// scheduler tick won't re-issue because the row's status is no
 /// longer `ok`.
+/// Start the check-in clock only once a vault is actually funded.
+///
+/// New vaults are created `unfunded`: their deadline placeholder is set
+/// but no clock-driven step touches them (reminders, the ok->alarmed
+/// transition, and escalations all filter `status = 'ok'`), and the
+/// check-in routes refuse them. This step scans each `unfunded` vault;
+/// the first time coins appear on-chain it flips the vault to `ok` and
+/// (re)starts the cadence from now, so the owner gets a full period
+/// before the first deadline. Until then we never nag the owner about,
+/// or let them pay Lightning to check in on, an empty vault.
+///
+/// A scan that finds no UTXOs — or fails to reach the chain — just
+/// leaves the vault `unfunded` and retries next tick. Demo deployments
+/// create vaults already `ok` (there is no real chain to scan), so this
+/// is a no-op there.
+async fn activate_funded_vaults(state: &AppState, _now_iso: &str) -> anyhow::Result<()> {
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,         // id
+            i64,            // checkin_period_secs
+            i64,            // grace_period_secs
+            String,         // descriptor_external
+            String,         // descriptor_internal
+            String,         // network
+            i64,            // timelock_blocks
+            Option<i64>,    // chain_unlock_height
+            Option<i64>,    // chain_tip_height
+            Option<String>, // chain_scanned_at
+        ),
+    >(
+        r#"SELECT id, checkin_period_secs, grace_period_secs,
+                  descriptor_external, descriptor_internal, network, timelock_blocks,
+                  chain_unlock_height, chain_tip_height, chain_scanned_at
+             FROM vaults
+            WHERE status = 'unfunded'"#,
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let now = Utc::now();
+    for (
+        id,
+        checkin_secs,
+        grace_secs,
+        descriptor_external,
+        descriptor_internal,
+        network,
+        timelock_blocks,
+        chain_unlock_height,
+        chain_tip_height,
+        chain_scanned_at,
+    ) in rows
+    {
+        let input = crate::psbt_routes::EstimateInput {
+            vault_id: id.clone(),
+            descriptor_external,
+            descriptor_internal,
+            network,
+            timelock_blocks,
+            cached_unlock_height: chain_unlock_height,
+            cached_tip_height: chain_tip_height,
+            cached_scanned_at: chain_scanned_at,
+        };
+
+        // Funded == the address scan finds at least one UTXO (a
+        // successful estimate). Any error — no UTXOs yet, or a transient
+        // failure reaching the chain — means "not yet"; leave the vault
+        // unfunded and try again next tick.
+        match crate::psbt_routes::unlock_estimate_with_cache(&state.db, &input, now).await {
+            Ok(_) => record_chain_scan(true, None, now),
+            Err(e) => {
+                record_chain_scan(false, Some(e.to_string()), now);
+                continue;
+            }
+        }
+
+        let next = now + chrono::Duration::seconds(checkin_secs + grace_secs);
+        let claim_eligible = next + chrono::Duration::seconds(grace_secs);
+        // CAS on status so a racing tick can't double-activate.
+        let marked = sqlx::query(
+            r#"UPDATE vaults
+                  SET status            = 'ok',
+                      next_deadline_at  = ?,
+                      claim_eligible_at = ?
+                WHERE id = ? AND status = 'unfunded'"#,
+        )
+        .bind(next.to_rfc3339())
+        .bind(claim_eligible.to_rfc3339())
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
+        if marked.rows_affected() == 0 {
+            continue;
+        }
+
+        record_event(
+            &state.db,
+            &id,
+            "funded",
+            Some(serde_json::json!({ "reason": "onchain_funds_detected" })),
+        )
+        .await?;
+        tracing::info!(
+            vault_id = %id,
+            "funds detected; vault activated (unfunded -> ok), check-in clock started"
+        );
+    }
+    Ok(())
+}
+
 async fn transition_ok_to_alarmed(state: &AppState, now_iso: &str) -> anyhow::Result<()> {
     let due = sqlx::query_as::<
         _,
@@ -1908,6 +2020,37 @@ mod tests {
         tick_once(&state).await.expect("tick");
         let (status, _) = read_status_and_token_hash(&pool, "vault-a").await;
         assert_eq!(status, "alarmed");
+    }
+
+    #[tokio::test]
+    async fn unfunded_past_deadline_never_alarms() {
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        // An unfunded vault whose placeholder deadline is long past must
+        // NOT start the alarm / heir-contact machinery: the check-in
+        // clock only runs once coins are on-chain. We drive the transition
+        // directly (a full tick would try a live funding scan on the fake
+        // descriptor) to isolate the clock-hold property.
+        insert_vault(
+            &pool,
+            "vault-unfunded",
+            "unfunded",
+            "2026-04-01T00:00:00Z",
+            Some("2030-01-01T00:00:00Z"),
+        )
+        .await;
+        let now = Utc::now().to_rfc3339();
+        transition_ok_to_alarmed(&state, &now)
+            .await
+            .expect("transition");
+        send_alarm_escalations(&state, &now)
+            .await
+            .expect("escalations");
+        let (status, _) = read_status_and_token_hash(&pool, "vault-unfunded").await;
+        assert_eq!(status, "unfunded", "unfunded vault must never alarm");
     }
 
     #[tokio::test]

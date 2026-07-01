@@ -293,6 +293,9 @@ function Result({
     [vault.next_deadline_at, now],
   );
   const copy = statusCopy(vault.status);
+  // Not funded yet: the check-in clock hasn't started, so there's
+  // nothing to tap and no reminder to count down to.
+  const isUnfunded = vault.status === "unfunded";
 
   return (
     <section className="mt-8 card overflow-hidden p-0">
@@ -314,19 +317,21 @@ function Result({
 
       <div className="p-8 text-center">
         <Heartbeat
-          onTap={busy ? undefined : lightningEnabled ? onLightning : onCheckin}
-          disabled={busy || vault.status === "claimed"}
+          onTap={busy || isUnfunded ? undefined : lightningEnabled ? onLightning : onCheckin}
+          disabled={busy || isUnfunded || vault.status === "claimed"}
         />
 
         <h2 className="mt-6 font-serif text-2xl">
           {justChecked ? "Thanks, you're safe" : copy.long}
         </h2>
-        <p className="mt-2 text-sm text-muted">
-          Next reminder{" "}
-          <span className="text-[var(--text)] font-medium">{cd.friendly}</span>
-        </p>
+        {!isUnfunded && (
+          <p className="mt-2 text-sm text-muted">
+            Next reminder{" "}
+            <span className="text-[var(--text)] font-medium">{cd.friendly}</span>
+          </p>
+        )}
 
-        {vault.status !== "claimed" && (
+        {!isUnfunded && vault.status !== "claimed" && (
           <div className="mt-6">
             {lightningEnabled ? (
               <Button onClick={onLightning} size="lg">

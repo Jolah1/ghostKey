@@ -20,6 +20,12 @@ export function statusCopy(status: VaultStatus): {
   tone: "ok" | "warning" | "alarm" | "neutral";
 } {
   switch (status) {
+    case "unfunded":
+      return {
+        label: "Awaiting funding",
+        long: "Send Bitcoin to your vault to activate it. Check-ins start once it's funded.",
+        tone: "neutral",
+      };
     case "ok":
       return {
         label: "Active",
