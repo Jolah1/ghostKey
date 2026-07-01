@@ -98,14 +98,9 @@ function Hero({ onNavigate }: Props) {
           </button>
         </div>
 
-        {/* Founding-user offer. Hand-counted cap; retire these lines
-            once the first 100 sign-ups are in. */}
-        <p className="mt-5 text-sm font-medium text-accent">
-          First 100 founding users get their first year free.
-        </p>
-        <p className="mt-1 text-xs text-muted">
-          No subscription for your first year. You only pay tiny network fees in
-          sats and your own check-ins.
+        <p className="mt-5 text-xs text-muted">
+          Free and open source. No subscription. You only pay tiny network fees
+          in sats and your own check-ins.
         </p>
 
         <TrustRow />
