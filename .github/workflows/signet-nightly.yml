@@ -47,7 +47,7 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # jq is preinstalled on ubuntu-latest; this is belt-and-braces in
       # case the image image changes underneath us.

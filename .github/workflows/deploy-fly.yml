@@ -67,7 +67,7 @@ jobs:
     name: fly deploy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Pin to a known-good flyctl. `@master` worked for the early
       # deploys but in 2026 any breaking-change release to the
       # action's master branch would silently take CI down with it.
