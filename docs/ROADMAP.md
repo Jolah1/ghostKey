@@ -161,7 +161,12 @@ reconciles with the shown balance.
 
 ---
 
-## Phase 3 — Value and revenue
+## Phase 3 — Value
+
+GhostKey is free and open source, and stays that way — no paid tier,
+no subscription (decision 2026-07-02, closing #112). The Lightning
+check-in exists because a payment is a stronger proof of life than a
+button, not as a business model.
 
 ### 3.1 Installable PWA + actionable push check-ins — [#224](https://github.com/Jolah1/ghostKey/issues/224)
 The mobile app, done the cheap correct way. The server-side push stack
@@ -173,15 +178,7 @@ a pre-deadline push with an "I'm still here" action completes a check-in
 on a real device; push failure still falls back to email; the service
 worker never serves stale claim/API responses.
 
-### 3.2 Check-in as subscription — [#112](https://github.com/Jolah1/ghostKey/issues/112)
-The revenue model that aligns with the product: paying *is* proof of
-life.
-
-**Done when:** free base tier unchanged; a paid tier exists with a
-defined price; payment failure alone can never advance a vault toward
-claimable (fail-safe tested); documented in DESIGN.md.
-
-### 3.3 One-click on-chain re-vault — [#94](https://github.com/Jolah1/ghostKey/issues/94)
+### 3.2 One-click on-chain re-vault — [#94](https://github.com/Jolah1/ghostKey/issues/94)
 Resolves the accepted trade-off of on-chain gating: the CSV timelock
 runs from the last coin move, not from check-ins — which also means a
 recovery file found early could be used once the timelock has matured.
