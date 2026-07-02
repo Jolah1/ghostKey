@@ -316,6 +316,10 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
   // and uploaded silently during creation. Not in `draft` because a
   // Blob isn't serialisable to localStorage.
   const [videoClip, setVideoClip] = useState<RecordedClip | null>(null);
+  // The video upload is best-effort (a failure must not abort a good
+  // vault), but the owner still has to HEAR about it — silently losing
+  // the clip means the heir finds out at claim time (#222).
+  const [videoSaveFailed, setVideoSaveFailed] = useState(false);
   // Demo-mode flag from /health. See SetupPortal.tsx for the
   // rationale; both portals share the same gating logic so the
   // experience is consistent across the two creation paths.
@@ -713,6 +717,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
             });
           } catch (e) {
             console.warn("video upload failed for guardian vault", resp.id, e);
+            setVideoSaveFailed(true);
           }
         }
 
@@ -974,6 +979,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
             });
           } catch (e) {
             console.warn("video upload failed for vault", resp.id, e);
+            setVideoSaveFailed(true);
           }
         }
 
@@ -1165,6 +1171,18 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           )}
           {step === 2 && created && <StepFund created={created} />}
         </div>
+
+        {/* Best-effort video upload failed: the vault is real and safe,
+            but the clip was lost. Say so here, because nothing else
+            will (#222). */}
+        {step === 2 && created && videoSaveFailed ? (
+          <div className="mt-6">
+            <InlineAlert tone="warning">
+              Your video message didn't save. Your vault is fine. You can
+              record the video again anytime from your dashboard.
+            </InlineAlert>
+          </div>
+        ) : null}
 
         {error ? (
           <div className="mt-6">
