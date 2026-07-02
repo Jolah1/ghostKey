@@ -387,7 +387,7 @@ export function SetupPortal({ onCancel, onCreated }: Props) {
   return (
     <main className="bg-app fade-in">
       <div className="mx-auto max-w-xl px-5 py-12 md:py-16">
-        <ProgressBar value={progress} />
+        <ProgressBar value={progress} label="Setup progress" />
 
         <div className="mt-10">
           <p className="eyebrow-dim">

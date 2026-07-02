@@ -118,11 +118,20 @@ export function Tile({
 
 /* --------------------------- Progress bar --------------------------- */
 
-export function ProgressBar({ value }: { value: number }) {
+export function ProgressBar({
+  value,
+  label = "Progress",
+}: {
+  value: number;
+  /** Accessible name — role="progressbar" is meaningless to a screen
+   *  reader without one (axe: aria-progressbar-name, WCAG 1.1.1). */
+  label?: string;
+}) {
   const pct = Math.max(0, Math.min(100, value));
   return (
     <div
       role="progressbar"
+      aria-label={label}
       aria-valuenow={Math.round(pct)}
       aria-valuemin={0}
       aria-valuemax={100}
