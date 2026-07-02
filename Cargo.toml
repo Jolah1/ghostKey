@@ -36,7 +36,7 @@ rust-version = "1.85"
 # Bitcoin stack
 bdk_wallet = { version = "1.0.0", features = ["keys-bip39"] }
 bdk_esplora = { version = "0.20", default-features = false, features = ["std", "blocking-https-rustls", "async-https-rustls"] }
-bdk_bitcoind_rpc = "0.18"
+bdk_bitcoind_rpc = "0.22"
 bitcoin = { version = "0.32", features = ["rand-std", "serde"] }
 miniscript = { version = "12", features = ["serde"] }
 
