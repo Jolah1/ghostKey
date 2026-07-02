@@ -8,12 +8,15 @@
 // push.rs). It's a small JSON object: { title, body, url }.
 //
 // When `url` is a one-tap check-in link, the notification carries an
-// "I'm still here" action button (#224). Tapping it completes the
-// check-in straight from the notification — a POST to the same
-// token-authenticated endpoint the link's page calls — without
-// opening the app at all. Browsers that don't support notification
-// actions (iOS) simply don't render the button; tapping the body
-// still opens the check-in page, which checks in on load.
+// "I'm still here" action button (#224). Tapping it POSTs the same
+// token-authenticated endpoint the link's page calls. Lightning is THE
+// check-in (see checkin.ts): the server only accepts this free path
+// inside the final 24h before the heir would be contacted, so the tap
+// completes silently only in that last-resort window. Any other answer
+// (pay-with-Lightning 409, link already used, stale token) opens the
+// check-in page, which renders the honest next step — usually the
+// Lightning invoice. Browsers without notification actions (iOS)
+// simply don't render the button; body taps open the page as before.
 
 /** Parse "https://host/#/checkin-link/<vaultId>/<token>" into the
  *  parts the check-in API call needs. Null for any other URL shape,
@@ -98,23 +101,23 @@ self.addEventListener("notificationclick", (event) => {
           // Offline / server unreachable: fall through to the page,
           // which shows a real error instead of a silent nothing.
         }
-        // 2xx = checked in now; 409 = this cycle's link was already
-        // used, which means the check-in is already covered. Both are
-        // good news — say so and stop.
-        if ((status >= 200 && status < 300) || status === 409) {
+        // Only a 2xx means "checked in". A 409 is ambiguous — it can
+        // be the benign "link already used", but it is ALSO how the
+        // server says "free check-in only in the final 24h; pay with
+        // Lightning instead". Claiming success on that one would tell
+        // an owner they're safe while their heir-contact clock keeps
+        // running. So: 2xx confirms, everything else opens the page,
+        // which renders the honest state (invoice, already-used, or
+        // expired) for each case.
+        if (status >= 200 && status < 300) {
           await self.registration.showNotification("You're checked in", {
-            body:
-              status === 409
-                ? "This period was already covered. Nothing else to do."
-                : "Done. Your countdown has been reset.",
+            body: "Done. Your countdown has been reset.",
             icon: "/pwa-192x192.png",
             badge: "/pwa-64x64.png",
             tag: "ghostkey-checkin",
           });
           return;
         }
-        // Stale token, or anything unexpected: the page explains and
-        // offers the working path.
         await openUrl(url);
       })(),
     );
