@@ -2029,6 +2029,71 @@ pub async fn get_heir_derivation_params(
  *  `total_input_sats` inside the claim PSBT response.                       *
  * -------------------------------------------------------------------------- */
 
+/// One confirmed incoming deposit surfaced by a chain scan: a genuine
+/// receive (external keychain), not owner-send change (internal keychain).
+/// Used to log "received" activity events so the feed reconciles with the
+/// balance (#213).
+pub(crate) struct ConfirmedDeposit {
+    pub outpoint: String,
+    pub amount_sat: i64,
+    pub height: u32,
+}
+
+/// Record any newly-seen deposits as "received" activity events, exactly
+/// once each. `vault_deposits` dedupes on (vault, outpoint): INSERT OR
+/// IGNORE means a repeat outpoint (a later scan, or a reorg re-confirming
+/// the same UTXO) is a silent no-op, so only genuinely new deposits emit
+/// an event. Best-effort: a logging failure must never fail the caller
+/// (e.g. the balance read), so errors are warned and swallowed.
+///
+/// Note: the first scan of a vault that was already funded before this
+/// shipped will emit one "received" per existing unspent deposit — a
+/// one-time catch-up so the feed matches the balance.
+pub(crate) async fn record_new_deposits(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+    deposits: &[ConfirmedDeposit],
+    now: chrono::DateTime<Utc>,
+) {
+    for d in deposits {
+        let inserted = sqlx::query(
+            "INSERT OR IGNORE INTO vault_deposits \
+                 (vault_id, outpoint, amount_sat, height, seen_at) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(vault_id)
+        .bind(&d.outpoint)
+        .bind(d.amount_sat)
+        .bind(d.height as i64)
+        .bind(now.to_rfc3339())
+        .execute(db)
+        .await;
+
+        match inserted {
+            Ok(res) if res.rows_affected() == 1 => {
+                if let Err(e) = crate::routes::record_event(
+                    db,
+                    vault_id,
+                    "received",
+                    Some(serde_json::json!({
+                        "amount_sat": d.amount_sat,
+                        "outpoint": d.outpoint,
+                        "height": d.height,
+                    })),
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, vault_id, "failed to record received event");
+                }
+            }
+            Ok(_) => {} // already recorded on a previous scan
+            Err(e) => {
+                tracing::warn!(error = %e, vault_id, "failed to dedupe deposit");
+            }
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct VaultBalanceView {
     pub vault_id: String,
@@ -2071,8 +2136,9 @@ pub async fn get_vault_balance(
 
     let urls = esplora_urls(network)?;
     let id_for_resp = id.clone();
-    let (confirmed_sat, unconfirmed_sat, total_sat) =
-        tokio::task::spawn_blocking(move || -> Result<(u64, u64, u64), BlockingErr> {
+    type ScanResult = (u64, u64, u64, Vec<ConfirmedDeposit>);
+    let (confirmed_sat, unconfirmed_sat, total_sat, deposits) =
+        tokio::task::spawn_blocking(move || -> Result<ScanResult, BlockingErr> {
             let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
                 .map_err(|e| BlockingErr::Vault(e.to_string()))?;
             let update = try_each_esplora(&urls, |client| {
@@ -2087,10 +2153,31 @@ pub async fn get_vault_balance(
             let confirmed = bal.confirmed.to_sat();
             let unconfirmed = bal.trusted_pending.to_sat() + bal.untrusted_pending.to_sat();
             let total = bal.total().to_sat();
-            Ok((confirmed, unconfirmed, total))
+
+            // Collect confirmed receives off this same scan (no extra chain
+            // poll). External keychain only: internal is owner-send change,
+            // not a deposit (#213).
+            let mut deposits = Vec::new();
+            for utxo in wallet.list_unspent() {
+                if utxo.keychain != bdk_wallet::KeychainKind::External {
+                    continue;
+                }
+                if let bdk_wallet::chain::ChainPosition::Confirmed { anchor, .. } =
+                    utxo.chain_position
+                {
+                    deposits.push(ConfirmedDeposit {
+                        outpoint: utxo.outpoint.to_string(),
+                        amount_sat: utxo.txout.value.to_sat() as i64,
+                        height: anchor.block_id.height,
+                    });
+                }
+            }
+            Ok((confirmed, unconfirmed, total, deposits))
         })
         .await
         .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
+
+    record_new_deposits(&state.db, &id, &deposits, Utc::now()).await;
 
     Ok(Json(VaultBalanceView {
         vault_id: id_for_resp,
@@ -2315,5 +2402,122 @@ mod tests {
         };
         assert!(msg.contains("400"));
         assert!(msg.contains("bad address format"));
+    }
+
+    async fn memory_db() -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect sqlite::memory");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+        pool
+    }
+
+    async fn received_count(pool: &sqlx::SqlitePool, vault_id: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE vault_id = ? AND kind = 'received'")
+            .bind(vault_id)
+            .fetch_one(pool)
+            .await
+            .expect("count received events")
+    }
+
+    fn deposit(outpoint: &str, sat: i64, height: u32) -> ConfirmedDeposit {
+        ConfirmedDeposit {
+            outpoint: outpoint.to_string(),
+            amount_sat: sat,
+            height,
+        }
+    }
+
+    // Minimal vault row so the events FK (events.vault_id -> vaults.id) is
+    // satisfied; foreign keys are on by default in sqlx.
+    async fn seed_vault(pool: &sqlx::SqlitePool, id: &str) {
+        let ts = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO vaults \
+                 (id, network, descriptor_external, descriptor_internal, timelock_blocks, \
+                  checkin_period_secs, grace_period_secs, created_at, next_deadline_at) \
+             VALUES (?, 'signet', ?, ?, 144, 3600, 3600, ?, ?)",
+        )
+        .bind(id)
+        .bind(format!("desc-ext-{id}")) // descriptor_external is UNIQUE
+        .bind(format!("desc-int-{id}"))
+        .bind(&ts)
+        .bind(&ts)
+        .execute(pool)
+        .await
+        .expect("seed vault");
+    }
+
+    #[tokio::test]
+    async fn record_new_deposits_emits_once_per_outpoint() {
+        let pool = memory_db().await;
+        seed_vault(&pool, "vault-1").await;
+        seed_vault(&pool, "vault-2").await;
+        let now = Utc::now();
+        let vault = "vault-1";
+
+        // First scan: two brand-new deposits -> two "received" events.
+        record_new_deposits(
+            &pool,
+            vault,
+            &[
+                deposit("aaaa:0", 100_000, 800_000),
+                deposit("bbbb:1", 50_000, 800_001),
+            ],
+            now,
+        )
+        .await;
+        assert_eq!(received_count(&pool, vault).await, 2);
+
+        // A later dashboard load re-scans and sees the SAME outpoints (plus
+        // the first one again): nothing new is logged.
+        record_new_deposits(
+            &pool,
+            vault,
+            &[
+                deposit("aaaa:0", 100_000, 800_000),
+                deposit("bbbb:1", 50_000, 800_001),
+            ],
+            now,
+        )
+        .await;
+        assert_eq!(
+            received_count(&pool, vault).await,
+            2,
+            "re-seen outpoints must not double-log"
+        );
+
+        // A genuinely new deposit alongside the old ones: exactly one more.
+        record_new_deposits(
+            &pool,
+            vault,
+            &[
+                deposit("aaaa:0", 100_000, 800_000),
+                deposit("cccc:2", 25_000, 800_005),
+            ],
+            now,
+        )
+        .await;
+        assert_eq!(
+            received_count(&pool, vault).await,
+            3,
+            "only the new outpoint logs"
+        );
+
+        // Deposits are scoped per vault: the same outpoint on another vault
+        // is its own first-seen.
+        record_new_deposits(
+            &pool,
+            "vault-2",
+            &[deposit("aaaa:0", 100_000, 800_000)],
+            now,
+        )
+        .await;
+        assert_eq!(received_count(&pool, "vault-2").await, 1);
     }
 }
