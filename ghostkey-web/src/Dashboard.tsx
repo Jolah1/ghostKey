@@ -2165,6 +2165,7 @@ function ActivityList({ events }: { events: VaultEvent[] }) {
                 className={`h-2 w-2 rounded-full ${
                   e.kind === "checkin" ||
                   e.kind === "resolved" ||
+                  e.kind === "received" ||
                   e.kind === "drill_completed"
                     ? "bg-ok"
                     : e.kind === "alarm"
