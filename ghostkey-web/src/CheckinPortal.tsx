@@ -33,7 +33,7 @@ import {
   type VaultEvent,
 } from "./api";
 import { countdown, parseRfc } from "./time";
-import { statusCopy } from "./vocab";
+import { useVocab } from "./vocab";
 import { getVaultOwnerToken } from "./vaultStore";
 import { LightningCheckin } from "./LightningCheckin";
 import { lastResortCheckinOpen } from "./checkin";
@@ -292,7 +292,8 @@ function Result({
     () => countdown(parseRfc(vault.next_deadline_at), now),
     [vault.next_deadline_at, now],
   );
-  const copy = statusCopy(vault.status);
+  const vocab = useVocab();
+  const copy = vocab.status(vault.status);
   // Not funded yet: the check-in clock hasn't started, so there's
   // nothing to tap and no reminder to count down to.
   const isUnfunded = vault.status === "unfunded";

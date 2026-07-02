@@ -16,7 +16,7 @@
  */
 import { useState } from "react";
 import { Disclosure, Eyebrow } from "./ui";
-import { brand } from "./vocab";
+import { useVocab } from "./vocab";
 import type { Route } from "./App";
 import { ApiError, api } from "./api";
 import { useTrackInView } from "./useTrackInView";
@@ -43,6 +43,7 @@ export function Landing({ onNavigate }: Props) {
 
 function Hero({ onNavigate }: Props) {
   const ref = useTrackInView("landing.section_viewed", "hero");
+  const vocab = useVocab();
   return (
     <section ref={ref} className="relative overflow-hidden hero-glow">
       {/* Mobile padding was `px-5 py-20` (1.25rem / 5rem). On a 360px
@@ -67,7 +68,7 @@ function Hero({ onNavigate }: Props) {
         </h1>
 
         <p className="mt-6 max-w-xl text-base text-body md:mt-8 md:text-xl">
-          {brand.longTagline}
+          {vocab.longTagline}
         </p>
 
         <div className="mt-8 flex w-full max-w-sm flex-col gap-3 md:mt-10 md:w-auto md:max-w-none md:flex-row md:flex-wrap md:items-center md:justify-center">

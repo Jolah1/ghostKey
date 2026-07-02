@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { LangProvider } from "./vocab";
 // Self-hosted variable fonts — single woff2 per family covering all
 // weights. Replaces the Google Fonts stylesheet so no third-party
 // origin is needed in the CSP.
@@ -15,7 +16,9 @@ if (!root) throw new Error("missing #root element");
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <App />
+      <LangProvider>
+        <App />
+      </LangProvider>
     </ErrorBoundary>
   </React.StrictMode>,
 );

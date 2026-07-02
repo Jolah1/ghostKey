@@ -3,7 +3,7 @@
  * lowercase "ghost" in plain text, "Key" in the teal accent.
  * Clicking returns to landing.
  */
-import { brand } from "./vocab";
+import { brandName } from "./vocab";
 
 export function Brand({
   onClick,
@@ -27,7 +27,7 @@ export function Brand({
         if (onClick) { e.preventDefault(); onClick(); }
       }}
       className="inline-flex items-center gap-2.5 focus:outline-none"
-      aria-label={`${brand.name} home`}
+      aria-label={`${brandName} home`}
     >
       {/* The mark keeps its native navy ground (the shield interior is
           navy too), so it reads as an app-icon tile on both themes. */}

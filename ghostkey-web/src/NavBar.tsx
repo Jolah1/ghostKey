@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { Brand } from "./Brand";
 import type { Route } from "./App";
 import { useTheme } from "./theme";
+import { LanguageToggle } from "./vocab";
 
 interface NavItem {
   key: Route;
@@ -75,6 +76,7 @@ export function NavBar({ route, onNavigate, signedIn }: Props) {
         </nav>
 
         <div className="flex items-center gap-2">
+          <LanguageToggle />
           <ThemeToggle theme={theme} onToggle={toggle} />
           {!signedIn && route !== "setup" && (
             <button
