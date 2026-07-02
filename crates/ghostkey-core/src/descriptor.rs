@@ -280,16 +280,13 @@ mod tests {
         )
     }
 
-    /// Owner, heir, guardian1, guardian2 fragment tuples (external, internal).
-    #[allow(clippy::type_complexity)]
+    /// A (external, internal) descriptor-fragment pair for one key.
+    type FragmentPair = (String, String);
+
+    /// Owner, heir, guardian1, guardian2 fragment pairs (external, internal).
     fn guardian_fragments(
         net: Network,
-    ) -> (
-        (String, String),
-        (String, String),
-        (String, String),
-        (String, String),
-    ) {
+    ) -> (FragmentPair, FragmentPair, FragmentPair, FragmentPair) {
         let frag = |seed: u8| {
             let m = Xpriv::new_master(net, &[seed; 32]).unwrap();
             let (fp, p, x) = account_xpub(&m, net).unwrap();

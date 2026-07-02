@@ -52,10 +52,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      # We accept the two pre-existing type_complexity warnings on
-      # the query_as tuples in routes.rs / psbt_routes.rs. New
-      # warnings should fail the build.
-      - run: cargo clippy --workspace --all-targets -- -D warnings -A clippy::type_complexity
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
     name: cargo test

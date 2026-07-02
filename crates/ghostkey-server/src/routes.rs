@@ -2219,13 +2219,14 @@ async fn get_vault_heir(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<HeirProfileView>, ApiError> {
     let id = auth.vault_id;
-    let row: (
+    type Row = (
         Option<String>, // heir_contact_ciphertext
         Option<String>, // heir_contact_nonce
         Option<String>, // heir_contact_channel
         Option<String>, // heir_intro_ciphertext
         Option<String>, // heir_intro_nonce
-    ) = sqlx::query_as(
+    );
+    let row: Row = sqlx::query_as(
         r#"SELECT heir_contact_ciphertext, heir_contact_nonce, heir_contact_channel,
                   heir_intro_ciphertext, heir_intro_nonce
              FROM vaults WHERE id = ?"#,
@@ -2660,14 +2661,14 @@ async fn resend_verification(
     State(state): State<Arc<AppState>>,
 ) -> Result<StatusCode, ApiError> {
     let id = auth.vault_id;
-    #[allow(clippy::type_complexity)]
-    let row: Option<(
+    type Row = (
         Option<String>, // owner_contact_ciphertext
         Option<String>, // owner_contact_nonce
         Option<String>, // owner_contact_channel
         Option<String>, // owner_contact_verified_at
         Option<String>, // owner_contact_verify_sent_at
-    )> = sqlx::query_as(
+    );
+    let row: Option<Row> = sqlx::query_as(
         "SELECT owner_contact_ciphertext, owner_contact_nonce, owner_contact_channel, \
                 owner_contact_verified_at, owner_contact_verify_sent_at \
            FROM vaults WHERE id = ?",
@@ -2873,14 +2874,15 @@ async fn checkin_from_link(
     //     different vault (defence in depth — a hash collision
     //     would be astronomical for a 256-bit token, but the cost
     //     of the extra predicate is one column compare).
-    let row: Option<(
+    type Row = (
         Option<String>, // checkin_link_token_hash
         Option<String>, // checkin_link_token_used_at
         i64,            // checkin_period_secs
         i64,            // grace_period_secs
         Option<String>, // last_checkin_at
         Option<String>, // claim_eligible_at
-    )> = sqlx::query_as(
+    );
+    let row: Option<Row> = sqlx::query_as(
         r#"SELECT checkin_link_token_hash, checkin_link_token_used_at,
                   checkin_period_secs, grace_period_secs, last_checkin_at,
                   claim_eligible_at
