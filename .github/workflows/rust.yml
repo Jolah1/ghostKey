@@ -92,7 +92,7 @@ jobs:
       # job is dominated by the test, not the install."
       - name: Cache bitcoind binary
         id: bitcoind-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.local/bin/bitcoind
           key: bitcoind-${{ runner.os }}-${{ env.BITCOIND_VERSION }}
@@ -163,7 +163,7 @@ jobs:
       # and cargo-audit will `git pull` the DB to pick up advisories
       # disclosed since the cache was warmed.
       - name: Cache advisory database
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/advisory-db
           key: cargo-advisory-db-${{ runner.os }}-${{ github.run_id }}
