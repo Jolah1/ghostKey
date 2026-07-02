@@ -84,6 +84,17 @@ pub fn router(state: Arc<AppState>) -> Router {
     let find_limiter = crate::rate_limit::Limiter::from_env("find", "GHOSTKEY_RL_FIND", 30, 0.5);
     let claim_limiter =
         crate::rate_limit::Limiter::from_env("claim", "GHOSTKEY_RL_CLAIM", 20, 1.0 / 3.0);
+    // RECOVERY: covers the two unauthenticated, UUID-keyed reads used
+    // by cross-device recovery — `/vaults/:id/sealed-blobs` (returns
+    // the sealed owner xprv + KDF params) and `/vaults/:id/address`.
+    // Each is useless without the owner's password, but the sealed
+    // blob is offline-crackable, so an unthrottled endpoint would let
+    // someone holding a list of vault ids bulk-harvest every sealed
+    // owner key for offline attack. A legitimate owner recovering on a
+    // new device makes a handful of calls; 10 burst, ~1 every 10s
+    // steady is generous for that and hostile to scraping.
+    let recovery_limiter =
+        crate::rate_limit::Limiter::from_env("recovery", "GHOSTKEY_RL_RECOVERY", 10, 0.1);
     // /events is hit on every landing-page section view. Generous
     // budget — 60 burst, 1/s steady — because a single visitor
     // emits ~7 events per page load and we don't want to lose
@@ -114,6 +125,17 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/vaults/find", post(find_vaults_by_email))
         .layer(axum::middleware::from_fn_with_state(
             find_limiter,
+            crate::rate_limit::enforce,
+        ));
+
+    // Unauthenticated, UUID-keyed recovery reads. Own limiter (see
+    // RECOVERY above) so a scraper with a list of vault ids can't pull
+    // every sealed owner key at once for offline cracking.
+    let recovery_routes: Router<Arc<AppState>> = Router::new()
+        .route("/vaults/:id/sealed-blobs", get(get_sealed_blobs))
+        .route("/vaults/:id/address", get(get_vault_address))
+        .layer(axum::middleware::from_fn_with_state(
+            recovery_limiter,
             crate::rate_limit::enforce,
         ));
 
@@ -212,13 +234,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/admin/analytics", get(crate::admin::analytics_summary))
         .route("/vaults/:id", get(get_vault).delete(delete_vault))
         .route("/vaults/:id/heir", get(get_vault_heir))
-        .route("/vaults/:id/address", get(get_vault_address))
         .route(
             "/vaults/:id/balance",
             get(crate::psbt_routes::get_vault_balance),
         )
         .route("/vaults/:id/send", post(crate::psbt_routes::owner_send))
-        .route("/vaults/:id/sealed-blobs", get(get_sealed_blobs))
         .route("/vaults/:id/seal-owner-token", post(seal_owner_token))
         .route("/vaults/:id/checkin", post(checkin))
         .route(
@@ -271,6 +291,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(assist_routes)
         .merge(create_routes)
         .merge(find_routes)
+        .merge(recovery_routes)
         .merge(claim_routes)
         .merge(video_routes)
         .merge(analytics_routes)
@@ -2476,14 +2497,16 @@ async fn push_subscribe(
 ) -> Result<StatusCode, ApiError> {
     let vault_id = auth.vault_id;
 
-    // The endpoint is an attacker-controlled URL we will later POST
-    // encrypted payloads to. Require https so a malicious subscribe
-    // can't point the worker at plaintext infrastructure.
-    let parsed = reqwest::Url::parse(&req.endpoint)
-        .map_err(|_| ApiError::Validation("endpoint must be a URL".into()))?;
-    if parsed.scheme() != "https" {
-        return Err(ApiError::Validation("endpoint must be https".into()));
-    }
+    // The endpoint is an attacker-controlled URL the worker will later
+    // POST encrypted payloads to. Require https AND a publicly routable
+    // target: refuse loopback/private/link-local/ULA hosts so a
+    // subscription can't aim the server at internal infrastructure
+    // (SSRF). Re-checked at send time to defeat DNS rebinding. A
+    // transient DNS failure at subscribe is surfaced the same way — the
+    // owner can retry; we never store an unverifiable endpoint.
+    crate::push::assert_endpoint_public(&req.endpoint)
+        .await
+        .map_err(|e| ApiError::Validation(format!("endpoint rejected: {e}")))?;
 
     let p256dh_bytes = b64url_field("p256dh", &req.p256dh)?;
     if p256::PublicKey::from_sec1_bytes(&p256dh_bytes).is_err() {
