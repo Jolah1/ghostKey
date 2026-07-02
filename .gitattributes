@@ -1,0 +1,8 @@
+# GitHub language stats (Linguist) tuning.
+#
+# The wasm-bindgen output and the base64-inlined binary for the offline
+# recovery kit are build artifacts, not hand-written source. wasmBase64.ts
+# alone is ~5.3 MB — it dwarfs every other file and skews the language bar
+# to "mostly TypeScript" when the authored code is actually Rust-majority.
+# Mark the whole generated directory so it's excluded from the stats.
+ghostkey-web/src/kit/wasm/** linguist-generated=true
