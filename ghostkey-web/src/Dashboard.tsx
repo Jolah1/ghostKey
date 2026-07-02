@@ -57,6 +57,7 @@ import {
 } from "./address";
 import {
   getPushSubscription,
+  isIosBrowserNeedingInstall,
   isPushSupported,
   subscribeToPush,
 } from "./push";
@@ -1824,6 +1825,7 @@ function PushOptInCard({
     | { kind: "checking" }
     | { kind: "hidden" }
     | { kind: "offer" }
+    | { kind: "install-hint" }
     | { kind: "busy" }
     | { kind: "done" }
     | { kind: "error"; message: string };
@@ -1831,11 +1833,22 @@ function PushOptInCard({
 
   useEffect(() => {
     let alive = true;
-    if (
-      !isPushSupported() ||
-      Notification.permission === "denied" ||
-      window.localStorage.getItem(pushDismissKey(vaultId)) === "1"
-    ) {
+    if (window.localStorage.getItem(pushDismissKey(vaultId)) === "1") {
+      setState({ kind: "hidden" });
+      return;
+    }
+    if (!isPushSupported()) {
+      // iOS Safari in the browser can't do push at all — it's only
+      // exposed to installed (Add to Home Screen) apps. The useful
+      // nudge there is "install", not a dead "turn on" button (#224).
+      setState(
+        isIosBrowserNeedingInstall()
+          ? { kind: "install-hint" }
+          : { kind: "hidden" },
+      );
+      return;
+    }
+    if (Notification.permission === "denied") {
       setState({ kind: "hidden" });
       return;
     }
@@ -1882,6 +1895,27 @@ function PushOptInCard({
   }
 
   if (state.kind === "checking" || state.kind === "hidden") return null;
+
+  if (state.kind === "install-hint") {
+    return (
+      <div
+        className="card-flat flex items-center justify-between gap-3 px-4 py-3"
+        data-testid="push-optin-card"
+      >
+        <p className="text-sm text-muted">
+          Want check-in reminders on this phone? Tap Share, then "Add to
+          Home Screen", and open GhostKey from there.
+        </p>
+        <button
+          type="button"
+          onClick={onNotNow}
+          className="shrink-0 text-xs text-dim underline-offset-2 hover:underline"
+        >
+          Not now
+        </button>
+      </div>
+    );
+  }
 
   if (state.kind === "done") {
     return (

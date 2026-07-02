@@ -30,6 +30,26 @@ export function isPushSupported(): boolean {
   );
 }
 
+/** True on an iPhone/iPad *browser* — i.e. not running as an installed
+ *  (Add to Home Screen) app. iOS only exposes web push to installed
+ *  PWAs (16.4+), so this is exactly the audience for an "install to
+ *  get reminders" hint instead of a dead "turn on" button (#224). */
+export function isIosBrowserNeedingInstall(): boolean {
+  if (typeof navigator === "undefined" || typeof window === "undefined") {
+    return false;
+  }
+  const ua = navigator.userAgent;
+  const isIos =
+    /iPad|iPhone|iPod/.test(ua) ||
+    // iPadOS 13+ reports itself as macOS; the touch screen gives it away.
+    (ua.includes("Macintosh") && navigator.maxTouchPoints > 1);
+  if (!isIos) return false;
+  const standalone =
+    window.matchMedia?.("(display-mode: standalone)")?.matches === true ||
+    (navigator as { standalone?: boolean }).standalone === true;
+  return !standalone;
+}
+
 /** Decode the server's base64url VAPID public key into the BufferSource
  *  shape `pushManager.subscribe({ applicationServerKey })` requires. */
 export function urlBase64ToUint8Array(base64url: string): Uint8Array {
