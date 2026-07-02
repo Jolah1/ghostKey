@@ -408,21 +408,41 @@ verbatim. The heir-side flow is now classified into plain English
 - Tracked: subsume into a future "owner UX polish" issue if owners
   start complaining; not currently a blocker.
 
-### R5. Argon2id parameters lean fast, not slow
-Password-vault sealing uses Argon2id with `m=64MiB, t=2, p=1`
+### R5. Sealed owner key is offline-crackable given the vault id + a weak password
+Password-vault sealing uses Argon2id with `m=64MiB, t=3, p=1`
 ([`ghostkey-web/src/crypto/sealing.ts`](../ghostkey-web/src/crypto/sealing.ts)).
-Tuned for ~2s on a mid-range Android phone — deliberately the
+Tuned for ~3s on a mid-range Android phone — deliberately the
 slowest we could justify without user-visible jank in the wizard.
-An offline brute-force against a weak password is therefore not
-prohibitively expensive: `/vaults/:id/sealed-blobs` is
-unauthenticated by design (the sealed blobs are useless without the
-password), but does allow an offline grind by anyone who has the
-vault id.
+`/vaults/:id/sealed-blobs` is unauthenticated by design: cross-device
+recovery has to hand the sealed owner xprv (plus its KDF parameters)
+to any browser that presents the vault id, because the whole point is
+"recover with two things you know — your email and your password."
+The sealed blob is useless without the password, but that means an
+attacker who learns a vault id can grind the password offline at the
+KDF cost, which is public in the blob.
 
-- Mitigation: the wizard enforces a password length minimum and
-  warns on common passwords. A user who picks a strong password is
-  safe; a user who picks `password123` is not.
-- Tracked: SECURITY.md "Known limitations" #4.
+The vault id is derivable: `/vaults/find` maps a hash of the owner's
+email to their vault ids (see R11), and an email is low-entropy. So in
+the worst case, owner-key confidentiality reduces to
+Argon2id-over-password strength. This is inherent to the recovery
+model; we cannot both let an owner recover from a blank browser with
+email + password AND withhold the sealed material from someone who
+supplies those. We make the offline grind as costly as the UX budget
+allows and gate the online reach of the endpoint.
+
+- Mitigation: the wizard enforces a length minimum (10) and a zxcvbn
+  score floor (≥ 3), refusing common/guessable passwords, so the
+  grind starts at ≥ ~10^8 guesses; each guess costs a 64 MiB / t=3
+  Argon2id. A user who picks a strong passphrase is safe; a user who
+  ignores the meter and picks `password123` is not.
+- Mitigation: `/vaults/:id/sealed-blobs` (and `/vaults/:id/address`)
+  are behind a dedicated per-IP rate limit (`GHOSTKEY_RL_RECOVERY`,
+  default 10 burst / ~1 per 10s) so a scraper holding a list of vault
+  ids cannot bulk-harvest every sealed owner key at once for offline
+  attack. The limit does not stop a single targeted fetch — one is
+  enough — but it defeats mass harvesting.
+- Tracked: SECURITY.md "Known limitations" #4; internal audit
+  2026-07-02.
 
 ### R6. No cross-instance shared rate-limit state
 The per-IP token-bucket limiter is in-process. Scaling beyond one
@@ -478,6 +498,36 @@ load-bearing user decision here, the same way master-key custody
 (R1) is for F2 vaults. Source:
 [`descriptor.rs`](../crates/ghostkey-core/src/descriptor.rs),
 [`psbt.rs`](../crates/ghostkey-core/src/psbt.rs).
+
+### R11. Vault existence is discoverable from an owner's email
+`/vaults/find` takes an unsalted hash of the owner's email and returns
+that owner's vault ids, labels, statuses, and dates (no key material).
+An unsalted deterministic hash is required — the owner's browser must
+be able to recompute it on any device to find their vaults — so anyone
+who knows or guesses an email can confirm it owns a GhostKey vault and
+learn the coarse status. This is a privacy exposure, not a funds risk,
+and it feeds R5's "attacker learns the vault id" step.
+
+- Mitigation: `/vaults/find` is rate-limited per IP
+  (`GHOSTKEY_RL_FIND`), which slows bulk email scraping but does not
+  stop a targeted check. The response deliberately omits descriptors,
+  contacts, and any sealed material.
+- Accepted: the deterministic lookup is the recovery UX; salting it
+  would break recovery. Documented so no copy implies vault existence
+  is private.
+
+### R12. A vault's funding address is readable given the vault id
+`/vaults/:id/address` returns the first receive address for a vault
+id, unauthenticated (the setup/funding flow needs it before the owner
+token round-trip completes). Someone holding a vault id can therefore
+correlate it to an on-chain address and watch its balance. On-chain
+addresses are public once used, so the marginal leak is the vault-id
+→ address linkage.
+
+- Mitigation: behind the `GHOSTKEY_RL_RECOVERY` limiter alongside
+  sealed-blobs to stop bulk id → address correlation.
+- Accepted: low severity for an on-chain-public tool; funds cannot be
+  moved with an address.
 
 ---
 

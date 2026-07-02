@@ -40,6 +40,8 @@
 //! transparently — it just parses the JSON and shows a notification
 //! whose click opens `url` (the one-tap check-in link).
 
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use base64::Engine;
 use hkdf::Hkdf;
@@ -153,6 +155,153 @@ impl VapidConfig {
     }
 }
 
+/// Why a push endpoint was rejected. `Invalid` is structural (wrong
+/// scheme, no host, or a non-public target) and will never become
+/// valid, so callers should refuse it at subscribe time and prune it
+/// at send time. `Unresolvable` is a transient DNS failure that may
+/// clear later.
+#[derive(Debug, thiserror::Error)]
+pub enum EndpointError {
+    #[error("{0}")]
+    Invalid(String),
+    #[error("{0}")]
+    Unresolvable(String),
+}
+
+/// True if `ip` is a publicly routable unicast address.
+///
+/// Allowlist-shaped: everything that is loopback, private (RFC1918),
+/// CGNAT, link-local, unique-local, unspecified, multicast/broadcast,
+/// or a reserved/documentation range is rejected. This is the SSRF
+/// guard for web-push endpoints — a subscription is an
+/// attacker-suppliable URL the server later POSTs to, and on Fly's
+/// 6PN private network an unchecked endpoint could reach internal
+/// apps (`fdaa::/16`, inside `fc00::/7`).
+pub fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_public_v4(v4),
+        IpAddr::V6(v6) => is_public_v6(v6),
+    }
+}
+
+fn is_public_v4(ip: Ipv4Addr) -> bool {
+    if ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || ip.is_documentation()
+        || ip.is_multicast()
+    {
+        return false;
+    }
+    let o = ip.octets();
+    // 0.0.0.0/8 "this network".
+    if o[0] == 0 {
+        return false;
+    }
+    // 100.64.0.0/10 carrier-grade NAT (no stable std predicate).
+    if o[0] == 100 && (o[1] & 0xc0) == 0x40 {
+        return false;
+    }
+    // 192.0.0.0/24 IETF protocol assignments.
+    if o[0] == 192 && o[1] == 0 && o[2] == 0 {
+        return false;
+    }
+    // 198.18.0.0/15 benchmarking.
+    if o[0] == 198 && (o[1] == 18 || o[1] == 19) {
+        return false;
+    }
+    // 240.0.0.0/4 reserved (broadcast 255.255.255.255 already caught).
+    if o[0] >= 240 {
+        return false;
+    }
+    true
+}
+
+fn is_public_v6(ip: Ipv6Addr) -> bool {
+    if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
+        return false;
+    }
+    // IPv4-mapped ::ffff:a.b.c.d — classify by the embedded v4 so an
+    // attacker can't smuggle a private v4 target through a v6 literal.
+    if let Some(v4) = ip.to_ipv4_mapped() {
+        return is_public_v4(v4);
+    }
+    let seg = ip.segments();
+    // Unique-local fc00::/7 (covers Fly 6PN fdaa::/16).
+    if (seg[0] & 0xfe00) == 0xfc00 {
+        return false;
+    }
+    // Link-local fe80::/10.
+    if (seg[0] & 0xffc0) == 0xfe80 {
+        return false;
+    }
+    // Documentation 2001:db8::/32.
+    if seg[0] == 0x2001 && seg[1] == 0x0db8 {
+        return false;
+    }
+    true
+}
+
+/// Reject a push endpoint that is not HTTPS or that resolves to any
+/// non-public address. Called at subscribe time (refuse before the row
+/// is ever stored) and again immediately before each send (so a host
+/// that resolved public at subscribe but flips to a private address
+/// later — DNS rebinding — is caught before the POST goes out).
+///
+/// A domain that resolves to multiple addresses is rejected if *any*
+/// of them is non-public, so an attacker can't hide an internal target
+/// behind one public A record.
+pub async fn assert_endpoint_public(endpoint: &str) -> Result<(), EndpointError> {
+    let url = reqwest::Url::parse(endpoint)
+        .map_err(|e| EndpointError::Invalid(format!("endpoint is not a URL: {e}")))?;
+    if url.scheme() != "https" {
+        return Err(EndpointError::Invalid("endpoint must be https".into()));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| EndpointError::Invalid("endpoint has no host".into()))?;
+    // `host_str()` brackets IPv6 literals (`[::1]`); strip before parse.
+    let host_unbracketed = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    let port = url.port_or_known_default().unwrap_or(443);
+
+    // Literal IP host: check directly, no DNS.
+    if let Ok(ip) = host_unbracketed.parse::<IpAddr>() {
+        return if is_public_ip(ip) {
+            Ok(())
+        } else {
+            Err(EndpointError::Invalid(
+                "endpoint resolves to a non-public address".into(),
+            ))
+        };
+    }
+
+    let addrs = tokio::net::lookup_host((host_unbracketed, port))
+        .await
+        .map_err(|e| {
+            EndpointError::Unresolvable(format!("could not resolve endpoint host: {e}"))
+        })?;
+    let mut saw_any = false;
+    for addr in addrs {
+        saw_any = true;
+        if !is_public_ip(addr.ip()) {
+            return Err(EndpointError::Invalid(
+                "endpoint resolves to a non-public address".into(),
+            ));
+        }
+    }
+    if !saw_any {
+        return Err(EndpointError::Unresolvable(
+            "endpoint host did not resolve".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// One browser subscription as stored in `push_subscriptions`:
 /// the `PushSubscription.toJSON()` triple.
 pub struct Subscription<'a> {
@@ -171,6 +320,21 @@ pub async fn send(
     sub: &Subscription<'_>,
     payload: &[u8],
 ) -> Result<(), PushError> {
+    // SSRF guard, re-run per send to defeat DNS rebinding. A
+    // definitively-bad target (non-public / not https) is treated as
+    // Gone so the row is pruned; a transient resolution failure is
+    // Transient so a real subscription isn't dropped over a DNS blip.
+    match assert_endpoint_public(sub.endpoint).await {
+        Ok(()) => {}
+        Err(EndpointError::Invalid(msg)) => {
+            tracing::warn!(endpoint = %sub.endpoint, reason = %msg, "push endpoint not public; pruning");
+            return Err(PushError::Gone);
+        }
+        Err(EndpointError::Unresolvable(msg)) => {
+            return Err(PushError::Transient(msg));
+        }
+    }
+
     let ua_public = B64URL
         .decode(sub.p256dh_b64)
         .map_err(|e| PushError::Permanent(format!("stored p256dh not base64url: {e}")))?;
@@ -422,5 +586,64 @@ mod tests {
         assert_eq!(claims["sub"], "mailto:test@example.com");
         // Signature is fixed-width r||s.
         assert_eq!(B64URL.decode(parts[2]).unwrap().len(), 64);
+    }
+
+    #[test]
+    fn public_ip_classifier_rejects_internal_ranges() {
+        use std::net::IpAddr;
+        let public = [
+            "8.8.8.8",
+            "1.1.1.1",
+            "142.250.72.196", // fcm/google
+            "2606:4700:4700::1111",
+        ];
+        for s in public {
+            assert!(
+                is_public_ip(s.parse::<IpAddr>().unwrap()),
+                "{s} should be public"
+            );
+        }
+        let internal = [
+            "127.0.0.1",       // loopback
+            "10.0.0.5",        // RFC1918
+            "192.168.1.1",     // RFC1918
+            "172.16.0.1",      // RFC1918
+            "169.254.169.254", // link-local / cloud metadata
+            "100.64.0.1",      // CGNAT
+            "0.0.0.0",         // this-network
+            "::1",             // v6 loopback
+            "fd00::1",         // v6 ULA
+            "fdaa:0:1::1",     // Fly 6PN
+            "fe80::1",         // v6 link-local
+            "::ffff:10.0.0.1", // v4-mapped private
+        ];
+        for s in internal {
+            assert!(
+                !is_public_ip(s.parse::<IpAddr>().unwrap()),
+                "{s} should be rejected"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn assert_endpoint_rejects_non_https_and_literal_private() {
+        assert!(matches!(
+            assert_endpoint_public("http://fcm.googleapis.com/x").await,
+            Err(EndpointError::Invalid(_))
+        ));
+        assert!(matches!(
+            assert_endpoint_public("https://127.0.0.1/x").await,
+            Err(EndpointError::Invalid(_))
+        ));
+        assert!(matches!(
+            assert_endpoint_public("https://[::1]/x").await,
+            Err(EndpointError::Invalid(_))
+        ));
+        assert!(matches!(
+            assert_endpoint_public("https://169.254.169.254/latest/meta-data").await,
+            Err(EndpointError::Invalid(_))
+        ));
+        // A literal public IP over https is allowed.
+        assert!(assert_endpoint_public("https://1.1.1.1/x").await.is_ok());
     }
 }

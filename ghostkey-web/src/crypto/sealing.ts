@@ -38,11 +38,21 @@
  * the server uses today for heir contacts (`crates/ghostkey-server/
  * src/crypto.rs`) so any future cross-validation is straightforward.
  *
- * KDF for password sealing: Argon2id, m=64MiB, t=2, p=1. Tuned for
- * ~1.5–2.5s on a 2020-era mid-range phone. We accept that latency as
+ * KDF for password sealing: Argon2id, m=64MiB, t=3, p=1. Tuned for
+ * ~2.5–3.5s on a 2020-era mid-range phone. We accept that latency as
  * the cost of pushing brute-force from "trivial" to "expensive on a
  * GPU farm." Anything stronger gets us into "user thinks the page
- * froze" territory.
+ * froze" territory. The sealed owner blob is retrievable by anyone
+ * who knows the vault id (cross-device recovery is unauthenticated by
+ * design; see threat-model R5), so this cost is the main thing
+ * standing between a leaked email + weak password and the owner key —
+ * we lean it as slow as the UX budget allows.
+ *
+ * Forward-compatible: every sealed blob stores its own
+ * `password_kdf_iters`/`_mem_kib`, and unseal reads them back, so
+ * raising this only affects newly-created (or re-sealed) vaults;
+ * existing vaults keep opening with the parameters they were made
+ * with. No migration.
  *
  * KDF for claim-token sealing: HKDF-SHA256. The token is already
  * 256 bits of CSPRNG output; we do not need a slow KDF — only domain
@@ -89,7 +99,7 @@ export interface SealedVaultSecrets {
 }
 
 const ARGON_MEM_KIB = 64 * 1024; // 64 MiB
-const ARGON_ITERS = 2;
+const ARGON_ITERS = 3;
 const ARGON_PARALLELISM = 1;
 const KEK_LEN = 32;
 const NONCE_LEN = 24;
