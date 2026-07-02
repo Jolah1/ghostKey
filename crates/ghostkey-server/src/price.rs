@@ -24,7 +24,8 @@ use tokio::sync::Mutex;
 /// so a single source is not reliable from a host like Fly. Coinbase and
 /// mempool.space answer datacenter requests without a key; CoinGecko stays
 /// last as a fallback. Each entry is (url, parser).
-const SOURCES: &[(&str, fn(&serde_json::Value) -> Option<f64>)] = &[
+type PriceSource = (&'static str, fn(&serde_json::Value) -> Option<f64>);
+const SOURCES: &[PriceSource] = &[
     (
         "https://api.coinbase.com/v2/prices/BTC-USD/spot",
         parse_coinbase,

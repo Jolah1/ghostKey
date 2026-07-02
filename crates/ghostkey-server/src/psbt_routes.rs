@@ -1528,7 +1528,7 @@ async fn load_vault_for_claim_token(
 ) -> Result<VaultForClaim, ApiError> {
     let hash = hash_claim_token(token);
 
-    let row: Option<(
+    type Row = (
         String,         // id
         Option<String>, // label
         String,         // network
@@ -1537,7 +1537,8 @@ async fn load_vault_for_claim_token(
         String,         // descriptor_internal
         Option<String>, // claim_token_hash
         Option<String>, // claim_token_used_at
-    )> = sqlx::query_as(
+    );
+    let row: Option<Row> = sqlx::query_as(
         r#"SELECT id, label, network, timelock_blocks,
                   descriptor_external, descriptor_internal,
                   claim_token_hash, claim_token_used_at

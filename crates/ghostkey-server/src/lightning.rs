@@ -343,7 +343,7 @@ pub async fn fetch_invoice_by_hash(
     db: &sqlx::SqlitePool,
     payment_hash: &str,
 ) -> Result<Option<InvoiceRecord>, sqlx::Error> {
-    let row: Option<(
+    type Row = (
         i64,
         String,
         String,
@@ -354,7 +354,8 @@ pub async fn fetch_invoice_by_hash(
         String,
         String,
         Option<String>,
-    )> = sqlx::query_as(
+    );
+    let row: Option<Row> = sqlx::query_as(
         r#"SELECT id, vault_id, bolt11, payment_hash, amount_sat, status,
                   invoice_type, created_at, expires_at, paid_at
              FROM lightning_invoices
@@ -416,7 +417,8 @@ pub async fn mark_paid_and_checkin(
     // this vault AND fan the heartbeat out to the owner's other vaults
     // (#231 — a payment proves the OWNER is alive, not just the vault
     // whose invoice happened to get paid).
-    let row: Option<(String, i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
+    type Row = (String, i64, i64, Option<String>, Option<String>);
+    let row: Option<Row> = sqlx::query_as(
         r#"SELECT li.vault_id, v.checkin_period_secs, v.grace_period_secs,
                   v.last_checkin_at, v.owner_email_hash
              FROM lightning_invoices li
