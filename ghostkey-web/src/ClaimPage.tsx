@@ -65,6 +65,7 @@ import {
 } from "./api";
 import { usePrice, btcAndUsd } from "./fiat";
 import { countdown, parseRfc } from "./time";
+import { useVocab, LanguageToggle } from "./vocab";
 import { HeirVideoMessage } from "./HeirVideoMessage";
 import { ConfirmSend } from "./ConfirmSend";
 import {
@@ -146,6 +147,7 @@ export function ClaimPage({ token }: Props) {
 /* ------------------------------ Header ------------------------------------ */
 
 function ClaimHeader() {
+  const v = useVocab();
   return (
     <header className="border-b border-app">
       <div className="mx-auto flex h-[60px] max-w-xl items-center justify-between px-5 md:px-8">
@@ -153,7 +155,10 @@ function ClaimHeader() {
           <img src="/brand-mark.png" alt="" className="h-7 w-7 rounded-lg" />
           <span>ghost<span className="text-accent">Key</span></span>
         </span>
-        <span className="text-xs text-muted">A message for you</span>
+        <div className="flex items-center gap-3">
+          <LanguageToggle />
+          <span className="hidden text-xs text-muted sm:inline">{v.claim.header}</span>
+        </div>
       </div>
     </header>
   );
@@ -162,6 +167,7 @@ function ClaimHeader() {
 /* ----------------------------- States ------------------------------------- */
 
 function LoadingState() {
+  const v = useVocab();
   return (
     <section className="text-center" aria-busy="true" aria-live="polite">
       <div className="mx-auto h-2 w-32 overflow-hidden rounded-full bg-[var(--border)]">
@@ -170,38 +176,33 @@ function LoadingState() {
           style={{ animationDuration: "1.2s" }}
         />
       </div>
-      <p className="mt-6 text-sm text-muted">Opening your link…</p>
+      <p className="mt-6 text-sm text-muted">{v.claim.loading}</p>
     </section>
   );
 }
 
 function NotFoundState() {
+  const v = useVocab();
   return (
     <section className="text-center">
-      <Eyebrow>This link doesn't work</Eyebrow>
+      <Eyebrow>{v.claim.notFound.eyebrow}</Eyebrow>
       <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
-        We couldn't find anything for this link
+        {v.claim.notFound.title}
       </h1>
-      <p className="mt-4 text-muted">
-        The link may be incomplete, expired, or copied wrong. If someone gave
-        you this by SMS or WhatsApp, ask them to send it again from the start.
-      </p>
+      <p className="mt-4 text-muted">{v.claim.notFound.body}</p>
     </section>
   );
 }
 
 function AlreadyUsedState() {
+  const v = useVocab();
   return (
     <section className="text-center">
-      <Eyebrow>This link has already been opened</Eyebrow>
+      <Eyebrow>{v.claim.alreadyUsed.eyebrow}</Eyebrow>
       <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
-        Looks like someone has been here before
+        {v.claim.alreadyUsed.title}
       </h1>
-      <p className="mt-4 text-muted">
-        A claim link works once. If you've already received what was left for
-        you, you're done. If you haven't, contact the person who set this
-        up. They can issue a new link.
-      </p>
+      <p className="mt-4 text-muted">{v.claim.alreadyUsed.body}</p>
     </section>
   );
 }
@@ -561,29 +562,24 @@ function TimelockWaitState({ est }: { est: UnlockEstimateView }) {
         day: "numeric",
       })
     : null;
+  const v = useVocab();
+  const t = v.claim.timelockWait;
   return (
     <section>
-      <Eyebrow>Your inheritance</Eyebrow>
+      <Eyebrow>{t.eyebrow}</Eyebrow>
       <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
-        Your funds are on the way
+        {t.title}
       </h1>
       {friendly ? (
         <p className="mt-4 text-muted">
-          What was left for you unlocks on the Bitcoin network around{" "}
-          <strong>{friendly}</strong>. There's nothing for you to do. We'll
-          email you when it's ready, and you can come back using this same
-          link.
+          {t.etaBefore}
+          <strong>{friendly}</strong>
+          {t.etaAfter}
         </p>
       ) : (
-        <p className="mt-4 text-muted">
-          We're still confirming the funds on the Bitcoin network. There's
-          nothing for you to do. Check back shortly using this same link.
-        </p>
+        <p className="mt-4 text-muted">{t.noEta}</p>
       )}
-      <p className="mt-3 text-sm text-dim">
-        Bitcoin holds an inheritance for a set time before it can be
-        collected.
-      </p>
+      <p className="mt-3 text-sm text-dim">{t.note}</p>
     </section>
   );
 }
@@ -603,27 +599,20 @@ function SafetyWaitState({ availableAt, now }: { availableAt: Date; now: Date })
     hour: "numeric",
     minute: "2-digit",
   });
+  const v = useVocab();
+  const s = v.claim.safetyWait;
   return (
     <section>
-      <Eyebrow>Almost there</Eyebrow>
+      <Eyebrow>{s.eyebrow}</Eyebrow>
       <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
-        Your claim has started. There's a short safety wait
+        {s.title}
       </h1>
-      <p className="mt-4 text-muted">
-        You've done everything right, and what was left for you is being
-        prepared. For everyone's protection, every claim includes a short
-        waiting period before anything can be collected.
-      </p>
+      <p className="mt-4 text-muted">{s.body1}</p>
       <p className="mt-3 text-muted">
-        We'll email you the moment everything's ready, so you don't have to
-        remember or keep checking. You can also come back{" "}
-        <strong>{friendly}</strong> ({cd.friendly}) using this same link.
+        {s.body2Before}
+        <strong>{friendly}</strong> ({cd.friendly}){s.body2After}
       </p>
-      <p className="mt-3 text-sm text-dim">
-        Why the wait? It gives the person who set this up one last chance
-        to respond if this claim was started by mistake. If nothing
-        changes, your claim continues automatically.
-      </p>
+      <p className="mt-3 text-sm text-dim">{s.note}</p>
     </section>
   );
 }
@@ -634,34 +623,30 @@ function NotReadyState({ view }: { view: ClaimView }) {
     () => countdown(parseRfc(view.next_deadline_at), now),
     [view.next_deadline_at, now],
   );
+  const v = useVocab();
+  const n = v.claim.notReady;
   return (
     <section>
-      <Eyebrow>Not yet</Eyebrow>
+      <Eyebrow>{n.eyebrow}</Eyebrow>
       <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
-        It's not time yet
+        {n.title}
       </h1>
-      <p className="mt-4 text-muted">
-        The person who set this up is still active. There's nothing for you to
-        do today. You'll receive a new message if anything changes.
-      </p>
-      <p className="mt-3 text-sm text-dim">Next check-in {cd.friendly}.</p>
+      <p className="mt-4 text-muted">{n.body}</p>
+      <p className="mt-3 text-sm text-dim">{n.nextCheckin(cd.friendly)}</p>
     </section>
   );
 }
 
 function AlreadyClaimedState({ view }: { view: ClaimView }) {
+  const v = useVocab();
+  const a = v.claim.alreadyClaimed;
   return (
     <section>
-      <Eyebrow>Done</Eyebrow>
+      <Eyebrow>{a.eyebrow}</Eyebrow>
       <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
-        This has already been passed on
+        {a.title}
       </h1>
-      <p className="mt-4 text-muted">
-        {view.label
-          ? `"${view.label}" was claimed earlier.`
-          : "This inheritance was claimed earlier."}{" "}
-        Nothing more to do here.
-      </p>
+      <p className="mt-4 text-muted">{a.body(view.label ?? null)}</p>
     </section>
   );
 }
