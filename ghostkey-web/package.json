@@ -11,6 +11,8 @@
     "wasm:bundle": "node scripts/bundle-kit-wasm.mjs",
     "wasm:verify": "node scripts/verify-kit-signer.mjs",
     "e2e": "npm run build:kit && playwright test",
+    "a11y": "playwright test e2e/a11y.spec.ts",
+    "lhci": "lhci autorun",
     "test": "vitest run",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
@@ -32,7 +34,9 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@eslint/js": "^9.39.4",
+    "@lhci/cli": "^0.15.1",
     "@playwright/test": "^1.61.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",

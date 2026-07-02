@@ -1121,7 +1121,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           floating GhostKey AI launcher (fixed bottom-right). */}
       <div className="mx-auto max-w-xl px-5 pt-12 pb-28 md:pt-16 lg:grid lg:max-w-5xl lg:grid-cols-[minmax(0,1fr)_320px] lg:items-start lg:gap-14">
         <div className="min-w-0 lg:max-w-xl">
-        <ProgressBar value={progress} />
+        <ProgressBar value={progress} label="Setup progress" />
 
         <div className="mt-10">
           <p className="eyebrow-dim">
@@ -2194,7 +2194,10 @@ function StepPassword({
               Generating your keys… {kdfProgress > 0 ? `${kdfProgress}%` : ""}
             </p>
             <div className="mt-2">
-              <ProgressBar value={Math.max(5, kdfProgress)} />
+              <ProgressBar
+                value={Math.max(5, kdfProgress)}
+                label="Key generation progress"
+              />
             </div>
             <p className="mt-2 text-xs text-muted">
               We're running a deliberately slow key derivation. This takes

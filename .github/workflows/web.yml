@@ -3,7 +3,9 @@
 # Runs only when ghostkey-web/ is touched (so server-only PRs don't
 # pay the npm install cost). Catches:
 #   - TypeScript type errors,
-#   - production build failures (Tailwind purge, Vite resolution, etc.).
+#   - production build failures (Tailwind purge, Vite resolution, etc.),
+#   - accessibility regressions (axe over the four core pages, #225),
+#   - performance/a11y budget regressions (Lighthouse, #225).
 
 name: web
 
@@ -42,3 +44,15 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # Accessibility gate (#225): axe scans landing, setup, dashboard
+      # and claim against the built bundle with a mocked API, and fails
+      # on any serious/critical violation. Uses the runner's system
+      # Chrome (channel: "chrome" in playwright.config.ts), so no
+      # Playwright browser download is needed.
+      - run: npm run a11y
+      # Performance + accessibility budgets (#225): Lighthouse in mobile
+      # emulation against the static build. Budgets live in
+      # lighthouserc.json (perf >= 0.90 on landing and claim, a11y >=
+      # 0.95). LHCI's console summary groups the two hash-routed URLs
+      # under one path; every run is still collected and asserted.
+      - run: npm run lhci
