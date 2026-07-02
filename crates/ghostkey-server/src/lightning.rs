@@ -412,10 +412,13 @@ pub async fn mark_paid_and_checkin(
         return Ok(());
     }
 
-    // Look up the vault id and its cadence to recompute the deadline.
-    let row: Option<(String, i64, i64, Option<String>)> = sqlx::query_as(
+    // Look up the vault id, its cadence, and its owner so we can reset
+    // this vault AND fan the heartbeat out to the owner's other vaults
+    // (#231 — a payment proves the OWNER is alive, not just the vault
+    // whose invoice happened to get paid).
+    let row: Option<(String, i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
         r#"SELECT li.vault_id, v.checkin_period_secs, v.grace_period_secs,
-                  v.last_checkin_at
+                  v.last_checkin_at, v.owner_email_hash
              FROM lightning_invoices li
              JOIN vaults v ON v.id = li.vault_id
             WHERE li.payment_hash = ?"#,
@@ -424,39 +427,141 @@ pub async fn mark_paid_and_checkin(
     .fetch_optional(&mut *tx)
     .await?;
 
-    let Some((vault_id, checkin_secs, grace_secs, last_checkin_at)) = row else {
+    let Some((vault_id, checkin_secs, grace_secs, last_checkin_at, owner_email_hash)) = row else {
         anyhow::bail!("lightning invoice {payment_hash} has no vault row");
     };
 
     // Once-per-period guard. The invoice is already marked paid (we
     // can't refund Lightning), but if the owner already checked in
     // inside this cycle we skip the deadline reset so a second
-    // payment doesn't get a free extension.
-    if let Some(last_s) = last_checkin_at.as_deref() {
-        if let Ok(last) = DateTime::parse_from_rfc3339(last_s) {
-            let next_open = last.with_timezone(&Utc) + chrono::Duration::seconds(checkin_secs);
-            if now < next_open {
-                tx.commit().await?;
-                tracing::info!(
-                    vault_id = %vault_id,
-                    payment_hash = %payment_hash,
-                    "lightning payment landed inside current period; \
-                     deadline not advanced (already checked in)"
-                );
-                return Ok(());
+    // payment doesn't get a free extension. NOTE: no early return —
+    // siblings may still be overdue (that desync is exactly what
+    // #231 is about), so the fan-out below runs either way.
+    let paid_vault_reset = !inside_current_period(last_checkin_at.as_deref(), checkin_secs, now);
+    if paid_vault_reset {
+        reset_vault_clock(&mut tx, &vault_id, checkin_secs, grace_secs, now).await?;
+    } else {
+        tracing::info!(
+            vault_id = %vault_id,
+            payment_hash = %payment_hash,
+            "lightning payment landed inside current period; \
+             deadline not advanced (already checked in)"
+        );
+    }
+
+    // Fan-out (#231): reset every OTHER vault of the same owner that is
+    // in a liveness-tracked state and past its own once-per-period
+    // window. Multi-heir groups are N parallel vaults sharing
+    // owner_email_hash; before this, a Lightning payment reset one
+    // sibling while the rest kept drifting toward alarm.
+    //
+    // Deliberately excluded:
+    //   - 'unfunded'  — no clock to reset;
+    //   - 'frozen'    — a panic freeze must hold;
+    //   - 'claiming'  — an heir is mid-claim on that sibling; stopping
+    //     that deserves an explicit owner action on that vault (its
+    //     deadline has passed, so the free check-in path is open for
+    //     it even under the Lightning gate), not a side effect of an
+    //     unrelated invoice;
+    //   - 'claimed'   — the funds already moved.
+    // Legacy vaults without owner_email_hash never match (SQL `= ?`
+    // is false for NULL), so CLI-era rows keep single-vault semantics.
+    let mut sibling_resets: Vec<String> = Vec::new();
+    if let Some(owner_hash) = owner_email_hash.as_deref() {
+        let siblings: Vec<(String, i64, i64, Option<String>)> = sqlx::query_as(
+            r#"SELECT id, checkin_period_secs, grace_period_secs, last_checkin_at
+                 FROM vaults
+                WHERE owner_email_hash = ?
+                  AND id != ?
+                  AND status IN ('ok', 'alarmed', 'timelock_started')"#,
+        )
+        .bind(owner_hash)
+        .bind(&vault_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        for (sib_id, sib_checkin, sib_grace, sib_last) in siblings {
+            if inside_current_period(sib_last.as_deref(), sib_checkin, now) {
+                continue; // already covered this cycle; skip silently
             }
+            reset_vault_clock(&mut tx, &sib_id, sib_checkin, sib_grace, now).await?;
+            sibling_resets.push(sib_id);
         }
     }
 
+    tx.commit().await?;
+
+    // Record the heartbeat(s) in the audit log so the dashboard event
+    // drawer shows them alongside button check-ins. The `source` field
+    // lets us tell them apart for analytics; siblings get their own
+    // tag so a group reset is traceable to the one payment.
+    if paid_vault_reset {
+        record_event(
+            db,
+            &vault_id,
+            "checkin",
+            Some(serde_json::json!({
+                "source": "lightning",
+                "payment_hash": payment_hash,
+            })),
+        )
+        .await?;
+    }
+    for sib_id in &sibling_resets {
+        record_event(
+            db,
+            sib_id,
+            "checkin",
+            Some(serde_json::json!({
+                "source": "lightning_group",
+                "payment_hash": payment_hash,
+                "paid_vault_id": vault_id,
+            })),
+        )
+        .await?;
+    }
+
+    tracing::info!(
+        vault_id = %vault_id,
+        payment_hash = %payment_hash,
+        siblings_reset = sibling_resets.len(),
+        "lightning check-in confirmed; vault deadline reset"
+    );
+    Ok(())
+}
+
+/// True when `last_checkin_at` says this vault already checked in
+/// inside its current cycle (the once-per-period rule shared by
+/// `routes::checkin`, `checkin_from_link`, and the Lightning path).
+fn inside_current_period(
+    last_checkin_at: Option<&str>,
+    checkin_period_secs: i64,
+    now: chrono::DateTime<Utc>,
+) -> bool {
+    let Some(last_s) = last_checkin_at else {
+        return false;
+    };
+    let Ok(last) = DateTime::parse_from_rfc3339(last_s) else {
+        return false;
+    };
+    let next_open = last.with_timezone(&Utc) + chrono::Duration::seconds(checkin_period_secs);
+    now < next_open
+}
+
+/// Reset one vault's check-in clock — the same column set the HTTP
+/// /checkin route writes. Clearing the claim_token_* trio matters: if
+/// the owner was already alarmed and a token had been minted, this
+/// unwinds that state cleanly. Clearing the alarm-reminder columns
+/// (F3) is what stops the daily-escalation emails the moment the
+/// owner checks in. See routes::checkin for the matching SQL.
+async fn reset_vault_clock(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    vault_id: &str,
+    checkin_secs: i64,
+    grace_secs: i64,
+    now: chrono::DateTime<Utc>,
+) -> anyhow::Result<()> {
     let next = now + chrono::Duration::seconds(checkin_secs + grace_secs);
     let claim_eligible = next + chrono::Duration::seconds(grace_secs);
-
-    // Same column set the HTTP /checkin route writes. Clearing the
-    // claim_token_* trio matters: if the owner was already alarmed
-    // and a token had been minted, paying the invoice unwinds that
-    // state cleanly. Clearing the alarm-reminder columns (F3) is what
-    // stops the daily-escalation emails the moment the owner checks
-    // in. See routes::checkin for the matching SQL.
     sqlx::query(
         r#"UPDATE vaults
               SET last_checkin_at      = ?,
@@ -474,34 +579,12 @@ pub async fn mark_paid_and_checkin(
                   checkin_link_token_used_at   = NULL
             WHERE id = ?"#,
     )
-    .bind(&now_s)
+    .bind(now.to_rfc3339())
     .bind(next.to_rfc3339())
     .bind(claim_eligible.to_rfc3339())
-    .bind(&vault_id)
-    .execute(&mut *tx)
+    .bind(vault_id)
+    .execute(&mut **tx)
     .await?;
-
-    tx.commit().await?;
-
-    // Record the heartbeat in the audit log so the dashboard event
-    // drawer shows it alongside button check-ins. The `source` field
-    // lets us tell them apart for analytics.
-    record_event(
-        db,
-        &vault_id,
-        "checkin",
-        Some(serde_json::json!({
-            "source": "lightning",
-            "payment_hash": payment_hash,
-        })),
-    )
-    .await?;
-
-    tracing::info!(
-        vault_id = %vault_id,
-        payment_hash = %payment_hash,
-        "lightning check-in confirmed; vault deadline reset"
-    );
     Ok(())
 }
 
@@ -1482,5 +1565,185 @@ mod tests {
         for _ in 0..1000 {
             assert!(provider.is_enabled());
         }
+    }
+
+    /* ----------------------------------------------------------------- *
+     *  Owner-wide fan-out on payment (#231)                             *
+     *                                                                   *
+     *  Multi-heir groups are N parallel vaults sharing                  *
+     *  owner_email_hash. One paid invoice must reset every liveness-    *
+     *  tracked sibling -- the payment proves the OWNER is alive -- while *
+     *  leaving other owners, frozen vaults, and mid-period siblings     *
+     *  untouched.                                                       *
+     * ----------------------------------------------------------------- */
+
+    /// Like `insert_vault`, plus an owner_email_hash, a status, and an
+    /// optional last_checkin_at -- the knobs the fan-out keys on.
+    async fn insert_vault_owned(
+        pool: &SqlitePool,
+        id: &str,
+        owner_hash: Option<&str>,
+        status: &str,
+        last_checkin_at: Option<&str>,
+    ) {
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network,
+                descriptor_external, descriptor_internal,
+                timelock_blocks,
+                checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status,
+                claim_eligible_at, last_checkin_at,
+                owner_token_hash, owner_email_hash
+            ) VALUES (?, 'regtest', ?, ?, 144, ?, ?,
+                      '2026-01-01T00:00:00Z',
+                      '2026-01-02T00:00:00Z', ?,
+                      '2026-01-03T00:00:00Z', ?,
+                      'fake-hash', ?)"#,
+        )
+        .bind(id)
+        .bind(format!("tr(fake/{id}/0/*)"))
+        .bind(format!("tr(fake/{id}/1/*)"))
+        .bind(14 * 86400)
+        .bind(3 * 86400)
+        .bind(status)
+        .bind(last_checkin_at)
+        .bind(owner_hash)
+        .execute(pool)
+        .await
+        .expect("insert");
+    }
+
+    async fn insert_pending_invoice(pool: &SqlitePool, vault_id: &str, payment_hash: &str) {
+        let now = Utc::now();
+        sqlx::query(
+            r#"INSERT INTO lightning_invoices
+                  (vault_id, bolt11, payment_hash, amount_sat, status, created_at, expires_at)
+               VALUES (?, 'lnbc...', ?, 1, 'pending', ?, ?)"#,
+        )
+        .bind(vault_id)
+        .bind(payment_hash)
+        .bind(now.to_rfc3339())
+        .bind((now + chrono::Duration::hours(1)).to_rfc3339())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn vault_status(pool: &SqlitePool, id: &str) -> String {
+        sqlx::query_scalar("SELECT status FROM vaults WHERE id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn paid_invoice_fans_out_to_owner_siblings() {
+        let pool = fresh_db().await;
+        let owner = "a".repeat(64);
+        // The paid vault + two liveness-state siblings of the same owner.
+        insert_vault_owned(&pool, "fan-paid", Some(&owner), "alarmed", None).await;
+        insert_vault_owned(&pool, "fan-sib-alarmed", Some(&owner), "alarmed", None).await;
+        insert_vault_owned(
+            &pool,
+            "fan-sib-timelock",
+            Some(&owner),
+            "timelock_started",
+            None,
+        )
+        .await;
+        // Must NOT be touched: another owner, a frozen sibling, a
+        // claiming sibling.
+        insert_vault_owned(
+            &pool,
+            "fan-other-owner",
+            Some(&"b".repeat(64)),
+            "alarmed",
+            None,
+        )
+        .await;
+        insert_vault_owned(&pool, "fan-sib-frozen", Some(&owner), "frozen", None).await;
+        insert_vault_owned(&pool, "fan-sib-claiming", Some(&owner), "claiming", None).await;
+
+        insert_pending_invoice(&pool, "fan-paid", "fan-hash-1").await;
+        mark_paid_and_checkin(&pool, "fan-hash-1").await.unwrap();
+
+        assert_eq!(vault_status(&pool, "fan-paid").await, "ok");
+        assert_eq!(vault_status(&pool, "fan-sib-alarmed").await, "ok");
+        assert_eq!(vault_status(&pool, "fan-sib-timelock").await, "ok");
+        assert_eq!(vault_status(&pool, "fan-other-owner").await, "alarmed");
+        assert_eq!(vault_status(&pool, "fan-sib-frozen").await, "frozen");
+        assert_eq!(vault_status(&pool, "fan-sib-claiming").await, "claiming");
+
+        // Events: one 'lightning' for the paid vault, one
+        // 'lightning_group' per reset sibling, nothing for the rest.
+        let group_events: Vec<String> = sqlx::query_scalar(
+            "SELECT vault_id FROM events WHERE kind = 'checkin' \
+             AND detail LIKE '%lightning_group%' ORDER BY vault_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(group_events, vec!["fan-sib-alarmed", "fan-sib-timelock"]);
+    }
+
+    #[tokio::test]
+    async fn fanout_skips_siblings_inside_their_period() {
+        let pool = fresh_db().await;
+        let owner = "c".repeat(64);
+        let fresh = Utc::now().to_rfc3339();
+        insert_vault_owned(&pool, "skip-paid", Some(&owner), "alarmed", None).await;
+        // Sibling checked in moments ago: mid-period, must be skipped.
+        insert_vault_owned(&pool, "skip-sib-fresh", Some(&owner), "ok", Some(&fresh)).await;
+
+        let (before,): (String,) =
+            sqlx::query_as("SELECT next_deadline_at FROM vaults WHERE id = 'skip-sib-fresh'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        insert_pending_invoice(&pool, "skip-paid", "skip-hash-1").await;
+        mark_paid_and_checkin(&pool, "skip-hash-1").await.unwrap();
+
+        let (after,): (String,) =
+            sqlx::query_as("SELECT next_deadline_at FROM vaults WHERE id = 'skip-sib-fresh'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(before, after, "mid-period sibling must not be advanced");
+
+        let n: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE vault_id = 'skip-sib-fresh'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(n, 0, "skipped sibling gets no event");
+    }
+
+    #[tokio::test]
+    async fn fanout_runs_even_when_paid_vault_is_mid_period() {
+        // The desync case #231 exists for: the paid vault was checked
+        // in recently, but a sibling drifted to alarmed. The payment
+        // must still rescue the sibling.
+        let pool = fresh_db().await;
+        let owner = "d".repeat(64);
+        let fresh = Utc::now().to_rfc3339();
+        insert_vault_owned(&pool, "desync-paid", Some(&owner), "ok", Some(&fresh)).await;
+        insert_vault_owned(&pool, "desync-sib", Some(&owner), "alarmed", None).await;
+
+        insert_pending_invoice(&pool, "desync-paid", "desync-hash-1").await;
+        mark_paid_and_checkin(&pool, "desync-hash-1").await.unwrap();
+
+        assert_eq!(vault_status(&pool, "desync-sib").await, "ok");
+        // The paid vault itself was mid-period: no double advance, no
+        // 'lightning' event for it.
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE vault_id = 'desync-paid' AND kind = 'checkin'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(n, 0);
     }
 }
