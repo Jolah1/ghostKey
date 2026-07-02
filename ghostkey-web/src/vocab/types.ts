@@ -47,10 +47,63 @@ export function makeStatus(text: StatusText): (s: VaultStatus) => StatusCopy {
   return (s) => ({ ...text[s], tone: STATUS_TONE[s] });
 }
 
+/** A simple informational screen: small eyebrow, headline, body. */
+export interface Screen {
+  eyebrow: string;
+  title: string;
+  body: string;
+}
+
+/**
+ * Heir-facing claim page copy. This is the highest-stakes plain-language
+ * surface, so it's the first screen migrated into the language layer.
+ * Only the informational states are here; the interactive claim
+ * mechanics (PSBT/broadcast) are a later slice.
+ *
+ * Where a sentence wraps an emphasised value (a date, a countdown), the
+ * string is split into `…Before`/`…After` halves rendered around the
+ * value in JSX. EN and PCM share word order, so the split is safe.
+ */
+export interface ClaimVocab {
+  /** Top-right header note ("A message for you"). */
+  header: string;
+  loading: string;
+  notFound: Screen;
+  alreadyUsed: Screen;
+  timelockWait: {
+    eyebrow: string;
+    title: string;
+    etaBefore: string;
+    etaAfter: string;
+    noEta: string;
+    note: string;
+  };
+  safetyWait: {
+    eyebrow: string;
+    title: string;
+    body1: string;
+    body2Before: string;
+    body2After: string;
+    note: string;
+  };
+  notReady: {
+    eyebrow: string;
+    title: string;
+    body: string;
+    nextCheckin: (friendly: string) => string;
+  };
+  alreadyClaimed: {
+    eyebrow: string;
+    title: string;
+    body: (label: string | null) => string;
+  };
+}
+
 export interface Vocab {
   /** Human name of this language, for the toggle (e.g. "English"). */
   langName: string;
   tagline: string;
   longTagline: string;
   status: (s: VaultStatus) => StatusCopy;
+  claim: ClaimVocab;
 }
