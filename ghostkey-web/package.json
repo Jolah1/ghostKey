@@ -27,7 +27,7 @@
     "@scure/bip32": "^2.2.0",
     "@scure/bip39": "^2.2.0",
     "@zxcvbn-ts/core": "^3.0.4",
-    "@zxcvbn-ts/language-common": "^3.0.4",
+    "@zxcvbn-ts/language-common": "^4.1.2",
     "@zxcvbn-ts/language-en": "^3.0.2",
     "qrcode-generator": "^1.5.2",
     "react": "^18.3.1",
