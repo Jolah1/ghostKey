@@ -5,7 +5,7 @@ from your Bitcoin wallet. The xpub lets GhostKey watch the addresses
 your wallet generates and build the inheritance script around them.
 It **cannot** move your funds; only your wallet's private key can.
 
-These guides walk through getting an xpub out of the five wallets the
+These guides walk through getting an xpub out of the wallets the
 GhostKey audience uses most. Each guide is 3–5 steps long and is
 written for someone who has used the wallet for normal sending and
 receiving but has never exported an xpub before.
@@ -16,9 +16,11 @@ receiving but has never exported an xpub before.
 |---|---|---|---|
 | [Cake Wallet](./cake.md) | Mobile (iOS/Android) | [cake.md](./cake.md) | No — exports a single SegWit-class public key |
 | [BlueWallet](./bluewallet.md) | Mobile (iOS/Android) | [bluewallet.md](./bluewallet.md) | Limited — see guide |
+| [Nunchuk](./nunchuk.md) | Mobile + Desktop | [nunchuk.md](./nunchuk.md) | Yes (single-sig) |
 | [Sparrow](./sparrow.md) | Desktop (Linux/macOS/Windows) | [sparrow.md](./sparrow.md) | Yes |
 | [Specter Desktop](./specter.md) | Desktop (multisig-friendly) | [specter.md](./specter.md) | Yes |
 | [Coldcard](./coldcard.md) | Hardware | [coldcard.md](./coldcard.md) | Yes (firmware 5.x+) |
+| [Trezor Suite](./trezor.md) | Hardware (Model T / Safe 3 / Safe 5) | [trezor.md](./trezor.md) | Yes — not Model One |
 
 ## What GhostKey expects
 
