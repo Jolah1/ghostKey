@@ -827,4 +827,154 @@ mod http_tests {
             r2.status()
         );
     }
+
+    /* ----------------------------------------------------------------- *
+     *  Lightning last-resort gate on POST /vaults/:id/checkin           *
+     *                                                                   *
+     *  Lightning is THE check-in. With a Lightning provider enabled,    *
+     *  the free owner-token path must refuse outside the final 24h      *
+     *  before the heir would be contacted -- the same server-side rule  *
+     *  checkin_from_link already enforces. These tests pin that the     *
+     *  rule holds at the API, not just in the dashboard UI.             *
+     * ----------------------------------------------------------------- */
+
+    /// A Lightning provider that reports enabled but can't mint --
+    /// exactly enough to flip the gate on. The gate only consults
+    /// `is_enabled()`; minting stays on the real provider's routes.
+    struct EnabledStubLightning;
+
+    #[async_trait::async_trait]
+    impl crate::lightning::LightningProvider for EnabledStubLightning {
+        fn is_enabled(&self) -> bool {
+            true
+        }
+        async fn create_invoice(
+            &self,
+            _amount_sat: u64,
+            _description: &str,
+        ) -> Result<crate::lightning::CreatedInvoice, crate::lightning::LightningError> {
+            Err(crate::lightning::LightningError::NotConfigured)
+        }
+        async fn invoice_status(
+            &self,
+            _payment_hash: &str,
+        ) -> Result<crate::lightning::InvoiceStatus, crate::lightning::LightningError> {
+            Err(crate::lightning::LightningError::NotConfigured)
+        }
+    }
+
+    /// `fresh_state`, but with the Lightning gate armed.
+    async fn fresh_state_lightning_enabled() -> std::sync::Arc<crate::AppState> {
+        let state = fresh_state().await;
+        std::sync::Arc::new(crate::AppState {
+            db: state.db.clone(),
+            lightning: std::sync::Arc::new(EnabledStubLightning),
+        })
+    }
+
+    #[tokio::test]
+    async fn checkin_with_lightning_enabled_outside_window_is_409() {
+        let state = fresh_state_lightning_enabled().await;
+        let issued = crate::crypto::issue_owner_token();
+        // insert_vault pins claim_eligible_at to 2099 -- far outside
+        // the 24h last-resort window.
+        insert_vault(&state.db, "vault-ln-A", Some(&issued.hash_hex)).await;
+
+        let resp = routes::router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/vaults/vault-ln-A/checkin")
+                    .header(header::AUTHORIZATION, format!("Bearer {}", issued.token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let msg = v["error"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("Lightning"),
+            "409 body should point at Lightning, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn checkin_with_lightning_enabled_inside_window_succeeds() {
+        let state = fresh_state_lightning_enabled().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-ln-B", Some(&issued.hash_hex)).await;
+        // Pull claim_eligible_at inside the final 24h.
+        let soon = (chrono::Utc::now() + chrono::Duration::seconds(3600)).to_rfc3339();
+        sqlx::query("UPDATE vaults SET claim_eligible_at = ? WHERE id = 'vault-ln-B'")
+            .bind(&soon)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let resp = routes::router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/vaults/vault-ln-B/checkin")
+                    .header(header::AUTHORIZATION, format!("Bearer {}", issued.token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn checkin_with_lightning_enabled_null_eligible_is_409() {
+        // No claim_eligible_at (legacy row): fail toward Lightning,
+        // mirroring the from-link gate's unwrap_or(false).
+        let state = fresh_state_lightning_enabled().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-ln-C", Some(&issued.hash_hex)).await;
+        sqlx::query("UPDATE vaults SET claim_eligible_at = NULL WHERE id = 'vault-ln-C'")
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let resp = routes::router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/vaults/vault-ln-C/checkin")
+                    .header(header::AUTHORIZATION, format!("Bearer {}", issued.token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn checkin_without_lightning_stays_free() {
+        // Servers without a Lightning provider (local dev, demo,
+        // self-hosters) keep the free button working at any time.
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-ln-D", Some(&issued.hash_hex)).await;
+
+        let resp = routes::router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/vaults/vault-ln-D/checkin")
+                    .header(header::AUTHORIZATION, format!("Bearer {}", issued.token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
 }
