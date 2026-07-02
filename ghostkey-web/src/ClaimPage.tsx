@@ -284,9 +284,138 @@ function ClaimErrorBlock({
   );
 }
 
+/* ----------------------------- Practice run ------------------------------- */
+
+/**
+ * The claim fire drill (#223). The heir walks the shape of the real
+ * claim while the owner is alive. The token behind this page lives in
+ * its own database column, so the server refuses it on every endpoint
+ * that could reveal keys or move coins; the only thing this page can
+ * write is "the practice was completed".
+ */
+function DrillFlow({ view, token }: { view: ClaimView; token: string }) {
+  const [step, setStep] = useState<"intro" | "walkthrough" | "done">("intro");
+  const [finishing, setFinishing] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const name = view.heir_display_name;
+
+  const finish = async () => {
+    setFinishing(true);
+    setError(null);
+    try {
+      await api.completeDrill(token);
+      setStep("done");
+    } catch (e) {
+      setError(e);
+    } finally {
+      setFinishing(false);
+    }
+  };
+
+  return (
+    <section>
+      <InlineAlert tone="ok">
+        <p className="font-bold">This is a practice run</p>
+        <p className="mt-1 text-sm">
+          Everyone is fine, and nothing real happens on this page. It exists
+          so the real thing is not the first time you see it.
+        </p>
+      </InlineAlert>
+
+      {step === "intro" && (
+        <div className="mt-8">
+          <Eyebrow>A practice run</Eyebrow>
+          <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
+            {name ? `Hello ${name}` : "Hello"}, someone set something aside
+            for you
+          </h1>
+          <p className="mt-4 text-muted">
+            They use GhostKey to make sure that if they ever stopped being
+            around, what they saved in Bitcoin would reach you. They asked us
+            to show you how that works, today, while they can answer your
+            questions.
+          </p>
+          <p className="mt-3 text-muted">
+            It takes about a minute. You don't need an account and you can't
+            break anything.
+          </p>
+          <div className="mt-6">
+            <Button onClick={() => setStep("walkthrough")}>
+              Show me how it works
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {step === "walkthrough" && (
+        <div className="mt-8">
+          <Eyebrow>What the real day looks like</Eyebrow>
+          <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
+            Three things happen
+          </h1>
+          <ol className="mt-6 space-y-4">
+            <li className="card-flat p-4">
+              <p className="font-bold">1. You get a message like today's</p>
+              <p className="mt-1 text-sm text-muted">
+                If they stop confirming they're okay, we send you a link,
+                just like the one you opened. That part you've already
+                practiced.
+              </p>
+            </li>
+            <li className="card-flat p-4">
+              <p className="font-bold">2. There's a short wait</p>
+              <p className="mt-1 text-sm text-muted">
+                Bitcoin itself enforces a waiting period, and this page
+                shows you the date. You just come back when it says to.
+                If they recorded a video message for you, it plays here on
+                the real day.
+              </p>
+            </li>
+            <li className="card-flat p-4">
+              <p className="font-bold">3. The money comes straight to you</p>
+              <p className="mt-1 text-sm text-muted">
+                You paste an address from any Bitcoin wallet on your phone,
+                and it arrives there. GhostKey never holds the money, so
+                there's no company that can lose it or keep it from you.
+              </p>
+            </li>
+          </ol>
+          {error != null && <ClaimErrorBlock error={error} context="resolve" />}
+          <div className="mt-6">
+            <Button onClick={finish} disabled={finishing}>
+              {finishing ? "Finishing…" : "Finish the practice"}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {step === "done" && (
+        <div className="mt-8 text-center">
+          <Eyebrow>Practice complete</Eyebrow>
+          <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
+            You're done, and you did it right
+          </h1>
+          <p className="mt-4 text-muted">
+            The person who set this up will see that the practice worked.
+            Nothing moved and nothing changed. If the real day ever comes,
+            it will look exactly like what you just walked through.
+          </p>
+          <p className="mt-3 text-sm text-dim">You can close this page.</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
 /* ----------------------------- Resolved ----------------------------------- */
 
 function Resolved({ view, token }: { view: ClaimView; token: string }) {
+  // Practice run (#223): its own walkthrough, no video fetch (the real
+  // clip is sealed under the real claim token and stays private until
+  // the real day), no waits, nothing to move.
+  if (view.drill) {
+    return <DrillFlow view={view} token={token} />;
+  }
   // Decide which sub-flow to show based on vault status. The switch
   // is exhaustive over today's `VaultStatus` union; the `default`
   // branch exists so a server adding a new status doesn't silently

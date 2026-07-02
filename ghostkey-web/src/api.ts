@@ -74,6 +74,12 @@ export interface VaultView {
    *  `GET /vaults/:id` when the vault has been scanned and hasn't matured.
    *  Drives the "waiting to claim — unlocks around <date>" copy. */
   unlock_eta?: string | null;
+  /** Claim fire-drill progress (#223): when the owner last sent a
+   *  practice run, when the heir first opened it, and when the heir
+   *  finished it. Present only on the owner `GET /vaults/:id`. */
+  drill_started_at?: string | null;
+  drill_opened_at?: string | null;
+  drill_completed_at?: string | null;
 }
 
 export interface CreateVaultRequest {
@@ -336,6 +342,27 @@ export interface ClaimView {
   token_role: "heir" | "guardian";
   /** For a guardian token, which slot (1 or 2). Null for heir tokens. */
   guardian_slot?: number | null;
+  /** True when this link is a practice run (#223): the page walks the
+   *  heir through the claim without moving anything. Optional so an
+   *  older server (which never sends it) reads as "not a drill". */
+  drill?: boolean;
+}
+
+/** Response from `POST /vaults/:id/drill` (#223). */
+export interface DrillStartView {
+  vault_id: string;
+  started_at: string;
+  /** Whether a practice message was queued for the heir. False when
+   *  the vault has no deliverable heir contact. */
+  heir_notified: boolean;
+  /** The practice link, so the owner can also share it directly. A
+   *  drill link cannot reach key material or move coins. */
+  claim_url: string;
+}
+
+/** Response from `POST /claim/:token/drill-complete` (#223). */
+export interface DrillCompleteView {
+  completed_at: string;
 }
 
 /** On-chain unlock estimate, from `GET /claim/:token/unlock-estimate`.
@@ -902,6 +929,21 @@ export const api = {
     request<VaultEvent[]>(`/vaults/${id}/events`, {}, ownerToken),
   resolveClaim: (token: string) =>
     request<ClaimView>(`/claim/${encodeURIComponent(token)}`),
+  /** Start a practice claim (#223): mints a drill token, emails the
+   *  heir a clearly-labelled rehearsal link. Owner-authenticated. */
+  startDrill: (id: string, ownerToken: string) =>
+    request<DrillStartView>(
+      `/vaults/${id}/drill`,
+      { method: "POST" },
+      ownerToken,
+    ),
+  /** The heir finished the practice walkthrough. Records the permanent
+   *  fact on the vault and tells the owner. Idempotent. */
+  completeDrill: (token: string) =>
+    request<DrillCompleteView>(
+      `/claim/${encodeURIComponent(token)}/drill-complete`,
+      { method: "POST" },
+    ),
   /** On-chain unlock estimate for this claim. Tells the heir when the
    *  funds actually become spendable (the CSV timelock), separate from
    *  the server's safety wait. Drives the "unlocks around <date>" screen. */

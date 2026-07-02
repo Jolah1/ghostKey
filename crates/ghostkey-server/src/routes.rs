@@ -168,6 +168,13 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/claim/:token/video",
             get(crate::video_routes::get_claim_video),
         )
+        // Practice-run completion (#223). Gated by the drill token,
+        // which cannot reach any of the endpoints above (different
+        // hash column); see drill.rs.
+        .route(
+            "/claim/:token/drill-complete",
+            post(crate::drill::complete_drill),
+        )
         .layer(axum::middleware::from_fn_with_state(
             claim_limiter,
             crate::rate_limit::enforce,
@@ -247,6 +254,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/lnurlp/:vault_id/panic/cb", get(lnurlp_panic_callback))
         .route("/vaults/:id/events", get(list_events))
         .route("/vaults/:id/issue-claim", post(issue_claim))
+        // Claim fire drill (#223): owner starts a practice run for
+        // the heir. OwnerAuth-gated; see drill.rs.
+        .route("/vaults/:id/drill", post(crate::drill::start_drill))
         .route(
             "/vaults/:id/push-subscriptions",
             post(push_subscribe).delete(push_unsubscribe),
@@ -569,6 +579,17 @@ pub struct VaultView {
     /// populated on owner-authenticated `GET /vaults/:id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_trusted_contact: Option<bool>,
+    /// Claim fire drill (#223) progress: when the owner last sent a
+    /// practice run, when the heir first opened it, and when the heir
+    /// finished it. The dashboard turns these into "sent / opened /
+    /// completed on <date>". Only populated on owner-authenticated
+    /// `GET /vaults/:id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drill_started_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drill_opened_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drill_completed_at: Option<DateTime<Utc>>,
     /// Rough wall-clock time the on-chain CSV timelock matures, derived
     /// from the cached maturity scan (the scheduler refreshes it; a
     /// dashboard read never triggers a scan). Lets the owner dashboard
@@ -784,6 +805,9 @@ async fn create_vault(
                 descriptor_external: None,
                 descriptor_internal: None,
                 has_trusted_contact: None,
+                drill_started_at: None,
+                drill_opened_at: None,
+                drill_completed_at: None,
                 unlock_eta: None,
             },
             owner_token: issued_owner.token,
@@ -1433,6 +1457,9 @@ async fn create_vault_from_xpub(
                 descriptor_external: Some(pair.external.clone()),
                 descriptor_internal: Some(pair.internal.clone()),
                 has_trusted_contact: None,
+                drill_started_at: None,
+                drill_opened_at: None,
+                drill_completed_at: None,
                 unlock_eta: None,
             },
             owner_token: issued_owner.token,
@@ -1836,6 +1863,9 @@ async fn create_vault_guardian(
                 descriptor_external: Some(pair.external.clone()),
                 descriptor_internal: Some(pair.internal.clone()),
                 has_trusted_contact: None,
+                drill_started_at: None,
+                drill_opened_at: None,
+                drill_completed_at: None,
                 unlock_eta: None,
             },
             owner_token: issued_owner.token,
@@ -2271,6 +2301,10 @@ async fn get_vault(
         /// Cached on-chain maturity scan (refreshed by the scheduler).
         chain_unlock_height: Option<i64>,
         chain_tip_height: Option<i64>,
+        /// Claim fire drill progress (#223).
+        drill_started_at: Option<String>,
+        drill_opened_at: Option<String>,
+        drill_completed_at: Option<String>,
     }
     let row = sqlx::query_as::<_, VaultRow>(
         r#"SELECT id, label, network, timelock_blocks,
@@ -2282,7 +2316,8 @@ async fn get_vault(
                   owner_contact_verified_at,
                   descriptor_external, descriptor_internal,
                   trusted_contact_ciphertext IS NOT NULL AS has_trusted_contact,
-                  chain_unlock_height, chain_tip_height
+                  chain_unlock_height, chain_tip_height,
+                  drill_started_at, drill_opened_at, drill_completed_at
            FROM vaults WHERE id = ?"#,
     )
     .bind(&id)
@@ -2346,6 +2381,9 @@ async fn get_vault(
         descriptor_external: Some(row.descriptor_external),
         descriptor_internal: Some(row.descriptor_internal),
         has_trusted_contact: Some(row.has_trusted_contact == 1),
+        drill_started_at: row.drill_started_at.as_deref().map(parse_rfc),
+        drill_opened_at: row.drill_opened_at.as_deref().map(parse_rfc),
+        drill_completed_at: row.drill_completed_at.as_deref().map(parse_rfc),
         unlock_eta,
     }))
 }
@@ -3110,6 +3148,12 @@ pub struct ClaimView {
     pub token_role: String,
     /// For a guardian token, which slot (1 or 2). `None` for heir tokens.
     pub guardian_slot: Option<i64>,
+    /// True when this link is a practice run (#223). The claim page
+    /// shows the rehearsal walkthrough instead of the live claim flow;
+    /// the server guarantees a drill token can't reach key material or
+    /// broadcast (see drill.rs — those endpoints resolve by
+    /// `claim_token_hash`, a column a drill token is never stored in).
+    pub drill: bool,
 }
 
 async fn resolve_claim(
@@ -3217,7 +3261,12 @@ async fn resolve_claim(
             .bind(&hash)
             .fetch_optional(&state.db)
             .await?;
-            let g = g.ok_or(ApiError::NotFound)?;
+            // Neither a heir nor a guardian token: it may be a practice
+            // token (#223), which lives in its own column and gets its
+            // own view — no challenge window, no alerts.
+            let Some(g) = g else {
+                return crate::drill::resolve_drill_claim(&state, &token).await;
+            };
             (
                 g.0,
                 g.1,
@@ -3300,6 +3349,7 @@ async fn resolve_claim(
         vault_kind,
         token_role,
         guardian_slot,
+        drill: false,
     }))
 }
 

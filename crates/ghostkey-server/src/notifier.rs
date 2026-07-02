@@ -119,6 +119,15 @@ pub enum NotificationKind {
     /// the owner objecting: "you can finish your claim now." Fired by
     /// the scheduler; `vaults.claim_ready_notified_at` dedupes.
     ClaimReady,
+    /// Heir-side, when the owner starts a claim fire drill (#223):
+    /// "nothing has happened — this is a practice run." Fired from
+    /// [`crate::drill::start_drill`].
+    DrillInvite,
+    /// Owner-side, when the heir finishes the practice claim: "the
+    /// rehearsal worked, nothing moved." Fired from
+    /// [`crate::drill::complete_drill`]; `vaults.drill_completed_at`
+    /// dedupes.
+    DrillCompleted,
 }
 
 impl NotificationKind {
@@ -132,6 +141,8 @@ impl NotificationKind {
             NotificationKind::ClaimOpened => "claim_opened",
             NotificationKind::PanicAlert => "panic_alert",
             NotificationKind::ClaimReady => "claim_ready",
+            NotificationKind::DrillInvite => "drill_invite",
+            NotificationKind::DrillCompleted => "drill_completed",
         }
     }
 }

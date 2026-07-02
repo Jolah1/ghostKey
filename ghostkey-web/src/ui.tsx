@@ -441,6 +441,9 @@ export function friendlyEventKind(kind: string): string {
     case "claim_resolved": return "Your heir opened the claim page";
     case "panic_activated": return "Emergency freeze on";
     case "panic_expired": return "Emergency freeze ended";
+    case "drill_started": return "Practice claim sent";
+    case "drill_opened": return "Your heir opened the practice link";
+    case "drill_completed": return "Your heir completed the practice claim";
     default:
       // Never show a raw database code (T4 #117). De-snake-case any
       // event we haven't named yet: "some_new_event" -> "Some new event".
