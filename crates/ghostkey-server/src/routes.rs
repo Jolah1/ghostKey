@@ -183,6 +183,13 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .get(crate::video_routes::get_video_status)
                 .delete(crate::video_routes::delete_video),
         )
+        // Owner fetches the heir's claim token to seal a video for an
+        // existing vault (#222). OwnerAuth-gated; see the handler for
+        // why exposing it to the owner adds no capability.
+        .route(
+            "/vaults/:id/claim-token",
+            get(crate::video_routes::get_claim_token),
+        )
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024));
 
     // Routes whose owner-auth or one-tap token already gates abuse,

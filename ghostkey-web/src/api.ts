@@ -357,6 +357,21 @@ export interface UnlockEstimateView {
   unlock_eta: string | null;
 }
 
+/** Owner-side video metadata from `GET /vaults/:id/video` (#222).
+ *  Mirrors `video_routes.rs::VideoStatusView`. */
+export interface VideoStatusView {
+  has_video: boolean;
+  mime: string | null;
+  duration_ms: number | null;
+  created_at: string | null;
+}
+
+/** The heir's claim token from `GET /vaults/:id/claim-token` (#222).
+ *  Mirrors `video_routes.rs::ClaimTokenView`. */
+export interface ClaimTokenView {
+  claim_token_b64: string;
+}
+
 /** Encrypted owner video message returned by `GET /claim/:token/video`
  *  (#85). The clip is sealed under the claim-token KEK; the signature is
  *  verified client-side against `owner_xpub`. */
@@ -770,6 +785,20 @@ export const api = {
       { method: "POST", body: JSON.stringify(body) },
       ownerToken,
     ),
+  /** Owner-side video status (#222): whether this vault has a clip and
+   *  its metadata. Never the ciphertext (the owner can't decrypt it —
+   *  it's sealed under the claim-token KEK, not the password). */
+  getVideoStatus: (id: string, ownerToken: string | null) =>
+    request<VideoStatusView>(`/vaults/${id}/video`, {}, ownerToken),
+  /** Remove the vault's video message (#222). */
+  deleteVideo: (id: string, ownerToken: string | null) =>
+    request<null>(`/vaults/${id}/video`, { method: "DELETE" }, ownerToken),
+  /** The heir's claim token, released to the authenticated owner so the
+   *  browser can seal a (re-)recorded video for an EXISTING vault under
+   *  the claim-token KEK (#222) — the same sealing setup performs. 404
+   *  for Door B / legacy vaults, which store no token at rest. */
+  getVaultClaimToken: (id: string, ownerToken: string | null) =>
+    request<ClaimTokenView>(`/vaults/${id}/claim-token`, {}, ownerToken),
   /** Store the owner's encrypted video message (#85). OwnerAuth via the
    *  freshly-issued owner_token. The clip is sealed under the claim-token
    *  KEK and signed with the owner key client-side; the server only ever

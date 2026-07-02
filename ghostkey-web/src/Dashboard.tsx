@@ -48,6 +48,7 @@ import {
 } from "./vaultStore";
 import { LightningCheckin } from "./LightningCheckin";
 import { AddHeirPortal } from "./AddHeirPortal";
+import { VideoMessageCard } from "./VideoMessageCard";
 import { ConfirmSend } from "./ConfirmSend";
 import {
   addressMatchesNetwork,
@@ -455,6 +456,20 @@ export function Dashboard({ onNavigate }: Props) {
                   }
                 />
               )}
+
+              {/* Video message status + record/re-record (#222). Setup's
+                  upload is best-effort and older vaults predate the
+                  feature, so this is the owner's only way to SEE whether
+                  a clip is attached and to fix it before claim time. */}
+              {vault && !isClosed ? (
+                <div className="mt-3">
+                  <VideoMessageCard
+                    vaultId={meta.id}
+                    ownerToken={ownerToken}
+                    heirName={meta.heir.name}
+                  />
+                </div>
+              ) : null}
 
               {/* Add another heir — own share, own claim link, same
                   one-tap check-in. Stays available even after an heir

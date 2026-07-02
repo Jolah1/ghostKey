@@ -168,6 +168,41 @@ pub async fn get_video_status(
     }))
 }
 
+/// The heir's claim token, released to the authenticated owner (#222).
+#[derive(Debug, Serialize)]
+pub struct ClaimTokenView {
+    pub claim_token_b64: String,
+}
+
+/// Owner-side: return the heir's claim token so the owner's browser can
+/// seal a (re-)recorded video message under the claim-token KEK for an
+/// existing vault — the same sealing the setup flow performs when the
+/// vault is first created.
+///
+/// Why releasing it to the owner is safe:
+///   - OwnerAuth gates it: only the vault owner's bearer token works.
+///   - The owner's browser *generated* this token at setup and handed
+///     it to the server; it was never a secret from the owner.
+///   - The owner spend path can drain the vault at any time, so the
+///     token grants the owner no power they don't already have.
+///
+/// Door B vaults (heir holds their own key) and legacy CLI vaults store
+/// no token at rest — those get 404, and the dashboard explains that
+/// video messages aren't available there.
+pub async fn get_claim_token(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<ClaimTokenView>, ApiError> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT claim_token_at_rest_b64 FROM vaults WHERE id = ?")
+            .bind(&auth.vault_id)
+            .fetch_optional(&state.db)
+            .await?;
+    let stored = row.and_then(|r| r.0).ok_or(ApiError::NotFound)?;
+    let claim_token_b64 = crate::crypto::open_claim_token_at_rest(&auth.vault_id, &stored)?;
+    Ok(Json(ClaimTokenView { claim_token_b64 }))
+}
+
 #[derive(Debug, Serialize)]
 pub struct VideoView {
     pub vault_id: String,
@@ -268,5 +303,166 @@ mod tests {
     #[test]
     fn none_when_no_pk() {
         assert!(owner_xpub_from_descriptor("tr(50929b74)").is_none());
+    }
+}
+
+/* -------------------------------------------------------------------------- *
+ *  HTTP-level tests for GET /vaults/:id/claim-token (#222)                   *
+ *                                                                            *
+ *  Same harness as auth.rs::http_tests: real router, in-memory SQLite with   *
+ *  every migration applied, driven through tower::ServiceExt::oneshot. The   *
+ *  endpoint releases key-gating material (the claim token seals the video    *
+ *  KEK and the heir xprv), so the auth and absence cases matter as much as   *
+ *  the happy path.                                                           *
+ * -------------------------------------------------------------------------- */
+
+#[cfg(test)]
+mod claim_token_http_tests {
+    use axum::body::Body;
+    use axum::http::{header, Request, StatusCode};
+    use base64::Engine as _;
+    use serde_json::Value;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::SqlitePool;
+    use tower::ServiceExt;
+
+    use crate::crypto::ensure_master_key_loaded;
+    use crate::routes;
+
+    async fn fresh_state() -> std::sync::Arc<crate::AppState> {
+        if std::env::var("GHOSTKEY_MASTER_KEY").is_err() {
+            let zeros = [0u8; 32];
+            let b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode(zeros);
+            // SAFETY: tests are single-process; the value is fixed.
+            unsafe {
+                std::env::set_var("GHOSTKEY_MASTER_KEY", &b64);
+            }
+        }
+        let _ = ensure_master_key_loaded();
+        unsafe { std::env::remove_var("GHOSTKEY_AUTH_DISABLED") };
+
+        let pool: SqlitePool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect sqlite::memory");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+        std::sync::Arc::new(crate::AppState {
+            db: pool,
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        })
+    }
+
+    /// Insert a vault with an owner token hash and (optionally) a claim
+    /// token sealed at rest, mirroring what password-vault setup stores.
+    async fn insert_vault(
+        pool: &SqlitePool,
+        id: &str,
+        owner_token_hash: &str,
+        claim_token_at_rest: Option<&str>,
+    ) {
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network,
+                descriptor_external, descriptor_internal,
+                timelock_blocks,
+                checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status,
+                claim_eligible_at,
+                owner_token_hash, claim_token_at_rest_b64
+            ) VALUES (?, 'regtest', ?, ?, 144, 86400, 3600,
+                      '2026-01-01T00:00:00Z',
+                      '2099-01-01T00:00:00Z', 'ok',
+                      '2099-01-02T00:00:00Z',
+                      ?, ?)"#,
+        )
+        .bind(id)
+        .bind(format!("tr(fake/{id}/0/*)"))
+        .bind(format!("tr(fake/{id}/1/*)"))
+        .bind(owner_token_hash)
+        .bind(claim_token_at_rest)
+        .execute(pool)
+        .await
+        .expect("insert vault");
+    }
+
+    fn get_claim_token_req(vault_id: &str, bearer: Option<&str>) -> Request<Body> {
+        let b = Request::builder()
+            .method("GET")
+            .uri(format!("/vaults/{vault_id}/claim-token"));
+        let b = match bearer {
+            Some(t) => b.header(header::AUTHORIZATION, format!("Bearer {t}")),
+            None => b,
+        };
+        b.body(Body::empty()).expect("request")
+    }
+
+    #[tokio::test]
+    async fn claim_token_without_auth_is_401() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        let sealed = crate::crypto::seal_claim_token_at_rest("vault-ct-a", "tok-a")
+            .expect("seal claim token");
+        insert_vault(&state.db, "vault-ct-a", &issued.hash_hex, Some(&sealed)).await;
+
+        let resp = routes::router(state)
+            .oneshot(get_claim_token_req("vault-ct-a", None))
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn claim_token_with_wrong_owner_token_is_401() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        let sealed = crate::crypto::seal_claim_token_at_rest("vault-ct-b", "tok-b")
+            .expect("seal claim token");
+        insert_vault(&state.db, "vault-ct-b", &issued.hash_hex, Some(&sealed)).await;
+
+        let resp = routes::router(state)
+            .oneshot(get_claim_token_req("vault-ct-b", Some("not-the-token")))
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn claim_token_roundtrips_for_the_owner() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        let sealed = crate::crypto::seal_claim_token_at_rest("vault-ct-c", "raw-claim-token")
+            .expect("seal claim token");
+        insert_vault(&state.db, "vault-ct-c", &issued.hash_hex, Some(&sealed)).await;
+
+        let resp = routes::router(state)
+            .oneshot(get_claim_token_req("vault-ct-c", Some(&issued.token)))
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        let v: Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(v["claim_token_b64"], "raw-claim-token");
+    }
+
+    #[tokio::test]
+    async fn claim_token_missing_at_rest_is_404() {
+        // Door B / legacy vaults store no claim token at rest; the
+        // owner gets 404 and the UI explains video isn't available.
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-ct-d", &issued.hash_hex, None).await;
+
+        let resp = routes::router(state)
+            .oneshot(get_claim_token_req("vault-ct-d", Some(&issued.token)))
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }
