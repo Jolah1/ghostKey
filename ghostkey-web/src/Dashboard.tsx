@@ -49,6 +49,7 @@ import {
 import { LightningCheckin } from "./LightningCheckin";
 import { AddHeirPortal } from "./AddHeirPortal";
 import { VideoMessageCard } from "./VideoMessageCard";
+import { PracticeClaimCard } from "./PracticeClaimCard";
 import { ConfirmSend } from "./ConfirmSend";
 import {
   addressMatchesNetwork,
@@ -468,6 +469,20 @@ export function Dashboard({ onNavigate }: Props) {
                     vaultId={meta.id}
                     ownerToken={ownerToken}
                     heirName={meta.heir.name}
+                  />
+                </div>
+              ) : null}
+
+              {/* Claim fire drill (#223): the heir rehearses the real
+                  claim while the owner is alive. Hidden mid/post-claim,
+                  when a practice email would land next to a real one. */}
+              {vault && !isClosed && !isClaiming ? (
+                <div className="mt-3">
+                  <PracticeClaimCard
+                    vaultId={meta.id}
+                    ownerToken={ownerToken}
+                    heirName={meta.heir.name}
+                    progress={vault}
                   />
                 </div>
               ) : null}
@@ -2148,7 +2163,9 @@ function ActivityList({ events }: { events: VaultEvent[] }) {
               <span
                 aria-hidden="true"
                 className={`h-2 w-2 rounded-full ${
-                  e.kind === "checkin" || e.kind === "resolved"
+                  e.kind === "checkin" ||
+                  e.kind === "resolved" ||
+                  e.kind === "drill_completed"
                     ? "bg-ok"
                     : e.kind === "alarm"
                     ? "bg-alarm"

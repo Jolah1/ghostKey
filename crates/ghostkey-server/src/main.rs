@@ -25,6 +25,7 @@ mod config;
 mod crypto;
 mod db;
 mod demo;
+mod drill;
 mod lightning;
 mod lnurl;
 mod newsletter;

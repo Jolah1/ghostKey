@@ -1799,12 +1799,12 @@ async fn enqueue_claim_link(
 /// (legacy vaults, owner skipped it, or a key mismatch) — the caller
 /// falls back to the generic "someone you knew" wording.
 #[derive(serde::Deserialize, Default)]
-struct HeirIntro {
-    from_name: Option<String>,
+pub(crate) struct HeirIntro {
+    pub(crate) from_name: Option<String>,
     note: Option<String>,
 }
 
-async fn load_heir_intro(state: &AppState, vault_id: &str) -> Option<HeirIntro> {
+pub(crate) async fn load_heir_intro(state: &AppState, vault_id: &str) -> Option<HeirIntro> {
     let row: Option<(Option<String>, Option<String>)> =
         sqlx::query_as("SELECT heir_intro_ciphertext, heir_intro_nonce FROM vaults WHERE id = ?")
             .bind(vault_id)
