@@ -232,6 +232,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         // GHOSTKEY_ADMIN_TOKEN_HASH is set). See admin.rs.
         .route("/admin/newsletter", get(crate::admin::list_newsletter))
         .route("/admin/analytics", get(crate::admin::analytics_summary))
+        .route(
+            "/admin/verify-address",
+            get(crate::admin::verify_address),
+        )
         .route("/vaults/:id", get(get_vault).delete(delete_vault))
         .route("/vaults/:id/heir", get(get_vault_heir))
         .route(

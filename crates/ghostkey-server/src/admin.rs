@@ -14,9 +14,9 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::Json;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::auth::AdminAuth;
 use crate::routes::ApiError;
@@ -111,6 +111,122 @@ pub async fn analytics_summary(
     Ok(Json(out))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct VerifyAddressParams {
+    pub address: String,
+}
+
+/// Result of an operator address check.
+///
+/// `matched` is the only field you strictly need: true means this address
+/// derives from a vault this server actually created, so it's safe to fund
+/// as part of a testing program. The rest are context (which vault, its
+/// status, and which keychain the address came from).
+#[derive(Debug, Serialize)]
+pub struct VerifyAddressResult {
+    pub matched: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vault_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// "external" (a receive/funding address — what a tester would send
+    /// you) or "internal" (change). A funding applicant is always external.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keychain: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<u32>,
+}
+
+/// GET /admin/verify-address?address=bc1p... — is this address one of ours?
+///
+/// You can't tell from an address alone that it belongs to a GhostKey
+/// vault (an address is just a hash). But this server created and stores
+/// every real vault, so it can answer authoritatively: it re-derives each
+/// vault's first `GAP` addresses on both keychains and reports whether the
+/// given one matches. Built for the founding-user funding program — paste
+/// an address someone DM'd you and get a definitive yes/no before funding.
+///
+/// Admin-gated, and read-only: it derives from public descriptors only,
+/// touches no key material, and mutates nothing.
+pub async fn verify_address(
+    _admin: AdminAuth,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<VerifyAddressParams>,
+) -> Result<Json<VerifyAddressResult>, ApiError> {
+    let target = params.address.trim();
+    if target.is_empty() {
+        return Err(ApiError::Validation(
+            "address query parameter is required".into(),
+        ));
+    }
+
+    // A tester funds address #0, but revealing a few per keychain covers
+    // anyone who tapped "new address" a handful of times before funding.
+    const GAP: u32 = 20;
+
+    let rows = sqlx::query_as::<_, (String, String, String, String, i64, String)>(
+        "SELECT id, network, descriptor_external, descriptor_internal, \
+                timelock_blocks, status \
+           FROM vaults",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    for (id, network_str, ext, int_, timelock, status) in rows {
+        // A vault we can't parse/derive can't match — skip it rather than
+        // failing the whole check on one bad legacy row.
+        let Ok(network) = crate::config::parse_network(&network_str) else {
+            continue;
+        };
+        let cfg = ghostkey_core::vault::VaultConfig {
+            descriptor_external: ext,
+            descriptor_internal: int_,
+            timelock_blocks: timelock as u32,
+            network,
+            role: ghostkey_core::vault::VaultRole::Watchonly,
+            label: None,
+        };
+        let Ok(vault) = ghostkey_core::vault::Vault::from_config(cfg) else {
+            continue;
+        };
+        let Ok((externals, internals)) = ghostkey_core::wallet::peek_addresses(&vault, GAP) else {
+            continue;
+        };
+
+        if let Some(i) = externals.iter().position(|a| a == target) {
+            return Ok(Json(VerifyAddressResult {
+                matched: true,
+                vault_id: Some(id),
+                network: Some(network_str),
+                status: Some(status),
+                keychain: Some("external".into()),
+                index: Some(i as u32),
+            }));
+        }
+        if let Some(i) = internals.iter().position(|a| a == target) {
+            return Ok(Json(VerifyAddressResult {
+                matched: true,
+                vault_id: Some(id),
+                network: Some(network_str),
+                status: Some(status),
+                keychain: Some("internal".into()),
+                index: Some(i as u32),
+            }));
+        }
+    }
+
+    Ok(Json(VerifyAddressResult {
+        matched: false,
+        vault_id: None,
+        network: None,
+        status: None,
+        keychain: None,
+        index: None,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,5 +283,98 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].email, "sarah@example.com");
         assert_eq!(list[0].source.as_deref(), Some("footer"));
+    }
+
+    #[tokio::test]
+    async fn verify_address_matches_a_real_vault_and_rejects_a_stranger() {
+        use bitcoin::bip32::Xpriv;
+        use bitcoin::Network;
+        use ghostkey_core::keys::{account_xpub, descriptor_key_fragment, Chain};
+        use ghostkey_core::vault::{Vault, VaultRole};
+
+        ensure_test_master_key();
+        let state = fresh_state().await;
+
+        // Build a real vault exactly like production does.
+        let net = Network::Signet;
+        let owner_m = Xpriv::new_master(net, &[0x33; 32]).unwrap();
+        let heir_m = Xpriv::new_master(net, &[0x44; 32]).unwrap();
+        let (ofp, op, ox) = account_xpub(&owner_m, net).unwrap();
+        let (hfp, hp, hx) = account_xpub(&heir_m, net).unwrap();
+        let vault = Vault::new(
+            &descriptor_key_fragment(ofp, &op, &ox, Chain::External),
+            &descriptor_key_fragment(ofp, &op, &ox, Chain::Internal),
+            &descriptor_key_fragment(hfp, &hp, &hx, Chain::External),
+            &descriptor_key_fragment(hfp, &hp, &hx, Chain::Internal),
+            144,
+            net,
+            VaultRole::Watchonly,
+            None,
+        )
+        .unwrap();
+        let pair = vault.descriptor_pair();
+
+        // The deposit address an applicant would DM us (external #0).
+        let (externals, _) = ghostkey_core::wallet::peek_addresses(&vault, 5).unwrap();
+        let funding_addr = externals[0].clone();
+
+        // Seed the vault the way create_vault stores it.
+        let ts = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO vaults \
+                 (id, network, descriptor_external, descriptor_internal, timelock_blocks, \
+                  checkin_period_secs, grace_period_secs, created_at, next_deadline_at, status) \
+             VALUES ('v-verify', 'signet', ?, ?, 144, 3600, 3600, ?, ?, 'ok')",
+        )
+        .bind(&pair.external)
+        .bind(&pair.internal)
+        .bind(&ts)
+        .bind(&ts)
+        .execute(&state.db)
+        .await
+        .expect("seed vault");
+
+        // A genuine vault address matches, and tells us which vault.
+        let Json(hit) = verify_address(
+            AdminAuth,
+            State(state.clone()),
+            Query(VerifyAddressParams {
+                address: funding_addr.clone(),
+            }),
+        )
+        .await
+        .expect("verify");
+        assert!(hit.matched, "genuine vault address should match");
+        assert_eq!(hit.vault_id.as_deref(), Some("v-verify"));
+        assert_eq!(hit.keychain.as_deref(), Some("external"));
+        assert_eq!(hit.index, Some(0));
+
+        // A stranger's address (a different, unseeded vault) does not.
+        let other_m = Xpriv::new_master(net, &[0x55; 32]).unwrap();
+        let (fp2, p2, x2) = account_xpub(&other_m, net).unwrap();
+        let other = Vault::new(
+            &descriptor_key_fragment(fp2, &p2, &x2, Chain::External),
+            &descriptor_key_fragment(fp2, &p2, &x2, Chain::Internal),
+            &descriptor_key_fragment(hfp, &hp, &hx, Chain::External),
+            &descriptor_key_fragment(hfp, &hp, &hx, Chain::Internal),
+            144,
+            net,
+            VaultRole::Watchonly,
+            None,
+        )
+        .unwrap();
+        let (other_ext, _) = ghostkey_core::wallet::peek_addresses(&other, 1).unwrap();
+
+        let Json(miss) = verify_address(
+            AdminAuth,
+            State(state.clone()),
+            Query(VerifyAddressParams {
+                address: other_ext[0].clone(),
+            }),
+        )
+        .await
+        .expect("verify");
+        assert!(!miss.matched, "an address we never issued must not match");
+        assert!(miss.vault_id.is_none());
     }
 }
