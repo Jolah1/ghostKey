@@ -1,6 +1,6 @@
 /**
  * i18n shell (#204): language selection, `*-NG`-locale auto-detect, a
- * persisted EN/PCM toggle, and hooks to read the active copy.
+ * persisted language dropdown, and hooks to read the active copy.
  *
  * Deliberately dependency-free — a tiny React context, no i18n library.
  * Language lives in context (not a per-hook `useState` like the theme)
@@ -99,40 +99,50 @@ export function useVocab(): Vocab {
 }
 
 /**
- * EN/PCM segmented toggle. Sits beside the theme toggle in the nav.
+ * Language dropdown. Sits beside the theme toggle in the nav. Lists every
+ * language by its full name straight from the vocab tables, so adding a
+ * language needs no change here — it appears in the list automatically.
  */
 export function LanguageToggle() {
   const { lang, setLang } = useLang();
-  const opts: { code: Lang; short: string; full: string }[] = [
-    { code: "en", short: "EN", full: "English" },
-    { code: "pcm", short: "PCM", full: "Pidgin" },
-  ];
+  const langs = Object.entries(VOCABS) as [Lang, Vocab][];
   return (
-    <div
-      role="group"
-      aria-label="Language"
-      className="inline-flex overflow-hidden rounded-full"
-      style={{ border: "1px solid var(--border-hi)" }}
-    >
-      {opts.map((o) => {
-        const active = o.code === lang;
-        return (
-          <button
-            key={o.code}
-            type="button"
-            onClick={() => setLang(o.code)}
-            aria-pressed={active}
-            title={o.full}
-            className="px-2.5 py-1 text-xs font-semibold transition-colors"
-            style={{
-              backgroundColor: active ? "var(--surface-2)" : "transparent",
-              color: active ? "var(--text)" : "var(--text-dim)",
-            }}
+    <div className="relative inline-flex">
+      <select
+        value={lang}
+        onChange={(e) => setLang(e.target.value as Lang)}
+        aria-label="Language"
+        className="h-9 cursor-pointer appearance-none rounded-full pl-3 pr-8 text-xs font-semibold text-[var(--text)] transition-colors hover:bg-[var(--surface-2)]"
+        style={{ border: "1px solid var(--border-hi)", backgroundColor: "transparent" }}
+      >
+        {langs.map(([code, v]) => (
+          <option
+            key={code}
+            value={code}
+            style={{ backgroundColor: "var(--surface)", color: "var(--text)" }}
           >
-            {o.short}
-          </button>
-        );
-      })}
+            {v.langName}
+          </option>
+        ))}
+      </select>
+      <ChevronDownIcon />
     </div>
+  );
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-dim)]"
+      aria-hidden="true"
+    >
+      <path d="M6 9l6 6 6-6" />
+    </svg>
   );
 }
