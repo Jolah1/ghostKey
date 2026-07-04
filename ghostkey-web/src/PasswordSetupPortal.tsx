@@ -77,7 +77,8 @@
  *     server stores only that public key and never anything spendable.
  *     Strictly non-custodial; the residual above does not apply.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import qrcode from "qrcode-generator";
 import {
   Button,
   Field,
@@ -2450,6 +2451,16 @@ function FundAddressCard({
       ? "Send from any Bitcoin wallet, any amount."
       : `This vault is on the ${network} test network. Don't send real Bitcoin here.`;
   const [copied, setCopied] = useState(false);
+  // Uppercase bech32 packs into the QR's alphanumeric mode, giving a
+  // sparser, easier-to-scan code. Wallets accept either case. Same
+  // pattern as the dashboard's Add Bitcoin card.
+  const qrUrl = useMemo(() => {
+    if (!address) return null;
+    const qr = qrcode(0, "M");
+    qr.addData(address.toUpperCase());
+    qr.make();
+    return qr.createDataURL(5, 8);
+  }, [address]);
   async function copy() {
     if (!address) return;
     try {
@@ -2479,19 +2490,16 @@ function FundAddressCard({
           // In group mode the heading + vault id already names the
           // card; render the address row directly without the Field
           // wrapper (which insists on a label).
-          <div className="card flex items-center gap-3 px-4 py-3">
-            <code className="flex-1 break-all font-mono text-sm">
-              {address}
-            </code>
-            <Button variant="quiet" onClick={copy}>
-              {copied ? "Copied" : "Copy"}
-            </Button>
-          </div>
-        ) : (
-          <Field
-            label="Your vault address"
-            hint={fundingHint}
-          >
+          <div>
+            {qrUrl ? (
+              <div className="mb-3 flex justify-center">
+                <img
+                  src={qrUrl}
+                  alt={`QR code for vault address ${address}`}
+                  className="h-40 w-40 rounded-lg bg-white p-1"
+                />
+              </div>
+            ) : null}
             <div className="card flex items-center gap-3 px-4 py-3">
               <code className="flex-1 break-all font-mono text-sm">
                 {address}
@@ -2499,6 +2507,31 @@ function FundAddressCard({
               <Button variant="quiet" onClick={copy}>
                 {copied ? "Copied" : "Copy"}
               </Button>
+            </div>
+          </div>
+        ) : (
+          <Field
+            label="Your vault address"
+            hint={fundingHint}
+          >
+            <div>
+              {qrUrl ? (
+                <div className="mb-3 flex justify-center">
+                  <img
+                    src={qrUrl}
+                    alt={`QR code for vault address ${address}`}
+                    className="h-40 w-40 rounded-lg bg-white p-1"
+                  />
+                </div>
+              ) : null}
+              <div className="card flex items-center gap-3 px-4 py-3">
+                <code className="flex-1 break-all font-mono text-sm">
+                  {address}
+                </code>
+                <Button variant="quiet" onClick={copy}>
+                  {copied ? "Copied" : "Copy"}
+                </Button>
+              </div>
             </div>
           </Field>
         )
