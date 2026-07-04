@@ -660,6 +660,9 @@ function BalanceCard({
 }) {
   const [balance, setBalance] = useState<VaultBalanceView | null>(null);
   const [loading, setLoading] = useState(false);
+  // Flips true a few seconds into a slow load so the card reassures
+  // instead of looking frozen — public explorers can crawl.
+  const [slow, setSlow] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const usdPerBtc = usePrice();
   const [hidden, setHidden] = useState<boolean>(() => {
@@ -673,8 +676,14 @@ function BalanceCard({
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setSlow(false);
+    // After a few seconds, show a "still checking" note so a slow public
+    // explorer doesn't read as a frozen card.
+    const slowAt = window.setTimeout(() => setSlow(true), 6000);
     try {
-      const b = await withTimeout(api.getVaultBalance(vaultId), 25000);
+      // Cap the wait so a stuck explorer resolves to a clear, actionable
+      // error instead of an endless spinner.
+      const b = await withTimeout(api.getVaultBalance(vaultId), 20000);
       setBalance(b);
     } catch (e) {
       // Keep raw server text (e.g. "500 Internal Server Error") out of the
@@ -684,10 +693,12 @@ function BalanceCard({
       const msg = e instanceof Error ? e.message : String(e);
       setError(
         msg === "timeout"
-          ? "Couldn't load your balance. Tap Refresh to try again."
+          ? "Couldn't load your balance. The block explorer is slow right now. Tap Refresh to try again."
           : "Couldn't load your balance right now. Tap Refresh to try again.",
       );
     } finally {
+      window.clearTimeout(slowAt);
+      setSlow(false);
       setLoading(false);
     }
   }, [vaultId]);
@@ -788,6 +799,12 @@ function BalanceCard({
             <p className="mt-1.5 text-sm text-muted">
               {formatSats(balance.confirmed_sat)} confirmed,{" "}
               {formatSats(balance.unconfirmed_sat)} pending
+            </p>
+          ) : null}
+          {loading && slow && !error ? (
+            <p className="mt-1.5 text-sm text-muted">
+              Still checking your balance. Public networks can be slow, hang
+              tight.
             </p>
           ) : null}
           {error ? <p className="mt-2 text-sm text-alarm">{error}</p> : null}

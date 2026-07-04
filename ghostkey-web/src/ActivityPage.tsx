@@ -24,20 +24,35 @@ import { formatBtc } from "./fiat";
  *  account reads as one merged feed without hiding anything. */
 type ActivityEvent = VaultEvent & { heirName?: string };
 
-/** Public block-explorer link for a txid, mirroring the server's
- *  mempool.space defaults per network. Returns null for networks with no
- *  public explorer (regtest / unknown), so the link just doesn't show. */
-function txExplorerUrl(network: string, txid: string): string | null {
+interface ExplorerLink {
+  name: string;
+  url: string;
+}
+
+/** Public block-explorer links for a txid. We offer more than one where
+ *  possible, so a single provider being down (mempool.space has outages)
+ *  still leaves a working way to view the transaction. Empty for networks
+ *  with no public explorer (regtest / unknown). */
+function explorerLinks(network: string, txid: string): ExplorerLink[] {
   switch (network.toLowerCase()) {
     case "bitcoin":
     case "mainnet":
-      return `https://mempool.space/tx/${txid}`;
+      return [
+        { name: "mempool.space", url: `https://mempool.space/tx/${txid}` },
+        { name: "Blockstream", url: `https://blockstream.info/tx/${txid}` },
+      ];
     case "testnet":
-      return `https://mempool.space/testnet/tx/${txid}`;
+      return [
+        { name: "mempool.space", url: `https://mempool.space/testnet/tx/${txid}` },
+        { name: "Blockstream", url: `https://blockstream.info/testnet/tx/${txid}` },
+      ];
     case "signet":
-      return `https://mempool.space/signet/tx/${txid}`;
+      // Blockstream has no signet explorer; mempool.space only.
+      return [
+        { name: "mempool.space", url: `https://mempool.space/signet/tx/${txid}` },
+      ];
     default:
-      return null;
+      return [];
   }
 }
 
@@ -214,7 +229,7 @@ export function ActivityPage({
             {events.map((e) => {
               const line = detailLine(e);
               const txid = txidOf(e);
-              const url = txid ? txExplorerUrl(network, txid) : null;
+              const links = txid ? explorerLinks(network, txid) : [];
               return (
                 <li key={`${e.vault_id}:${e.id}`} className="py-4">
                   <div className="flex items-start gap-3 text-sm">
@@ -239,18 +254,23 @@ export function ActivityPage({
                       {txid ? (
                         <p className="mt-1 font-mono text-xs text-dim">
                           txid {shortAddr(txid)}
-                          {url ? (
-                            <>
-                              {"  "}
-                              <a
-                                href={url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="underline hover:text-[var(--text)]"
-                              >
-                                view on explorer ↗
-                              </a>
-                            </>
+                          {links.length > 0 ? (
+                            <span>
+                              {" · open in "}
+                              {links.map((lnk, i) => (
+                                <span key={lnk.name}>
+                                  {i > 0 ? " · " : ""}
+                                  <a
+                                    href={lnk.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="underline hover:text-[var(--text)]"
+                                  >
+                                    {lnk.name} ↗
+                                  </a>
+                                </span>
+                              ))}
+                            </span>
                           ) : null}
                         </p>
                       ) : null}
