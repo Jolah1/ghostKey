@@ -1357,7 +1357,7 @@ function SetupRail({
           <div className="card-quiet p-5 text-sm text-muted">
             <p className="font-medium text-[var(--text)]">What's next</p>
             <ul className="mt-2 space-y-2">
-              <li>• Send a small test amount first, then the rest.</li>
+              <li>• Send from any wallet, any amount. Add more anytime.</li>
               <li>
                 • Download the recovery file from your dashboard. It
                 works even if GhostKey disappears.
@@ -2447,7 +2447,7 @@ function FundAddressCard({
   // at the exact moment they were meant to.
   const fundingHint =
     network === "bitcoin"
-      ? "Send from any Bitcoin wallet. Start with a small test amount."
+      ? "Send from any Bitcoin wallet, any amount."
       : `This vault is on the ${network} test network. Don't send real Bitcoin here.`;
   const [copied, setCopied] = useState(false);
   async function copy() {
