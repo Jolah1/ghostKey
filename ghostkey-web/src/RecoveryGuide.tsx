@@ -50,9 +50,10 @@ export function RecoveryGuide({ onNavigate }: Props) {
             <p>
               Your heir can still claim. The rules that release your Bitcoin
               live on the Bitcoin network, not on our servers. At setup you
-              download one recovery file that holds everything needed to claim
-              without us. Keep it with your important papers and tell your heir
-              where it is.
+              save two files: your own spare key, and a file made for your
+              heir with its own short unlock code. Keep the heir's file and
+              its code together with your important papers, and tell your
+              heir where they are.
             </p>
           </div>
         </section>
@@ -74,21 +75,33 @@ export function RecoveryGuide({ onNavigate }: Props) {
             </p>
           </Section>
 
-          <Section title="The recovery file">
+          <Section title="Two files, one for each of you">
             <p>
-              At setup you download a single file, named something like{" "}
+              <strong>Your spare key</strong> is a file named something like{" "}
               <code className="rounded bg-surface-2 px-1 py-0.5 text-[0.85em]">
                 ghostkey-recovery-yourvault.html
               </code>
-              . It contains the vault's rules and your own encrypted key. It
-              does not need GhostKey, an account, or an internet connection to
-              do its job.
+              . It opens with the same password you sign in with, and it's for
+              you: if you ever lose access to GhostKey, it reaches your money.
+              Your heir cannot open this one, and that's on purpose. You never
+              have to write your password down.
             </p>
             <p>
-              Treat it like a key to a safe. Store a copy somewhere safe and
-              lasting, and make sure the people who would need it know where to
-              find it. If you ever misplace it, you can sign in and download a
-              fresh copy from the{" "}
+              <strong>Your heir's file</strong> is named something like{" "}
+              <code className="rounded bg-surface-2 px-1 py-0.5 text-[0.85em]">
+                ghostkey-for-ada.html
+              </code>
+              . It opens with a short code of five simple words, shown to you
+              once at setup. Keep the file and its code together, somewhere
+              your heir will look when the time comes: with your will, your
+              important papers, or someone you both trust. Keeping the code
+              beside the file is safe, because Bitcoin's own timer keeps the
+              file powerless while you're alive and checking in.
+            </p>
+            <p>
+              Neither file needs GhostKey, an account, or an internet
+              connection to do its job. If you misplace your own spare key,
+              sign in and download a fresh copy from the{" "}
               <button
                 type="button"
                 className="underline"
@@ -111,11 +124,12 @@ export function RecoveryGuide({ onNavigate }: Props) {
 
           <Section title="If GhostKey is gone">
             <p>
-              Your heir opens the recovery file in any web browser. The file is
-              a self-contained tool: it rebuilds the claim and signs it right
-              there on their device, even with no internet, then produces a
-              transaction they can broadcast to the Bitcoin network. It walks
-              them through each step.
+              Your heir opens <strong>their</strong> file in any web browser
+              and types the code that was kept with it. The file is a
+              self-contained tool: it walks them through each step and moves
+              the money right there on their device, no GhostKey involved.
+              Your own spare key works the same way for you, with your
+              password.
             </p>
             <p>
               For anyone who wants to verify everything independently, the vault
@@ -145,8 +159,12 @@ export function RecoveryGuide({ onNavigate }: Props) {
               Three small things make all of this real:
             </p>
             <ul className="ml-5 list-disc space-y-1.5">
-              <li>Download your recovery file and store it safely.</li>
-              <li>Tell your heir it exists and where to find it.</li>
+              <li>
+                Store your heir's file and its code together, somewhere your
+                heir will look.
+              </li>
+              <li>Tell your heir the file exists. They don't need to open or understand it now.</li>
+              <li>Keep your own spare key file somewhere safe too.</li>
               <li>Keep checking in, so the clock only runs when you mean it to.</li>
             </ul>
             <div className="pt-2">

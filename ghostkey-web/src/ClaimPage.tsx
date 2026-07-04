@@ -1040,26 +1040,31 @@ function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
             </Field>
           </div>
 
-          <div className="mt-4">
-            <Field
-              label="Fee rate in sat/vB (optional)"
-              hint={
-                feeRate.trim() && !feeRateValid
-                  ? "Enter a whole number between 1 and 1000, or leave blank."
-                  : "Leave blank to use 2 sat/vB."
-              }
-            >
-              <input
-                type="text"
-                inputMode="numeric"
-                value={feeRate}
-                onChange={(e) => setFeeRate(e.target.value)}
-                placeholder="2"
-                className="input"
-                disabled={submitting || confirming}
-              />
-            </Field>
-          </div>
+          <details className="mt-3">
+            <summary className="cursor-pointer text-xs text-muted">
+              Advanced: change the network fee
+            </summary>
+            <div className="mt-2">
+              <Field
+                label="Fee rate in sat/vB (optional)"
+                hint={
+                  feeRate.trim() && !feeRateValid
+                    ? "Enter a whole number between 1 and 1000, or leave blank."
+                    : "Leave blank to use 2 sat/vB."
+                }
+              >
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={feeRate}
+                  onChange={(e) => setFeeRate(e.target.value)}
+                  placeholder="2"
+                  className="input"
+                  disabled={submitting || confirming}
+                />
+              </Field>
+            </div>
+          </details>
 
           {!confirming ? (
             <>
@@ -1260,9 +1265,9 @@ function PasswordVaultClaim({
           </h2>
           <p className="mt-2 text-sm text-soft">
             Open any Bitcoin wallet and tap <strong>Receive</strong>. A
-            Lightning wallet works too. Apps like Wallet of Satoshi, Bitnob,
-            Cash App, or Phoenix each give you a Bitcoin address that adds the
-            money to your balance. Copy the long address that starts with{" "}
+            Lightning wallet works too. Apps like Blink, Bitnob, or Wallet of
+            Satoshi each give you a Bitcoin address that adds the money to
+            your balance. Copy the long address that starts with{" "}
             <code className="font-mono">{bech32PrefixFor(sealed.network)}</code>{" "}
             and paste it below.
           </p>
@@ -1291,26 +1296,31 @@ function PasswordVaultClaim({
             </Field>
           </div>
 
-          <div className="mt-4">
-            <Field
-              label="Fee rate in sat/vB (optional)"
-              hint={
-                feeRate.trim() && !feeRateValid
-                  ? "Enter a whole number between 1 and 1000, or leave blank."
-                  : "Leave blank to use 2 sat/vB. Raise it if you need the transaction to confirm faster."
-              }
-            >
-              <input
-                type="text"
-                inputMode="numeric"
-                value={feeRate}
-                onChange={(e) => setFeeRate(e.target.value)}
-                placeholder="2"
-                className="input"
-                disabled={submitting || confirming}
-              />
-            </Field>
-          </div>
+          <details className="mt-3">
+            <summary className="cursor-pointer text-xs text-muted">
+              Advanced: change the network fee
+            </summary>
+            <div className="mt-2">
+              <Field
+                label="Fee rate in sat/vB (optional)"
+                hint={
+                  feeRate.trim() && !feeRateValid
+                    ? "Enter a whole number between 1 and 1000, or leave blank."
+                    : "Leave blank to use 2 sat/vB. Raise it if you need the transaction to confirm faster."
+                }
+              >
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={feeRate}
+                  onChange={(e) => setFeeRate(e.target.value)}
+                  placeholder="2"
+                  className="input"
+                  disabled={submitting || confirming}
+                />
+              </Field>
+            </div>
+          </details>
 
           {!confirming ? (
             <>
@@ -1529,9 +1539,9 @@ function DerivedHeirClaim({
         </h2>
         <p className="mt-2 text-sm text-soft">
           Paste any Bitcoin address you control on the {networkLabel(params.network)}.{" "}
-          A Lightning wallet works too. Apps like Wallet of Satoshi, Bitnob,
-          Cash App, or Phoenix each give you a Bitcoin address that adds the
-          money to your balance. {walletExamplesInline(params.network)}.
+          A Lightning wallet works too. Apps like Blink, Bitnob, or Wallet of
+          Satoshi each give you a Bitcoin address that adds the money to your
+          balance. {walletExamplesInline(params.network)}.
         </p>
 
         <div className="mt-4">
@@ -1992,7 +2002,7 @@ function BroadcastSuccess({ result }: { result: BroadcastClaimResponse }) {
             rel="noreferrer noopener"
             className="font-display text-sm font-bold tracking-tight text-accent underline underline-offset-2"
           >
-            Watch it confirm on mempool.space ↗
+            Watch it arrive ↗
           </a>
         </div>
       </div>

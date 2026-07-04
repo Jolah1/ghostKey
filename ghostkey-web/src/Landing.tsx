@@ -112,7 +112,7 @@ function Hero({ onNavigate }: Props) {
 function TrustRow() {
   const items = [
     { strong: "0",        sub: "Third parties" },
-    { strong: "Your key", sub: "Never stored" },
+    { strong: "Your key", sub: "Locked by your password" },
     { strong: "On-chain", sub: "No company can freeze it" },
   ];
   return (
@@ -249,7 +249,7 @@ const REASONS: Reason[] = [
   {
     tag: "Precise",
     title: "On-chain timelocks",
-    body: "Waiting periods are enforced by Bitcoin itself using OP_CSV. Once set, no one can move funds before the timer runs out. Not us, not them, not anyone.",
+    body: "Waiting periods are enforced by Bitcoin itself. Once set, no one can move the funds to your heir before the timer runs out. Not us, not them, not anyone.",
   },
   {
     tag: "Trustless",
@@ -478,7 +478,7 @@ const FAQS = [
   },
   {
     q: "Can I change my heir after creating a vault?",
-    a: "Yes, while you're still checking in. From the dashboard you can change the heir, the waiting period, or how often you check in. The change takes effect the next time you update the vault.",
+    a: "You can add another heir at any time, each with their own share. To change who inherits an existing share, or to change its waiting period, send that share back to your own wallet from the dashboard (one transaction) and set up a fresh vault with the new details. While you keep checking in, nothing ever moves without you.",
   },
   {
     q: "What does a check-in cost?",
@@ -494,7 +494,7 @@ const FAQS = [
   },
   {
     q: "What kinds of Bitcoin can I deposit?",
-    a: "Any Bitcoin you already hold. You don't send it to us. It stays in your wallet, with the inheritance rules attached to it.",
+    a: "Any Bitcoin you already hold. You send it from your wallet to your vault's own Bitcoin address, one whose rules already include your heir. We never hold it and can't spend it.",
   },
   {
     q: "Is this a legal will?",
@@ -506,7 +506,7 @@ const FAQS = [
   },
   {
     q: "What if GhostKey shuts down?",
-    a: "Your heir can still claim. When you set up, you download a recovery kit: one file with everything needed to claim the Bitcoin straight from the Bitcoin network. If GhostKey ever disappears, your heir, or anyone helping them, uses that file to unlock the funds without us. Keep it with your important papers.",
+    a: "Your heir can still claim. At setup you save two files: your own spare key, which opens with your password, and a file for your heir, which opens with a short code kept beside it. If GhostKey ever disappears, your heir opens their file and it walks them through claiming straight from the Bitcoin network, no GhostKey needed. Keep both with your important papers.",
   },
 ];
 

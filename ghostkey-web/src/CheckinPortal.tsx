@@ -198,20 +198,19 @@ export function CheckinPortal({ initialId }: { initialId?: string }) {
         {state.kind === "no-credentials" && (
           <div className="mt-6">
             <InlineAlert tone="warning">
-              This device doesn't have the credentials for vault{" "}
+              This device doesn't remember vault{" "}
               <span className="font-mono">{state.id.slice(0, 8)}…</span>.
               <br />
-              If you set this vault up with a password, sign in with
+              If you set your vault up with a password, sign in with
               your email and password instead.{" "}
               <a
                 href="#/checkin"
                 className="underline hover:text-[var(--text)]"
               >
-                go to sign in
+                Go to sign in
               </a>
-              . For legacy vaults, check in from the browser you used
-              to set the vault up; the owner token only lives on that
-              device.
+              . For older vaults, check in from the browser you used at
+              setup; that's the only device that can open this one.
             </InlineAlert>
           </div>
         )}
