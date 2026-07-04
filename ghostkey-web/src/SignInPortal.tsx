@@ -81,6 +81,10 @@ type Phase =
 export function SignInPortal({ onNavigate }: Props) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  // Mistyped passwords are the #1 sign-in failure, and the field hides
+  // every character. A show toggle costs nothing and rescues most of
+  // them (Bitcoin UX principle: password UX is money UX).
+  const [showPassword, setShowPassword] = useState(false);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [error, setError] = useState<string | null>(null);
 
@@ -351,17 +355,27 @@ export function SignInPortal({ onNavigate }: Props) {
           </Field>
 
           <Field label="Password">
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => {
-                setPassword(e.target.value);
-                reset();
-              }}
-              autoComplete="current-password"
-              className="input"
-              disabled={phase.kind === "looking" || phase.kind === "unsealing"}
-            />
+            <div className="relative">
+              <input
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  reset();
+                }}
+                autoComplete="current-password"
+                className="input pr-16"
+                disabled={phase.kind === "looking" || phase.kind === "unsealing"}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                className="absolute inset-y-0 right-3 text-xs font-medium text-muted hover:text-[var(--text)]"
+                aria-pressed={showPassword}
+              >
+                {showPassword ? "Hide" : "Show"}
+              </button>
+            </div>
           </Field>
 
           {phase.kind === "unsealing" ? (
