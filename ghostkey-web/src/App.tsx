@@ -359,13 +359,13 @@ export default function App() {
       <a href="#main" className="skip-link">
         Skip to content
       </a>
-      {/* Wait for the first /health probe before showing the network
-          banner. `network` defaults to "testnet", so rendering early
-          flashed an "Alpha: testnet, don't use real money" warning on
-          every reload of a mainnet vault before flipping to the live
-          banner. A wrong-network safety warning, even for a moment,
-          is worse than a brief absence. */}
-      {health !== "unknown" && <AlphaBanner network={network} />}
+      {/* Only show the network banner once /health has SUCCEEDED.
+          `network` defaults to "testnet", so rendering before the
+          probe (or after a failed one) told a mainnet owner
+          "Alpha: testnet, don't use real-money keys" — false and
+          alarming at the exact moment the server was already down.
+          When the probe fails, ServerOfflineBanner below covers it. */}
+      {health === "ok" && <AlphaBanner network={network} />}
       {demoMode && <DemoBanner />}
       {health === "offline" && <ServerOfflineBanner />}
       {/*
