@@ -298,7 +298,10 @@ export function AddHeirPortal({
         <button
           type="button"
           aria-label="Close"
-          onClick={onClose}
+          // Once the heir exists, closing must refresh the dashboard so
+          // the new heir shows up. Otherwise dismissing with ✕ (instead
+          // of "Done") left the new heir invisible until a manual reload.
+          onClick={phase.kind === "done" ? onAdded : onClose}
           disabled={busy}
           className="absolute right-3 top-3 rounded-full p-2 text-muted hover:bg-surface-2 hover:text-[var(--text)]"
         >

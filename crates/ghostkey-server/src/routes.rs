@@ -1442,14 +1442,43 @@ async fn create_vault_from_xpub(
     // not fail the creation — the vault is already live and the
     // dashboard's "send it again" button covers a lost first email.
     let has_owner_email = owner_sealed.is_some() && owner_channel.as_deref() == Some("email");
+    // Adding a second heir creates another vault for the SAME owner. If
+    // that owner already confirmed this email on a sibling vault, don't
+    // re-open the "confirm your email" prompt (or send another email) —
+    // inherit the verified status so the new heir is ready immediately.
+    let mut owner_email_already_verified = false;
     if has_owner_email {
-        if let Some(email) = req.owner_contact.as_deref() {
-            if let Err(e) = send_contact_verification(&state, &id, email).await {
-                tracing::warn!(
-                    vault_id = %id,
-                    error = ?e,
-                    "could not enqueue owner contact verification email"
-                );
+        if let Some(hash) = sealed_owner_email_hash.as_ref() {
+            let verified_sibling: Option<String> = sqlx::query_scalar(
+                "SELECT id FROM vaults \
+                 WHERE owner_email_hash = ? \
+                   AND owner_contact_verified_at IS NOT NULL \
+                   AND id != ? \
+                 LIMIT 1",
+            )
+            .bind(hash)
+            .bind(&id)
+            .fetch_optional(&state.db)
+            .await?;
+            if verified_sibling.is_some() {
+                sqlx::query("UPDATE vaults SET owner_contact_verified_at = ? WHERE id = ?")
+                    .bind(&now_s)
+                    .bind(&id)
+                    .execute(&state.db)
+                    .await?;
+                record_event(&state.db, &id, "owner_contact_verified", None).await?;
+                owner_email_already_verified = true;
+            }
+        }
+        if !owner_email_already_verified {
+            if let Some(email) = req.owner_contact.as_deref() {
+                if let Err(e) = send_contact_verification(&state, &id, email).await {
+                    tracing::warn!(
+                        vault_id = %id,
+                        error = ?e,
+                        "could not enqueue owner contact verification email"
+                    );
+                }
             }
         }
     }
@@ -1472,7 +1501,11 @@ async fn create_vault_from_xpub(
                 panic_frozen_until: None,
                 lnurl_checkin: None,
                 lnurl_panic: None,
-                owner_contact_verified: if has_owner_email { Some(false) } else { None },
+                owner_contact_verified: if has_owner_email {
+                    Some(owner_email_already_verified)
+                } else {
+                    None
+                },
                 // Return the public descriptor pair so the setup browser
                 // can build the heir envelope (block A) immediately,
                 // without a second round-trip. Watch-only; no secrets.
@@ -4582,6 +4615,102 @@ mod tests {
             from_name: None,
             heir_note: None,
         }
+    }
+
+    /// A from-xpub vault that carries an owner email, sharing an owner
+    /// identity across siblings via `owner_email_hash`. Varying the heir
+    /// seed keeps each vault's descriptor unique so siblings can coexist.
+    fn from_xpub_with_owner_email(
+        heir_seed: u8,
+        owner_email_hash: &str,
+    ) -> CreateVaultFromXpubRequest {
+        let (owner_xpub, owner_fp) = xpub_for(0x77);
+        let (heir_xpub, heir_fp) = xpub_for(heir_seed);
+        CreateVaultFromXpubRequest {
+            label: Some("heir".into()),
+            network: "regtest".into(),
+            owner: PartyXpub {
+                xpub: owner_xpub,
+                fingerprint: Some(owner_fp),
+            },
+            heir: PartyXpub {
+                xpub: heir_xpub,
+                fingerprint: Some(heir_fp),
+            },
+            timelock_blocks: 144,
+            checkin_period_secs: 86_400,
+            grace_period_secs: 3_600,
+            owner_contact: Some("owner@example.com".into()),
+            owner_contact_channel: Some("email".into()),
+            heir_contact: Some("heir@example.com".into()),
+            heir_contact_channel: Some("email".into()),
+            sealed: Some(sealed_setup(owner_email_hash, None, None, None)),
+            heir_derivation: None,
+            trusted_contact: None,
+            trusted_contact_channel: None,
+            from_name: None,
+            heir_note: None,
+        }
+    }
+
+    /// Adding a second heir for an owner who already confirmed their email
+    /// must NOT re-open the "confirm your email" prompt or send another
+    /// confirmation email: the new sibling inherits the verified status.
+    #[tokio::test]
+    async fn added_heir_inherits_owner_email_verification() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let hash = "f".repeat(64);
+
+        // First heir: created with an owner email → starts unverified and
+        // enqueues one confirmation email.
+        let (_, first) = create_vault_from_xpub(
+            State(state.clone()),
+            Json(from_xpub_with_owner_email(0x88, &hash)),
+        )
+        .await
+        .expect("first heir create");
+        assert_eq!(first.vault.owner_contact_verified, Some(false));
+
+        // Owner confirms their email on the first heir.
+        sqlx::query(
+            "UPDATE vaults SET owner_contact_verified_at = '2026-01-01T00:00:00Z' WHERE id = ?",
+        )
+        .bind(&first.vault.id)
+        .execute(&state.db)
+        .await
+        .expect("mark first heir verified");
+
+        let notifs_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications")
+            .fetch_one(&state.db)
+            .await
+            .expect("count notifications");
+
+        // Second heir, same owner email: inherits verified, no new email.
+        let (_, second) = create_vault_from_xpub(
+            State(state.clone()),
+            Json(from_xpub_with_owner_email(0x99, &hash)),
+        )
+        .await
+        .expect("second heir create");
+        assert_eq!(
+            second.vault.owner_contact_verified,
+            Some(true),
+            "added heir should inherit the owner's already-verified email"
+        );
+        assert!(
+            verified_at(&state, &second.vault.id).await.is_some(),
+            "new heir row should be stored as verified"
+        );
+
+        let notifs_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications")
+            .fetch_one(&state.db)
+            .await
+            .expect("count notifications");
+        assert_eq!(
+            notifs_before, notifs_after,
+            "no new confirmation email should be enqueued for the added heir"
+        );
     }
 
     /// The whole point of Door B: the server stores a real, spendable-by-

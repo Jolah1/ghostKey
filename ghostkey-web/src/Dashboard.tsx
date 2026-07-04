@@ -101,7 +101,7 @@ export function Dashboard({ onNavigate }: Props) {
   }, [meta]);
 
   const [vault, setVault] = useState<VaultView | null>(null);
-  const [events, setEvents] = useState<VaultEvent[]>([]);
+  const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [justChecked, setJustChecked] = useState(false);
@@ -128,12 +128,26 @@ export function Dashboard({ onNavigate }: Props) {
   const refresh = useCallback(async () => {
     if (!activeId) return;
     try {
-      const [v, evs] = await Promise.all([
-        api.getVault(activeId, ownerToken),
-        api.listEvents(activeId, ownerToken),
-      ]);
+      const v = await api.getVault(activeId, ownerToken);
       setVault(v);
-      setEvents(evs);
+      // Activity spans the whole account, not just the heir on screen,
+      // so nothing an owner did on another heir is hidden. Best-effort
+      // per sibling: if one heir's fetch fails we just omit its rows.
+      const perHeir = await Promise.all(
+        groupVaults.map((g) =>
+          api
+            .listEvents(g.id, getVaultOwnerToken(g.id))
+            .then((evs): ActivityEvent[] =>
+              evs.map((e) => ({ ...e, heirName: g.heir.name })),
+            )
+            .catch((): ActivityEvent[] => []),
+        ),
+      );
+      setEvents(
+        perHeir
+          .flat()
+          .sort((a, b) => a.created_at.localeCompare(b.created_at)),
+      );
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         setError(
@@ -154,7 +168,7 @@ export function Dashboard({ onNavigate }: Props) {
       }
       // Otherwise swallow; the next tick may succeed.
     }
-  }, [activeId, ownerToken, onNavigate]);
+  }, [activeId, ownerToken, onNavigate, groupVaults]);
 
   // Initial load.
   useEffect(() => {
@@ -391,6 +405,7 @@ export function Dashboard({ onNavigate }: Props) {
                   network={vault.network}
                   ownerToken={ownerToken}
                   canManage={!isClosed && !isClaiming}
+                  heirLabel={groupVaults.length > 1 ? meta.heir.name : null}
                 />
               </div>
             ) : null}
@@ -515,7 +530,7 @@ export function Dashboard({ onNavigate }: Props) {
         </div>
 
         <div className="mt-12">
-          <ActivityList events={events} />
+          <ActivityList events={events} showHeir={groupVaults.length > 1} />
         </div>
       </div>
 
@@ -580,11 +595,15 @@ function MoneyCard({
   network,
   ownerToken,
   canManage,
+  heirLabel,
 }: {
   vaultId: string;
   network: string;
   ownerToken: string | null;
   canManage: boolean;
+  /** Whose share this card is for. Shown only for multi-heir accounts,
+   *  so the deposit address reads as belonging to a specific heir. */
+  heirLabel: string | null;
 }) {
   const canSend = canManage && Boolean(ownerToken);
   const canSeeHeir = Boolean(ownerToken);
@@ -599,6 +618,11 @@ function MoneyCard({
 
   return (
     <section className="card-flat p-5">
+      {heirLabel ? (
+        <p className="mb-3 text-xs uppercase tracking-wider text-dim">
+          {heirLabel}'s share
+        </p>
+      ) : null}
       <div role="tablist" className="flex gap-2">
         {tabs.map((t) => (
           <button
@@ -1330,7 +1354,7 @@ function Greeting({
   let sub: string;
   if (isUnfunded) {
     headline = "Fund your vault to start";
-    sub = `Send Bitcoin to your vault to activate it. Check-ins begin once the funds arrive, not before.`;
+    sub = `Add Bitcoin to your vault to start it. Check-ins begin once the funds arrive, not before.`;
   } else if (isClosed) {
     headline = "Vault closed";
     sub = `${meta.heir.name || "Your heir"} claimed the funds.`;
@@ -1703,10 +1727,10 @@ function LightningStatusBadge() {
         : "var(--alarm)";
   const label =
     state.kind === "ready"
-      ? "Sidecar ready"
+      ? "Lightning ready"
       : state.kind === "warming"
-        ? "Sidecar warming up"
-        : "Sidecar unreachable";
+        ? "Lightning starting up"
+        : "Lightning offline";
   const title =
     state.kind === "error" ? state.message : undefined;
 
@@ -2142,7 +2166,17 @@ function HeirGroupList({
 
 /* ----------------------------- Activity list ------------------------------ */
 
-function ActivityList({ events }: { events: VaultEvent[] }) {
+/** A vault event tagged with which heir it belongs to, so a multi-heir
+ *  account can show one merged feed without hiding anything. */
+type ActivityEvent = VaultEvent & { heirName?: string };
+
+function ActivityList({
+  events,
+  showHeir,
+}: {
+  events: ActivityEvent[];
+  showHeir: boolean;
+}) {
   // Newest first. Show a compact 6 by default, expand to the full
   // history on demand so older events (vault creation, early sends)
   // aren't lost below the fold.
@@ -2159,7 +2193,10 @@ function ActivityList({ events }: { events: VaultEvent[] }) {
       ) : (
         <ul role="list" className="mt-3 divide-y divide-[var(--border)]">
           {items.map((e) => (
-            <li key={e.id} className="flex items-center gap-3 py-3 text-sm">
+            <li
+              key={`${e.vault_id}:${e.id}`}
+              className="flex items-center gap-3 py-3 text-sm"
+            >
               <span
                 aria-hidden="true"
                 className={`h-2 w-2 rounded-full ${
@@ -2174,6 +2211,9 @@ function ActivityList({ events }: { events: VaultEvent[] }) {
                 }`}
               />
               <span className="flex-1 text-muted">
+                {showHeir && e.heirName ? (
+                  <span className="text-dim">{e.heirName} · </span>
+                ) : null}
                 <strong className="font-semibold text-[var(--text)]">
                   {friendlyEventKind(e.kind)}
                 </strong>
