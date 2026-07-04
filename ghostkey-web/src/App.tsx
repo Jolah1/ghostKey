@@ -58,6 +58,21 @@ const InheritPortal = lazy(() =>
 const Dashboard = lazy(() =>
   import("./Dashboard").then((m) => ({ default: m.Dashboard })),
 );
+const ActivityPage = lazy(() =>
+  import("./ActivityPage").then((m) => ({ default: m.ActivityPage })),
+);
+const HeirMessagePage = lazy(() =>
+  import("./VaultToolPages").then((m) => ({ default: m.HeirMessagePage })),
+);
+const PracticeRunPage = lazy(() =>
+  import("./VaultToolPages").then((m) => ({ default: m.PracticeRunPage })),
+);
+const EmergencyPage = lazy(() =>
+  import("./VaultToolPages").then((m) => ({ default: m.EmergencyPage })),
+);
+const RemindersPage = lazy(() =>
+  import("./VaultToolPages").then((m) => ({ default: m.RemindersPage })),
+);
 const RecoveryKitPage = lazy(() =>
   import("./RecoveryKitPage").then((m) => ({ default: m.RecoveryKitPage })),
 );
@@ -105,6 +120,11 @@ export type Route =
   | "setup-password"
   | "success"
   | "dashboard"
+  | "activity"
+  | "heir-message"
+  | "practice"
+  | "emergency"
+  | "reminders"
   | "recovery"
   | "recovery-guide"
   | "checkin"
@@ -121,6 +141,11 @@ const VALID: Route[] = [
   "setup-password",
   "success",
   "dashboard",
+  "activity",
+  "heir-message",
+  "practice",
+  "emergency",
+  "reminders",
   "recovery",
   "recovery-guide",
   "checkin",
@@ -379,6 +404,11 @@ export default function App() {
       )}
       {location.kind === "route" && location.route === "success"   && <Success onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "dashboard" && <Dashboard onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "activity"  && <ActivityPage onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "heir-message" && <HeirMessagePage onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "practice"  && <PracticeRunPage onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "emergency" && <EmergencyPage onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "reminders" && <RemindersPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "recovery"  && <RecoveryKitPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "recovery-guide" && <RecoveryGuide onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "checkin"   && <SignInPortal onNavigate={setRoute} />}

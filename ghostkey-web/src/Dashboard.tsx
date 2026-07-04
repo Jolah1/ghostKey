@@ -48,8 +48,6 @@ import {
 } from "./vaultStore";
 import { LightningCheckin } from "./LightningCheckin";
 import { AddHeirPortal } from "./AddHeirPortal";
-import { VideoMessageCard } from "./VideoMessageCard";
-import { PracticeClaimCard } from "./PracticeClaimCard";
 import { ConfirmSend } from "./ConfirmSend";
 import {
   addressMatchesNetwork,
@@ -416,15 +414,6 @@ export function Dashboard({ onNavigate }: Props) {
               </div>
             ) : null}
 
-            {vault && !isClosed && !isClaiming && !isUnfunded && pushKey && ownerToken ? (
-              <div className="mt-5">
-                <PushOptInCard
-                  vaultId={vault.id}
-                  ownerToken={ownerToken}
-                  vapidPublicKey={pushKey}
-                />
-              </div>
-            ) : null}
           </div>
 
           <div className="min-w-0">
@@ -474,34 +463,6 @@ export function Dashboard({ onNavigate }: Props) {
                 />
               )}
 
-              {/* Video message status + record/re-record (#222). Setup's
-                  upload is best-effort and older vaults predate the
-                  feature, so this is the owner's only way to SEE whether
-                  a clip is attached and to fix it before claim time. */}
-              {vault && !isClosed ? (
-                <div className="mt-3">
-                  <VideoMessageCard
-                    vaultId={meta.id}
-                    ownerToken={ownerToken}
-                    heirName={meta.heir.name}
-                  />
-                </div>
-              ) : null}
-
-              {/* Claim fire drill (#223): the heir rehearses the real
-                  claim while the owner is alive. Hidden mid/post-claim,
-                  when a practice email would land next to a real one. */}
-              {vault && !isClosed && !isClaiming ? (
-                <div className="mt-3">
-                  <PracticeClaimCard
-                    vaultId={meta.id}
-                    ownerToken={ownerToken}
-                    heirName={meta.heir.name}
-                    progress={vault}
-                  />
-                </div>
-              ) : null}
-
               {/* Add another heir — own share, own claim link, same
                   one-tap check-in. Stays available even after an heir
                   has claimed: a new heir reuses your owner key, so you
@@ -519,18 +480,33 @@ export function Dashboard({ onNavigate }: Props) {
               ) : null}
             </div>
 
-            {vault?.lnurl_panic && vault.status !== "frozen" && !isClosed && !isClaiming ? (
-              <div className="mt-5">
-                <PanicCard lnurl={vault.lnurl_panic} hasTrustedContact={Boolean(vault.has_trusted_contact)} />
-              </div>
-            ) : null}
-            {/* Recovery file now lives on its own nav page (Recovery
-                kit) to keep the dashboard calm. */}
+            {/* Set-once tools live on their own pages now, reached from
+                this compact list, so the dashboard stays status + money +
+                heir. Recovery kit already works the same way (in the nav). */}
+            <MoreLinks
+              onNavigate={onNavigate}
+              showMessage={Boolean(vault) && !isClosed}
+              showPractice={Boolean(vault) && !isClosed && !isClaiming}
+              showEmergency={
+                Boolean(vault?.lnurl_panic) &&
+                vault?.status !== "frozen" &&
+                !isClosed &&
+                !isClaiming
+              }
+              showReminders={
+                Boolean(vault) &&
+                !isClosed &&
+                !isClaiming &&
+                !isUnfunded &&
+                Boolean(pushKey) &&
+                Boolean(ownerToken)
+              }
+            />
           </div>
         </div>
 
         <div className="mt-12">
-          <ActivityList events={events} showHeir={groupVaults.length > 1} />
+          <ActivityCard events={events} onOpen={() => onNavigate("activity")} />
         </div>
       </div>
 
@@ -1851,7 +1827,7 @@ function ConfirmEmailCard({
   );
 }
 
-function PushOptInCard({
+export function PushOptInCard({
   vaultId,
   ownerToken,
   vapidPublicKey,
@@ -2164,77 +2140,128 @@ function HeirGroupList({
   );
 }
 
-/* ----------------------------- Activity list ------------------------------ */
+/* ----------------------------- Activity card ------------------------------ */
 
 /** A vault event tagged with which heir it belongs to, so a multi-heir
  *  account can show one merged feed without hiding anything. */
 type ActivityEvent = VaultEvent & { heirName?: string };
 
-function ActivityList({
+/**
+ * Calm one-row summary of the newest event. Tapping it opens the full
+ * history on its own page (details + explorer links live there), keeping
+ * the dashboard uncluttered rather than stacking a long list below.
+ */
+function ActivityCard({
   events,
-  showHeir,
+  onOpen,
 }: {
   events: ActivityEvent[];
-  showHeir: boolean;
+  onOpen: () => void;
 }) {
-  // Newest first. Show a compact 6 by default, expand to the full
-  // history on demand so older events (vault creation, early sends)
-  // aren't lost below the fold.
-  const [expanded, setExpanded] = useState(false);
-  const all = useMemo(() => events.slice().reverse(), [events]);
-  const items = expanded ? all : all.slice(0, 6);
+  const latest = events.length ? events[events.length - 1] : null;
   return (
-    <section aria-label="Recent activity">
-      <p className="text-xs uppercase tracking-wider text-dim">
-        Recent activity
-      </p>
-      {items.length === 0 ? (
-        <p className="mt-3 text-sm text-muted">Nothing yet.</p>
-      ) : (
-        <ul role="list" className="mt-3 divide-y divide-[var(--border)]">
-          {items.map((e) => (
-            <li
-              key={`${e.vault_id}:${e.id}`}
-              className="flex items-center gap-3 py-3 text-sm"
-            >
-              <span
-                aria-hidden="true"
-                className={`h-2 w-2 rounded-full ${
-                  e.kind === "checkin" ||
-                  e.kind === "resolved" ||
-                  e.kind === "received" ||
-                  e.kind === "drill_completed"
-                    ? "bg-ok"
-                    : e.kind === "alarm"
-                    ? "bg-alarm"
-                    : "bg-warning"
-                }`}
-              />
-              <span className="flex-1 text-muted">
-                {showHeir && e.heirName ? (
-                  <span className="text-dim">{e.heirName} · </span>
-                ) : null}
-                <strong className="font-semibold text-[var(--text)]">
-                  {friendlyEventKind(e.kind)}
-                </strong>
-              </span>
-              <span className="font-mono text-xs text-dim">
-                {formatWhen(e.created_at)}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-      {all.length > 6 && (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label="View all activity"
+      className="card-flat flex w-full items-center gap-4 p-5 text-left transition-colors hover:bg-[var(--surface-2)]"
+    >
+      <div className="min-w-0 flex-1">
+        <p className="text-xs uppercase tracking-wider text-dim">
+          Recent activity
+        </p>
+        {latest ? (
+          <p className="mt-1 truncate text-sm">
+            <strong className="font-semibold text-[var(--text)]">
+              {friendlyEventKind(latest.kind)}
+            </strong>
+            <span className="text-muted"> · {formatWhen(latest.created_at)}</span>
+          </p>
+        ) : (
+          <p className="mt-1 text-sm text-muted">Nothing yet.</p>
+        )}
+      </div>
+      {events.length > 0 ? (
+        <span className="shrink-0 text-xs text-dim">
+          View all {events.length} →
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+/* ------------------------------- More links ------------------------------- */
+
+/**
+ * Compact list linking out to the set-once tools that used to be cards on
+ * the dashboard (heir message, practice run, reminders, emergency). Each
+ * link only shows when its tool applies, so the list disappears entirely
+ * when there's nothing to offer.
+ */
+function MoreLinks({
+  onNavigate,
+  showMessage,
+  showPractice,
+  showEmergency,
+  showReminders,
+}: {
+  onNavigate: (r: Route) => void;
+  showMessage: boolean;
+  showPractice: boolean;
+  showEmergency: boolean;
+  showReminders: boolean;
+}) {
+  const items: Array<{ label: string; desc: string; route: Route }> = [];
+  if (showMessage)
+    items.push({
+      label: "Message for your heir",
+      desc: "Record or update your video",
+      route: "heir-message",
+    });
+  if (showPractice)
+    items.push({
+      label: "Practice a claim",
+      desc: "Let your heir rehearse safely",
+      route: "practice",
+    });
+  if (showReminders)
+    items.push({
+      label: "Reminders",
+      desc: "Get a nudge to check in",
+      route: "reminders",
+    });
+  if (showEmergency)
+    items.push({
+      label: "Emergency options",
+      desc: "Freeze this vault if needed",
+      route: "emergency",
+    });
+  if (items.length === 0) return null;
+
+  return (
+    <nav
+      className="card-flat mt-5 divide-y divide-[var(--border)] p-0"
+      aria-label="More"
+    >
+      {items.map((it) => (
         <button
+          key={it.route}
           type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="mt-3 text-xs text-dim underline hover:text-[var(--text)]"
+          onClick={() => onNavigate(it.route)}
+          className="flex w-full items-center gap-3 p-4 text-left transition-colors hover:bg-[var(--surface-2)]"
         >
-          {expanded ? "Show less" : `Show all ${all.length}`}
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-medium text-[var(--text)]">
+              {it.label}
+            </span>
+            <span className="block truncate text-xs text-muted">{it.desc}</span>
+          </span>
+          <span aria-hidden="true" className="shrink-0 text-lg text-dim">
+            ›
+          </span>
         </button>
-      )}
-    </section>
+      ))}
+    </nav>
   );
 }
 
@@ -2407,7 +2434,7 @@ function LnurlCard({ lnurl }: { lnurl: string }) {
 
 /* ----------------------------- Panic card --------------------------------- */
 
-function PanicCard({
+export function PanicCard({
   lnurl,
   hasTrustedContact,
 }: {
