@@ -1886,10 +1886,32 @@ async fn create_vault_guardian(
     )
     .await?;
 
-    // Owner email verification (best-effort, mirrors from-xpub).
+    // Owner email verification (best-effort, mirrors from-xpub),
+    // including the sibling check: an owner who already confirmed this
+    // email on another vault should never be asked again.
     let has_owner_email = owner_ct.is_some() && owner_channel.as_deref() == Some("email");
+    let mut owner_email_already_verified = false;
     if has_owner_email {
-        if let Some(email) = req.owner_contact.as_deref() {
+        let verified_sibling: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM vaults \
+              WHERE owner_email_hash = ? \
+                AND owner_contact_verified_at IS NOT NULL \
+                AND id != ? \
+              LIMIT 1",
+        )
+        .bind(&s.owner_email_hash)
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await?;
+        if verified_sibling.is_some() {
+            sqlx::query("UPDATE vaults SET owner_contact_verified_at = ? WHERE id = ?")
+                .bind(&now_s)
+                .bind(&id)
+                .execute(&state.db)
+                .await?;
+            record_event(&state.db, &id, "owner_contact_verified", None).await?;
+            owner_email_already_verified = true;
+        } else if let Some(email) = req.owner_contact.as_deref() {
             if let Err(e) = send_contact_verification(&state, &id, email).await {
                 tracing::warn!(vault_id = %id, error = ?e, "guardian: owner verification email");
             }
@@ -1914,7 +1936,11 @@ async fn create_vault_guardian(
                 panic_frozen_until: None,
                 lnurl_checkin: None,
                 lnurl_panic: None,
-                owner_contact_verified: if has_owner_email { Some(false) } else { None },
+                owner_contact_verified: if has_owner_email {
+                    Some(owner_email_already_verified)
+                } else {
+                    None
+                },
                 descriptor_external: Some(pair.external.clone()),
                 descriptor_internal: Some(pair.internal.clone()),
                 has_trusted_contact: None,
@@ -2617,15 +2643,21 @@ async fn verify_contact(
     State(state): State<Arc<AppState>>,
     Path((id, token)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+    type VerifyRow = (
+        Option<String>, // owner_contact_verify_token_hash
+        Option<String>, // owner_contact_verified_at
+        Option<String>, // owner_contact_verify_sent_at
+        Option<String>, // owner_email_hash
+    );
+    let row: Option<VerifyRow> = sqlx::query_as(
         "SELECT owner_contact_verify_token_hash, owner_contact_verified_at, \
-                owner_contact_verify_sent_at \
+                owner_contact_verify_sent_at, owner_email_hash \
            FROM vaults WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.db)
     .await?;
-    let (stored_hash, verified_at, sent_at) = row.ok_or(ApiError::NotFound)?;
+    let (stored_hash, verified_at, sent_at, email_hash) = row.ok_or(ApiError::NotFound)?;
 
     // Already confirmed: report success whatever token was presented.
     // The common path here is the owner tapping the same email link
@@ -2666,6 +2698,36 @@ async fn verify_contact(
     .await?;
 
     record_event(&state.db, &id, "owner_contact_verified", None).await?;
+
+    // One email, one confirmation. The owner may hold several vaults
+    // (one per heir) that share this address; confirming it on any of
+    // them confirms it on all of them, so sibling vaults stop asking.
+    if let Some(hash) = email_hash.as_deref() {
+        let siblings: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM vaults \
+              WHERE owner_email_hash = ? \
+                AND owner_contact_verified_at IS NULL \
+                AND id != ?",
+        )
+        .bind(hash)
+        .bind(&id)
+        .fetch_all(&state.db)
+        .await?;
+        for sibling in siblings {
+            sqlx::query(
+                "UPDATE vaults \
+                    SET owner_contact_verified_at       = ?, \
+                        owner_contact_verify_token_hash = NULL \
+                  WHERE id = ?",
+            )
+            .bind(Utc::now().to_rfc3339())
+            .bind(&sibling)
+            .execute(&state.db)
+            .await?;
+            record_event(&state.db, &sibling, "owner_contact_verified", None).await?;
+        }
+    }
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -4710,6 +4772,83 @@ mod tests {
         assert_eq!(
             notifs_before, notifs_after,
             "no new confirmation email should be enqueued for the added heir"
+        );
+    }
+
+    /// The mirror case: the owner adds every heir FIRST and only then taps
+    /// the confirmation link. One tap must verify every sibling vault that
+    /// shares the owner's email, so no vault keeps asking.
+    #[tokio::test]
+    async fn verifying_one_vault_verifies_all_siblings() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let hash = "e".repeat(64);
+
+        // Two heirs created back to back, both unverified.
+        let (_, first) = create_vault_from_xpub(
+            State(state.clone()),
+            Json(from_xpub_with_owner_email(0x88, &hash)),
+        )
+        .await
+        .expect("first heir create");
+        let (_, second) = create_vault_from_xpub(
+            State(state.clone()),
+            Json(from_xpub_with_owner_email(0x99, &hash)),
+        )
+        .await
+        .expect("second heir create");
+        assert_eq!(first.vault.owner_contact_verified, Some(false));
+        assert_eq!(second.vault.owner_contact_verified, Some(false));
+
+        // Fish the first vault's confirmation token out of its sealed
+        // notification, the way the owner's inbox would.
+        let (body_ct, body_nonce): (String, String) = sqlx::query_as(
+            "SELECT body_ciphertext, body_nonce FROM notifications WHERE vault_id = ?",
+        )
+        .bind(&first.vault.id)
+        .fetch_one(&state.db)
+        .await
+        .expect("first vault notification");
+        let body = String::from_utf8(
+            open_for_vault(
+                &first.vault.id,
+                &SealedContact {
+                    ciphertext_b64: body_ct,
+                    nonce_b64: body_nonce,
+                },
+            )
+            .expect("open body"),
+        )
+        .expect("utf8 body");
+        let marker = format!("/#/verify-email/{}/", first.vault.id);
+        let token = body
+            .split(marker.as_str())
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .expect("link with token in body")
+            .to_string();
+
+        // One tap on the first vault's link…
+        let status = verify_contact(State(state.clone()), Path((first.vault.id.clone(), token)))
+            .await
+            .expect("verify ok");
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        // …verifies both vaults and kills the sibling's pending token.
+        assert!(verified_at(&state, &first.vault.id).await.is_some());
+        assert!(
+            verified_at(&state, &second.vault.id).await.is_some(),
+            "sibling vault must be verified by the same tap"
+        );
+        let sibling_hash: Option<String> =
+            sqlx::query_scalar("SELECT owner_contact_verify_token_hash FROM vaults WHERE id = ?")
+                .bind(&second.vault.id)
+                .fetch_one(&state.db)
+                .await
+                .expect("read sibling token hash");
+        assert!(
+            sibling_hash.is_none(),
+            "sibling's pending confirmation token should be cleared"
         );
     }
 
