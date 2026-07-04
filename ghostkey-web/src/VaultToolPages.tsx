@@ -7,12 +7,14 @@
  * the real work. Keeping the dashboard to status + money + heir was the
  * goal; these pages are one tap away from it.
  */
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import type { Route } from "./App";
+import { api } from "./api";
 import { useActiveVault } from "./useActiveVault";
+import { useToolDoneState } from "./toolStatus";
 import { VideoMessageCard } from "./VideoMessageCard";
-import { PracticeClaimCard } from "./PracticeClaimCard";
+import { PracticeClaimCard, type HeirChannel } from "./PracticeClaimCard";
 import { PanicCard, PushOptInCard } from "./Dashboard";
 import { Button } from "./ui";
 
@@ -108,13 +110,31 @@ export function HeirMessagePage({ onNavigate }: PageProps) {
 
 export function PracticeRunPage({ onNavigate }: PageProps) {
   const { meta, ownerToken, vault, loading } = useActiveVault();
+  // The card's copy names the channel the practice actually travels on
+  // (email, text, WhatsApp), which only the server's heir profile knows.
+  const [heirChannel, setHeirChannel] = useState<HeirChannel>(undefined);
+  useEffect(() => {
+    if (!meta?.id || !ownerToken) return;
+    let alive = true;
+    api
+      .getVaultHeir(meta.id, ownerToken)
+      .then((h) => {
+        if (alive) setHeirChannel((h.channel as HeirChannel) ?? null);
+      })
+      .catch(() => {
+        /* unknown channel keeps the generic wording */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [meta?.id, ownerToken]);
   const isClaiming =
     vault?.status === "timelock_started" || vault?.status === "claiming";
   const ready = Boolean(meta && vault && vault.status !== "claimed" && !isClaiming);
   return (
     <ToolPage
       title="Practice a claim"
-      intro="Let your heir rehearse the real claim while you're here — no funds move, nothing changes."
+      intro="Let your heir rehearse the real claim while you're here. No money moves, nothing changes."
       onNavigate={onNavigate}
     >
       {ready && meta && vault ? (
@@ -122,6 +142,7 @@ export function PracticeRunPage({ onNavigate }: PageProps) {
           vaultId={meta.id}
           ownerToken={ownerToken}
           heirName={meta.heir.name}
+          heirChannel={heirChannel}
           progress={vault}
         />
       ) : (
@@ -162,6 +183,103 @@ export function EmergencyPage({ onNavigate }: PageProps) {
           loading={loading}
           hasVault={Boolean(meta)}
           emptyText="Emergency freeze isn't available for this vault right now."
+          onNavigate={onNavigate}
+        />
+      )}
+    </ToolPage>
+  );
+}
+
+/**
+ * The permanent home for every vault tool, linked from the nav.
+ * The dashboard's More list only shows tools that still need doing;
+ * once a video is saved, a practice is sent, or reminders are on,
+ * this page is where the owner comes back to review or change them.
+ */
+export function ToolsPage({ onNavigate }: PageProps) {
+  const { meta, ownerToken, vault, pushKey, loading } = useActiveVault();
+  const done = useToolDoneState(meta?.id ?? null, ownerToken);
+  const isClaiming =
+    vault?.status === "timelock_started" || vault?.status === "claiming";
+  const isClosed = vault?.status === "claimed";
+
+  const items: Array<{ label: string; desc: string; route: Route }> = [];
+  if (vault && !isClosed) {
+    items.push({
+      label: "Message for your heir",
+      desc:
+        done.hasVideo === true
+          ? "Video saved. Watch, replace, or remove it"
+          : "Record a short video for your heir",
+      route: "heir-message",
+    });
+  }
+  if (vault && !isClosed && !isClaiming) {
+    items.push({
+      label: "Practice a claim",
+      desc: vault.drill_completed_at
+        ? "Completed. Send another any time"
+        : vault.drill_started_at
+          ? "Practice sent. See where it stands"
+          : "Let your heir rehearse safely",
+      route: "practice",
+    });
+  }
+  if (vault && ownerToken && pushKey && !isClosed) {
+    items.push({
+      label: "Reminders",
+      desc:
+        done.remindersOn === true
+          ? "On for this device"
+          : "Get a nudge to check in",
+      route: "reminders",
+    });
+  }
+  if (vault?.lnurl_panic && vault.status !== "frozen" && !isClosed && !isClaiming) {
+    items.push({
+      label: "Emergency options",
+      desc: "Freeze this vault if needed",
+      route: "emergency",
+    });
+  }
+
+  return (
+    <ToolPage
+      title="Vault tools"
+      intro="Everything you can set up or check for this vault, in one place."
+      onNavigate={onNavigate}
+    >
+      {items.length > 0 ? (
+        <nav
+          className="card-flat divide-y divide-[var(--border)] p-0"
+          aria-label="Vault tools"
+        >
+          {items.map((it) => (
+            <button
+              key={it.route}
+              type="button"
+              onClick={() => onNavigate(it.route)}
+              className="flex w-full items-center gap-3 p-4 text-left transition-colors hover:bg-[var(--surface-2)]"
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium text-[var(--text)]">
+                  {it.label}
+                </span>
+                <span className="block truncate text-xs text-muted">
+                  {it.desc}
+                </span>
+              </span>
+              <span aria-hidden="true" className="shrink-0 text-lg text-dim">
+                ›
+              </span>
+            </button>
+          ))}
+        </nav>
+      ) : (
+        <Fallback
+          loading={loading}
+          hasVault={Boolean(meta)}
+          emptyText="No tools apply to this vault right now."
           onNavigate={onNavigate}
         />
       )}

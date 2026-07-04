@@ -11,8 +11,24 @@ import { drillStatusLine } from "./PracticeClaimCard";
 describe("drillStatusLine", () => {
   it("invites a first practice when nothing was sent", () => {
     const line = drillStatusLine({}, "Fola");
-    expect(line).toContain("Fola gets a clearly-marked practice email");
+    expect(line).toContain("Fola gets a clearly-marked practice message");
     expect(line).toContain("Nothing can move");
+  });
+
+  it("names the heir's real channel, never promising an email to a WhatsApp heir", () => {
+    expect(drillStatusLine({}, "Fola", "email")).toContain(
+      "clearly-marked practice email",
+    );
+    expect(drillStatusLine({}, "Fola", "sms")).toContain(
+      "clearly-marked practice text message",
+    );
+    expect(drillStatusLine({}, "Fola", "whatsapp")).toContain(
+      "clearly-marked practice WhatsApp message",
+    );
+    // Unknown channel stays honest and generic.
+    expect(drillStatusLine({}, "Fola", null)).toContain(
+      "clearly-marked practice message",
+    );
   });
 
   it("reports sent-but-unopened", () => {

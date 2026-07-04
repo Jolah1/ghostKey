@@ -32,6 +32,7 @@ const SIGNED_OUT_ITEMS: NavItem[] = [
 
 const SIGNED_IN_ITEMS: NavItem[] = [
   { key: "dashboard", label: "Dashboard" },
+  { key: "tools",     label: "Tools" },
   { key: "recovery",  label: "Recovery kit" },
   { key: "inherit",   label: "Inherit" },
 ];
