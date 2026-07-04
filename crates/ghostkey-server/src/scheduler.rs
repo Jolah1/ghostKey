@@ -435,25 +435,28 @@ async fn enqueue_alarm_escalation(
     let amount_sat = crate::lightning::heartbeat_amount_sat();
     let one_tap_block = match mint_or_reuse_one_tap_token(state, vault_id, now_iso).await? {
         Some(token) => format!(
-            "Tap this link and pay the tiny {amount_sat}-sat Lightning \
-             invoice to check in:\n\n\
+            "Tap this link and pay {amount_sat} sats from any Lightning \
+             wallet to check in:\n\n\
              {base}/#/checkin-link/{vault_id}/{token}\n\n"
         ),
         None => String::new(),
     };
+    // "1 days" reads like a robot wrote it, at the exact moment the
+    // email most needs to be taken seriously.
+    let days_word = if days_left == 1 { "day" } else { "days" };
 
     let (subject, lead) = match count_so_far {
         0 => (
-            format!("You missed a check-in. {days_left} days until your heir is notified"),
+            format!("You missed a check-in. {days_left} {days_word} until your heir is notified"),
             "This is the first daily reminder.".to_string(),
         ),
         n if n < 7 => (
-            format!("{days_left} days left to check in before your heir is contacted"),
+            format!("{days_left} {days_word} left to check in before your heir is contacted"),
             format!("You've now missed {} daily reminders.", n + 1),
         ),
         _ => (
             format!(
-                "Last few days: {days_left} days until your heir is notified about {display_label}"
+                "Last few days: {days_left} {days_word} until your heir is notified about {display_label}"
             ),
             "This is one of the final reminders.".to_string(),
         ),
@@ -465,7 +468,7 @@ async fn enqueue_alarm_escalation(
          {one_tap_block}\
          You can also open the dashboard on any device:\n\n\
          {base}/#/checkin\n\n\
-         If we don't hear from you within {days_left} day(s), your heir \
+         If we don't hear from you within {days_left} {days_word}, your heir \
          will receive a claim link for this vault. You can stop that \
          instantly by checking in.\n\n\
          From GhostKey\n"
@@ -756,17 +759,16 @@ async fn enqueue_pre_deadline_reminder(
             "Hello,\n\n\
              A quick reminder that {display_label} needs a check-in by \
              {deadline_friendly}. That's about 24 hours from now.\n\n\
-             Tap this link and pay the tiny {amount_sat}-sat Lightning \
-             invoice. The payment is your proof you're still here, and it \
+             Tap this link and pay {amount_sat} sats from any Lightning \
+             wallet. The payment is your proof you're still here, and it \
              resets the countdown.\n\n\
              {one_tap_url}\n\n\
-             You can pay from any Lightning wallet. If you'd rather not from \
-             this email, open the dashboard on any device and check in \
-             there:\n\n\
+             If you'd rather not pay from this email, open the dashboard \
+             on any device and check in there:\n\n\
              {base}/#/checkin\n\n\
-             If we don't hear from you by the deadline, you'll get one more \
-             email, and then your heir will be contacted after the \
-             grace period.\n\n\
+             If we don't hear from you by the deadline, we'll keep \
+             reminding you every day through the grace period. Only after \
+             that would your heir be contacted.\n\n\
              If this email reached you by mistake, you can ignore it.\n\n\
              From GhostKey\n"
         );
@@ -789,7 +791,7 @@ async fn enqueue_pre_deadline_reminder(
             "title": title,
             "body": format!(
                 "{display_label} needs a check-in by {deadline_friendly}. \
-                 Pay a tiny {amount_sat}-sat Lightning invoice to check in."
+                 Pay {amount_sat} sats from any Lightning wallet to check in."
             ),
             "url": one_tap_url,
         })
@@ -1092,8 +1094,8 @@ async fn enqueue_alarm_owner(
         let amount_sat = crate::lightning::heartbeat_amount_sat();
         let one_tap_block = match &one_tap_url {
             Some(url) => format!(
-                "Tap this link and pay the tiny {amount_sat}-sat Lightning \
-                 invoice to check in. The payment is your proof you're still \
+                "Tap this link and pay {amount_sat} sats from any Lightning \
+                 wallet to check in. The payment is your proof you're still \
                  here and resets the clock.\n\n\
                  {url}\n\n"
             ),

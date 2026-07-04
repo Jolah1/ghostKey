@@ -196,7 +196,7 @@ export function LightningCheckin({
 
         <div className="mt-6 min-h-[200px]">
           {state.kind === "minting" && (
-            <p className="text-sm text-muted">Minting invoice…</p>
+            <p className="text-sm text-muted">Getting your check-in ready…</p>
           )}
 
           {state.kind === "error" && (

@@ -157,9 +157,9 @@ export function StatusPage() {
           </h2>
           <p className="mt-1.5 text-sm text-muted">
             Your money never lives on these servers. It sits on the Bitcoin
-            network, locked to keys only you and your heir can use. Your
-            emergency recovery file opens it with just your password. No
-            GhostKey required. That's the whole point.
+            network, locked by keys, not by our uptime. Your emergency
+            recovery file opens it with just your password. No GhostKey
+            required. That's the whole point.
           </p>
         </section>
 

@@ -68,9 +68,11 @@ export function RecoveryKitPage({ onNavigate }: Props) {
           <p className="eyebrow">Recovery kit</p>
           <h1 className="mt-4 font-serif text-3xl">Your spare key</h1>
           <p className="mt-3 text-sm text-muted">
-            A backup of your key, for emergencies. Save a copy somewhere safe
-            like your email or a USB stick. If you ever can't get into GhostKey,
-            open it and type your password to reach your money.
+            A backup of your key, for emergencies. Best kept somewhere offline
+            you control, like a USB stick or a printout, in more than one
+            place. Email works too, but it's the least private choice. If you
+            ever can't get into GhostKey, open the file and type your password
+            to reach your money.
           </p>
         </header>
 
