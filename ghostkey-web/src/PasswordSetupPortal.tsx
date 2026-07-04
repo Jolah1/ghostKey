@@ -8,8 +8,9 @@
  *                   never shown a seed phrase: the password *is* the
  *                   only secret.
  *   3. Fund       — the freshly-derived first receive address, with a
- *                   copy button and a reminder that funds sent here
- *                   are testnet-only during alpha.
+ *                   copy button and a network-aware funding hint (a
+ *                   test-network warning on testnet/signet, "start
+ *                   small" guidance on mainnet).
  *
  * Why three steps, not four (like the legacy wallet-paste flow)?
  *
@@ -1169,7 +1170,9 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
               </p>
             </>
           )}
-          {step === 2 && created && <StepFund created={created} />}
+          {step === 2 && created && (
+            <StepFund created={created} network={network} />
+          )}
         </div>
 
         {/* Best-effort video upload failed: the vault is real and safe,
@@ -2228,8 +2231,8 @@ function StepPassword({
                 waiting period).
               </li>
               <li>
-                You'll get an address on the next screen. Fund it with
-                testnet BTC and you're done.
+                You'll get an address on the next screen. Send Bitcoin to
+                it and you're done.
               </li>
             </ol>
           </Disclosure>
@@ -2245,6 +2248,7 @@ function StepPassword({
 
 function StepFund({
   created,
+  network,
 }: {
   created: {
     groupId: string;
@@ -2255,6 +2259,7 @@ function StepFund({
       envelope?: HeirEnvelope;
     }>;
   };
+  network: Network;
 }) {
   const isGroup = created.vaults.length > 1;
   const anyEnvelope = created.vaults.some((v) => v.envelope);
@@ -2289,6 +2294,7 @@ function StepFund({
               address={v.address}
               vaultId={v.vaultId}
               showHeading={isGroup}
+              network={network}
             />
             <FundingBalanceLine vaultId={v.vaultId} />
           </div>
@@ -2427,12 +2433,22 @@ function FundAddressCard({
   address,
   vaultId,
   showHeading,
+  network,
 }: {
   heirName: string;
   address: string | null;
   vaultId: string;
   showHeading: boolean;
+  network: Network;
 }) {
+  // The funding hint must match the network the vault is actually on.
+  // The old hard-coded "Testnet only during alpha" line outlived the
+  // alpha: on a mainnet server it told owners not to send real Bitcoin
+  // at the exact moment they were meant to.
+  const fundingHint =
+    network === "bitcoin"
+      ? "Send from any Bitcoin wallet. Start with a small test amount."
+      : `This vault is on the ${network} test network. Don't send real Bitcoin here.`;
   const [copied, setCopied] = useState(false);
   async function copy() {
     if (!address) return;
@@ -2474,7 +2490,7 @@ function FundAddressCard({
         ) : (
           <Field
             label="Your vault address"
-            hint="Testnet only during alpha. Don't send real-money BTC here."
+            hint={fundingHint}
           >
             <div className="card flex items-center gap-3 px-4 py-3">
               <code className="flex-1 break-all font-mono text-sm">
