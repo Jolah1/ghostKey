@@ -21,6 +21,46 @@ export interface DrillProgress {
   drill_completed_at?: string | null;
 }
 
+/** How this heir is reached, from the server's heir profile. The copy
+ *  must match the real channel: a WhatsApp heir never gets an email,
+ *  so the card must not promise one. Unknown falls back to "message". */
+export type HeirChannel = "email" | "sms" | "whatsapp" | null | undefined;
+
+function practiceNoun(channel: HeirChannel): string {
+  switch (channel) {
+    case "email":
+      return "practice email";
+    case "sms":
+      return "practice text message";
+    case "whatsapp":
+      return "practice WhatsApp message";
+    default:
+      return "practice message";
+  }
+}
+
+function sendWords(channel: HeirChannel, who: string): {
+  alert: string;
+  button: string;
+} {
+  switch (channel) {
+    case "email":
+      return { alert: `This emails ${who} right now.`, button: `Email ${who} now` };
+    case "sms":
+      return { alert: `This texts ${who} right now.`, button: `Text ${who} now` };
+    case "whatsapp":
+      return {
+        alert: `This sends ${who} a WhatsApp message right now.`,
+        button: `Message ${who} on WhatsApp`,
+      };
+    default:
+      return {
+        alert: `This sends ${who} a message right now.`,
+        button: `Send it to ${who} now`,
+      };
+  }
+}
+
 function fmtDay(rfc: string): string | null {
   const d = new Date(rfc);
   if (Number.isNaN(d.getTime())) return null;
@@ -33,7 +73,11 @@ function fmtDay(rfc: string): string | null {
 
 /** One line describing where the rehearsal stands, for the card and
  *  its tests. */
-export function drillStatusLine(progress: DrillProgress, who: string): string {
+export function drillStatusLine(
+  progress: DrillProgress,
+  who: string,
+  channel?: HeirChannel,
+): string {
   if (progress.drill_completed_at) {
     const when = fmtDay(progress.drill_completed_at);
     return when
@@ -52,7 +96,7 @@ export function drillStatusLine(progress: DrillProgress, who: string): string {
       ? `Practice sent ${when}. ${who} hasn't opened it yet.`
       : `Practice sent. ${who} hasn't opened it yet.`;
   }
-  return `See the claim work while you're here to help. ${who} gets a clearly-marked practice email and walks the real steps. Nothing can move.`;
+  return `See the claim work while you're here to help. ${who} gets a clearly-marked ${practiceNoun(channel)} and walks the real steps. Nothing can move.`;
 }
 
 type Stage = "idle" | "confirming" | "sending" | "sent";
@@ -61,11 +105,13 @@ export function PracticeClaimCard({
   vaultId,
   ownerToken,
   heirName,
+  heirChannel,
   progress,
 }: {
   vaultId: string;
   ownerToken: string | null;
   heirName?: string;
+  heirChannel?: HeirChannel;
   progress: DrillProgress;
 }) {
   const [stage, setStage] = useState<Stage>("idle");
@@ -78,8 +124,9 @@ export function PracticeClaimCard({
   // A just-sent drill beats whatever the vault fetch knew.
   const line =
     stage === "sent" && result
-      ? drillStatusLine({ drill_started_at: result.started_at }, who)
-      : drillStatusLine(progress, who);
+      ? drillStatusLine({ drill_started_at: result.started_at }, who, heirChannel)
+      : drillStatusLine(progress, who, heirChannel);
+  const send = sendWords(heirChannel, who);
   const completed = Boolean(progress.drill_completed_at) && stage !== "sent";
   const startedBefore = Boolean(progress.drill_started_at) || stage === "sent";
 
@@ -129,8 +176,8 @@ export function PracticeClaimCard({
         <div className="mt-3">
           <InlineAlert tone="warning">
             <p className="text-sm">
-              This emails {who} right now. The message says clearly that you
-              are fine and that this is practice.
+              {send.alert} The message says clearly that you are fine and
+              that this is practice.
             </p>
           </InlineAlert>
           {error ? (
@@ -142,7 +189,7 @@ export function PracticeClaimCard({
               onClick={() => void onSend()}
               disabled={stage === "sending"}
             >
-              {stage === "sending" ? "Sending…" : `Email ${who} now`}
+              {stage === "sending" ? "Sending…" : send.button}
             </Button>
             <Button
               variant="ghost"
@@ -165,7 +212,7 @@ export function PracticeClaimCard({
             <p className="text-sm">
               {result.heir_notified
                 ? `On its way. You'll see it here when ${who} opens the link and when they finish.`
-                : `We couldn't email ${who} automatically. Share this practice link with them yourself:`}
+                : `We couldn't reach ${who} automatically. Share this practice link with them yourself:`}
             </p>
             {!result.heir_notified ? (
               <p className="mt-2 break-all font-mono text-xs">

@@ -73,6 +73,9 @@ const EmergencyPage = lazy(() =>
 const RemindersPage = lazy(() =>
   import("./VaultToolPages").then((m) => ({ default: m.RemindersPage })),
 );
+const ToolsPage = lazy(() =>
+  import("./VaultToolPages").then((m) => ({ default: m.ToolsPage })),
+);
 const RecoveryKitPage = lazy(() =>
   import("./RecoveryKitPage").then((m) => ({ default: m.RecoveryKitPage })),
 );
@@ -125,6 +128,7 @@ export type Route =
   | "practice"
   | "emergency"
   | "reminders"
+  | "tools"
   | "recovery"
   | "recovery-guide"
   | "checkin"
@@ -146,6 +150,7 @@ const VALID: Route[] = [
   "practice",
   "emergency",
   "reminders",
+  "tools",
   "recovery",
   "recovery-guide",
   "checkin",
@@ -409,6 +414,7 @@ export default function App() {
       {location.kind === "route" && location.route === "practice"  && <PracticeRunPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "emergency" && <EmergencyPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "reminders" && <RemindersPage onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "tools"     && <ToolsPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "recovery"  && <RecoveryKitPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "recovery-guide" && <RecoveryGuide onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "checkin"   && <SignInPortal onNavigate={setRoute} />}

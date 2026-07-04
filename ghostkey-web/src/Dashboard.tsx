@@ -63,6 +63,7 @@ import {
 import { unsealOwner } from "./crypto/sealing";
 import { usePrice, btcAndUsd, satsToUsd, formatUsd } from "./fiat";
 import { lastResortCheckinOpen } from "./checkin";
+import { useToolDoneState } from "./toolStatus";
 import type { Route } from "./App";
 
 interface Props {
@@ -120,6 +121,9 @@ export function Dashboard({ onNavigate }: Props) {
   // VAPID public key from /health, or null when the server has no
   // push keypair configured. Gates the reminder opt-in card.
   const [pushKey, setPushKey] = useState<string | null>(null);
+  // Set-once tools that are already done drop off the More list below;
+  // the nav's Tools page stays their permanent home.
+  const toolsDone = useToolDoneState(activeId, ownerToken);
 
   const now = useTicker(1000);
 
@@ -482,11 +486,20 @@ export function Dashboard({ onNavigate }: Props) {
 
             {/* Set-once tools live on their own pages now, reached from
                 this compact list, so the dashboard stays status + money +
-                heir. Recovery kit already works the same way (in the nav). */}
+                heir. Once a tool is done (video saved, practice sent,
+                reminders on) its link leaves this list too; the nav's
+                Tools page is the permanent home for all of them. */}
             <MoreLinks
               onNavigate={onNavigate}
-              showMessage={Boolean(vault) && !isClosed}
-              showPractice={Boolean(vault) && !isClosed && !isClaiming}
+              showMessage={
+                Boolean(vault) && !isClosed && toolsDone.hasVideo !== true
+              }
+              showPractice={
+                Boolean(vault) &&
+                !isClosed &&
+                !isClaiming &&
+                !vault?.drill_started_at
+              }
               showEmergency={
                 Boolean(vault?.lnurl_panic) &&
                 vault?.status !== "frozen" &&
@@ -499,7 +512,8 @@ export function Dashboard({ onNavigate }: Props) {
                 !isClaiming &&
                 !isUnfunded &&
                 Boolean(pushKey) &&
-                Boolean(ownerToken)
+                Boolean(ownerToken) &&
+                toolsDone.remindersOn !== true
               }
             />
           </div>
