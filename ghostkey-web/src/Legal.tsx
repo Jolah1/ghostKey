@@ -148,8 +148,11 @@ export function TermsPage() {
         <ul role="list" className="list-disc space-y-1.5 pl-5">
           <li>
             <strong>Your password.</strong> We never see it and cannot
-            reset it. Losing both your password and your recovery file can
-            mean losing access to your bitcoin permanently.
+            reset it. Your recovery file opens with this same password, so
+            it cannot rescue a forgotten one. If you forget your password,
+            the funds remain reachable only through the inheritance path:
+            your heir's claim, or your own copy of your heir's file once
+            the waiting period has passed.
           </li>
           <li>
             <strong>Your emergency recovery file.</strong> Keep a copy

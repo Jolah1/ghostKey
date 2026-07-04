@@ -473,8 +473,12 @@ function Mark({ v }: { v: "yes" | "partial" | "no" }) {
 
 const FAQS = [
   {
-    q: "What happens if I lose access to my wallet?",
-    a: "Treat the GhostKey vault like any other Bitcoin wallet and back up your seed phrase. If you lose both your wallet and your backup, no one can recover the funds. That includes us. This is the trade-off of true self-custody.",
+    q: "What happens if I lose my phone or computer?",
+    a: "Nothing is tied to one device. Sign in from any browser with your email and password and your vault is right there. For a deeper emergency, your recovery file reaches the money without GhostKey at all, so keep a copy of it somewhere safe. If you connected your own wallet instead of using easy setup, back up its seed phrase like always.",
+  },
+  {
+    q: "What if I forget my password?",
+    a: "You lose time, not money. There is no reset, because we never see your password. But the plan still works without it: your heir's claim doesn't need your password, and you also hold your heir's file and its unlock code, so once the waiting period passes you can open that file yourself and move the funds to a new wallet. A password manager is still the best protection.",
   },
   {
     q: "Can I change my heir after creating a vault?",
