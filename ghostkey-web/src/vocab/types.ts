@@ -97,6 +97,237 @@ export interface ClaimVocab {
     title: string;
     body: (label: string | null) => string;
   };
+  error: {
+    eyebrow: string;
+    tryAgain: string;
+  };
+  checking: {
+    eyebrow: string;
+    title: string;
+    body: string;
+    firstLoadSlow: string;
+    firstLoadEstimating: string;
+  };
+  probeError: {
+    holdOn: string;
+  };
+  technical: {
+    showDetails: string;
+  };
+  footer: string;
+}
+
+export interface DrillVocab {
+  bannerTitle: string;
+  bannerBody: string;
+  introEyebrow: string;
+  introTitle: (name: string | null) => string;
+  introBody1: string;
+  introBody2: string;
+  introCta: string;
+  walkthroughEyebrow: string;
+  walkthroughTitle: string;
+  walkthroughStep1Title: string;
+  walkthroughStep1Body: string;
+  walkthroughStep2Title: string;
+  walkthroughStep2Body: string;
+  walkthroughStep3Title: string;
+  walkthroughStep3Body: string;
+  walkthroughFinishing: string;
+  walkthroughFinish: string;
+  doneEyebrow: string;
+  doneTitle: string;
+  doneBody: string;
+  doneClose: string;
+}
+
+export interface ClaimCommonVocab {
+  whatIsBeingPassedOn: string;
+  defaultLabel: string;
+  step1: string;
+  step2: string;
+  step3: string;
+  whereShouldMoneyGo: string;
+  bitcoinAddress: string;
+  reviewAndSend: string;
+  sendingBitcoin: string;
+  sendTheBitcoin: string;
+  everythingMinusFee: string;
+  defaultFeeLabel: string;
+  someonesLeftYou: string;
+  pageDescription: string;
+  advancedFee: string;
+  feeRateLabel: string;
+  feeRateInvalid: string;
+  feeRateHint: string;
+  addressInvalidShape: string;
+  doYouHaveWallet: string;
+  walletDesc: (network: string, examples: string) => string;
+  haveWalletYes: string;
+  haveWalletYesSub: string;
+  haveWalletNo: string;
+  haveWalletNoSub: string;
+  onNetwork: (network: string) => string;
+  addressInstructions: (prefix: string) => string;
+  addressWrongNetwork: (prefix: string) => string;
+  addressPlaceholder: (prefix: string) => string;
+  confirmDescription: string;
+}
+
+export interface GuardianVocab {
+  sentEyebrow: string;
+  sentTitle: string;
+  eyebrow: string;
+  greeting: (heir: string, isHeir: boolean) => string;
+  heirBody: (heir: string) => string;
+  guardianBody: (heir: string) => string;
+  bringLink: (needLabel: string) => string;
+  heirLinkInstructions: string;
+  guardianLinkInstructions: string;
+  bothLinksReady: string;
+  pasteLink: (needLabel: string) => string;
+  linkHint: string;
+  checking: string;
+  addLink: string;
+  confirmDescription: string;
+  errInvalidLink: string;
+  errSameLink: string;
+  errDifferentVault: string;
+  errWrongRoleHeir: string;
+  errWrongRoleGuardian: string;
+  errAlreadyUsed: string;
+  errCheckFailed: string;
+}
+
+export interface DerivedClaimVocab {
+  confirmEmail: (email: string) => string;
+  notYourEmail: string;
+  stopAndContact: string;
+  whereShouldMoneyGo: (network: string, examples: string) => string;
+  reviewAndClaim: string;
+  claimingAndSending: string;
+  claimAndSend: string;
+  advancedFee: string;
+  feePlaceholder: string;
+  yourBackupPhrase: string;
+  backupDescription: string;
+}
+
+export interface ManualClaimVocab {
+  walletDesc: (network: string) => string;
+  walletWarning: string;
+  bitcoinAddress: string;
+  whereShouldBitcoinGo: string;
+  prepareTransaction: string;
+  preparingTransaction: string;
+  signInWallet: string;
+  signInstructions: string;
+  unsignedTransaction: string;
+  unsignedDescription: string;
+  copy: string;
+  copied: string;
+  signHint: string;
+  signedTransaction: string;
+  signedHint: string;
+  broadcastTransaction: string;
+  broadcasting: string;
+  walletGuidePickAny: string;
+  walletPsbtDescription: string;
+  downloadBitcoinCore: string;
+  walletPsbtHint: string;
+  psbtSummary: string;
+  amountBeingMoved: string;
+  youllReceive: string;
+  networkFee: string;
+  networkLabel: string;
+  psbtWarning: string;
+}
+
+export interface BroadcastSuccessVocab {
+  done: string;
+  itsOnTheNetwork: string;
+  description: string;
+  transactionId: string;
+  watchItArrive: string;
+  noNeedToKeepOpen: string;
+}
+
+export interface HeirRecoveryFileVocab {
+  advanced: string;
+  description: string;
+  createFile: string;
+  preparing: string;
+  couldNotBuild: (message: string) => string;
+  tryAgain: string;
+  yourCode: string;
+  codeDescription: string;
+  downloadFile: string;
+}
+
+export interface ClaimErrorsCopyEntry {
+  headline: string;
+  body: string;
+  nextStep: string;
+}
+
+export interface ClaimErrorsCopy {
+  destinationMismatch: ClaimErrorsCopyEntry;
+  noUtxos: ClaimErrorsCopyEntry;
+  psbtNotFullySigned: ClaimErrorsCopyEntry;
+  timelockNotMatured: ClaimErrorsCopyEntry;
+  esploraDown: ClaimErrorsCopyEntry;
+  olderFormat: ClaimErrorsCopyEntry;
+  serverError: ClaimErrorsCopyEntry;
+  linkIncomplete: ClaimErrorsCopyEntry;
+  genericResolve: ClaimErrorsCopyEntry;
+  genericProbe: ClaimErrorsCopyEntry;
+  genericSend: ClaimErrorsCopyEntry;
+  genericBuild: ClaimErrorsCopyEntry;
+  genericBroadcast: ClaimErrorsCopyEntry;
+}
+
+export interface InheritPortalVocab {
+  eyebrow: string;
+  title: string;
+  description: string;
+  whatLinkLooksLike: string;
+  linkExample: string;
+  linkPrivacyNote: string;
+  alreadyHaveLink: string;
+  linkHint: string;
+  linkPlaceholder: string;
+  openIt: string;
+  noLinkYet: string;
+}
+
+export interface PracticeCardVocab {
+  title: string;
+  realClaimLooksSame: string;
+  sendAgain: string;
+  sendPractice: string;
+  cancel: string;
+  sending: string;
+  errorRealClaimUnderway: string;
+  errorSendingFailed: string;
+  lineCompleted: (who: string, when: string | null) => string;
+  lineOpened: (who: string, when: string | null) => string;
+  lineSent: (who: string, when: string | null) => string;
+  lineIdle: (who: string, noun: string) => string;
+  confirmAlert: (alert: string) => string;
+  sentNotified: (who: string) => string;
+  sentNotNotified: (who: string) => string;
+  practiceNounEmail: string;
+  practiceNounSms: string;
+  practiceNounWhatsapp: string;
+  practiceNounDefault: string;
+  sendWordsEmailAlert: (who: string) => string;
+  sendWordsEmailButton: (who: string) => string;
+  sendWordsSmsAlert: (who: string) => string;
+  sendWordsSmsButton: (who: string) => string;
+  sendWordsWhatsappAlert: (who: string) => string;
+  sendWordsWhatsappButton: (who: string) => string;
+  sendWordsDefaultAlert: (who: string) => string;
+  sendWordsDefaultButton: (who: string) => string;
 }
 
 export interface Vocab {
@@ -106,4 +337,14 @@ export interface Vocab {
   longTagline: string;
   status: (s: VaultStatus) => StatusCopy;
   claim: ClaimVocab;
+  drill: DrillVocab;
+  claimCommon: ClaimCommonVocab;
+  guardian: GuardianVocab;
+  derivedClaim: DerivedClaimVocab;
+  manualClaim: ManualClaimVocab;
+  broadcastSuccess: BroadcastSuccessVocab;
+  heirRecoveryFile: HeirRecoveryFileVocab;
+  claimErrors: ClaimErrorsCopy;
+  inheritPortal: InheritPortalVocab;
+  practiceCard: PracticeCardVocab;
 }

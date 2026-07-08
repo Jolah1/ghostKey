@@ -214,10 +214,11 @@ function ErrorState({
   error: unknown;
   onRetry: () => void;
 }) {
-  const copy = classifyClaimError(error, "resolve");
+  const v = useVocab();
+  const copy = classifyClaimError(error, "resolve", v.claimErrors);
   return (
     <section className="text-center">
-      <Eyebrow>Something went wrong</Eyebrow>
+      <Eyebrow>{v.claim.error.eyebrow}</Eyebrow>
       <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
         {copy.headline}
       </h1>
@@ -226,7 +227,7 @@ function ErrorState({
       <TechnicalDetails error={error} align="center" />
       {copy.kind !== "contact" && (
         <div className="mt-6">
-          <Button onClick={onRetry}>Try again</Button>
+          <Button onClick={onRetry}>{v.claim.error.tryAgain}</Button>
         </div>
       )}
     </section>
@@ -245,6 +246,7 @@ function TechnicalDetails({
   error: unknown;
   align?: "left" | "center";
 }) {
+  const v = useVocab();
   const raw = rawErrorMessage(error);
   if (!raw) return null;
   return (
@@ -252,7 +254,7 @@ function TechnicalDetails({
       className={`mt-4 ${align === "center" ? "mx-auto inline-block text-left" : ""}`}
     >
       <summary className="cursor-pointer text-xs text-dim">
-        Show technical details
+        {v.claim.technical.showDetails}
       </summary>
       <p className="mt-1 break-all font-mono text-xs text-dim">{raw}</p>
     </details>
@@ -272,7 +274,8 @@ function ClaimErrorBlock({
   error: unknown;
   context: ClaimContext;
 }) {
-  const copy = classifyClaimError(error, context);
+  const v = useVocab();
+  const copy = classifyClaimError(error, context, v.claimErrors);
   return (
     <div className="mt-4">
       <InlineAlert tone="alarm">
@@ -295,6 +298,8 @@ function ClaimErrorBlock({
  * write is "the practice was completed".
  */
 function DrillFlow({ view, token }: { view: ClaimView; token: string }) {
+  const v = useVocab();
+  const d = v.drill;
   const [step, setStep] = useState<"intro" | "walkthrough" | "done">("intro");
   const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -316,75 +321,48 @@ function DrillFlow({ view, token }: { view: ClaimView; token: string }) {
   return (
     <section>
       <InlineAlert tone="ok">
-        <p className="font-bold">This is a practice run</p>
-        <p className="mt-1 text-sm">
-          Everyone is fine, and nothing real happens on this page. It exists
-          so the real thing is not the first time you see it.
-        </p>
+        <p className="font-bold">{d.bannerTitle}</p>
+        <p className="mt-1 text-sm">{d.bannerBody}</p>
       </InlineAlert>
 
       {step === "intro" && (
         <div className="mt-8">
-          <Eyebrow>A practice run</Eyebrow>
+          <Eyebrow>{d.introEyebrow}</Eyebrow>
           <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
-            {name ? `Hello ${name}` : "Hello"}, someone set something aside
-            for you
+            {d.introTitle(name)}
           </h1>
-          <p className="mt-4 text-muted">
-            They use GhostKey to make sure that if they ever stopped being
-            around, what they saved in Bitcoin would reach you. They asked us
-            to show you how that works, today, while they can answer your
-            questions.
-          </p>
-          <p className="mt-3 text-muted">
-            It takes about a minute. You don't need an account and you can't
-            break anything.
-          </p>
+          <p className="mt-4 text-muted">{d.introBody1}</p>
+          <p className="mt-3 text-muted">{d.introBody2}</p>
           <div className="mt-6">
-            <Button onClick={() => setStep("walkthrough")}>
-              Show me how it works
-            </Button>
+            <Button onClick={() => setStep("walkthrough")}>{d.introCta}</Button>
           </div>
         </div>
       )}
 
       {step === "walkthrough" && (
         <div className="mt-8">
-          <Eyebrow>What the real day looks like</Eyebrow>
+          <Eyebrow>{d.walkthroughEyebrow}</Eyebrow>
           <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
-            Three things happen
+            {d.walkthroughTitle}
           </h1>
           <ol className="mt-6 space-y-4">
             <li className="card-flat p-4">
-              <p className="font-bold">1. You get a message like today's</p>
-              <p className="mt-1 text-sm text-muted">
-                If they stop confirming they're okay, we send you a link,
-                just like the one you opened. That part you've already
-                practiced.
-              </p>
+              <p className="font-bold">{d.walkthroughStep1Title}</p>
+              <p className="mt-1 text-sm text-muted">{d.walkthroughStep1Body}</p>
             </li>
             <li className="card-flat p-4">
-              <p className="font-bold">2. There's a short wait</p>
-              <p className="mt-1 text-sm text-muted">
-                Bitcoin itself enforces a waiting period, and this page
-                shows you the date. You just come back when it says to.
-                If they recorded a video message for you, it plays here on
-                the real day.
-              </p>
+              <p className="font-bold">{d.walkthroughStep2Title}</p>
+              <p className="mt-1 text-sm text-muted">{d.walkthroughStep2Body}</p>
             </li>
             <li className="card-flat p-4">
-              <p className="font-bold">3. The money comes straight to you</p>
-              <p className="mt-1 text-sm text-muted">
-                You paste an address from any Bitcoin wallet on your phone,
-                and it arrives there. GhostKey never holds the money, so
-                there's no company that can lose it or keep it from you.
-              </p>
+              <p className="font-bold">{d.walkthroughStep3Title}</p>
+              <p className="mt-1 text-sm text-muted">{d.walkthroughStep3Body}</p>
             </li>
           </ol>
           {error != null && <ClaimErrorBlock error={error} context="resolve" />}
           <div className="mt-6">
             <Button onClick={finish} disabled={finishing}>
-              {finishing ? "Finishing…" : "Finish the practice"}
+              {finishing ? d.walkthroughFinishing : d.walkthroughFinish}
             </Button>
           </div>
         </div>
@@ -392,16 +370,12 @@ function DrillFlow({ view, token }: { view: ClaimView; token: string }) {
 
       {step === "done" && (
         <div className="mt-8 text-center">
-          <Eyebrow>Practice complete</Eyebrow>
+          <Eyebrow>{d.doneEyebrow}</Eyebrow>
           <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
-            You're done, and you did it right
+            {d.doneTitle}
           </h1>
-          <p className="mt-4 text-muted">
-            The person who set this up will see that the practice worked.
-            Nothing moved and nothing changed. If the real day ever comes,
-            it will look exactly like what you just walked through.
-          </p>
-          <p className="mt-3 text-sm text-dim">You can close this page.</p>
+          <p className="mt-4 text-muted">{d.doneBody}</p>
+          <p className="mt-3 text-sm text-dim">{d.doneClose}</p>
         </div>
       )}
     </section>
@@ -479,6 +453,7 @@ function MaturityGate({
   token: string;
   availableAt: Date | null;
 }) {
+  const v = useVocab();
   const [est, setEst] = useState<UnlockEstimateView | null>(null);
   const [failed, setFailed] = useState(false);
   // The first lookup can do a cold chain scan that takes up to ~a minute.
@@ -525,25 +500,22 @@ function MaturityGate({
     // endpoints would only fail anyway. Keep it calm and self-healing.
     return (
       <section>
-        <Eyebrow>One moment</Eyebrow>
+        <Eyebrow>{v.claim.checking.eyebrow}</Eyebrow>
         <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
-          We're checking the Bitcoin network
+          {v.claim.checking.title}
         </h1>
-        <p className="mt-4 text-muted">
-          This is taking a moment. Leave this page open, or come back using
-          the same link in a little while.
-        </p>
+        <p className="mt-4 text-muted">{v.claim.checking.body}</p>
       </section>
     );
   }
   // First load, estimate not back yet.
   return (
     <section>
-      <Eyebrow>One moment</Eyebrow>
+      <Eyebrow>{v.claim.checking.eyebrow}</Eyebrow>
       <p className="mt-4 text-muted">
         {slow
-          ? "This can take up to a minute the first time. You can leave this page open and it will update on its own."
-          : "Checking when your funds are ready…"}
+          ? v.claim.checking.firstLoadSlow
+          : v.claim.checking.firstLoadEstimating}
       </p>
     </section>
   );
@@ -691,6 +663,7 @@ function HeirClaimable({
   view: ClaimView;
   token: string;
 }) {
+  const v = useVocab();
   const [flow, setFlow] = useState<
     | { kind: "probing" }
     | { kind: "password-vault"; sealed: SealedHeirView }
@@ -756,10 +729,10 @@ function HeirClaimable({
     return <LoadingState />;
   }
   if (flow.kind === "probe-error") {
-    const copy = classifyClaimError(flow.error, "probe");
+    const copy = classifyClaimError(flow.error, "probe", v.claimErrors);
     return (
       <section>
-        <Eyebrow>Hold on</Eyebrow>
+        <Eyebrow>{v.claim.probeError.holdOn}</Eyebrow>
         <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
           {copy.headline}
         </h1>
@@ -805,6 +778,9 @@ function extractClaimToken(input: string): string | null {
  * for a single call, and dropped.
  */
 function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
+  const v = useVocab();
+  const g = v.guardian;
+  const c = v.claimCommon;
   const openedRole = view.token_role; // "heir" | "guardian"
   const [otherLink, setOtherLink] = useState("");
   const [otherToken, setOtherToken] = useState<string | null>(null);
@@ -829,11 +805,11 @@ function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
   const checkOtherLink = useCallback(async () => {
     const t = extractClaimToken(otherLink);
     if (!t) {
-      setOtherErr("That doesn't look like a GhostKey link. Paste the whole link.");
+      setOtherErr(g.errInvalidLink);
       return;
     }
     if (t === token) {
-      setOtherErr("That's the link you already opened. Paste the other person's link.");
+      setOtherErr(g.errSameLink);
       return;
     }
     setChecking(true);
@@ -841,17 +817,13 @@ function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
     try {
       const other = await api.resolveClaim(t);
       if (other.vault_id !== view.vault_id) {
-        setOtherErr("That link is for a different inheritance. Check you have the right one.");
+        setOtherErr(g.errDifferentVault);
         setOtherToken(null);
         return;
       }
       const needRole = openedRole === "heir" ? "guardian" : "heir";
       if (other.token_role !== needRole) {
-        setOtherErr(
-          openedRole === "heir"
-            ? "That's another heir link. You need a guardian's link to finish."
-            : "That's a guardian link. You need the heir's link to finish.",
-        );
+        setOtherErr(openedRole === "heir" ? g.errWrongRoleHeir : g.errWrongRoleGuardian);
         setOtherToken(null);
         return;
       }
@@ -859,8 +831,8 @@ function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
     } catch (e) {
       setOtherErr(
         e instanceof ApiError && e.status === 409
-          ? "That link has already been used."
-          : "We couldn't check that link. Try again in a moment.",
+          ? g.errAlreadyUsed
+          : g.errCheckFailed,
       );
       setOtherToken(null);
     } finally {
@@ -923,9 +895,9 @@ function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
   if (result) {
     return (
       <section>
-        <p className="eyebrow">It's done</p>
+        <p className="eyebrow">{g.sentEyebrow}</p>
         <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-5xl">
-          Sent.
+          {g.sentTitle}
         </h1>
         <BroadcastSuccess result={result} />
       </section>
@@ -934,51 +906,47 @@ function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
 
   return (
     <section>
-      <p className="eyebrow">Two of you, together</p>
+      <p className="eyebrow">{g.eyebrow}</p>
       <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-5xl">
-        {openedRole === "heir" ? `Hello ${heir}.` : `Helping ${heir}.`}
+        {g.greeting(heir, openedRole === "heir")}
       </h1>
       <p className="mt-4 text-base text-body md:text-lg">
-        {openedRole === "heir"
-          ? `Someone set this up so that ${heir} and a trusted guardian finish it together. You can't do it alone, and that's on purpose. Ask one guardian to be with you now.`
-          : `${heir} was set up with a guardian's help. You're one of the guardians. To finish, ${heir} and you do this together on this page.`}
+        {openedRole === "heir" ? g.heirBody(heir) : g.guardianBody(heir)}
       </p>
 
       <div className="mt-8 card-flat p-5">
         <p className="text-xs uppercase tracking-wider text-dim">
-          What's being passed on
+          {c.whatIsBeingPassedOn}
         </p>
         <p className="mt-2 font-display text-xl font-bold tracking-tight">
-          {view.label || "A Bitcoin inheritance"}
+          {view.label || c.defaultLabel}
         </p>
         <p className="mt-1 text-xs text-muted">
-          On the {networkLabel(view.network)}.
+          {c.onNetwork(networkLabel(view.network))}
         </p>
         <VaultValueLine vaultId={view.vault_id} />
       </div>
 
       <div className="mt-10">
-        <p className="text-xs uppercase tracking-wider text-dim">Step 1</p>
+        <p className="text-xs uppercase tracking-wider text-dim">{c.step1}</p>
         <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
-          Bring in {needLabel} link
+          {g.bringLink(needLabel)}
         </h2>
         <p className="mt-2 text-sm text-soft">
-          {openedRole === "heir"
-            ? "Each guardian got their own message with a link. Ask one guardian to open their link and paste it below, or paste it for them."
-            : "The heir got their own message with a link. Paste it below so the two halves come together."}
+          {openedRole === "heir" ? g.heirLinkInstructions : g.guardianLinkInstructions}
         </p>
 
         {otherToken ? (
           <div className="mt-4">
             <InlineAlert tone="ok">
-              Both links are here. You can finish below.
+              {g.bothLinksReady}
             </InlineAlert>
           </div>
         ) : (
           <div className="mt-4">
             <Field
-              label={`Paste ${needLabel} link`}
-              hint={otherErr ?? "It's the long web link from their message."}
+              label={g.pasteLink(needLabel)}
+              hint={otherErr ?? g.linkHint}
             >
               <textarea
                 rows={2}
@@ -996,7 +964,7 @@ function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
                 onClick={() => void checkOtherLink()}
                 disabled={checking || !otherLink.trim()}
               >
-                {checking ? "Checking…" : "Add this link"}
+                {checking ? g.checking : g.addLink}
               </Button>
             </div>
           </div>
@@ -1005,25 +973,22 @@ function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
 
       {bothReady && (
         <div className="mt-10">
-          <p className="text-xs uppercase tracking-wider text-dim">Step 2</p>
+          <p className="text-xs uppercase tracking-wider text-dim">{c.step2}</p>
           <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
-            Where should the money go?
+            {c.whereShouldMoneyGo}
           </h2>
           <p className="mt-2 text-sm text-soft">
-            Open any Bitcoin wallet and tap <strong>Receive</strong> to get an
-            address. Copy the long address that starts with{" "}
-            <code className="font-mono">{bech32PrefixFor(view.network)}</code>{" "}
-            and paste it below.
+            {c.addressInstructions(bech32PrefixFor(view.network))}
           </p>
 
           <div className="mt-4">
             <Field
-              label="Bitcoin address"
+              label={c.bitcoinAddress}
               hint={
                 address && !addrShapeOk
-                  ? "That doesn't look like a Bitcoin address. Check the start."
+                  ? c.addressInvalidShape
                   : address && !addrNetworkOk
-                    ? `That address is for a different network. It should start with ${bech32PrefixFor(view.network)}.`
+                    ? c.addressWrongNetwork(bech32PrefixFor(view.network))
                     : undefined
               }
             >
@@ -1031,7 +996,7 @@ function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
                 rows={3}
                 value={address}
                 onChange={(e) => setAddress(e.target.value)}
-                placeholder={`${bech32PrefixFor(view.network)}...`}
+                placeholder={c.addressPlaceholder(bech32PrefixFor(view.network))}
                 spellCheck={false}
                 autoComplete="off"
                 className="textarea"
@@ -1042,15 +1007,15 @@ function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
 
           <details className="mt-3">
             <summary className="cursor-pointer text-xs text-muted">
-              Advanced: change the network fee
+              {c.advancedFee}
             </summary>
             <div className="mt-2">
               <Field
-                label="Fee rate in sat/vB (optional)"
+                label={c.feeRateLabel}
                 hint={
                   feeRate.trim() && !feeRateValid
-                    ? "Enter a whole number between 1 and 1000, or leave blank."
-                    : "Leave blank to use 2 sat/vB."
+                    ? c.feeRateInvalid
+                    : c.feeRateHint
                 }
               >
                 <input
@@ -1074,23 +1039,22 @@ function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
                   disabled={!validAddr || !feeRateValid}
                   size="lg"
                 >
-                  Review and send
+                  {c.reviewAndSend}
                 </Button>
               </div>
               <p className="mt-3 text-xs text-muted">
-                We'll show you the details to check, then prepare and broadcast
-                the transaction for both of you. No app to install.
+                {g.confirmDescription}
               </p>
             </>
           ) : (
             <div className="mt-4 card-flat p-4">
               <ConfirmSend
                 destination={address.trim()}
-                amountLabel="Everything in the vault, minus the network fee"
+                amountLabel={c.everythingMinusFee}
                 networkLabel={networkLabel(view.network)}
-                feeLabel={feeRateNum ? `${feeRateNum} sat/vB` : "2 sat/vB"}
+                feeLabel={feeRateNum ? `${feeRateNum} sat/vB` : c.defaultFeeLabel}
                 busy={submitting}
-                confirmLabel={submitting ? "Sending Bitcoin…" : "Send the Bitcoin"}
+                confirmLabel={submitting ? c.sendingBitcoin : c.sendTheBitcoin}
                 onConfirm={() => void onSubmit()}
                 onBack={() => setConfirming(false)}
               />
@@ -1139,6 +1103,8 @@ function PasswordVaultClaim({
   token: string;
   sealed: SealedHeirView;
 }) {
+  const v = useVocab();
+  const c = v.claimCommon;
   const [hasWallet, setHasWallet] = useState<boolean | null>(null);
   const [address, setAddress] = useState("");
   const [feeRate, setFeeRate] = useState("");
@@ -1194,7 +1160,7 @@ function PasswordVaultClaim({
   if (result) {
     return (
       <section>
-        <p className="eyebrow">Someone left you something</p>
+        <p className="eyebrow">{c.someonesLeftYou}</p>
         <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-5xl">
           Hello {heir}.
         </h1>
@@ -1205,52 +1171,48 @@ function PasswordVaultClaim({
 
   return (
     <section>
-      <p className="eyebrow">Someone left you something</p>
+      <p className="eyebrow">{c.someonesLeftYou}</p>
       <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-5xl">
         Hello {heir}.
       </h1>
       <p className="mt-4 text-base text-body md:text-lg">
-        Someone you knew left you Bitcoin. They set up GhostKey so that if they
-        ever stopped checking in, the link would reach you. That's what
-        happened. This page is for you.
+        {c.pageDescription}
       </p>
 
       <div className="mt-8 card-flat p-5">
         <p className="text-xs uppercase tracking-wider text-dim">
-          What's being passed on
+          {c.whatIsBeingPassedOn}
         </p>
         <p className="mt-2 font-display text-xl font-bold tracking-tight">
-          {view.label || "A Bitcoin inheritance"}
+          {view.label || c.defaultLabel}
         </p>
         <p className="mt-1 text-xs text-muted">
-          On the {networkLabel(sealed.network)}.
+          {c.onNetwork(networkLabel(sealed.network))}
         </p>
         <VaultValueLine vaultId={view.vault_id} />
       </div>
 
       <div className="mt-10">
-        <p className="text-xs uppercase tracking-wider text-dim">Step 1</p>
+        <p className="text-xs uppercase tracking-wider text-dim">{c.step1}</p>
         <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
-          Do you have a Bitcoin wallet?
+          {c.doYouHaveWallet}
         </h2>
         <p className="mt-2 text-sm text-soft">
-          A Bitcoin wallet is an app where you can receive Bitcoin. You only
-          need one that can <em>receive</em> on the {networkLabel(sealed.network)}.{" "}
-          {walletExamplesInline(sealed.network)} all work.
+          {c.walletDesc(networkLabel(sealed.network), walletExamplesInline(sealed.network))}
         </p>
 
         <div className="mt-4 grid grid-cols-2 gap-2">
           <Tile
             selected={hasWallet === true}
             onClick={() => setHasWallet(true)}
-            title="Yes, I do"
-            sub="Skip to step 2"
+            title={c.haveWalletYes}
+            sub={c.haveWalletYesSub}
           />
           <Tile
             selected={hasWallet === false}
             onClick={() => setHasWallet(false)}
-            title="No, not yet"
-            sub="We'll point you somewhere"
+            title={c.haveWalletNo}
+            sub={c.haveWalletNoSub}
           />
         </div>
 
@@ -1259,27 +1221,22 @@ function PasswordVaultClaim({
 
       {hasWallet !== null && (
         <div className="mt-10">
-          <p className="text-xs uppercase tracking-wider text-dim">Step 2</p>
+          <p className="text-xs uppercase tracking-wider text-dim">{c.step2}</p>
           <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
-            Where should the money go?
+            {c.whereShouldMoneyGo}
           </h2>
           <p className="mt-2 text-sm text-soft">
-            Open any Bitcoin wallet and tap <strong>Receive</strong>. A
-            Lightning wallet works too. Apps like Blink, Bitnob, or Wallet of
-            Satoshi each give you a Bitcoin address that adds the money to
-            your balance. Copy the long address that starts with{" "}
-            <code className="font-mono">{bech32PrefixFor(sealed.network)}</code>{" "}
-            and paste it below.
+            {c.addressInstructions(bech32PrefixFor(sealed.network))}
           </p>
 
           <div className="mt-4">
             <Field
-              label="Your Bitcoin address"
+              label={v.manualClaim.bitcoinAddress}
               hint={
                 address && !addrShapeOk
-                  ? "That doesn't look like a Bitcoin address. Check the start."
+                  ? c.addressInvalidShape
                   : address && !addrNetworkOk
-                    ? `That address is for a different network. It should start with ${bech32PrefixFor(sealed.network)}.`
+                    ? c.addressWrongNetwork(bech32PrefixFor(sealed.network))
                     : undefined
               }
             >
@@ -1287,7 +1244,7 @@ function PasswordVaultClaim({
                 rows={3}
                 value={address}
                 onChange={(e) => setAddress(e.target.value)}
-                placeholder={`${bech32PrefixFor(sealed.network)}...`}
+                placeholder={c.addressPlaceholder(bech32PrefixFor(sealed.network))}
                 spellCheck={false}
                 autoComplete="off"
                 className="textarea"
@@ -1298,15 +1255,15 @@ function PasswordVaultClaim({
 
           <details className="mt-3">
             <summary className="cursor-pointer text-xs text-muted">
-              Advanced: change the network fee
+              {c.advancedFee}
             </summary>
             <div className="mt-2">
               <Field
-                label="Fee rate in sat/vB (optional)"
+                label={c.feeRateLabel}
                 hint={
                   feeRate.trim() && !feeRateValid
-                    ? "Enter a whole number between 1 and 1000, or leave blank."
-                    : "Leave blank to use 2 sat/vB. Raise it if you need the transaction to confirm faster."
+                    ? c.feeRateInvalid
+                    : c.feeRateHint
                 }
               >
                 <input
@@ -1330,25 +1287,23 @@ function PasswordVaultClaim({
                   disabled={!validAddr || !feeRateValid}
                   size="lg"
                 >
-                  Review and send
+                  {c.reviewAndSend}
                 </Button>
               </div>
 
               <p className="mt-3 text-xs text-muted">
-                We'll show you the details to check, then prepare and
-                broadcast the transaction for you. You don't need to sign
-                anything in another app.
+                {c.confirmDescription}
               </p>
             </>
           ) : (
             <div className="mt-4 card-flat p-4">
               <ConfirmSend
                 destination={address.trim()}
-                amountLabel="Everything in the vault, minus the network fee"
+                amountLabel={c.everythingMinusFee}
                 networkLabel={networkLabel(sealed.network)}
-                feeLabel={feeRateNum ? `${feeRateNum} sat/vB` : "2 sat/vB"}
+                feeLabel={feeRateNum ? `${feeRateNum} sat/vB` : c.defaultFeeLabel}
                 busy={submitting}
-                confirmLabel={submitting ? "Sending Bitcoin…" : "Send the Bitcoin"}
+                confirmLabel={submitting ? c.sendingBitcoin : c.sendTheBitcoin}
                 onConfirm={() => void onSubmit()}
                 onBack={() => setConfirming(false)}
               />
@@ -1425,6 +1380,9 @@ function DerivedHeirClaim({
   token: string;
   params: HeirDerivationParamsView;
 }) {
+  const v = useVocab();
+  const d = v.derivedClaim;
+  const c = v.claimCommon;
   const [address, setAddress] = useState("");
   const [feeRate, setFeeRate] = useState("");
   const [confirming, setConfirming] = useState(false);
@@ -1478,7 +1436,7 @@ function DerivedHeirClaim({
   if (result) {
     return (
       <section>
-        <p className="eyebrow">Someone left you something</p>
+        <p className="eyebrow">{c.someonesLeftYou}</p>
         <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-5xl">
           Hello {heir}.
         </h1>
@@ -1486,13 +1444,10 @@ function DerivedHeirClaim({
 
         <div className="mt-10 card-flat p-5">
           <p className="text-xs uppercase tracking-wider text-dim">
-            Your backup phrase
+            {d.yourBackupPhrase}
           </p>
           <p className="mt-2 text-sm text-soft">
-            Write these 12 words down somewhere safe. They're the only
-            way to recover this key without GhostKey. The funds you just
-            claimed are already on their way to your address. This is
-            just insurance.
+            {d.backupDescription}
           </p>
           <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
             {result.mnemonic.split(/\s+/).map((w, i) => (
@@ -1511,14 +1466,12 @@ function DerivedHeirClaim({
 
   return (
     <section>
-      <p className="eyebrow">Someone left you something</p>
+      <p className="eyebrow">{c.someonesLeftYou}</p>
       <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-5xl">
         Hello {heir}.
       </h1>
       <p className="mt-4 text-base text-body md:text-lg">
-        Someone you knew left you Bitcoin. They set up GhostKey so that if
-        they ever stopped checking in, the link would reach you. That's
-        what happened. This page is for you.
+        {c.pageDescription}
       </p>
 
       <div className="mt-8 card-flat p-5">
@@ -1526,22 +1479,17 @@ function DerivedHeirClaim({
           Confirm this is you
         </p>
         <p className="mt-2 text-sm">
-          They told us to expect <strong>{params.heir_email}</strong>. If
-          that's not your email, stop and reach out to whoever sent you
-          this link.
+          {d.confirmEmail(params.heir_email)} {d.notYourEmail}
         </p>
       </div>
 
       <div className="mt-10">
-        <p className="text-xs uppercase tracking-wider text-dim">Step 1</p>
+        <p className="text-xs uppercase tracking-wider text-dim">{c.step1}</p>
         <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
-          Where should the money go?
+          {c.whereShouldMoneyGo}
         </h2>
         <p className="mt-2 text-sm text-soft">
-          Paste any Bitcoin address you control on the {networkLabel(params.network)}.{" "}
-          A Lightning wallet works too. Apps like Blink, Bitnob, or Wallet of
-          Satoshi each give you a Bitcoin address that adds the money to your
-          balance. {walletExamplesInline(params.network)}.
+          {d.whereShouldMoneyGo(networkLabel(params.network), walletExamplesInline(params.network))}
         </p>
 
         <div className="mt-4">
@@ -1556,26 +1504,25 @@ function DerivedHeirClaim({
           />
           {address && !addrShapeOk ? (
             <p className="mt-1 text-xs text-alarm">
-              That doesn't look like a Bitcoin address. Check the start.
+              {c.addressInvalidShape}
             </p>
           ) : address && !addrNetworkOk ? (
             <p className="mt-1 text-xs text-alarm">
-              That address is for a different network. It should start with{" "}
-              {bech32PrefixFor(params.network)}.
+              {c.addressWrongNetwork(bech32PrefixFor(params.network))}
             </p>
           ) : null}
         </div>
 
         <details className="mt-3">
           <summary className="cursor-pointer text-xs text-muted">
-            Advanced: custom fee rate
+            {d.advancedFee}
           </summary>
           <div className="mt-2">
             <input
               type="text"
               value={feeRate}
               onChange={(e) => setFeeRate(e.target.value)}
-              placeholder="sat/vB (optional, e.g. 4)"
+              placeholder={d.feePlaceholder}
               autoComplete="off"
               className="input"
               disabled={submitting || confirming}
@@ -1592,18 +1539,18 @@ function DerivedHeirClaim({
             onClick={() => setConfirming(true)}
             disabled={!validAddr || !feeRateValid}
           >
-            Review and claim
+            {d.reviewAndClaim}
           </Button>
         </div>
       ) : (
         <div className="mt-8 card-flat p-4">
           <ConfirmSend
             destination={address.trim()}
-            amountLabel="Everything in the vault, minus the network fee"
+            amountLabel={c.everythingMinusFee}
             networkLabel={networkLabel(params.network)}
-            feeLabel={feeRateNum ? `${feeRateNum} sat/vB` : "2 sat/vB"}
+            feeLabel={feeRateNum ? `${feeRateNum} sat/vB` : c.defaultFeeLabel}
             busy={submitting}
-            confirmLabel={submitting ? "Sending Bitcoin…" : "Claim and send"}
+            confirmLabel={submitting ? d.claimingAndSending : d.claimAndSend}
             onConfirm={() => void onSubmit()}
             onBack={() => setConfirming(false)}
           />
@@ -1636,6 +1583,9 @@ function ManualPsbtClaim({
   view: ClaimView;
   token: string;
 }) {
+  const v = useVocab();
+  const m = v.manualClaim;
+  const c = v.claimCommon;
   const [hasWallet, setHasWallet] = useState<boolean | null>(null);
   const [address, setAddress] = useState("");
   const [feeRate, setFeeRate] = useState("");
@@ -1713,66 +1663,57 @@ function ManualPsbtClaim({
 
   return (
     <section>
-      <p className="eyebrow">Someone left you something</p>
+      <p className="eyebrow">{c.someonesLeftYou}</p>
       <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-5xl">
         Hello {heir}.
       </h1>
       <p className="mt-4 text-base text-body md:text-lg">
-        Someone you knew left you Bitcoin. They set up GhostKey so that if they
-        ever stopped checking in, the link would reach you. That's what
-        happened. This page is for you.
+        {c.pageDescription}
       </p>
 
       {/* ---- What you're inheriting ---- */}
       <div className="mt-8 card-flat p-5">
         <p className="text-xs uppercase tracking-wider text-dim">
-          What's being passed on
+          {c.whatIsBeingPassedOn}
         </p>
         <p className="mt-2 font-display text-xl font-bold tracking-tight">
-          {view.label || "A Bitcoin inheritance"}
+          {view.label || c.defaultLabel}
         </p>
         <p className="mt-1 text-xs text-muted">
-          On the {networkLabel(view.network)}.
+          {c.onNetwork(networkLabel(view.network))}
         </p>
         <VaultValueLine vaultId={view.vault_id} />
       </div>
 
       {/* ---- Step 1: do you have a Bitcoin wallet? ---- */}
       <div className="mt-10">
-        <p className="text-xs uppercase tracking-wider text-dim">Step 1</p>
+        <p className="text-xs uppercase tracking-wider text-dim">{c.step1}</p>
         <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
-          Do you have a Bitcoin wallet?
+          {c.doYouHaveWallet}
         </h2>
         <p className="mt-2 text-sm text-soft">
-          A Bitcoin wallet is an app where you can receive and hold Bitcoin on
-          the {networkLabel(view.network)}. This claim is special: it needs a
-          wallet that can sign a Bitcoin Taproot timelock.{" "}
-          <strong>Most phone wallets can't.</strong> The one we've tested is
-          Bitcoin Core, on a computer.
+          {m.walletDesc(networkLabel(view.network))}
         </p>
 
         <div className="mt-4 grid grid-cols-2 gap-2">
           <Tile
             selected={hasWallet === true}
             onClick={() => setHasWallet(true)}
-            title="Yes, I do"
-            sub="On a computer"
+            title={c.haveWalletYes}
+            sub={"On a computer"}
           />
           <Tile
             selected={hasWallet === false}
             onClick={() => setHasWallet(false)}
-            title="No, not yet"
-            sub="We'll point you somewhere"
+            title={c.haveWalletNo}
+            sub={c.haveWalletNoSub}
           />
         </div>
 
         {hasWallet === true && (
           <div className="mt-4">
             <InlineAlert tone="warning">
-              One thing to check first: most phone wallets can't sign this
-              kind of claim. If your wallet can't sign a Bitcoin Taproot
-              script, choose <strong>No, not yet</strong> and we'll point you
-              to Bitcoin Core.
+              {m.walletWarning}
             </InlineAlert>
           </div>
         )}
@@ -1785,25 +1726,22 @@ function ManualPsbtClaim({
       {/* ---- Step 2: paste address + (optional) fee rate ---- */}
       {hasWallet !== null && (
         <div className="mt-10">
-          <p className="text-xs uppercase tracking-wider text-dim">Step 2</p>
+          <p className="text-xs uppercase tracking-wider text-dim">{c.step2}</p>
           <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
-            Where should the Bitcoin go?
+            {m.whereShouldBitcoinGo}
           </h2>
           <p className="mt-2 text-sm text-soft">
-            Open your wallet. Tap <strong>Receive</strong>. Copy the long
-            address that starts with{" "}
-            <code className="font-mono">{bech32PrefixFor(view.network)}</code>.
-            Paste it below.
+            {c.addressInstructions(bech32PrefixFor(view.network))}
           </p>
 
           <div className="mt-4">
             <Field
-              label="Your Bitcoin address"
+              label={m.bitcoinAddress}
               hint={
                 address && !addrShapeOk
-                  ? "That doesn't look like a Bitcoin address. Check the start."
+                  ? c.addressInvalidShape
                   : address && !addrNetworkOk
-                    ? `That address is for a different network. It should start with ${bech32PrefixFor(view.network)}.`
+                    ? c.addressWrongNetwork(bech32PrefixFor(view.network))
                     : undefined
               }
             >
@@ -1811,7 +1749,7 @@ function ManualPsbtClaim({
                 rows={3}
                 value={address}
                 onChange={(e) => setAddress(e.target.value)}
-                placeholder={`${bech32PrefixFor(view.network)}...`}
+                placeholder={c.addressPlaceholder(bech32PrefixFor(view.network))}
                 spellCheck={false}
                 autoComplete="off"
                 className="textarea"
@@ -1822,11 +1760,11 @@ function ManualPsbtClaim({
 
           <div className="mt-4">
             <Field
-              label="Fee rate in sat/vB (optional)"
+              label={c.feeRateLabel}
               hint={
                 feeRate.trim() && !feeRateValid
-                  ? "Enter a whole number between 1 and 1000, or leave blank."
-                  : "Leave blank to use 2 sat/vB. Raise it if you need the transaction to confirm faster."
+                  ? c.feeRateInvalid
+                  : c.feeRateHint
               }
             >
               <input
@@ -1849,7 +1787,7 @@ function ManualPsbtClaim({
               }
               size="lg"
             >
-              {building ? "Preparing transaction…" : "Prepare transaction"}
+              {building ? m.preparingTransaction : m.prepareTransaction}
             </Button>
           </div>
 
@@ -1862,30 +1800,22 @@ function ManualPsbtClaim({
       {/* ---- Step 3: sign the PSBT ---- */}
       {build && !broadcast && (
         <div className="mt-10">
-          <p className="text-xs uppercase tracking-wider text-dim">Step 3</p>
+          <p className="text-xs uppercase tracking-wider text-dim">{c.step3}</p>
           <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
-            Sign it in your wallet
+            {m.signInWallet}
           </h2>
           <p className="mt-2 text-sm text-soft">
-            We've prepared an unsigned transaction. GhostKey can't sign it for
-            you. This claim spends a Bitcoin timelock, so it needs a wallet
-            that can sign Taproot scripts. Many phone wallets can't. Bitcoin
-            Core is the one we've tested. If the wallet that holds your key can
-            open and sign this, that works too. Sign it there, then paste the
-            signed transaction back.
+            {m.signInstructions}
           </p>
 
           <PsbtSummary build={build} />
 
           <div className="mt-5">
             <p className="text-xs uppercase tracking-wider text-dim">
-              Unsigned transaction
+              {m.unsignedTransaction}
             </p>
             <p className="mt-1 text-xs text-muted">
-              This long block of letters and numbers is just your transaction
-              written out as text (its technical name is a "PSBT"). Nothing here
-              can spend your money on its own. It still has to be signed. It's
-              safe to copy.
+              {m.unsignedDescription}
             </p>
             <textarea
               readOnly
@@ -1896,19 +1826,18 @@ function ManualPsbtClaim({
             />
             <div className="mt-3 flex flex-wrap items-center gap-3">
               <Button onClick={() => void onCopyPsbt()} variant="ghost">
-                {copied ? "Copied" : "Copy"}
+                {copied ? m.copied : m.copy}
               </Button>
               <span className="text-xs text-muted">
-                Open the wallet that holds your key, find its transaction
-                signer (sometimes called "sign PSBT"), paste this in, and sign.
+                {m.signHint}
               </span>
             </div>
           </div>
 
           <div className="mt-8">
             <Field
-              label="Signed transaction"
-              hint="Paste back what your wallet gives you after signing."
+              label={m.signedTransaction}
+              hint={m.signedHint}
             >
               <textarea
                 rows={6}
@@ -1929,7 +1858,7 @@ function ManualPsbtClaim({
               disabled={signedPsbt.trim().length === 0 || broadcasting}
               size="lg"
             >
-              {broadcasting ? "Broadcasting…" : "Broadcast transaction"}
+              {broadcasting ? m.broadcasting : m.broadcastTransaction}
             </Button>
           </div>
 
@@ -1946,21 +1875,21 @@ function ManualPsbtClaim({
 }
 
 function PsbtSummary({ build }: { build: BuildClaimPsbtResponse }) {
+  const v = useVocab();
+  const m = v.manualClaim;
   return (
     <div className="mt-5 card-flat p-4">
       <p className="text-xs uppercase tracking-wider text-dim">
-        Transaction summary
+        {m.psbtSummary}
       </p>
       <dl className="mt-2 grid grid-cols-1 gap-1 text-sm">
-        <Row k="Amount being moved" v={`${formatSats(build.total_input_sats)} sats`} />
-        <Row k="You'll receive" v={`${formatSats(build.output_sats)} sats`} />
-        <Row k="Network fee" v={`${formatSats(build.fee_sats)} sats`} />
-        <Row k="Network" v={build.network} />
+        <Row k={m.amountBeingMoved} v={`${formatSats(build.total_input_sats)} sats`} />
+        <Row k={m.youllReceive} v={`${formatSats(build.output_sats)} sats`} />
+        <Row k={m.networkFee} v={`${formatSats(build.fee_sats)} sats`} />
+        <Row k={m.networkLabel} v={build.network} />
       </dl>
       <p className="mt-3 text-xs text-muted">
-        Double-check these numbers in your wallet before signing. If the
-        amount or destination looks wrong, don't sign. Come back and start
-        again.
+        {m.psbtWarning}
       </p>
     </div>
   );
@@ -1976,21 +1905,21 @@ function Row({ k, v }: { k: string; v: string }) {
 }
 
 function BroadcastSuccess({ result }: { result: BroadcastClaimResponse }) {
+  const v = useVocab();
+  const bs = v.broadcastSuccess;
   return (
     <div className="mt-10">
-      <p className="text-xs uppercase tracking-wider text-dim">Done</p>
+      <p className="text-xs uppercase tracking-wider text-dim">{bs.done}</p>
       <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
-        It's on the network
+        {bs.itsOnTheNetwork}
       </h2>
       <p className="mt-2 text-sm text-soft">
-        Your transaction has been broadcast. Bitcoin transactions usually
-        confirm within an hour, sometimes faster. Once it's confirmed, the
-        funds are yours.
+        {bs.description}
       </p>
 
       <div className="mt-5 card-flat p-4">
         <p className="text-xs uppercase tracking-wider text-dim">
-          Transaction ID
+          {bs.transactionId}
         </p>
         <p className="mt-2 break-all font-mono text-xs text-[var(--text)]">
           {result.txid}
@@ -2002,14 +1931,13 @@ function BroadcastSuccess({ result }: { result: BroadcastClaimResponse }) {
             rel="noreferrer noopener"
             className="font-display text-sm font-bold tracking-tight text-accent underline underline-offset-2"
           >
-            Watch it arrive ↗
+            {bs.watchItArrive}
           </a>
         </div>
       </div>
 
       <p className="mt-6 text-xs text-muted">
-        You don't need to keep this page open. The transaction is on the
-        Bitcoin network and will confirm on its own.
+        {bs.noNeedToKeepOpen}
       </p>
     </div>
   );
@@ -2108,6 +2036,8 @@ function WalletGuide({
   network: string;
   requirePsbt?: boolean;
 }) {
+  const v = useVocab();
+  const m = v.manualClaim;
   // The PSBT-signing path can't honestly recommend phone wallets: the
   // heir branch is a Taproot timelock script, and the wallets we'd list
   // for receiving can't satisfy it (the restore drill confirmed Sparrow
@@ -2117,9 +2047,7 @@ function WalletGuide({
     return (
       <div className="mt-5 card-flat p-5">
         <p className="text-sm text-body">
-          Signing this claim needs a wallet that can sign Bitcoin Taproot
-          timelock scripts. Most phone wallets can't. The one we've tested is
-          Bitcoin Core, on a desktop computer.
+          {m.walletPsbtDescription}
         </p>
         <a
           href="https://bitcoincore.org/en/download/"
@@ -2127,12 +2055,11 @@ function WalletGuide({
           rel="noreferrer noopener"
           className="mt-3 inline-block font-display text-base font-bold tracking-tight text-[var(--text)] underline-offset-2 hover:underline"
         >
-          Download Bitcoin Core
+          {m.downloadBitcoinCore}
           <span className="ml-1 text-xs text-dim">↗</span>
         </a>
         <p className="mt-2 text-xs text-soft">
-          Open the transaction below in Bitcoin Core, sign it, and paste the
-          signed version back here.
+          {m.walletPsbtHint}
         </p>
       </div>
     );
@@ -2141,8 +2068,7 @@ function WalletGuide({
   return (
     <div className="mt-5 card-flat p-5">
       <p className="text-sm text-body">
-        Pick any of these. Download it on your phone, open it, and follow the
-        steps inside.
+        {m.walletGuidePickAny}
       </p>
       <ul role="list" className="mt-4 space-y-3">
         {walletsFor(network).map((w) => (
@@ -2201,6 +2127,8 @@ function HeirRecoveryFileSection({
   heirName: string;
   deriveXprv: () => string;
 }) {
+  const v = useVocab();
+  const rf = v.heirRecoveryFile;
   const [status, setStatus] = useState<
     | { kind: "idle" }
     | { kind: "building" }
@@ -2241,38 +2169,35 @@ function HeirRecoveryFileSection({
   return (
     <details className="mt-10">
       <summary className="cursor-pointer text-sm text-muted">
-        Advanced: save your own recovery file
+        {rf.advanced}
       </summary>
       <div className="mt-3 card-flat p-5">
         <p className="text-sm text-soft">
-          This downloads a file that can reach this Bitcoin{" "}
-          <strong>without GhostKey</strong>, using just a code we'll show
-          you. You don't need it to receive the money above. It's a
-          backup, and a way to do it yourself if you ever want to.
+          {rf.description}
         </p>
 
         {status.kind === "idle" && (
           <div className="mt-4">
             <Button variant="ghost" onClick={() => void onCreate()}>
-              Create my recovery file
+              {rf.createFile}
             </Button>
           </div>
         )}
 
         {status.kind === "building" && (
           <p className="mt-4 text-sm text-muted" aria-live="polite">
-            Preparing your file… this takes a few seconds.
+            {rf.preparing}
           </p>
         )}
 
         {status.kind === "error" && (
           <div className="mt-4">
             <InlineAlert tone="alarm">
-              <p className="text-sm">Couldn't build the file: {status.message}</p>
+              <p className="text-sm">{rf.couldNotBuild(status.message)}</p>
             </InlineAlert>
             <div className="mt-3">
               <Button variant="ghost" onClick={() => void onCreate()}>
-                Try again
+                {rf.tryAgain}
               </Button>
             </div>
           </div>
@@ -2281,18 +2206,17 @@ function HeirRecoveryFileSection({
         {status.kind === "ready" && (
           <div className="mt-4">
             <p className="text-xs uppercase tracking-wider text-dim">
-              Your code, write it down
+              {rf.yourCode}
             </p>
             <code className="mt-2 inline-block select-all rounded bg-[var(--bg-elev)] px-3 py-2 font-mono text-sm">
               {status.env.passphrase}
             </code>
             <p className="mt-3 text-sm text-muted">
-              The file is locked with this code. We won't show it again,
-              and we never store it. Keep the file and the code together.
+              {rf.codeDescription}
             </p>
             <div className="mt-4">
               <Button onClick={() => downloadHeirEnvelope(status.env)}>
-                Download the file
+                {rf.downloadFile}
               </Button>
             </div>
           </div>
@@ -2305,13 +2229,12 @@ function HeirRecoveryFileSection({
 /* ----------------------------- Footer ------------------------------------- */
 
 function ClaimFooter() {
+  const v = useVocab();
   return (
     <footer className="mt-16 border-t border-app">
       <div className="mx-auto max-w-xl px-5 py-6 text-center text-xs text-dim md:px-8">
         <p>
-          This page is from GhostKey, a Bitcoin inheritance service. The link
-          you opened was sent to you because someone you knew set up an
-          inheritance and named your phone or email.
+          {v.claim.footer}
         </p>
       </div>
     </footer>
