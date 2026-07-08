@@ -256,7 +256,7 @@ export function InlineAlert({
       className="flex items-start gap-3 rounded-xl border border-app p-3 text-sm"
       style={{ background: bg, color }}
     >
-      <span aria-hidden="true" className="mt-0.5">!</span>
+      <span aria-hidden="true" className="mt-0.5">{tone === "ok" ? "✓" : "!"}</span>
       <div className="text-[var(--text)]">{children}</div>
     </div>
   );

@@ -952,6 +952,31 @@ async fn activate_funded_vaults(state: &AppState, _now_iso: &str) -> anyhow::Res
             vault_id = %id,
             "funds detected; vault activated (unfunded -> ok), check-in clock started"
         );
+
+        // Tell the owner their vault is live. Once per vault by
+        // construction (the CAS above only lets one tick activate),
+        // skipped silently while the email is still unverified, and
+        // best-effort: mail trouble must not stop the activation loop.
+        let base = public_base_url();
+        let body = format!(
+            "Hi,\n\n\
+             Your vault received its first bitcoin \u{2713} Your check-in \
+             clock has started: we will remind you at this address before \
+             each check-in is due.\n\n\
+             The amount and details are on your dashboard: {base}\n\n\
+             From GhostKey"
+        );
+        if let Err(e) = notifier::enqueue_owner_email(
+            &state.db,
+            &id,
+            NotificationKind::Funded,
+            "\u{2713} Your vault is funded",
+            &body,
+        )
+        .await
+        {
+            tracing::warn!(vault_id = %id, error = %e, "could not enqueue funded email");
+        }
     }
     Ok(())
 }

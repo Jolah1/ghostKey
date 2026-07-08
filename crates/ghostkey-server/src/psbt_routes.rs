@@ -1492,6 +1492,36 @@ pub async fn owner_send(
     )
     .await?;
 
+    // Emailed receipt, and a theft alarm in disguise: a send the owner
+    // didn't make means the vault password has leaked. No amounts or
+    // destination in email; the dashboard activity feed has both.
+    // Best-effort — the coins are already broadcast, so a mail hiccup
+    // must not turn this response into an error.
+    {
+        let base = crate::scheduler::public_base_url();
+        let body = format!(
+            "Hi,\n\n\
+             Your vault just sent bitcoin \u{2713} The transaction is on \
+             its way to the Bitcoin network. The amount and details are \
+             in your dashboard activity: {base}\n\n\
+             If you did not make this send, act now: whoever did has \
+             your vault password. Move your remaining funds to a fresh \
+             wallet.\n\n\
+             From GhostKey"
+        );
+        if let Err(e) = crate::notifier::enqueue_owner_email(
+            &state.db,
+            &id,
+            crate::notifier::NotificationKind::OwnerSend,
+            "\u{2713} Your send is on its way",
+            &body,
+        )
+        .await
+        {
+            tracing::warn!(vault_id = %id, error = %e, "could not enqueue send email");
+        }
+    }
+
     Ok((
         StatusCode::OK,
         Json(OwnerSendResponse {
@@ -2049,12 +2079,27 @@ pub(crate) struct ConfirmedDeposit {
 /// Note: the first scan of a vault that was already funded before this
 /// shipped will emit one "received" per existing unspent deposit — a
 /// one-time catch-up so the feed matches the balance.
+///
+/// New deposits also email the owner (verified email only, no amount),
+/// EXCEPT when the vault had no recorded deposits before this scan:
+/// the very first deposit is announced by the scheduler's "funded"
+/// email, and the catch-up scan of an old vault described above should
+/// backfill the feed silently, not fire a burst of stale mail.
 pub(crate) async fn record_new_deposits(
     db: &sqlx::SqlitePool,
     vault_id: &str,
     deposits: &[ConfirmedDeposit],
     now: chrono::DateTime<Utc>,
 ) {
+    // Read before inserting; an error here still records events as
+    // usual but skips the email (None = "don't know" = stay quiet).
+    let prior: Option<i64> =
+        sqlx::query_scalar("SELECT COUNT(*) FROM vault_deposits WHERE vault_id = ?")
+            .bind(vault_id)
+            .fetch_one(db)
+            .await
+            .ok();
+    let mut newly_recorded = 0;
     for d in deposits {
         let inserted = sqlx::query(
             "INSERT OR IGNORE INTO vault_deposits \
@@ -2071,6 +2116,7 @@ pub(crate) async fn record_new_deposits(
 
         match inserted {
             Ok(res) if res.rows_affected() == 1 => {
+                newly_recorded += 1;
                 if let Err(e) = crate::routes::record_event(
                     db,
                     vault_id,
@@ -2090,6 +2136,31 @@ pub(crate) async fn record_new_deposits(
             Err(e) => {
                 tracing::warn!(error = %e, vault_id, "failed to dedupe deposit");
             }
+        }
+    }
+
+    // One email per scan, however many deposits it found; the feed
+    // has the per-deposit rows. Skipped for the vault's first-ever
+    // deposits (see the doc comment) and for unverified contacts.
+    if newly_recorded > 0 && prior.is_some_and(|n| n > 0) {
+        let base = crate::scheduler::public_base_url();
+        let body = format!(
+            "Hi,\n\n\
+             New bitcoin arrived in your vault \u{2713} The amount and \
+             details are on your dashboard: {base}\n\n\
+             Nothing to do. Your vault keeps working as before.\n\n\
+             From GhostKey"
+        );
+        if let Err(e) = crate::notifier::enqueue_owner_email(
+            db,
+            vault_id,
+            crate::notifier::NotificationKind::Received,
+            "\u{2713} Your vault received bitcoin",
+            &body,
+        )
+        .await
+        {
+            tracing::warn!(error = %e, vault_id, "could not enqueue received email");
         }
     }
 }
@@ -2519,5 +2590,164 @@ mod tests {
         )
         .await;
         assert_eq!(received_count(&pool, "vault-2").await, 1);
+    }
+
+    /// Give the vault the sealed + verified owner email the setup
+    /// wizard would have written, so `enqueue_owner_email` fires.
+    async fn attach_verified_owner_email(pool: &sqlx::SqlitePool, id: &str) {
+        use base64::Engine as _;
+        if std::env::var("GHOSTKEY_MASTER_KEY").is_err() {
+            let zeros = [0u8; 32];
+            let b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode(zeros);
+            // SAFETY: tests are single-process; the value is fixed.
+            unsafe {
+                std::env::set_var("GHOSTKEY_MASTER_KEY", &b64);
+            }
+        }
+        let sealed =
+            crate::crypto::seal_for_vault(id, b"owner@example.com").expect("seal owner contact");
+        sqlx::query(
+            "UPDATE vaults \
+                SET owner_contact_ciphertext = ?, owner_contact_nonce = ?, \
+                    owner_contact_channel = 'email', owner_contact_verified_at = ? \
+              WHERE id = ?",
+        )
+        .bind(&sealed.ciphertext_b64)
+        .bind(&sealed.nonce_b64)
+        .bind(Utc::now().to_rfc3339())
+        .bind(id)
+        .execute(pool)
+        .await
+        .expect("attach owner email");
+    }
+
+    async fn received_email_count(pool: &sqlx::SqlitePool, vault_id: &str) -> i64 {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE vault_id = ? AND kind = 'received'",
+        )
+        .bind(vault_id)
+        .fetch_one(pool)
+        .await
+        .expect("count received notifications")
+    }
+
+    #[tokio::test]
+    async fn received_email_skips_first_deposit_then_fires_once_per_scan() {
+        let pool = memory_db().await;
+        seed_vault(&pool, "vault-mail").await;
+        attach_verified_owner_email(&pool, "vault-mail").await;
+        let now = Utc::now();
+
+        // First-ever deposits: feed rows, but the "funded" email owns
+        // this moment — no received email.
+        record_new_deposits(
+            &pool,
+            "vault-mail",
+            &[deposit("aaaa:0", 100_000, 800_000)],
+            now,
+        )
+        .await;
+        assert_eq!(received_count(&pool, "vault-mail").await, 1);
+        assert_eq!(
+            received_email_count(&pool, "vault-mail").await,
+            0,
+            "first deposit must not email; the funded email covers it"
+        );
+
+        // Later scan finds TWO new deposits: one email, not two.
+        record_new_deposits(
+            &pool,
+            "vault-mail",
+            &[
+                deposit("aaaa:0", 100_000, 800_000),
+                deposit("bbbb:1", 50_000, 800_010),
+                deposit("cccc:2", 25_000, 800_010),
+            ],
+            now,
+        )
+        .await;
+        assert_eq!(received_count(&pool, "vault-mail").await, 3);
+        assert_eq!(
+            received_email_count(&pool, "vault-mail").await,
+            1,
+            "one email per scan, however many deposits it found"
+        );
+
+        // Re-scanning the same outpoints: nothing new, no email.
+        record_new_deposits(
+            &pool,
+            "vault-mail",
+            &[
+                deposit("bbbb:1", 50_000, 800_010),
+                deposit("cccc:2", 25_000, 800_010),
+            ],
+            now,
+        )
+        .await;
+        assert_eq!(received_email_count(&pool, "vault-mail").await, 1);
+    }
+
+    #[tokio::test]
+    async fn received_email_requires_verified_owner_contact() {
+        let pool = memory_db().await;
+        seed_vault(&pool, "vault-quiet").await;
+        let now = Utc::now();
+
+        // No owner contact at all: events recorded, nothing mailed,
+        // even past the first deposit.
+        record_new_deposits(
+            &pool,
+            "vault-quiet",
+            &[deposit("aaaa:0", 100_000, 800_000)],
+            now,
+        )
+        .await;
+        record_new_deposits(
+            &pool,
+            "vault-quiet",
+            &[deposit("bbbb:1", 50_000, 800_010)],
+            now,
+        )
+        .await;
+        assert_eq!(received_count(&pool, "vault-quiet").await, 2);
+        assert_eq!(received_email_count(&pool, "vault-quiet").await, 0);
+
+        // Sealed contact but never verified: still silent.
+        attach_verified_owner_email(&pool, "vault-quiet").await;
+        sqlx::query("UPDATE vaults SET owner_contact_verified_at = NULL WHERE id = 'vault-quiet'")
+            .execute(&pool)
+            .await
+            .expect("unverify");
+        record_new_deposits(
+            &pool,
+            "vault-quiet",
+            &[deposit("cccc:2", 25_000, 800_020)],
+            now,
+        )
+        .await;
+        assert_eq!(
+            received_email_count(&pool, "vault-quiet").await,
+            0,
+            "unverified addresses must never get lifecycle mail"
+        );
+
+        // Verified but on a non-email channel: lifecycle mail is
+        // email-only, so still silent.
+        sqlx::query(
+            "UPDATE vaults SET owner_contact_verified_at = ?, owner_contact_channel = 'sms' \
+              WHERE id = 'vault-quiet'",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .execute(&pool)
+        .await
+        .expect("switch to sms");
+        record_new_deposits(
+            &pool,
+            "vault-quiet",
+            &[deposit("dddd:3", 10_000, 800_030)],
+            now,
+        )
+        .await;
+        assert_eq!(received_email_count(&pool, "vault-quiet").await, 0);
     }
 }
