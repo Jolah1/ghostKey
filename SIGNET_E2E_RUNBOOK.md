@@ -69,6 +69,14 @@ fly secrets set GHOSTKEY_DEFAULT_NETWORK=signet -a ghostkey-signet
 fly secrets set GHOSTKEY_DEMO_MODE=1 -a ghostkey-signet
 
 # Optional but recommended: SMTP for owner reminder + alarm emails.
+#
+# CAREFUL with multi-line paste: if the backslash continuations get
+# mangled (some terminals eat them), fly will happily store fragments
+# of the command text AS the secret values and the notifier will
+# "configure" itself with garbage. This happened with the Twilio
+# block on 2026-07-08. Safest is one NAME=VALUE per `fly secrets set`
+# call, then check `fly logs` after boot: the notifier prints what it
+# parsed.
 fly secrets set \
   SMTP_HOST="smtp.postmarkapp.com" \
   SMTP_PORT="587" \
@@ -77,7 +85,10 @@ fly secrets set \
   SMTP_PASS="your-postmark-token" \
   -a ghostkey-signet
 
-# Deploy.
+# Deploy. NOTE: CI (deploy-fly.yml) only auto-deploys the mainnet
+# `ghostkey` app on merges to main — this signet app is manual-only,
+# so re-run this from a clean main checkout after any server merge
+# you want live here (found 18 days stale on 2026-07-08).
 fly deploy -a ghostkey-signet
 
 # Confirm:
@@ -99,9 +110,16 @@ rule in a feature branch, OR by running the web dashboard locally:
 
 ```bash
 cd ghostkey-web
-VITE_API_ORIGIN=https://ghostkey-signet.fly.dev npm run dev
+DEV_PROXY_TARGET=https://ghostkey-signet.fly.dev npm run dev
 # -> http://localhost:5173
 ```
+
+(`DEV_PROXY_TARGET` is the variable `vite.config.ts` reads for the
+dev-server proxy; it defaults to the local server at 127.0.0.1:8787.
+If you see "Reminder service is unreachable" plus ECONNREFUSED
+proxy errors in the vite log, the variable didn't take — it must be
+on the same line as `npm run dev`. `VITE_API_BASE` is different: it
+bakes an absolute API origin into a production build.)
 
 Open that. The top banner should now say:
 
