@@ -2008,6 +2008,48 @@ async fn send_contact_verification(
     Ok(())
 }
 
+/// The one-time welcome, sent the moment the owner confirms their
+/// email. Until that tap we deliberately say nothing beyond "confirm
+/// this address" (see the verification body above), so this is the
+/// first real mail the owner gets: what GhostKey will do for them,
+/// and, while the vault is still unfunded, the next step. No vault
+/// address and no amounts in email, ever — the dashboard has those.
+async fn send_welcome_email(
+    state: &AppState,
+    vault_id: &str,
+    status: &str,
+) -> Result<(), crate::notifier::EnqueueError> {
+    let base = crate::scheduler::public_base_url();
+    let next_step = if status == "unfunded" {
+        "Next step: add bitcoin to your vault. Open GhostKey, sign in, \
+         and use \"Add bitcoin\" on your dashboard. Send any amount from \
+         your usual wallet. Your check-in clock starts when the first \
+         deposit confirms.\n\n"
+    } else {
+        ""
+    };
+    let body = format!(
+        "Hi,\n\n\
+         Your email is confirmed \u{2713} Welcome to GhostKey.\n\n\
+         {next_step}\
+         From here GhostKey does the work:\n\n\
+         - We remind you at this address before each check-in is due.\n\
+         - If you miss one, we warn you before anything else happens.\n\
+         - Only if you stay silent does your heir hear from us.\n\n\
+         Your dashboard: {base}\n\n\
+         From GhostKey"
+    );
+    crate::notifier::enqueue_owner_email(
+        &state.db,
+        vault_id,
+        crate::notifier::NotificationKind::Welcome,
+        "Welcome to GhostKey",
+        &body,
+    )
+    .await?;
+    Ok(())
+}
+
 /* -------------------------------------------------------------------------- *
  *  Claim-challenge window                                                    *
  *                                                                            *
@@ -2648,16 +2690,17 @@ async fn verify_contact(
         Option<String>, // owner_contact_verified_at
         Option<String>, // owner_contact_verify_sent_at
         Option<String>, // owner_email_hash
+        String,         // status (drives the welcome email's next step)
     );
     let row: Option<VerifyRow> = sqlx::query_as(
         "SELECT owner_contact_verify_token_hash, owner_contact_verified_at, \
-                owner_contact_verify_sent_at, owner_email_hash \
+                owner_contact_verify_sent_at, owner_email_hash, status \
            FROM vaults WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.db)
     .await?;
-    let (stored_hash, verified_at, sent_at, email_hash) = row.ok_or(ApiError::NotFound)?;
+    let (stored_hash, verified_at, sent_at, email_hash, status) = row.ok_or(ApiError::NotFound)?;
 
     // Already confirmed: report success whatever token was presented.
     // The common path here is the owner tapping the same email link
@@ -2684,7 +2727,7 @@ async fn verify_contact(
         ));
     }
 
-    sqlx::query(
+    let won = sqlx::query(
         r#"UPDATE vaults
               SET owner_contact_verified_at       = ?,
                   owner_contact_verify_token_hash = NULL
@@ -2698,6 +2741,16 @@ async fn verify_contact(
     .await?;
 
     record_event(&state.db, &id, "owner_contact_verified", None).await?;
+
+    // First confirmation = the one moment we know mail reaches a real
+    // owner. Send the welcome with next steps. The CAS above dedupes:
+    // two racing taps both reach here, but only the winner emails.
+    // Best-effort — a full mail queue must not fail the verify tap.
+    if won.rows_affected() == 1 {
+        if let Err(e) = send_welcome_email(&state, &id, &status).await {
+            tracing::warn!(vault_id = %id, error = ?e, "could not enqueue welcome email");
+        }
+    }
 
     // One email, one confirmation. The owner may hold several vaults
     // (one per heir) that share this address; confirming it on any of
@@ -4488,6 +4541,16 @@ mod tests {
             .expect("read verified_at")
     }
 
+    async fn welcome_count(state: &AppState, id: &str) -> i64 {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE vault_id = ? AND kind = 'welcome'",
+        )
+        .bind(id)
+        .fetch_one(&state.db)
+        .await
+        .expect("count welcome rows")
+    }
+
     #[tokio::test]
     async fn verify_contact_happy_path_sets_verified_and_clears_hash() {
         let state = fresh_state().await;
@@ -4532,6 +4595,13 @@ mod tests {
         assert_eq!(status, StatusCode::NO_CONTENT);
         assert!(verified_at(&state, "v-verify-1").await.is_some());
 
+        // The first successful verify enqueues the one-time welcome.
+        assert_eq!(
+            welcome_count(&state, "v-verify-1").await,
+            1,
+            "welcome sent on first verify"
+        );
+
         // Second tap of the same link: still 204, not an error.
         let again = verify_contact(
             State(state.clone()),
@@ -4540,6 +4610,11 @@ mod tests {
         .await
         .expect("idempotent re-verify");
         assert_eq!(again, StatusCode::NO_CONTENT);
+        assert_eq!(
+            welcome_count(&state, "v-verify-1").await,
+            1,
+            "re-tapping the link must not send another welcome"
+        );
     }
 
     #[tokio::test]

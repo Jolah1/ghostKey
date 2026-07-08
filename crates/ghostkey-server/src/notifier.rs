@@ -128,6 +128,27 @@ pub enum NotificationKind {
     /// [`crate::drill::complete_drill`]; `vaults.drill_completed_at`
     /// dedupes.
     DrillCompleted,
+    /// Owner-side, once, the moment the owner confirms their email:
+    /// "welcome, here is what happens next." Includes the fund-your-
+    /// vault next step while the vault is still unfunded. Fired from
+    /// the verify-contact route; at most once because a vault only
+    /// transitions to verified once (siblings inherit the flag
+    /// without re-verifying, so they never fire it).
+    Welcome,
+    /// Owner-side, once, when the chain scan first finds coins and
+    /// the scheduler flips the vault unfunded -> ok: "your check-in
+    /// clock has started." Fired from
+    /// [`crate::scheduler`]'s `activate_funded_vaults`.
+    Funded,
+    /// Owner-side, when a chain scan finds a NEW confirmed deposit
+    /// after the first (the first is covered by [`Self::Funded`]).
+    /// Deliberately amount-free: the dashboard has the numbers, and
+    /// email is the least private place to put them.
+    Received,
+    /// Owner-side, right after an owner send is broadcast. Doubles
+    /// as a theft alarm: a send the owner didn't make means the
+    /// vault password has leaked.
+    OwnerSend,
 }
 
 impl NotificationKind {
@@ -143,6 +164,10 @@ impl NotificationKind {
             NotificationKind::ClaimReady => "claim_ready",
             NotificationKind::DrillInvite => "drill_invite",
             NotificationKind::DrillCompleted => "drill_completed",
+            NotificationKind::Welcome => "welcome",
+            NotificationKind::Funded => "funded",
+            NotificationKind::Received => "received",
+            NotificationKind::OwnerSend => "owner_send",
         }
     }
 }
@@ -1116,6 +1141,59 @@ pub fn parse_owner_contact(
         return Ok(None);
     }
     Ok(Some(OwnerContact { address, channel }))
+}
+
+/// Enqueue an email to the vault owner, but only when the owner has a
+/// CONFIRMED email contact. Returns `Ok(false)` when the vault has no
+/// owner contact, the contact is not an email address, or the address
+/// was never verified. Lifecycle mail (welcome / funded / received /
+/// sent) must never go to an address nobody has proven they own — see
+/// the 20260610000002 migration for why that matters.
+pub async fn enqueue_owner_email(
+    pool: &SqlitePool,
+    vault_id: &str,
+    kind: NotificationKind,
+    subject: &str,
+    body: &str,
+) -> Result<bool, EnqueueError> {
+    type Row = (
+        Option<String>, // owner_contact_ciphertext
+        Option<String>, // owner_contact_nonce
+        Option<String>, // owner_contact_channel
+        Option<String>, // owner_contact_verified_at
+    );
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT owner_contact_ciphertext, owner_contact_nonce, \
+                owner_contact_channel, owner_contact_verified_at \
+           FROM vaults WHERE id = ?",
+    )
+    .bind(vault_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((ct, nn, ch, verified_at)) = row else {
+        return Ok(false);
+    };
+    if verified_at.is_none() {
+        return Ok(false);
+    }
+    let Some(contact) = parse_owner_contact(vault_id, ct.as_deref(), nn.as_deref(), ch.as_deref())?
+    else {
+        return Ok(false);
+    };
+    if contact.channel != Channel::Email {
+        return Ok(false);
+    }
+    enqueue(
+        pool,
+        vault_id,
+        kind,
+        Channel::Email,
+        &contact.address,
+        subject,
+        body,
+    )
+    .await?;
+    Ok(true)
 }
 
 #[cfg(test)]
