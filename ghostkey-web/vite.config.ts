@@ -144,6 +144,39 @@ export default defineConfig({
         changeOrigin: true,
         secure: true,
         rewrite: (p) => p.replace(/^\/api/, ""),
+        // Remote targets (fly.dev) close idle keep-alive sockets at
+        // their edge. http-proxy's default agent then reuses a dead
+        // socket: the request either hangs forever (a spinner that
+        // never resolves) or dies as an empty-body 500 the UI can
+        // only render as "500 Internal Server Error". `agent: false`
+        // opens a fresh connection per request — one extra TLS
+        // handshake, zero wedged sockets.
+        agent: false,
+        // And if the target is genuinely down or unreachable, fail
+        // fast instead of letting the browser wait on a dead request.
+        proxyTimeout: 30_000,
+        timeout: 30_000,
+        configure: (proxy) => {
+          // Turn transport-level proxy failures into the JSON error
+          // shape the app's API client knows how to display, instead
+          // of an empty 500 (or a hang the user reads as a bug in
+          // the product).
+          proxy.on("error", (err, _req, res) => {
+            const r = res as unknown as {
+              headersSent?: boolean;
+              writeHead?: (code: number, headers: Record<string, string>) => void;
+              end?: (body: string) => void;
+            };
+            if (r.writeHead && !r.headersSent) {
+              r.writeHead(502, { "content-type": "application/json" });
+            }
+            r.end?.(
+              JSON.stringify({
+                error: `dev proxy could not reach ${DEV_PROXY_TARGET}: ${err.message}. Is the server up (and DEV_PROXY_TARGET correct)?`,
+              }),
+            );
+          });
+        },
       },
     },
   },
