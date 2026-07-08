@@ -636,7 +636,14 @@ async function request<T>(
     },
   });
   const text = await res.text();
-  const body = text ? (JSON.parse(text) as unknown) : null;
+  let body: unknown = null;
+  try {
+    body = text ? (JSON.parse(text) as unknown) : null;
+  } catch {
+    // Non-JSON body — a proxy or CDN error page, not our server.
+    // Leave body null so the status line below becomes the message
+    // instead of a raw SyntaxError reaching the user.
+  }
   if (!res.ok) {
     const msg =
       (body && typeof body === "object" && "error" in body
