@@ -8,10 +8,15 @@
  * `/vaults/:id/verify-contact/:token` and tell the owner reminders
  * will reach them.
  *
- * Mirrors OneTapCheckinPage's structure, including the strict-mode
- * single-fire guard: the POST is idempotent server-side (a second
- * tap of an already-verified link still 204s), but the guard keeps
- * dev behaviour identical to prod anyway.
+ * The single-fire guard (`firedRef`) exists for dev StrictMode, where
+ * React runs the effect twice: the POST is idempotent server-side (a
+ * second tap of an already-verified link still 204s), but one request
+ * keeps dev behaviour identical to prod. The guard must NOT be paired
+ * with an is-mounted cleanup flag: StrictMode's first cleanup would
+ * clear the flag while the guard blocks the second run from ever
+ * re-fetching, so the success lands with the flag down and the page
+ * spins forever. Setting state after unmount is a no-op in React 18,
+ * so the late setState is safe without a flag.
  *
  * No navbar — the owner came from an email to do exactly one thing.
  */
@@ -38,21 +43,17 @@ export function VerifyEmailPage({ vaultId, token, onNavigate }: Props) {
   useEffect(() => {
     if (firedRef.current) return;
     firedRef.current = true;
-    let alive = true;
     (async () => {
       try {
         await api.verifyContact(vaultId, token);
-        if (alive) setState({ kind: "ok" });
+        setState({ kind: "ok" });
       } catch {
         // 404 (stale/replaced token) and any network/5xx failure get
         // the same calm copy: this link didn't work, ask for a fresh
         // one from the dashboard. No error stacks for email-clickers.
-        if (alive) setState({ kind: "stale" });
+        setState({ kind: "stale" });
       }
     })();
-    return () => {
-      alive = false;
-    };
   }, [vaultId, token]);
 
   return (
