@@ -73,6 +73,9 @@ const EmergencyPage = lazy(() =>
 const RemindersPage = lazy(() =>
   import("./VaultToolPages").then((m) => ({ default: m.RemindersPage })),
 );
+const HeirContactPage = lazy(() =>
+  import("./VaultToolPages").then((m) => ({ default: m.HeirContactPage })),
+);
 const ToolsPage = lazy(() =>
   import("./VaultToolPages").then((m) => ({ default: m.ToolsPage })),
 );
@@ -125,6 +128,7 @@ export type Route =
   | "dashboard"
   | "activity"
   | "heir-message"
+  | "heir-contact"
   | "practice"
   | "emergency"
   | "reminders"
@@ -147,6 +151,7 @@ const VALID: Route[] = [
   "dashboard",
   "activity",
   "heir-message",
+  "heir-contact",
   "practice",
   "emergency",
   "reminders",
@@ -411,6 +416,7 @@ export default function App() {
       {location.kind === "route" && location.route === "dashboard" && <Dashboard onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "activity"  && <ActivityPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "heir-message" && <HeirMessagePage onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "heir-contact" && <HeirContactPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "practice"  && <PracticeRunPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "emergency" && <EmergencyPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "reminders" && <RemindersPage onNavigate={setRoute} />}
