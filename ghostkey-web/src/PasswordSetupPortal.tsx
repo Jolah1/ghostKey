@@ -96,6 +96,7 @@ import {
   type VaultBalanceView,
 } from "./api";
 import { saveVaultMeta } from "./vaultStore";
+import type { HeirContactChannel } from "./heirChannels";
 import {
   buildHeirEnvelope,
   downloadHeirEnvelope,
@@ -146,7 +147,7 @@ interface Props {
   onSignIn: () => void;
 }
 
-type ContactChannel = "sms" | "email" | "whatsapp";
+type ContactChannel = HeirContactChannel;
 
 /**
  * One heir's worth of contact info. The setup wizard collects an

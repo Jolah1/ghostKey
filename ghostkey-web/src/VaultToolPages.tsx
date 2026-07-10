@@ -17,14 +17,11 @@ import { VideoMessageCard } from "./VideoMessageCard";
 import { PracticeClaimCard, type HeirChannel } from "./PracticeClaimCard";
 import { PanicCard, PushOptInCard } from "./Dashboard";
 import { Button, Field, Tile, InlineAlert } from "./ui";
-
-type Channel = "sms" | "email" | "whatsapp";
-
-const HEIR_CHANNELS: { id: Channel; title: string; sub: string; placeholder: string }[] = [
-  { id: "sms", title: "SMS", sub: "Phone number", placeholder: "+234 800 000 0000" },
-  { id: "whatsapp", title: "WhatsApp", sub: "Same number", placeholder: "+234 800 000 0000" },
-  { id: "email", title: "Email", sub: "Inbox", placeholder: "sarah@example.com" },
-];
+import {
+  HEIR_CHANNELS,
+  contactShapeError,
+  type HeirContactChannel,
+} from "./heirChannels";
 
 function ToolPage({
   title,
@@ -331,7 +328,11 @@ export function RemindersPage({ onNavigate }: PageProps) {
 
 export function HeirContactPage({ onNavigate }: PageProps) {
   const { meta, ownerToken, vault, loading } = useActiveVault();
-  const ready = Boolean(meta && ownerToken && vault?.status !== "claimed");
+  const isClaiming =
+    vault?.status === "timelock_started" || vault?.status === "claiming";
+  const ready = Boolean(
+    meta && ownerToken && vault?.status !== "claimed" && !isClaiming,
+  );
   return (
     <ToolPage
       title="How your heir is reached"
@@ -359,7 +360,7 @@ function HeirContactCard({
   vaultId: string;
   ownerToken: string;
 }) {
-  const [channel, setChannel] = useState<Channel>("email");
+  const [channel, setChannel] = useState<HeirContactChannel>("email");
   const [contact, setContact] = useState("");
   // Prefill state: until the current profile loads we don't want the
   // owner typing into a field that's about to be overwritten.
@@ -396,15 +397,29 @@ function HeirContactCard({
       setError(channel === "email" ? "Enter their email." : "Enter their phone number.");
       return;
     }
-    if (channel === "email" && !/^.+@.+\..+$/.test(trimmed)) {
-      setError("That doesn't look like an email address.");
+    const shapeError = contactShapeError(channel, trimmed);
+    if (shapeError) {
+      setError(shapeError);
       return;
     }
     setSaving(true);
     setError(null);
     setSaved(false);
     try {
-      await api.updateVaultHeir(vaultId, ownerToken, { contact: trimmed, channel });
+      const saved = await api.updateVaultHeir(vaultId, ownerToken, {
+        contact: trimmed,
+        channel,
+      });
+      // Re-sync the inputs to what the server actually stored (it trims and
+      // re-seals), so the fields match the saved state exactly.
+      if (
+        saved.channel === "sms" ||
+        saved.channel === "whatsapp" ||
+        saved.channel === "email"
+      ) {
+        setChannel(saved.channel);
+      }
+      if (saved.contact) setContact(saved.contact);
       setSaved(true);
     } catch (e) {
       // The server refuses an address change on easy-setup vaults, where

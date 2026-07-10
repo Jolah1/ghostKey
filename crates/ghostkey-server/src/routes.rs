@@ -709,6 +709,40 @@ fn validate_contact_channel(field: &str, ch: Option<&str>) -> Result<(), ApiErro
     Ok(())
 }
 
+/// Reject a contact whose shape can't be delivered on the chosen channel,
+/// so we never store a phone-number channel pointing at an email address
+/// (or vice-versa) that would silently fail at notify time. Deliberately
+/// loose: `email` needs an `@` with something either side and a dot in the
+/// domain; `sms`/`whatsapp` needs a `+`-prefixed run of digits (E.164), the
+/// format Twilio expects.
+fn validate_contact_shape(channel: &str, contact: &str) -> Result<(), ApiError> {
+    match channel {
+        "email" => {
+            let ok = contact
+                .split_once('@')
+                .is_some_and(|(local, domain)| !local.is_empty() && domain.contains('.'));
+            if !ok {
+                return Err(ApiError::Validation(
+                    "That doesn't look like an email address.".into(),
+                ));
+            }
+        }
+        "sms" | "whatsapp" => {
+            let digits = contact.strip_prefix('+').unwrap_or("");
+            let ok = digits.len() >= 7 && digits.chars().all(|c| c.is_ascii_digit());
+            if !ok {
+                return Err(ApiError::Validation(
+                    "That doesn't look like a phone number. Use the international \
+                     format, like +2348000000000."
+                        .into(),
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Status a freshly created vault starts in.
 ///
 /// New vaults are `unfunded` until coins actually land on-chain: their
@@ -2424,9 +2458,9 @@ pub struct UpdateHeirRequest {
 ///
 /// Guard: on `heir_derived` (F2 "easy-setup") vaults the heir's key is
 /// derived from their email, so the address is load-bearing for the
-/// claim itself and changing it would strand the heir. We allow a
-/// channel change there but refuse an address change, with a clear
-/// message.
+/// claim itself and changing it would strand the heir. Email is also the
+/// only channel that reaches that address, so both the address and the
+/// channel are locked to email there, with a clear message.
 async fn update_vault_heir(
     auth: OwnerAuth,
     State(state): State<Arc<AppState>>,
@@ -2438,6 +2472,8 @@ async fn update_vault_heir(
     if contact.is_empty() {
         return Err(ApiError::Validation("contact must not be empty".into()));
     }
+    // The contact must fit the channel, or the notifier can't deliver it.
+    validate_contact_shape(&req.channel, &contact)?;
 
     // Load the current sealed heir contact so we can preserve the heir's
     // name and enforce the F2 email-is-load-bearing guard below.
@@ -2478,10 +2514,16 @@ async fn update_vault_heir(
         }
     }
 
-    if heir_derived != 0 && existing_contact.as_deref() != Some(contact.as_str()) {
+    // On F2 ("easy-setup") vaults the heir's key is derived from their
+    // email, so the email is the only address that can reach them and it's
+    // load-bearing for the claim. We can't change the address, and email is
+    // the only channel that points at it, so lock both.
+    if heir_derived != 0
+        && (existing_contact.as_deref() != Some(contact.as_str()) || req.channel != "email")
+    {
         return Err(ApiError::Validation(
-            "This heir's recovery key is tied to their email, so their address \
-             can't be changed here. You can still change how they're reached."
+            "This heir's recovery key is tied to their email, so we can only \
+             reach them by email at that address. It can't be changed here."
                 .into(),
         ));
     }
@@ -5738,6 +5780,57 @@ mod tests {
         .expect_err("unknown channel");
         assert!(matches!(bad, ApiError::Validation(_)), "got {bad:?}");
 
+        // A phone channel pointing at an email address is undeliverable, so
+        // the contact/channel shapes must agree.
+        let mismatch = update_vault_heir(
+            OwnerAuth {
+                vault_id: id.to_string(),
+            },
+            State(state.clone()),
+            Json(UpdateHeirRequest {
+                contact: "ara@example.com".to_string(),
+                channel: "sms".to_string(),
+            }),
+        )
+        .await
+        .expect_err("email contact on sms channel");
+        assert!(
+            matches!(mismatch, ApiError::Validation(_)),
+            "got {mismatch:?}"
+        );
+
+        // A real phone number on a phone channel is fine.
+        let sms = update_vault_heir(
+            OwnerAuth {
+                vault_id: id.to_string(),
+            },
+            State(state.clone()),
+            Json(UpdateHeirRequest {
+                contact: "+2348111111111".to_string(),
+                channel: "sms".to_string(),
+            }),
+        )
+        .await
+        .expect("phone on sms channel")
+        .0;
+        assert_eq!(sms.channel.as_deref(), Some("sms"));
+        assert_eq!(sms.contact.as_deref(), Some("+2348111111111"));
+
+        // Put the vault back on email so the F2 lock below starts from a
+        // consistent {email contact, email channel} state.
+        let _ = update_vault_heir(
+            OwnerAuth {
+                vault_id: id.to_string(),
+            },
+            State(state.clone()),
+            Json(UpdateHeirRequest {
+                contact: "ara@example.com".to_string(),
+                channel: "email".to_string(),
+            }),
+        )
+        .await
+        .expect("back to email");
+
         // Mark the vault heir-derived (F2): the email is now load-bearing
         // for the heir's key, so an ADDRESS change must be refused...
         sqlx::query("UPDATE vaults SET heir_derived = 1 WHERE id = ?")
@@ -5759,8 +5852,9 @@ mod tests {
         .expect_err("f2 address change refused");
         assert!(matches!(refused, ApiError::Validation(_)), "got {refused:?}");
 
-        // ...but a channel change that keeps the same address is allowed.
-        let ok = update_vault_heir(
+        // ...and so must a channel change away from email, since email is the
+        // only channel that points at the load-bearing address.
+        let refused_channel = update_vault_heir(
             OwnerAuth {
                 vault_id: id.to_string(),
             },
@@ -5771,9 +5865,27 @@ mod tests {
             }),
         )
         .await
-        .expect("f2 channel-only change allowed")
+        .expect_err("f2 channel change refused");
+        assert!(
+            matches!(refused_channel, ApiError::Validation(_)),
+            "got {refused_channel:?}"
+        );
+
+        // The email-only no-op still succeeds.
+        let ok = update_vault_heir(
+            OwnerAuth {
+                vault_id: id.to_string(),
+            },
+            State(state.clone()),
+            Json(UpdateHeirRequest {
+                contact: "ara@example.com".to_string(),
+                channel: "email".to_string(),
+            }),
+        )
+        .await
+        .expect("f2 email no-op allowed")
         .0;
-        assert_eq!(ok.channel.as_deref(), Some("sms"));
+        assert_eq!(ok.channel.as_deref(), Some("email"));
         assert_eq!(ok.contact.as_deref(), Some("ara@example.com"));
     }
 }
