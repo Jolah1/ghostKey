@@ -498,6 +498,33 @@ It's the only variant that doesn't touch the on-chain script. The Taproot leaf s
 
 ---
 
+## Entry 17 — Fixing how an heir is reached, after setup
+
+Entry 14 made SMS and WhatsApp real channels. Then reality bit: WhatsApp business-initiated messages (the kind a claim notice is — we message an heir who never messaged us first) need a Meta-approved template, and getting one approved is slow and can fail. Meanwhile a vault set up on WhatsApp had no way to move the heir to email short of deleting the vault and starting over. This entry adds the missing edit path, and makes email the reliable floor.
+
+What we built:
+
+- **`GET` / `PUT /vaults/:id/heir`** (owner-auth). GET was already reading the sealed `{name, contact, channel}` blob for the dashboard; PUT re-seals a new contact + channel and rewrites the plaintext `heir_contact_channel` column so the notifier (channel from the blob) and the dashboard (channel from the column) stay in agreement. The heir's name is preserved from the existing record.
+- **"How your heir is reached"** — a new tool page (`VaultToolPages.tsx`), one tap from the dashboard's Tools list. Pre-fills from GET, lets the owner switch channel + edit the contact, and shows the plain "Saved. This is how we'll reach them." confirmation.
+- **`heirChannels.ts`** — the channel catalog (sms / whatsapp / email, with labels + placeholders) and the contact-shape checks, in one module the setup portals and the edit page now share. It kept drifting when each file had its own copy.
+
+### Why lock the F2 heir to email
+
+An F2 ("easy-setup") heir has no wallet; the server derives their key from `(master_key, heir_email, vault_id)` and the heir's browser recomputes the same xprv at claim time (see the "F2 server-derived heirs" section in ARCHITECTURE.md). So the email isn't just how we reach them — it's an input to their key. Change it and you strand the heir. The PUT handler refuses an address change on F2 vaults, and since email is the only channel that points at that address, it refuses a channel change away from email too. Both with one plain message.
+
+### What was hard
+
+**Channel and contact could drift out of coherence.** The first cut validated the channel against the allowed set and the contact against non-empty, but nothing stopped `channel=sms` + `contact=<an email>` — a row the notifier would pick up and silently fail to deliver, which is the exact class of bug this feature exists to prevent. The fix is `validate_contact_shape`: email needs an `@` with text either side and a dot in the domain; sms/whatsapp needs a `+`-prefixed run of ≥7 digits (E.164, what Twilio wants). The client mirrors it (`contactShapeError`) so the owner sees the error before the round-trip, but the server is the authority. A code review caught this before merge.
+
+**The F2 guard and the shape guard interact.** With both in place, F2 + sms is impossible two ways over: the shape guard rejects an email on a phone channel, and the F2 guard rejects any non-email channel. That's belt-and-suspenders, and deliberately so — either guard alone closes the hole, but the messages differ and the F2 one is the honest explanation, so we keep it.
+
+### What we left for later
+
+- **The WhatsApp template path.** `send_twilio` still posts a free-form `Body`, which only delivers inside a 24-hour user-initiated window. Business-initiated WhatsApp (claims, drill invites) needs `ContentSid` + `ContentVariables` pointing at an approved template, plus a `StatusCallback` to learn real delivery (Entry 14's open item). Until that lands, email is the reliable channel for claim notices and this edit page is how an owner moves a stuck heir onto it. Tracked in issues #277 / #278.
+- **Surfacing F2 in the UI.** The edit page learns a vault is F2 only when the server refuses the change and it shows the message. Knowing up front (the GET could return a `locked` flag) would let the page grey out the non-email tiles instead of erroring after the fact.
+
+---
+
 ## How to use this journal
 
 **Read it front to back once** when you join the project. Then use it as a reference when you encounter something confusing in the code.
