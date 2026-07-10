@@ -978,7 +978,7 @@ function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
             {c.whereShouldMoneyGo}
           </h2>
           <p className="mt-2 text-sm text-soft">
-            {c.addressInstructions(bech32PrefixFor(view.network))}
+            {c.addressInstructions1}<strong>Receive</strong>{c.addressInstructions2}<code>{bech32PrefixFor(view.network)}</code>{c.addressInstructions3}
           </p>
 
           <div className="mt-4">
@@ -1226,12 +1226,12 @@ function PasswordVaultClaim({
             {c.whereShouldMoneyGo}
           </h2>
           <p className="mt-2 text-sm text-soft">
-            {c.addressInstructions(bech32PrefixFor(sealed.network))}
+            {c.addressInstructions1}<strong>Receive</strong>{c.addressInstructions2}<code>{bech32PrefixFor(sealed.network)}</code>{c.addressInstructions3}
           </p>
 
           <div className="mt-4">
             <Field
-              label={v.manualClaim.bitcoinAddress}
+              label={c.bitcoinAddress}
               hint={
                 address && !addrShapeOk
                   ? c.addressInvalidShape
@@ -1263,7 +1263,7 @@ function PasswordVaultClaim({
                 hint={
                   feeRate.trim() && !feeRateValid
                     ? c.feeRateInvalid
-                    : c.feeRateHint
+                    : c.feeRateHintDetailed
                 }
               >
                 <input
@@ -1479,7 +1479,7 @@ function DerivedHeirClaim({
           Confirm this is you
         </p>
         <p className="mt-2 text-sm">
-          {d.confirmEmail(params.heir_email)} {d.notYourEmail}
+          {d.confirmEmail(params.heir_email)} {d.stopAndContact}
         </p>
       </div>
 
@@ -1731,7 +1731,7 @@ function ManualPsbtClaim({
             {m.whereShouldBitcoinGo}
           </h2>
           <p className="mt-2 text-sm text-soft">
-            {c.addressInstructions(bech32PrefixFor(view.network))}
+            {c.addressInstructions1}<strong>Receive</strong>{c.addressInstructions2}<code>{bech32PrefixFor(view.network)}</code>{c.addressInstructions3}
           </p>
 
           <div className="mt-4">
@@ -1764,7 +1764,7 @@ function ManualPsbtClaim({
               hint={
                 feeRate.trim() && !feeRateValid
                   ? c.feeRateInvalid
-                  : c.feeRateHint
+                  : c.feeRateHintDetailed
               }
             >
               <input

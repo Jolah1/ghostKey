@@ -1,3 +1,13 @@
+/**
+ * Owner-side "Practice claim" card (#223).
+ *
+ * Inheritance tools fail silently: a wrong email or a confused heir
+ * only surfaces when the owner is gone. One click here sends the heir
+ * a clearly-labelled rehearsal of the real claim. The practice token
+ * lives in its own server column, so it can't reach key material or
+ * move coins on any endpoint; the only thing the rehearsal can write
+ * is "the practice was completed", which this card then shows forever.
+ */
 import { useState } from "react";
 
 import { api, ApiError, type DrillStartView } from "./api";
@@ -5,12 +15,26 @@ import { Button, InlineAlert } from "./ui";
 import { useVocab } from "./vocab";
 import { type PracticeCardVocab } from "./vocab/types";
 
+/**
+ * Practice token storage — the server stores the practice token in a
+ * separate database column from the real claim token, so the server
+ * refuses it on every endpoint that could reveal keys or move coins.
+ * The only thing this token can write is "the practice was completed".
+ *
+ * Because practice data never holds or references key material, there
+ * is no way for a practice request to access keys, sign transactions,
+ * or move coins — even if the component or server logic had a bug.
+ */
 export interface DrillProgress {
   drill_started_at?: string | null;
   drill_opened_at?: string | null;
   drill_completed_at?: string | null;
 }
 
+/** How the practice notification was sent (email, SMS, WhatsApp, or
+ *  unknown). Used to pick the correct noun for the status line so the
+ *  owner sees "practice email" vs "practice text message" vs the
+ *  generic fallback. */
 export type HeirChannel = "email" | "sms" | "whatsapp" | null | undefined;
 
 function practiceNoun(channel: HeirChannel, pc: PracticeCardVocab): string {
@@ -58,43 +82,28 @@ function fmtDay(rfc: string): string | null {
   });
 }
 
+/** One line describing where the rehearsal stands, for the card and
+ *  its tests. */
 export function drillStatusLine(
   progress: DrillProgress,
   who: string,
-  channel?: HeirChannel,
-  pc?: PracticeCardVocab,
+  channel: HeirChannel = undefined,
+  pc: PracticeCardVocab,
 ): string {
   if (progress.drill_completed_at) {
     const when = fmtDay(progress.drill_completed_at);
-    return pc
-      ? pc.lineCompleted(who, when)
-      : `${who} completed a practice claim${when ? ` on ${when}` : ""}.`;
+    return pc.lineCompleted(who, when);
   }
   if (progress.drill_opened_at) {
     const when = fmtDay(progress.drill_opened_at);
-    return pc
-      ? pc.lineOpened(who, when)
-      : `${who} opened the practice link${when ? ` on ${when}` : ""} but hasn't finished it.`;
+    return pc.lineOpened(who, when);
   }
   if (progress.drill_started_at) {
     const when = fmtDay(progress.drill_started_at);
-    return pc
-      ? pc.lineSent(who, when)
-      : `Practice sent${when ? ` ${when}` : ""}. ${who} hasn't opened it yet.`;
+    return pc.lineSent(who, when);
   }
-  if (pc) {
-    const noun = practiceNoun(channel, pc);
-    return pc.lineIdle(who, noun);
-  }
-  const legacyNoun = (() => {
-    switch (channel) {
-      case "email": return "practice email";
-      case "sms": return "practice text message";
-      case "whatsapp": return "practice WhatsApp message";
-      default: return "practice message";
-    }
-  })();
-  return `See the claim work while you're here to help. ${who} gets a clearly-marked ${legacyNoun} and walks the real steps. Nothing can move.`;
+  const noun = practiceNoun(channel, pc);
+  return pc.lineIdle(who, noun);
 }
 
 type Stage = "idle" | "confirming" | "sending" | "sent";
@@ -121,6 +130,7 @@ export function PracticeClaimCard({
   if (!ownerToken) return null;
 
   const who = heirName?.trim() ? heirName.trim() : "Your heir";
+  // A just-sent drill beats whatever the vault fetch knew.
   const line =
     stage === "sent" && result
       ? drillStatusLine({ drill_started_at: result.started_at }, who, heirChannel, pc)

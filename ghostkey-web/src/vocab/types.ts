@@ -160,6 +160,7 @@ export interface ClaimCommonVocab {
   feeRateLabel: string;
   feeRateInvalid: string;
   feeRateHint: string;
+  feeRateHintDetailed: string;
   addressInvalidShape: string;
   doYouHaveWallet: string;
   walletDesc: (network: string, examples: string) => string;
@@ -168,7 +169,9 @@ export interface ClaimCommonVocab {
   haveWalletNo: string;
   haveWalletNoSub: string;
   onNetwork: (network: string) => string;
-  addressInstructions: (prefix: string) => string;
+  addressInstructions1: string;
+  addressInstructions2: string;
+  addressInstructions3: string;
   addressWrongNetwork: (prefix: string) => string;
   addressPlaceholder: (prefix: string) => string;
   confirmDescription: string;
@@ -201,7 +204,6 @@ export interface GuardianVocab {
 
 export interface DerivedClaimVocab {
   confirmEmail: (email: string) => string;
-  notYourEmail: string;
   stopAndContact: string;
   whereShouldMoneyGo: (network: string, examples: string) => string;
   reviewAndClaim: string;
