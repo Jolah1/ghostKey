@@ -234,7 +234,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/admin/analytics", get(crate::admin::analytics_summary))
         .route("/admin/verify-address", get(crate::admin::verify_address))
         .route("/vaults/:id", get(get_vault).delete(delete_vault))
-        .route("/vaults/:id/heir", get(get_vault_heir).put(update_vault_heir))
+        .route(
+            "/vaults/:id/heir",
+            get(get_vault_heir).put(update_vault_heir),
+        )
         .route(
             "/vaults/:id/balance",
             get(crate::psbt_routes::get_vault_balance),
@@ -2353,10 +2356,7 @@ pub struct HeirProfileView {
 /// Read + decrypt a vault's heir profile (name, contact, channel, and
 /// the note left for them). Shared by the GET handler and the PUT
 /// handler, which returns the freshly-updated profile after a change.
-async fn read_heir_profile(
-    db: &sqlx::SqlitePool,
-    id: &str,
-) -> Result<HeirProfileView, ApiError> {
+async fn read_heir_profile(db: &sqlx::SqlitePool, id: &str) -> Result<HeirProfileView, ApiError> {
     type Row = (
         Option<String>, // heir_contact_ciphertext
         Option<String>, // heir_contact_nonce
@@ -5850,7 +5850,10 @@ mod tests {
         )
         .await
         .expect_err("f2 address change refused");
-        assert!(matches!(refused, ApiError::Validation(_)), "got {refused:?}");
+        assert!(
+            matches!(refused, ApiError::Validation(_)),
+            "got {refused:?}"
+        );
 
         // ...and so must a channel change away from email, since email is the
         // only channel that points at the load-bearing address.
