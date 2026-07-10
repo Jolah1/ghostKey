@@ -234,7 +234,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/admin/analytics", get(crate::admin::analytics_summary))
         .route("/admin/verify-address", get(crate::admin::verify_address))
         .route("/vaults/:id", get(get_vault).delete(delete_vault))
-        .route("/vaults/:id/heir", get(get_vault_heir))
+        .route(
+            "/vaults/:id/heir",
+            get(get_vault_heir).put(update_vault_heir),
+        )
         .route(
             "/vaults/:id/balance",
             get(crate::psbt_routes::get_vault_balance),
@@ -705,6 +708,40 @@ fn validate_contact_channel(field: &str, ch: Option<&str>) -> Result<(), ApiErro
                 )));
             }
         }
+    }
+    Ok(())
+}
+
+/// Reject a contact whose shape can't be delivered on the chosen channel,
+/// so we never store a phone-number channel pointing at an email address
+/// (or vice-versa) that would silently fail at notify time. Deliberately
+/// loose: `email` needs an `@` with something either side and a dot in the
+/// domain; `sms`/`whatsapp` needs a `+`-prefixed run of digits (E.164), the
+/// format Twilio expects.
+fn validate_contact_shape(channel: &str, contact: &str) -> Result<(), ApiError> {
+    match channel {
+        "email" => {
+            let ok = contact
+                .split_once('@')
+                .is_some_and(|(local, domain)| !local.is_empty() && domain.contains('.'));
+            if !ok {
+                return Err(ApiError::Validation(
+                    "That doesn't look like an email address.".into(),
+                ));
+            }
+        }
+        "sms" | "whatsapp" => {
+            let digits = contact.strip_prefix('+').unwrap_or("");
+            let ok = digits.len() >= 7 && digits.chars().all(|c| c.is_ascii_digit());
+            if !ok {
+                return Err(ApiError::Validation(
+                    "That doesn't look like a phone number. Use the international \
+                     format, like +2348000000000."
+                        .into(),
+                ));
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -2316,11 +2353,10 @@ pub struct HeirProfileView {
     pub note: Option<String>,
 }
 
-async fn get_vault_heir(
-    auth: OwnerAuth,
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<HeirProfileView>, ApiError> {
-    let id = auth.vault_id;
+/// Read + decrypt a vault's heir profile (name, contact, channel, and
+/// the note left for them). Shared by the GET handler and the PUT
+/// handler, which returns the freshly-updated profile after a change.
+async fn read_heir_profile(db: &sqlx::SqlitePool, id: &str) -> Result<HeirProfileView, ApiError> {
     type Row = (
         Option<String>, // heir_contact_ciphertext
         Option<String>, // heir_contact_nonce
@@ -2333,8 +2369,8 @@ async fn get_vault_heir(
                   heir_intro_ciphertext, heir_intro_nonce
              FROM vaults WHERE id = ?"#,
     )
-    .bind(&id)
-    .fetch_optional(&state.db)
+    .bind(id)
+    .fetch_optional(db)
     .await?
     .ok_or(ApiError::NotFound)?;
 
@@ -2344,7 +2380,7 @@ async fn get_vault_heir(
     let (mut name, mut contact) = (None, None);
     if let (Some(ct), Some(nn)) = (contact_ct, contact_nn) {
         let bytes = open_for_vault(
-            &id,
+            id,
             &SealedContact {
                 ciphertext_b64: ct,
                 nonce_b64: nn,
@@ -2369,7 +2405,7 @@ async fn get_vault_heir(
     let mut note = None;
     if let (Some(ct), Some(nn)) = (intro_ct, intro_nn) {
         let bytes = open_for_vault(
-            &id,
+            id,
             &SealedContact {
                 ciphertext_b64: ct,
                 nonce_b64: nn,
@@ -2384,12 +2420,139 @@ async fn get_vault_heir(
         }
     }
 
-    Ok(Json(HeirProfileView {
+    Ok(HeirProfileView {
         name,
         contact,
         channel,
         note,
-    }))
+    })
+}
+
+async fn get_vault_heir(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<HeirProfileView>, ApiError> {
+    Ok(Json(read_heir_profile(&state.db, &auth.vault_id).await?))
+}
+
+/// Owner-submitted change to how the heir is reached. Only the contact
+/// address and channel are editable; the heir's name is preserved from
+/// the existing sealed record (it also lives in the owner's local store,
+/// and we don't want the two to drift). See `update_vault_heir`.
+#[derive(Debug, Deserialize)]
+pub struct UpdateHeirRequest {
+    /// New contact address: an email for `email`, a phone number for
+    /// `sms`/`whatsapp`. Trimmed server-side; must be non-empty.
+    pub contact: String,
+    /// New channel: `email`, `sms`, or `whatsapp`.
+    pub channel: String,
+}
+
+/// Change the heir's contact address and channel on an existing vault
+/// (OwnerAuth). This is the only way to fix a heir who was set up on a
+/// channel we can't deliver to (e.g. WhatsApp before it's approved) or
+/// whose address changed. It re-seals the `{name, contact, channel}`
+/// blob with the vault key and rewrites the plaintext channel column so
+/// the notifier (which reads the channel from the blob) and the
+/// dashboard (which reads the column) stay in agreement.
+///
+/// Guard: on `heir_derived` (F2 "easy-setup") vaults the heir's key is
+/// derived from their email, so the address is load-bearing for the
+/// claim itself and changing it would strand the heir. Email is also the
+/// only channel that reaches that address, so both the address and the
+/// channel are locked to email there, with a clear message.
+async fn update_vault_heir(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<UpdateHeirRequest>,
+) -> Result<Json<HeirProfileView>, ApiError> {
+    let id = auth.vault_id;
+    validate_contact_channel("channel", Some(&req.channel))?;
+    let contact = req.contact.trim().to_string();
+    if contact.is_empty() {
+        return Err(ApiError::Validation("contact must not be empty".into()));
+    }
+    // The contact must fit the channel, or the notifier can't deliver it.
+    validate_contact_shape(&req.channel, &contact)?;
+
+    // Load the current sealed heir contact so we can preserve the heir's
+    // name and enforce the F2 email-is-load-bearing guard below.
+    type Row = (i64, Option<String>, Option<String>);
+    let row: Row = sqlx::query_as(
+        "SELECT heir_derived, heir_contact_ciphertext, heir_contact_nonce FROM vaults WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    let (heir_derived, cur_ct, cur_nn) = row;
+
+    // Existing name + contact, from the current blob. Normal rows hold a
+    // {name, contact, channel} JSON; legacy / F2 rows hold the raw email.
+    let (mut existing_name, mut existing_contact): (Option<String>, Option<String>) = (None, None);
+    if let (Some(ct), Some(nn)) = (cur_ct, cur_nn) {
+        let bytes = open_for_vault(
+            &id,
+            &SealedContact {
+                ciphertext_b64: ct,
+                nonce_b64: nn,
+            },
+        )?;
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            existing_name = v
+                .get("name")
+                .and_then(|n| n.as_str())
+                .map(str::to_string)
+                .filter(|s| !s.is_empty());
+            existing_contact = v
+                .get("contact")
+                .and_then(|c| c.as_str())
+                .map(str::to_string)
+                .filter(|s| !s.is_empty());
+        } else if let Ok(s) = String::from_utf8(bytes) {
+            existing_contact = Some(s.trim().to_string()).filter(|s| !s.is_empty());
+        }
+    }
+
+    // On F2 ("easy-setup") vaults the heir's key is derived from their
+    // email, so the email is the only address that can reach them and it's
+    // load-bearing for the claim. We can't change the address, and email is
+    // the only channel that points at it, so lock both.
+    if heir_derived != 0
+        && (existing_contact.as_deref() != Some(contact.as_str()) || req.channel != "email")
+    {
+        return Err(ApiError::Validation(
+            "This heir's recovery key is tied to their email, so we can only \
+             reach them by email at that address. It can't be changed here."
+                .into(),
+        ));
+    }
+
+    // Re-seal {name, contact, channel}, preserving the existing name.
+    let blob = serde_json::json!({
+        "name": existing_name,
+        "contact": contact,
+        "channel": req.channel,
+    })
+    .to_string();
+    let sealed = seal_for_vault(&id, blob.as_bytes())?;
+
+    sqlx::query(
+        r#"UPDATE vaults
+              SET heir_contact_ciphertext = ?,
+                  heir_contact_nonce = ?,
+                  heir_contact_channel = ?
+            WHERE id = ?"#,
+    )
+    .bind(&sealed.ciphertext_b64)
+    .bind(&sealed.nonce_b64)
+    .bind(&req.channel)
+    .bind(&id)
+    .execute(&state.db)
+    .await?;
+
+    tracing::info!(vault_id = %id, channel = %req.channel, "heir contact updated");
+    Ok(Json(read_heir_profile(&state.db, &id).await?))
 }
 
 async fn get_vault(
@@ -5542,5 +5705,190 @@ mod tests {
         .await
         .expect_err("unknown vault");
         assert!(matches!(nf, ApiError::NotFound), "got {nf:?}");
+    }
+
+    /// `PUT /vaults/:id/heir` switches an undeliverable channel (the
+    /// "Ara's share" WhatsApp case) to email: it re-seals the contact
+    /// blob, rewrites the plaintext channel column, preserves the heir's
+    /// name, and refuses an address change on heir-derived (F2) vaults.
+    #[tokio::test]
+    async fn update_vault_heir_switches_channel_and_guards_f2() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let id = "edit-heir-vault";
+        let contact = seal_for_vault(
+            id,
+            br#"{"name":"Ara","contact":"+2348000000000","channel":"whatsapp"}"#,
+        )
+        .expect("seal contact");
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status,
+                heir_contact_ciphertext, heir_contact_nonce, heir_contact_channel
+            ) VALUES (?, 'regtest', 'tr(a)', 'tr(b)', 144, 86400, 3600,
+                      '2026-01-01T00:00:00Z', '2026-04-01T00:00:00Z', 'ok',
+                      ?, ?, 'whatsapp')"#,
+        )
+        .bind(id)
+        .bind(&contact.ciphertext_b64)
+        .bind(&contact.nonce_b64)
+        .execute(&state.db)
+        .await
+        .expect("insert vault");
+
+        // WhatsApp -> email. Name is preserved; the returned view and the
+        // plaintext channel column both reflect the change.
+        let view = update_vault_heir(
+            OwnerAuth {
+                vault_id: id.to_string(),
+            },
+            State(state.clone()),
+            Json(UpdateHeirRequest {
+                contact: "  ara@example.com  ".to_string(),
+                channel: "email".to_string(),
+            }),
+        )
+        .await
+        .expect("update heir")
+        .0;
+        assert_eq!(view.name.as_deref(), Some("Ara"));
+        assert_eq!(view.contact.as_deref(), Some("ara@example.com"));
+        assert_eq!(view.channel.as_deref(), Some("email"));
+
+        let col: (Option<String>,) =
+            sqlx::query_as("SELECT heir_contact_channel FROM vaults WHERE id = ?")
+                .bind(id)
+                .fetch_one(&state.db)
+                .await
+                .expect("read channel column");
+        assert_eq!(col.0.as_deref(), Some("email"));
+
+        // Bad channel is rejected.
+        let bad = update_vault_heir(
+            OwnerAuth {
+                vault_id: id.to_string(),
+            },
+            State(state.clone()),
+            Json(UpdateHeirRequest {
+                contact: "ara@example.com".to_string(),
+                channel: "carrier-pigeon".to_string(),
+            }),
+        )
+        .await
+        .expect_err("unknown channel");
+        assert!(matches!(bad, ApiError::Validation(_)), "got {bad:?}");
+
+        // A phone channel pointing at an email address is undeliverable, so
+        // the contact/channel shapes must agree.
+        let mismatch = update_vault_heir(
+            OwnerAuth {
+                vault_id: id.to_string(),
+            },
+            State(state.clone()),
+            Json(UpdateHeirRequest {
+                contact: "ara@example.com".to_string(),
+                channel: "sms".to_string(),
+            }),
+        )
+        .await
+        .expect_err("email contact on sms channel");
+        assert!(
+            matches!(mismatch, ApiError::Validation(_)),
+            "got {mismatch:?}"
+        );
+
+        // A real phone number on a phone channel is fine.
+        let sms = update_vault_heir(
+            OwnerAuth {
+                vault_id: id.to_string(),
+            },
+            State(state.clone()),
+            Json(UpdateHeirRequest {
+                contact: "+2348111111111".to_string(),
+                channel: "sms".to_string(),
+            }),
+        )
+        .await
+        .expect("phone on sms channel")
+        .0;
+        assert_eq!(sms.channel.as_deref(), Some("sms"));
+        assert_eq!(sms.contact.as_deref(), Some("+2348111111111"));
+
+        // Put the vault back on email so the F2 lock below starts from a
+        // consistent {email contact, email channel} state.
+        let _ = update_vault_heir(
+            OwnerAuth {
+                vault_id: id.to_string(),
+            },
+            State(state.clone()),
+            Json(UpdateHeirRequest {
+                contact: "ara@example.com".to_string(),
+                channel: "email".to_string(),
+            }),
+        )
+        .await
+        .expect("back to email");
+
+        // Mark the vault heir-derived (F2): the email is now load-bearing
+        // for the heir's key, so an ADDRESS change must be refused...
+        sqlx::query("UPDATE vaults SET heir_derived = 1 WHERE id = ?")
+            .bind(id)
+            .execute(&state.db)
+            .await
+            .expect("set heir_derived");
+        let refused = update_vault_heir(
+            OwnerAuth {
+                vault_id: id.to_string(),
+            },
+            State(state.clone()),
+            Json(UpdateHeirRequest {
+                contact: "someone-else@example.com".to_string(),
+                channel: "email".to_string(),
+            }),
+        )
+        .await
+        .expect_err("f2 address change refused");
+        assert!(
+            matches!(refused, ApiError::Validation(_)),
+            "got {refused:?}"
+        );
+
+        // ...and so must a channel change away from email, since email is the
+        // only channel that points at the load-bearing address.
+        let refused_channel = update_vault_heir(
+            OwnerAuth {
+                vault_id: id.to_string(),
+            },
+            State(state.clone()),
+            Json(UpdateHeirRequest {
+                contact: "ara@example.com".to_string(),
+                channel: "sms".to_string(),
+            }),
+        )
+        .await
+        .expect_err("f2 channel change refused");
+        assert!(
+            matches!(refused_channel, ApiError::Validation(_)),
+            "got {refused_channel:?}"
+        );
+
+        // The email-only no-op still succeeds.
+        let ok = update_vault_heir(
+            OwnerAuth {
+                vault_id: id.to_string(),
+            },
+            State(state.clone()),
+            Json(UpdateHeirRequest {
+                contact: "ara@example.com".to_string(),
+                channel: "email".to_string(),
+            }),
+        )
+        .await
+        .expect("f2 email no-op allowed")
+        .0;
+        assert_eq!(ok.channel.as_deref(), Some("email"));
+        assert_eq!(ok.contact.as_deref(), Some("ara@example.com"));
     }
 }

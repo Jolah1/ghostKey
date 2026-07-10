@@ -10,13 +10,18 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import type { Route } from "./App";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { useActiveVault } from "./useActiveVault";
 import { useToolDoneState } from "./toolStatus";
 import { VideoMessageCard } from "./VideoMessageCard";
 import { PracticeClaimCard, type HeirChannel } from "./PracticeClaimCard";
 import { PanicCard, PushOptInCard } from "./Dashboard";
-import { Button } from "./ui";
+import { Button, Field, Tile, InlineAlert } from "./ui";
+import {
+  HEIR_CHANNELS,
+  contactShapeError,
+  type HeirContactChannel,
+} from "./heirChannels";
 
 function ToolPage({
   title,
@@ -214,6 +219,13 @@ export function ToolsPage({ onNavigate }: PageProps) {
       route: "heir-message",
     });
   }
+  if (vault && !isClosed) {
+    items.push({
+      label: "How your heir is reached",
+      desc: "Change their contact or the way we reach them",
+      route: "heir-contact",
+    });
+  }
   if (vault && !isClosed && !isClaiming) {
     items.push({
       label: "Practice a claim",
@@ -311,5 +323,170 @@ export function RemindersPage({ onNavigate }: PageProps) {
         />
       )}
     </ToolPage>
+  );
+}
+
+export function HeirContactPage({ onNavigate }: PageProps) {
+  const { meta, ownerToken, vault, loading } = useActiveVault();
+  const isClaiming =
+    vault?.status === "timelock_started" || vault?.status === "claiming";
+  const ready = Boolean(
+    meta && ownerToken && vault?.status !== "claimed" && !isClaiming,
+  );
+  return (
+    <ToolPage
+      title="How your heir is reached"
+      intro="Change your heir's contact or the way we reach them. They're only ever contacted if you stop checking in."
+      onNavigate={onNavigate}
+    >
+      {ready && meta && ownerToken ? (
+        <HeirContactCard vaultId={meta.id} ownerToken={ownerToken} />
+      ) : (
+        <Fallback
+          loading={loading}
+          hasVault={Boolean(meta)}
+          emptyText="This isn't available once a claim is underway."
+          onNavigate={onNavigate}
+        />
+      )}
+    </ToolPage>
+  );
+}
+
+function HeirContactCard({
+  vaultId,
+  ownerToken,
+}: {
+  vaultId: string;
+  ownerToken: string;
+}) {
+  const [channel, setChannel] = useState<HeirContactChannel>("email");
+  const [contact, setContact] = useState("");
+  // Prefill state: until the current profile loads we don't want the
+  // owner typing into a field that's about to be overwritten.
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .getVaultHeir(vaultId, ownerToken)
+      .then((h) => {
+        if (!alive) return;
+        if (h.channel === "sms" || h.channel === "whatsapp" || h.channel === "email") {
+          setChannel(h.channel);
+        }
+        if (h.contact) setContact(h.contact);
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (alive) setLoaded(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [vaultId, ownerToken]);
+
+  const meta = HEIR_CHANNELS.find((c) => c.id === channel) ?? HEIR_CHANNELS[0];
+
+  async function save() {
+    const trimmed = contact.trim();
+    if (!trimmed) {
+      setError(channel === "email" ? "Enter their email." : "Enter their phone number.");
+      return;
+    }
+    const shapeError = contactShapeError(channel, trimmed);
+    if (shapeError) {
+      setError(shapeError);
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    setSaved(false);
+    try {
+      const saved = await api.updateVaultHeir(vaultId, ownerToken, {
+        contact: trimmed,
+        channel,
+      });
+      // Re-sync the inputs to what the server actually stored (it trims and
+      // re-seals), so the fields match the saved state exactly.
+      if (
+        saved.channel === "sms" ||
+        saved.channel === "whatsapp" ||
+        saved.channel === "email"
+      ) {
+        setChannel(saved.channel);
+      }
+      if (saved.contact) setContact(saved.contact);
+      setSaved(true);
+    } catch (e) {
+      // The server refuses an address change on easy-setup vaults, where
+      // the heir's key is tied to their email. Surface its message plainly.
+      setError(
+        e instanceof ApiError && e.message
+          ? e.message
+          : "Couldn't save that. Check your connection and try again.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!loaded) {
+    return <p className="text-sm text-muted">Loading…</p>;
+  }
+
+  return (
+    <div className="card-flat p-5">
+      <Field label="How should we reach them">
+        <div className="grid grid-cols-3 gap-2">
+          {HEIR_CHANNELS.map((c) => (
+            <Tile
+              key={c.id}
+              title={c.title}
+              sub={c.sub}
+              selected={channel === c.id}
+              onClick={() => {
+                setChannel(c.id);
+                setSaved(false);
+                setError(null);
+              }}
+            />
+          ))}
+        </div>
+      </Field>
+
+      <Field
+        label={channel === "email" ? "Their email" : "Their phone number"}
+        hint="Stored encrypted. We don't message them unless you stop checking in."
+        error={error}
+      >
+        <input
+          type={channel === "email" ? "email" : "tel"}
+          value={contact}
+          onChange={(e) => {
+            setContact(e.target.value);
+            setSaved(false);
+            setError(null);
+          }}
+          placeholder={meta.placeholder}
+          autoComplete="off"
+          inputMode={channel === "email" ? "email" : "tel"}
+          className="input"
+        />
+      </Field>
+
+      {saved ? (
+        <div className="mb-4">
+          <InlineAlert tone="ok">Saved. This is how we'll reach them.</InlineAlert>
+        </div>
+      ) : null}
+
+      <Button onClick={save} disabled={saving}>
+        {saving ? "Saving…" : "Save"}
+      </Button>
+    </div>
   );
 }

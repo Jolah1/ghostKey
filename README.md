@@ -76,6 +76,7 @@ What works today:
 - Scheduler with pre-deadline reminders, daily alarm escalation, panic-stop freeze, and per-cycle one-tap tokens
 - Encrypted heir / owner / trusted-contact storage; sealed password-vault blobs the server cannot open
 - Email notifications (SMTP via `lettre` + STARTTLS); SMS + WhatsApp via Twilio (optional, off by default)
+- Owners can change how an heir is reached after setup (contact + channel), so a vault set up on an undeliverable channel can be fixed without re-doing setup. The address must match the channel, and easy-setup (F2) heirs stay locked to their email since their key is derived from it.
 - One-time claim link and two heir-claim flows:
   - **Password-vault flow** (default): heir pastes a receive address, server signs in-memory with the just-unwrapped heir xprv, broadcasts in one call.
   - **Manual PSBT flow** (legacy): server hands the heir an unsigned PSBT, accepts the signed string back.

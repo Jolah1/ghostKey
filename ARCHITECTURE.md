@@ -130,6 +130,7 @@ Heir / owner / trusted contacts are encrypted at rest with XChaCha20-Poly1305. P
 | `/vaults/:id` | GET / DELETE | Vault detail / owner-initiated removal (cascades) |
 | `/vaults/:id/address` | GET | First external receive address |
 | `/vaults/:id/balance` | GET | Confirmed + unconfirmed sats via Esplora scan |
+| `/vaults/:id/heir` | GET / PUT | Read the sealed heir profile (name/contact/channel); PUT re-seals a new contact + channel (owner-auth). Rejects a contact that doesn't fit the channel; on F2 vaults both address and channel are locked to email. |
 | `/vaults/:id/sealed-blobs` | GET | Password-wrapped owner xprv + owner-token ciphertexts for recovery |
 | `/vaults/:id/seal-owner-token` | POST | Re-seal owner token after creation (owner-auth) |
 | `/vaults/:id/checkin` | POST | Record heartbeat (owner-auth, once-per-period) |

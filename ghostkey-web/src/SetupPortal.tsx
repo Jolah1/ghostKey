@@ -47,6 +47,7 @@ import {
   type PartyXpub,
 } from "./api";
 import { saveVaultMeta } from "./vaultStore";
+import { HEIR_CHANNELS as CHANNELS, type HeirContactChannel } from "./heirChannels";
 import {
   DEFAULT_CADENCE_ID,
   DEFAULT_GRACE_ID,
@@ -63,7 +64,7 @@ interface Props {
   onCreated: (v: VaultListItem) => void;
 }
 
-type ContactChannel = "sms" | "email" | "whatsapp";
+type ContactChannel = HeirContactChannel;
 
 interface Draft {
   // Owner side
@@ -627,12 +628,6 @@ function StepWallet({
 }
 
 /* ---------------------------- Step 2: heir -------------------------------- */
-
-const CHANNELS: { id: ContactChannel; title: string; sub: string; placeholder: string }[] = [
-  { id: "sms",      title: "SMS",      sub: "Phone number", placeholder: "+234 800 000 0000" },
-  { id: "whatsapp", title: "WhatsApp", sub: "Same number",  placeholder: "+234 800 000 0000" },
-  { id: "email",    title: "Email",    sub: "Inbox",        placeholder: "sarah@example.com" },
-];
 
 function StepHeir({
   draft,

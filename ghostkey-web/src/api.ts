@@ -705,6 +705,20 @@ export const api = {
    *  and the note left for them) for the dashboard heir panel. */
   getVaultHeir: (id: string, ownerToken: string | null) =>
     request<HeirProfileView>(`/vaults/${id}/heir`, {}, ownerToken),
+  /** Owner-only: change how the heir is reached (contact address +
+   *  channel). The heir's name is preserved server-side. Returns the
+   *  updated profile. On `heir_derived` vaults the server refuses an
+   *  address change (400) because the heir's key is tied to their email. */
+  updateVaultHeir: (
+    id: string,
+    ownerToken: string | null,
+    body: { contact: string; channel: "sms" | "email" | "whatsapp" },
+  ) =>
+    request<HeirProfileView>(
+      `/vaults/${id}/heir`,
+      { method: "PUT", body: JSON.stringify(body) },
+      ownerToken,
+    ),
   /** Owner-initiated vault deletion. The server clears its metadata
    *  (vault row + cascaded events/notifications/lightning invoices).
    *  On-chain funds remain spendable by the owner — GhostKey never
