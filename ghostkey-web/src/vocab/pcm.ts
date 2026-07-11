@@ -85,7 +85,7 @@ export const pcm: Vocab = {
       eyebrow: "Never yet",
       title: "Time never reach",
       body: "The person wey set am up still dey active. Nothing dey for you to do today. You go get new message if anything change.",
-      nextCheckin: (friendly) => `Next check-in ${friendly}.`,
+      nextCheckin: (friendly) => `Next check na ${friendly}.`,
     },
     alreadyClaimed: {
       eyebrow: "Done",

@@ -838,7 +838,7 @@ function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
     } finally {
       setChecking(false);
     }
-  }, [otherLink, token, view.vault_id, openedRole]);
+  }, [otherLink, token, view.vault_id, openedRole, g]);
 
   const bothReady = Boolean(heirToken && guardianToken);
   const addrShapeOk = looksLikeBitcoinAddress(address);
