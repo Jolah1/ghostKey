@@ -12,51 +12,62 @@ import { useState } from "react";
 
 import { api, ApiError, type DrillStartView } from "./api";
 import { Button, InlineAlert } from "./ui";
+import { useVocab } from "./vocab";
+import { type PracticeCardVocab } from "./vocab/types";
 
-/** The drill fields of `VaultView`, split out so tests don't need a
- *  whole vault. */
+/**
+ * Practice token storage — the server stores the practice token in a
+ * separate database column from the real claim token, so the server
+ * refuses it on every endpoint that could reveal keys or move coins.
+ * The only thing this token can write is "the practice was completed".
+ *
+ * Because practice data never holds or references key material, there
+ * is no way for a practice request to access keys, sign transactions,
+ * or move coins — even if the component or server logic had a bug.
+ */
 export interface DrillProgress {
   drill_started_at?: string | null;
   drill_opened_at?: string | null;
   drill_completed_at?: string | null;
 }
 
-/** How this heir is reached, from the server's heir profile. The copy
- *  must match the real channel: a WhatsApp heir never gets an email,
- *  so the card must not promise one. Unknown falls back to "message". */
+/** How the practice notification was sent (email, SMS, WhatsApp, or
+ *  unknown). Used to pick the correct noun for the status line so the
+ *  owner sees "practice email" vs "practice text message" vs the
+ *  generic fallback. */
 export type HeirChannel = "email" | "sms" | "whatsapp" | null | undefined;
 
-function practiceNoun(channel: HeirChannel): string {
+function practiceNoun(channel: HeirChannel, pc: PracticeCardVocab): string {
   switch (channel) {
     case "email":
-      return "practice email";
+      return pc.practiceNounEmail;
     case "sms":
-      return "practice text message";
+      return pc.practiceNounSms;
     case "whatsapp":
-      return "practice WhatsApp message";
+      return pc.practiceNounWhatsapp;
     default:
-      return "practice message";
+      return pc.practiceNounDefault;
   }
 }
 
-function sendWords(channel: HeirChannel, who: string): {
+function sendWords(channel: HeirChannel, who: string, pc: PracticeCardVocab): {
   alert: string;
   button: string;
 } {
   switch (channel) {
     case "email":
-      return { alert: `This emails ${who} right now.`, button: `Email ${who} now` };
+      return { alert: pc.sendWordsEmailAlert(who), button: pc.sendWordsEmailButton(who) };
     case "sms":
-      return { alert: `This texts ${who} right now.`, button: `Text ${who} now` };
+      return { alert: pc.sendWordsSmsAlert(who), button: pc.sendWordsSmsButton(who) };
     case "whatsapp":
       return {
-        alert: `This sends ${who} a WhatsApp message right now.`,
-        button: `Message ${who} on WhatsApp`,
+        alert: pc.sendWordsWhatsappAlert(who),
+        button: pc.sendWordsWhatsappButton(who),
       };
     default:
       return {
-        alert: `This sends ${who} a message right now.`,
-        button: `Send it to ${who} now`,
+        alert: pc.sendWordsDefaultAlert(who),
+        button: pc.sendWordsDefaultButton(who),
       };
   }
 }
@@ -76,27 +87,23 @@ function fmtDay(rfc: string): string | null {
 export function drillStatusLine(
   progress: DrillProgress,
   who: string,
-  channel?: HeirChannel,
+  channel: HeirChannel = undefined,
+  pc: PracticeCardVocab,
 ): string {
   if (progress.drill_completed_at) {
     const when = fmtDay(progress.drill_completed_at);
-    return when
-      ? `${who} completed a practice claim on ${when}.`
-      : `${who} completed a practice claim.`;
+    return pc.lineCompleted(who, when);
   }
   if (progress.drill_opened_at) {
     const when = fmtDay(progress.drill_opened_at);
-    return when
-      ? `${who} opened the practice link on ${when} but hasn't finished it.`
-      : `${who} opened the practice link but hasn't finished it.`;
+    return pc.lineOpened(who, when);
   }
   if (progress.drill_started_at) {
     const when = fmtDay(progress.drill_started_at);
-    return when
-      ? `Practice sent ${when}. ${who} hasn't opened it yet.`
-      : `Practice sent. ${who} hasn't opened it yet.`;
+    return pc.lineSent(who, when);
   }
-  return `See the claim work while you're here to help. ${who} gets a clearly-marked ${practiceNoun(channel)} and walks the real steps. Nothing can move.`;
+  const noun = practiceNoun(channel, pc);
+  return pc.lineIdle(who, noun);
 }
 
 type Stage = "idle" | "confirming" | "sending" | "sent";
@@ -114,6 +121,8 @@ export function PracticeClaimCard({
   heirChannel?: HeirChannel;
   progress: DrillProgress;
 }) {
+  const v = useVocab();
+  const pc = v.practiceCard;
   const [stage, setStage] = useState<Stage>("idle");
   const [result, setResult] = useState<DrillStartView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -124,9 +133,9 @@ export function PracticeClaimCard({
   // A just-sent drill beats whatever the vault fetch knew.
   const line =
     stage === "sent" && result
-      ? drillStatusLine({ drill_started_at: result.started_at }, who, heirChannel)
-      : drillStatusLine(progress, who, heirChannel);
-  const send = sendWords(heirChannel, who);
+      ? drillStatusLine({ drill_started_at: result.started_at }, who, heirChannel, pc)
+      : drillStatusLine(progress, who, heirChannel, pc);
+  const send = sendWords(heirChannel, who, pc);
   const completed = Boolean(progress.drill_completed_at) && stage !== "sent";
   const startedBefore = Boolean(progress.drill_started_at) || stage === "sent";
 
@@ -141,8 +150,8 @@ export function PracticeClaimCard({
       setStage("confirming");
       setError(
         e instanceof ApiError && e.status === 409
-          ? "A real claim is already underway on this vault, so a practice run isn't possible."
-          : "Sending failed. Your vault is fine. Try again in a moment.",
+          ? pc.errorRealClaimUnderway
+          : pc.errorSendingFailed,
       );
     }
   }
@@ -151,11 +160,11 @@ export function PracticeClaimCard({
     <section className="card-flat p-5">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="text-sm font-semibold">Practice claim</h3>
+          <h3 className="text-sm font-semibold">{pc.title}</h3>
           <p className="mt-1 text-sm text-muted">{line}</p>
           {completed ? (
             <p className="mt-1 text-xs text-muted">
-              The real claim will look exactly like what they practiced.
+              {pc.realClaimLooksSame}
             </p>
           ) : null}
         </div>
@@ -166,7 +175,7 @@ export function PracticeClaimCard({
               size="sm"
               onClick={() => setStage("confirming")}
             >
-              {startedBefore || completed ? "Send again" : "Send a practice"}
+              {startedBefore || completed ? pc.sendAgain : pc.sendPractice}
             </Button>
           </div>
         ) : null}
@@ -176,8 +185,7 @@ export function PracticeClaimCard({
         <div className="mt-3">
           <InlineAlert tone="warning">
             <p className="text-sm">
-              {send.alert} The message says clearly that you are fine and
-              that this is practice.
+              {pc.confirmAlert(send.alert)}
             </p>
           </InlineAlert>
           {error ? (
@@ -189,7 +197,7 @@ export function PracticeClaimCard({
               onClick={() => void onSend()}
               disabled={stage === "sending"}
             >
-              {stage === "sending" ? "Sending…" : send.button}
+              {stage === "sending" ? pc.sending : send.button}
             </Button>
             <Button
               variant="ghost"
@@ -200,7 +208,7 @@ export function PracticeClaimCard({
               }}
               disabled={stage === "sending"}
             >
-              Cancel
+              {pc.cancel}
             </Button>
           </div>
         </div>
@@ -211,8 +219,8 @@ export function PracticeClaimCard({
           <InlineAlert tone="ok">
             <p className="text-sm">
               {result.heir_notified
-                ? `On its way. You'll see it here when ${who} opens the link and when they finish.`
-                : `We couldn't reach ${who} automatically. Share this practice link with them yourself:`}
+                ? pc.sentNotified(who)
+                : pc.sentNotNotified(who)}
             </p>
             {!result.heir_notified ? (
               <p className="mt-2 break-all font-mono text-xs">

@@ -14,8 +14,11 @@
  */
 import { useState } from "react";
 import { Button, Field, InlineAlert } from "./ui";
+import { useVocab } from "./vocab";
 
 export function InheritPortal() {
+  const v = useVocab();
+  const p = v.inheritPortal;
   const [claimUrl, setClaimUrl] = useState("");
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -44,49 +47,44 @@ export function InheritPortal() {
     <main className="bg-app fade-in">
       <div className="mx-auto max-w-2xl px-5 py-12 md:py-16">
         <header className="text-center">
-          <p className="eyebrow">Inherit</p>
+          <p className="eyebrow">{p.eyebrow}</p>
           <h1 className="mt-6 font-serif text-3xl md:text-5xl">
-            Someone trusted you with this
+            {p.title}
           </h1>
           <p className="mx-auto mt-3 max-w-md text-muted">
-            If you're here, someone you knew left something behind and
-            trusted you to look after it. We'll walk you through it slowly,
-            one step at a time. If you don't have your link yet, that's
-            normal. It arrives by SMS, WhatsApp, or email when the time
-            comes. There's no account to sign in to.
+            {p.description}
           </p>
         </header>
 
         <div className="mt-10 card-flat p-5">
           <p className="text-xs uppercase tracking-wider text-dim">
-            What the link looks like
+            {p.whatLinkLooksLike}
           </p>
           <p className="mt-2 font-mono text-xs text-[var(--text)] break-all">
-            https://www.ghostkeyapp.com/#/claim/AbCdEf12_3456_etc…
+            {p.linkExample}
           </p>
           <p className="mt-3 text-sm text-muted">
-            Your link is private and works only once. Please don't share it
-            with anyone.
+            {p.linkPrivacyNote}
           </p>
         </div>
 
         <form onSubmit={submit} className="mt-8">
           <Field
-            label="Already have your link?"
-            hint="Paste the whole link, or just the code at the end."
+            label={p.alreadyHaveLink}
+            hint={p.linkHint}
           >
             <div className="flex flex-col gap-2 sm:flex-row">
               <input
                 type="text"
                 value={claimUrl}
                 onChange={(e) => setClaimUrl(e.target.value)}
-                placeholder="https://www.ghostkeyapp.com/#/claim/…"
+                placeholder={p.linkPlaceholder}
                 spellCheck={false}
                 autoComplete="off"
                 className="input font-mono text-[13px]"
               />
               <Button type="submit" disabled={!claimUrl.trim()}>
-                Open it
+                {p.openIt}
               </Button>
             </div>
           </Field>
@@ -94,9 +92,7 @@ export function InheritPortal() {
 
         <div className="mt-8">
           <InlineAlert tone="neutral">
-            Don't have a link yet? That's normal. You'll only receive one if
-            the person who set up the vault stops checking in. Until then,
-            there is nothing on this site for you to do.
+            {p.noLinkYet}
           </InlineAlert>
         </div>
       </div>
