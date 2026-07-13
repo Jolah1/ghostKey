@@ -3491,6 +3491,14 @@ pub struct ClaimView {
     /// broadcast (see drill.rs — those endpoints resolve by
     /// `claim_token_hash`, a column a drill token is never stored in).
     pub drill: bool,
+    /// Set only after the claim completed: the txid of the broadcast
+    /// that moved the funds. Lets the page keep showing the heir their
+    /// receipt after the token is consumed, instead of a bare
+    /// "link already used" dead end.
+    pub claimed_txid: Option<String>,
+    /// Explorer link for `claimed_txid`, following the indexer this
+    /// server is configured with (mempool.space on mainnet).
+    pub claimed_explorer_url: Option<String>,
 }
 
 async fn resolve_claim(
@@ -3631,14 +3639,32 @@ async fn resolve_claim(
         return Err(ApiError::NotFound);
     }
 
-    if used_at.is_some() {
-        return Err(ApiError::Conflict("claim token already used".into()));
-    }
+    // A consumed token stays resolvable when the claim actually went
+    // through. The heir's phone reloads the page the moment they switch
+    // to their wallet app, and a bare 409 turned their success into
+    // "looks like someone has been here before" with the txid gone.
+    // Whoever holds this link already ran the claim, so echoing the
+    // broadcast receipt back to them reveals nothing new. A used token
+    // on a vault that is NOT claimed (e.g. a broadcast rollback left
+    // mid-flight state) keeps the conservative 409.
+    let claimed_txid = if used_at.is_some() {
+        if status != "claimed" {
+            return Err(ApiError::Conflict("claim token already used".into()));
+        }
+        latest_claim_broadcast_txid(&state.db, &vault_id).await?
+    } else {
+        None
+    };
 
     // First valid resolve starts the challenge window and alerts the
     // owner + trusted contact; later resolves just report how long is
-    // left so the claim page can render the wait screen.
-    let claim_available_at = ensure_claim_challenge(&state, &vault_id).await?;
+    // left so the claim page can render the wait screen. A finished
+    // claim has no window to start or report.
+    let claim_available_at = if used_at.is_some() {
+        None
+    } else {
+        ensure_claim_challenge(&state, &vault_id).await?
+    };
 
     // Decrypt the sealed contact (if any) and pull out the display name.
     let (heir_display_name, heir_channel) = match (ciphertext_b64, nonce_b64) {
@@ -3673,6 +3699,12 @@ async fn resolve_claim(
     // activity feed with one row per heir page refresh, mislabelled
     // as "Claim stopped, you checked in" — the opposite of the truth.
 
+    let claimed_explorer_url = claimed_txid.as_deref().and_then(|t| {
+        let net = crate::config::parse_network(&network).ok()?;
+        let txid = t.parse::<bitcoin::Txid>().ok()?;
+        Some(crate::psbt_routes::explorer_url(net, &txid))
+    });
+
     Ok(Json(ClaimView {
         vault_id,
         label,
@@ -3687,6 +3719,31 @@ async fn resolve_claim(
         token_role,
         guardian_slot,
         drill: false,
+        claimed_explorer_url,
+        claimed_txid,
+    }))
+}
+
+/// Txid of the vault's most recent successful claim broadcast, read
+/// back from the `claim_broadcast` event the spend paths record. `None`
+/// for vaults claimed before that event carried a txid; the page then
+/// falls back to its plain "already passed on" screen.
+async fn latest_claim_broadcast_txid(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+) -> Result<Option<String>, ApiError> {
+    let detail: Option<Option<String>> = sqlx::query_scalar(
+        r#"SELECT detail FROM events
+            WHERE vault_id = ? AND kind = 'claim_broadcast'
+            ORDER BY id DESC LIMIT 1"#,
+    )
+    .bind(vault_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(detail.flatten().and_then(|d| {
+        serde_json::from_str::<serde_json::Value>(&d)
+            .ok()
+            .and_then(|v| v.get("txid").and_then(|t| t.as_str()).map(str::to_owned))
     }))
 }
 
@@ -5645,6 +5702,118 @@ mod tests {
         .await
         .expect_err("unknown token");
         assert!(matches!(nf, ApiError::NotFound), "got {nf:?}");
+    }
+
+    /// A consumed claim token keeps resolving once the vault is claimed,
+    /// carrying the broadcast txid so the page can show the heir their
+    /// receipt after a reload instead of "link already used". A consumed
+    /// token on a vault that never reached 'claimed' stays a 409.
+    #[tokio::test]
+    async fn resolve_claim_returns_receipt_after_successful_claim() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let (owner_xpub, owner_fp) = xpub_for(0x61);
+        let (heir_xpub, heir_fp) = xpub_for(0x62);
+        let req = CreateGuardianVaultRequest {
+            label: Some("receipt".into()),
+            network: "regtest".into(),
+            owner: PartyXpub {
+                xpub: owner_xpub,
+                fingerprint: Some(owner_fp),
+            },
+            heir: PartyXpub {
+                xpub: heir_xpub,
+                fingerprint: Some(heir_fp),
+            },
+            guardian1: guardian_party(0x63, "rg1-token"),
+            guardian2: guardian_party(0x64, "rg2-token"),
+            timelock_blocks: 144,
+            unlock_height: None,
+            checkin_period_secs: 86_400,
+            grace_period_secs: 3_600,
+            owner_contact: None,
+            owner_contact_channel: None,
+            heir_contact: Some("heir@example.com".into()),
+            heir_contact_channel: Some("email".into()),
+            sealed: sealed_setup(
+                &"c".repeat(64),
+                Some("aGVpcmN0".into()),
+                Some("aGVpcm5u".into()),
+                Some("receipt-heir-token".into()),
+            ),
+            from_name: None,
+            heir_note: None,
+        };
+        let (_, created) = create_vault_guardian(State(state.clone()), Json(req))
+            .await
+            .expect("guardian create");
+        let id = created.vault.id.clone();
+
+        let txid = "2815f3ddee141950b1d2eca1848d0dc9c810c68c0be13bfd23cfeeae91cad0f7";
+        let now = Utc::now().to_rfc3339();
+
+        // Consumed token, but the vault never reached 'claimed' (e.g. a
+        // broadcast rollback left mid-flight state): conservative 409.
+        sqlx::query(
+            "UPDATE vaults SET claim_token_used_at = ?, status = 'timelock_started' WHERE id = ?",
+        )
+        .bind(&now)
+        .bind(&id)
+        .execute(&state.db)
+        .await
+        .expect("mark used, not claimed");
+        let conflict = resolve_claim(
+            State(state.clone()),
+            axum::extract::Path("receipt-heir-token".to_string()),
+        )
+        .await
+        .expect_err("used token on unclaimed vault");
+        assert!(
+            matches!(conflict, ApiError::Conflict(_)),
+            "got {conflict:?}"
+        );
+
+        // The real flow: broadcast succeeded, vault is claimed.
+        sqlx::query("UPDATE vaults SET status = 'claimed' WHERE id = ?")
+            .bind(&id)
+            .execute(&state.db)
+            .await
+            .expect("mark claimed");
+        record_event(
+            &state.db,
+            &id,
+            "claim_broadcast",
+            Some(serde_json::json!({
+                "txid": txid,
+                "destination": "bcrt1qdest",
+                "flow": "heir-claim-one-shot",
+            })),
+        )
+        .await
+        .expect("record broadcast");
+
+        let view = resolve_claim(
+            State(state.clone()),
+            axum::extract::Path("receipt-heir-token".to_string()),
+        )
+        .await
+        .expect("used token still resolves after claim")
+        .0;
+        assert_eq!(view.status, "claimed");
+        assert_eq!(view.claimed_txid.as_deref(), Some(txid));
+        let url = view.claimed_explorer_url.expect("explorer url");
+        assert!(url.ends_with(txid), "got {url}");
+        assert_eq!(view.claim_available_at, None);
+
+        // A guardian's link shows the same receipt.
+        let gview = resolve_claim(
+            State(state.clone()),
+            axum::extract::Path("rg1-token".to_string()),
+        )
+        .await
+        .expect("guardian token resolves after claim")
+        .0;
+        assert_eq!(gview.claimed_txid.as_deref(), Some(txid));
     }
 
     /// The owner-only heir endpoint decrypts the sealed heir contact and

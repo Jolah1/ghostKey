@@ -172,7 +172,7 @@ where
 /// server actually uses. Reads `GHOSTKEY_ESPLORA_URL` so a custom indexer
 /// (mutinynet, a self-hosted Esplora) gets a link that resolves, instead of
 /// always pointing at mempool.space (#152).
-fn explorer_url(network: Network, txid: &bitcoin::Txid) -> String {
+pub(crate) fn explorer_url(network: Network, txid: &bitcoin::Txid) -> String {
     let esplora = std::env::var("GHOSTKEY_ESPLORA_URL").ok();
     format!("{}/{txid}", explorer_base(esplora.as_deref(), network))
 }

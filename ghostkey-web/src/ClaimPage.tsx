@@ -66,12 +66,14 @@ import {
 import { usePrice, btcAndUsd } from "./fiat";
 import { countdown, parseRfc } from "./time";
 import { useVocab, LanguageToggle } from "./vocab";
+import type { ClaimCommonVocab } from "./vocab/types";
 import { HeirVideoMessage } from "./HeirVideoMessage";
 import { ConfirmSend } from "./ConfirmSend";
 import {
   addressMatchesNetwork,
   bech32PrefixFor,
   looksLikeBitcoinAddress,
+  looksLikeLightningDestination,
 } from "./address";
 import { b64decode, unsealHeirXprv } from "./crypto/sealing";
 import { deriveHeirKey } from "./crypto/heirKey";
@@ -419,7 +421,14 @@ function Resolved({ view, token }: { view: ClaimView; token: string }) {
           />
         );
       case "claimed":
-        return <AlreadyClaimedState view={view} />;
+        // With a txid this is the claimant's own link coming back after
+        // a reload: show them their receipt. Without one (vaults claimed
+        // before the server recorded txids) keep the plain notice.
+        return view.claimed_txid ? (
+          <ClaimedSuccessState view={view} />
+        ) : (
+          <AlreadyClaimedState view={view} />
+        );
       default:
         return <NotReadyState view={view} />;
     }
@@ -621,6 +630,83 @@ function AlreadyClaimedState({ view }: { view: ClaimView }) {
       <p className="mt-4 text-muted">{a.body(view.label ?? null)}</p>
     </section>
   );
+}
+
+/**
+ * The reload-safe receipt. The in-flow success screen (BroadcastSuccess)
+ * only lives in React state, and heirs lose it the moment the phone
+ * reloads the tab — which happens as soon as they switch to their wallet
+ * to watch the money arrive. The server now resolves a consumed token on
+ * a claimed vault to this view (with the broadcast txid) instead of a
+ * 409, so coming back to the link lands here, not on "already used".
+ */
+function ClaimedSuccessState({ view }: { view: ClaimView }) {
+  const v = useVocab();
+  const c = v.claim.claimedSuccess;
+  return (
+    <section>
+      <Eyebrow>{c.eyebrow}</Eyebrow>
+      <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-4xl">
+        {c.title}
+      </h1>
+      <p className="mt-4 text-muted">{c.body}</p>
+
+      <div className="mt-6 card-flat p-4">
+        <p className="text-xs uppercase tracking-wider text-dim">
+          {c.txidLabel}
+        </p>
+        <p className="mt-2 break-all font-mono text-xs text-[var(--text)]">
+          {view.claimed_txid}
+        </p>
+        {view.claimed_explorer_url && (
+          <div className="mt-4">
+            <a
+              href={view.claimed_explorer_url}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="font-display text-sm font-bold tracking-tight text-accent underline underline-offset-2"
+            >
+              {c.explorer} ↗
+            </a>
+          </div>
+        )}
+      </div>
+
+      <p className="mt-8 text-sm text-muted">
+        <a
+          href="/"
+          className="text-accent underline underline-offset-2"
+        >
+          {c.homeCta}
+        </a>
+      </p>
+    </section>
+  );
+}
+
+/**
+ * One hint for every destination field in the claim flows, worst
+ * confusion first. The Lightning case gets its own words: heirs with
+ * Lightning-first wallets paste their Lightning address or an invoice
+ * in good faith, and the generic "doesn't look like a Bitcoin address"
+ * gives them nothing to act on. Copy comes from `claimCommon` so every
+ * flow (and every language) says the same thing.
+ */
+function destinationHint(
+  c: Pick<
+    ClaimCommonVocab,
+    "addressInvalidShape" | "addressWrongNetwork" | "addressLightning"
+  >,
+  address: string,
+  network: string,
+): string | undefined {
+  if (!address) return undefined;
+  if (looksLikeLightningDestination(address))
+    return c.addressLightning(bech32PrefixFor(network));
+  if (!looksLikeBitcoinAddress(address)) return c.addressInvalidShape;
+  if (!addressMatchesNetwork(address, network))
+    return c.addressWrongNetwork(bech32PrefixFor(network));
+  return undefined;
 }
 
 /* ----------------------------- Claimable ---------------------------------- */
@@ -984,13 +1070,7 @@ function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
           <div className="mt-4">
             <Field
               label={c.bitcoinAddress}
-              hint={
-                address && !addrShapeOk
-                  ? c.addressInvalidShape
-                  : address && !addrNetworkOk
-                    ? c.addressWrongNetwork(bech32PrefixFor(view.network))
-                    : undefined
-              }
+              hint={destinationHint(c, address, view.network)}
             >
               <textarea
                 rows={3}
@@ -1232,13 +1312,7 @@ function PasswordVaultClaim({
           <div className="mt-4">
             <Field
               label={c.bitcoinAddress}
-              hint={
-                address && !addrShapeOk
-                  ? c.addressInvalidShape
-                  : address && !addrNetworkOk
-                    ? c.addressWrongNetwork(bech32PrefixFor(sealed.network))
-                    : undefined
-              }
+              hint={destinationHint(c, address, sealed.network)}
             >
               <textarea
                 rows={3}
@@ -1396,6 +1470,7 @@ function DerivedHeirClaim({
   const heir = view.heir_display_name?.trim() || "you";
   const addrShapeOk = looksLikeBitcoinAddress(address);
   const addrNetworkOk = addressMatchesNetwork(address, params.network);
+  const destHint = destinationHint(c, address, params.network);
   const validAddr = addrShapeOk && addrNetworkOk;
   const feeRateNum = parseFeeRate(feeRate);
   const feeRateValid = feeRate.trim() === "" || feeRateNum !== null;
@@ -1502,14 +1577,8 @@ function DerivedHeirClaim({
             className="input"
             disabled={submitting || confirming}
           />
-          {address && !addrShapeOk ? (
-            <p className="mt-1 text-xs text-alarm">
-              {c.addressInvalidShape}
-            </p>
-          ) : address && !addrNetworkOk ? (
-            <p className="mt-1 text-xs text-alarm">
-              {c.addressWrongNetwork(bech32PrefixFor(params.network))}
-            </p>
+          {destHint ? (
+            <p className="mt-1 text-xs text-alarm">{destHint}</p>
           ) : null}
         </div>
 
@@ -1737,13 +1806,7 @@ function ManualPsbtClaim({
           <div className="mt-4">
             <Field
               label={m.bitcoinAddress}
-              hint={
-                address && !addrShapeOk
-                  ? c.addressInvalidShape
-                  : address && !addrNetworkOk
-                    ? c.addressWrongNetwork(bech32PrefixFor(view.network))
-                    : undefined
-              }
+              hint={destinationHint(c, address, view.network)}
             >
               <textarea
                 rows={3}
@@ -1937,7 +2000,12 @@ function BroadcastSuccess({ result }: { result: BroadcastClaimResponse }) {
       </div>
 
       <p className="mt-6 text-xs text-muted">
-        {bs.noNeedToKeepOpen}
+        {bs.noNeedToKeepOpen} {bs.linkShowsReceipt}
+      </p>
+      <p className="mt-3 text-xs text-muted">
+        <a href="/" className="text-accent underline underline-offset-2">
+          {bs.learnMore}
+        </a>
       </p>
     </div>
   );

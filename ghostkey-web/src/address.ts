@@ -32,6 +32,28 @@ export function looksLikeBitcoinAddress(s: string): boolean {
 }
 
 /**
+ * True when the paste is a Lightning payment string rather than a
+ * Bitcoin address: a Lightning address (name@domain — the email-looking
+ * kind wallets like Blink hand out), a BOLT11 invoice, an LNURL, or a
+ * lightning: URI. An on-chain spend can't pay any of these, and heirs
+ * with Lightning-first wallets paste them in good faith. Callers show a
+ * "get your wallet's Bitcoin address instead" hint rather than the
+ * generic "doesn't look right".
+ */
+export function looksLikeLightningDestination(s: string): boolean {
+  const t = s.trim().toLowerCase();
+  if (!t) return false;
+  if (t.startsWith("lightning:")) return true;
+  // BOLT11 invoices: lnbc (mainnet), lntb (testnet), lntbs (signet),
+  // lnbcrt (regtest). No Bitcoin address starts with "ln".
+  if (/^ln(bc|tb|tbs|bcrt)[0-9a-z]+$/.test(t)) return true;
+  if (/^lnurl1[0-9a-z]+$/.test(t)) return true;
+  // Lightning address: one @, a dot in the domain, no spaces.
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(t)) return true;
+  return false;
+}
+
+/**
  * True when `addr` belongs to `network`. Catches the realistic
  * cross-network paste — a mainnet `bc1…` address into a signet vault,
  * or a test `tb1…` into a mainnet vault — which would otherwise build a

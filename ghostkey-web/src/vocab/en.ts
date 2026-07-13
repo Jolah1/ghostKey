@@ -90,6 +90,14 @@ export const en: Vocab = {
           label ? `"${label}" was claimed earlier.` : "This inheritance was claimed earlier."
         } Nothing more to do here.`,
     },
+    claimedSuccess: {
+      eyebrow: "It's done",
+      title: "The Bitcoin is yours",
+      body: "This inheritance has been claimed and sent. The money is in the wallet that was chosen when the claim was made. There's nothing more to do here.",
+      txidLabel: "Your receipt: the transaction ID",
+      explorer: "See it on the Bitcoin network",
+      homeCta: "Learn more about GhostKey",
+    },
     error: {
       eyebrow: "Something went wrong",
       tryAgain: "Try again",
@@ -167,6 +175,8 @@ export const en: Vocab = {
     addressInstructions3: " and paste it below.",
     addressWrongNetwork: (prefix) =>
       `That address is for a different network. It should start with ${prefix}.`,
+    addressLightning: (prefix) =>
+      `That looks like a Lightning address or invoice. This money moves on the Bitcoin network itself, so it needs a Bitcoin address. In your wallet, tap Receive and choose Bitcoin or On-chain, then paste the address that starts with ${prefix}.`,
     addressPlaceholder: (prefix) => `${prefix}...`,
     confirmDescription: "We'll show you the details to check, then prepare and broadcast the transaction for you. You don't need to sign anything in another app.",
   },
@@ -246,6 +256,8 @@ export const en: Vocab = {
     transactionId: "Transaction ID",
     watchItArrive: "Watch it arrive \u2197",
     noNeedToKeepOpen: "You don't need to keep this page open. The transaction is on the Bitcoin network and will confirm on its own.",
+    linkShowsReceipt: "If you come back to your claim link later, it will show you this receipt again.",
+    learnMore: "Learn more about GhostKey",
   },
   heirRecoveryFile: {
     advanced: "Advanced: save your own recovery file",

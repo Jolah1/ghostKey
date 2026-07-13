@@ -97,6 +97,16 @@ export interface ClaimVocab {
     title: string;
     body: (label: string | null) => string;
   };
+  /** Reload-safe receipt once the claim broadcast succeeded: the heir's
+   *  link keeps showing the txid instead of "already used". */
+  claimedSuccess: {
+    eyebrow: string;
+    title: string;
+    body: string;
+    txidLabel: string;
+    explorer: string;
+    homeCta: string;
+  };
   error: {
     eyebrow: string;
     tryAgain: string;
@@ -173,6 +183,9 @@ export interface ClaimCommonVocab {
   addressInstructions2: string;
   addressInstructions3: string;
   addressWrongNetwork: (prefix: string) => string;
+  /** Shown when the paste is a Lightning address/invoice/LNURL — tells
+   *  the heir how to get their wallet's on-chain address instead. */
+  addressLightning: (prefix: string) => string;
   addressPlaceholder: (prefix: string) => string;
   confirmDescription: string;
 }
@@ -252,6 +265,9 @@ export interface BroadcastSuccessVocab {
   transactionId: string;
   watchItArrive: string;
   noNeedToKeepOpen: string;
+  /** The claim link now resolves to a receipt after success (#280). */
+  linkShowsReceipt: string;
+  learnMore: string;
 }
 
 export interface HeirRecoveryFileVocab {

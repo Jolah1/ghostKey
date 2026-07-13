@@ -300,6 +300,9 @@ pub(crate) async fn resolve_drill_claim(
         token_role: "heir".to_string(),
         guardian_slot: None,
         drill: true,
+        // A rehearsal never broadcasts anything.
+        claimed_txid: None,
+        claimed_explorer_url: None,
     }))
 }
 
