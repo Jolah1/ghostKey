@@ -98,6 +98,10 @@ import {
 import { saveVaultMeta } from "./vaultStore";
 import type { HeirContactChannel } from "./heirChannels";
 import {
+  useChannelCapability,
+  CHANNEL_UNAVAILABLE_NOTE,
+} from "./useChannelCapability";
+import {
   buildHeirEnvelope,
   downloadHeirEnvelope,
   type HeirEnvelope,
@@ -1739,6 +1743,7 @@ function HeirCard({
 }) {
   const channelMeta =
     CHANNELS.find((c) => c.id === heir.channel) ?? CHANNELS[0];
+  const cap = useChannelCapability();
 
   return (
     <div className="card-flat p-4 md:p-5">
@@ -1777,9 +1782,10 @@ function HeirCard({
             <Tile
               key={c.id}
               title={c.title}
-              sub={c.sub}
+              sub={cap[c.id] ? c.sub : CHANNEL_UNAVAILABLE_NOTE}
               selected={heir.channel === c.id}
               onClick={() => onChange({ channel: c.id })}
+              disabled={!cap[c.id]}
             />
           ))}
         </div>
@@ -1912,6 +1918,7 @@ function GuardianCard({
 }) {
   const channelMeta =
     CHANNELS.find((c) => c.id === guardian.channel) ?? CHANNELS[0];
+  const cap = useChannelCapability();
 
   return (
     <div className="card-flat p-4 md:p-5">
@@ -1938,9 +1945,10 @@ function GuardianCard({
             <Tile
               key={c.id}
               title={c.title}
-              sub={c.sub}
+              sub={cap[c.id] ? c.sub : CHANNEL_UNAVAILABLE_NOTE}
               selected={guardian.channel === c.id}
               onClick={() => onChange({ channel: c.id })}
+              disabled={!cap[c.id]}
             />
           ))}
         </div>

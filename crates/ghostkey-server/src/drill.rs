@@ -140,6 +140,13 @@ async fn enqueue_drill_invite(
     let Some(recipient) = contact.contact.as_deref().filter(|c| !c.is_empty()) else {
         return Ok(false);
     };
+    // Don't queue into a black hole (#278): if this deployment can't
+    // deliver on the heir's channel, say so instead of "Practice sent".
+    // The practice card already renders the share-it-yourself path for
+    // `heir_notified: false`.
+    if !notifier::channel_deliverable(channel) {
+        return Ok(false);
+    }
 
     let heir_name = contact.name.as_deref().unwrap_or("there");
     let intro = crate::scheduler::load_heir_intro(state, vault_id).await;
@@ -444,6 +451,21 @@ mod http_tests {
         }
         let _ = ensure_master_key_loaded();
         unsafe { std::env::remove_var("GHOSTKEY_AUTH_DISABLED") };
+        // The drill tests use an email heir and assert the invite was
+        // queued (`heir_notified: true`). Since the drill now consults
+        // channel capability (#278), email must look deliverable here —
+        // which mirrors production, where SMTP is configured. Set it
+        // under the shared SMTP env lock so we don't race the
+        // SMTP-config unit test that asserts SMTP is unset.
+        {
+            let _g = crate::notifier::SMTP_ENV_LOCK.lock().unwrap();
+            if std::env::var("SMTP_HOST").is_err() {
+                // SAFETY: single-process tests; the lock serialises access.
+                unsafe {
+                    std::env::set_var("SMTP_HOST", "localhost");
+                }
+            }
+        }
 
         let pool: SqlitePool = SqlitePoolOptions::new()
             .max_connections(1)
