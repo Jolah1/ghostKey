@@ -10,12 +10,24 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, InlineAlert } from "./ui";
+import { captureVideoPoster } from "./videoPoster";
 
 const MAX_SECONDS = 30;
 
-/** Container the browser will record into, best-supported first. */
+/** Container the browser will record into, most heir-playable first.
+ *
+ *  H.264 MP4 leads: the clip plays back on whatever device the HEIR
+ *  opens years from now, and iPhones can't play WebM at all — a WebM
+ *  clip recorded here was a dead player on the first real mainnet
+ *  claim. The H.264 candidates name avc1 explicitly because a bare
+ *  "video/mp4" lets the browser pick a codec iPhones can't decode
+ *  either (VP9-in-MP4). WebM stays as the fallback for browsers that
+ *  can't record MP4, and the claim page now offers those clips as a
+ *  download when the heir's device can't play them. */
 function pickMime(): string | undefined {
   const candidates = [
+    'video/mp4;codecs="avc1.42E01E,mp4a.40.2"',
+    "video/mp4;codecs=avc1",
     "video/webm;codecs=vp8,opus",
     "video/webm;codecs=vp9,opus",
     "video/webm",
@@ -46,6 +58,7 @@ export function VideoMessageRecorder({
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewPoster, setPreviewPoster] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -77,6 +90,7 @@ export function VideoMessageRecorder({
 
   async function start() {
     setError(null);
+    setPreviewPoster(null);
     if (typeof MediaRecorder === "undefined" || !navigator.mediaDevices) {
       setPhase("unsupported");
       return;
@@ -111,6 +125,11 @@ export function VideoMessageRecorder({
         setPreviewUrl(url);
         setPhase("review");
         onChange({ blob, durationMs, mime: blob.type || type });
+        // Best-effort: show a frame in the review player instead of a
+        // blank box. Arrives async; the player works fine without it.
+        void captureVideoPoster(url).then((p) => {
+          if (p) setPreviewPoster(p);
+        });
       };
       recorderRef.current = recorder;
       startedAtRef.current = Date.now();
@@ -144,6 +163,7 @@ export function VideoMessageRecorder({
   function reset() {
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPreviewUrl(null);
+    setPreviewPoster(null);
     setElapsed(0);
     setPhase("idle");
     onChange(null);
@@ -180,6 +200,7 @@ export function VideoMessageRecorder({
             {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
             <video
               src={previewUrl}
+              poster={previewPoster ?? undefined}
               className="aspect-video w-full object-cover"
               controls
               playsInline

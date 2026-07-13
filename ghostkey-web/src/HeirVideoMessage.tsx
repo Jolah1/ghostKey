@@ -15,12 +15,30 @@ import { api, ApiError } from "./api";
 import { b64decode } from "./crypto/sealing";
 import { decryptAndVerifyVideo } from "./crypto/video";
 import { InlineAlert } from "./ui";
+import {
+  captureVideoPoster,
+  videoDownloadName,
+  videoIsPlayable,
+} from "./videoPoster";
 
 type State =
   | { kind: "loading" }
   | { kind: "none" }
   | { kind: "error" }
-  | { kind: "ready"; url: string; verified: boolean };
+  | {
+      kind: "ready";
+      url: string;
+      verified: boolean;
+      /** False when this browser can't decode the clip's container
+       *  (WebM on an iPhone): render a download offer, not a player
+       *  that never plays. */
+      playable: boolean;
+      /** First-frame data URL so the player isn't a blank box before
+       *  play is pressed. Arrives async; null renders as before. */
+      poster: string | null;
+      /** Filename for the download offer, from the clip's MIME. */
+      filename: string;
+    };
 
 export function HeirVideoMessage({ token }: { token: string }) {
   const [state, setState] = useState<State>({ kind: "loading" });
@@ -42,12 +60,28 @@ export function HeirVideoMessage({ token }: { token: string }) {
         if (cancelled) return;
         // Copy into a fresh ArrayBuffer-backed array so the Blob ctor's
         // BlobPart typing is satisfied regardless of the source buffer.
-        const blob = new Blob([new Uint8Array(clip.bytes)], {
-          type: view.mime || "video/webm",
-        });
+        const mime = view.mime || "video/webm";
+        const blob = new Blob([new Uint8Array(clip.bytes)], { type: mime });
         const url = URL.createObjectURL(blob);
         urlRef.current = url;
-        setState({ kind: "ready", url, verified: clip.verified });
+        const playable = videoIsPlayable(mime);
+        setState({
+          kind: "ready",
+          url,
+          verified: clip.verified,
+          playable,
+          poster: null,
+          filename: videoDownloadName(mime),
+        });
+        if (playable) {
+          // Poster arrives after first render; the player shows it as
+          // long as playback hasn't started, which is exactly the gap
+          // it exists to fill.
+          void captureVideoPoster(url).then((poster) => {
+            if (cancelled || !poster) return;
+            setState((s) => (s.kind === "ready" ? { ...s, poster } : s));
+          });
+        }
       } catch (e) {
         if (cancelled) return;
         // 404 = this vault simply has no video. Anything else (including
@@ -97,11 +131,35 @@ export function HeirVideoMessage({ token }: { token: string }) {
   return (
     <div className="mb-6 rounded-2xl border border-app p-5">
       <h2 className="text-lg font-semibold">A message left for you</h2>
-      <div className="mt-3 overflow-hidden rounded-xl bg-black/80">
-        {/* The owner's own recorded clip — no caption file exists. */}
-        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-        <video src={state.url} className="aspect-video w-full object-cover" controls playsInline />
-      </div>
+      {state.playable ? (
+        <div className="mt-3 overflow-hidden rounded-xl bg-black/80">
+          {/* The owner's own recorded clip — no caption file exists. */}
+          {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+          <video
+            src={state.url}
+            poster={state.poster ?? undefined}
+            className="aspect-video w-full object-cover"
+            controls
+            playsInline
+          />
+        </div>
+      ) : (
+        <>
+          <p className="text-app-subtle mt-2 text-sm">
+            This phone can't play the video here. Save it and open it in a
+            video app, or open this same link on a computer.
+          </p>
+          <p className="mt-3">
+            <a
+              href={state.url}
+              download={state.filename}
+              className="font-display text-sm font-bold tracking-tight text-accent underline underline-offset-2"
+            >
+              Save the video
+            </a>
+          </p>
+        </>
+      )}
       {state.verified ? (
         <p className="text-ok mt-3 flex items-center gap-2 text-sm font-medium">
           <span aria-hidden>✓</span>
@@ -111,9 +169,9 @@ export function HeirVideoMessage({ token }: { token: string }) {
       ) : (
         <div className="mt-3">
           <InlineAlert tone="warning">
-            This message played, but we could not confirm it really came from
-            the person who set up this vault. It may have been changed. Treat
-            it with caution.
+            We could not confirm this message really came from the person who
+            set up this vault. It may have been changed. Treat it with
+            caution.
           </InlineAlert>
         </div>
       )}
