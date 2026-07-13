@@ -5768,7 +5768,10 @@ mod tests {
         )
         .await
         .expect_err("used token on unclaimed vault");
-        assert!(matches!(conflict, ApiError::Conflict(_)), "got {conflict:?}");
+        assert!(
+            matches!(conflict, ApiError::Conflict(_)),
+            "got {conflict:?}"
+        );
 
         // The real flow: broadcast succeeded, vault is claimed.
         sqlx::query("UPDATE vaults SET status = 'claimed' WHERE id = ?")
