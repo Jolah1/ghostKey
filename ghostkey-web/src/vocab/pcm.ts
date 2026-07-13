@@ -95,6 +95,14 @@ export const pcm: Vocab = {
           label ? `Dem don claim "${label}" before.` : "Dem don claim this inheritance before."
         } Nothing dey again to do here.`,
     },
+    claimedSuccess: {
+      eyebrow: "E don finish",
+      title: "The Bitcoin don be your own",
+      body: "Dem don claim this inheritance and send am. The money dey inside the wallet wey dem choose when dem claim am. Nothing remain to do here.",
+      txidLabel: "Your receipt: the transaction ID",
+      explorer: "See am for Bitcoin network",
+      homeCta: "Learn more about GhostKey",
+    },
     error: {
       eyebrow: "Something dey wrong",
       tryAgain: "Try again",
@@ -172,6 +180,8 @@ export const pcm: Vocab = {
     addressInstructions3: " and paste am below.",
     addressWrongNetwork: (prefix) =>
       `That address na for different network. E suppose start with ${prefix}.`,
+    addressLightning: (prefix) =>
+      `That one be like Lightning address or invoice. This money dey move for the Bitcoin network itself, so e need Bitcoin address. For your wallet, tap Receive and choose Bitcoin or On-chain, then paste the address wey start with ${prefix}.`,
     addressPlaceholder: (prefix) => `${prefix}...`,
     confirmDescription: "We go show you the details to check, then prepare and broadcast the transaction for you. You no need to sign anything for another app.",
   },
@@ -251,6 +261,8 @@ export const pcm: Vocab = {
     transactionId: "Transaction ID",
     watchItArrive: "Watch am arrive \u2197",
     noNeedToKeepOpen: "You no need to keep this page open. The transaction dey for the Bitcoin network and e go confirm by itself.",
+    linkShowsReceipt: "If you come back to your claim link later, e go show you this receipt again.",
+    learnMore: "Learn more about GhostKey",
   },
   heirRecoveryFile: {
     advanced: "Advanced: save your own recovery file",

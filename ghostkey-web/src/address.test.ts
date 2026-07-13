@@ -3,6 +3,7 @@ import {
   addressMatchesNetwork,
   bech32PrefixFor,
   looksLikeBitcoinAddress,
+  looksLikeLightningDestination,
 } from "./address";
 
 // Representative addresses per network. Not real funds — just the right
@@ -59,6 +60,40 @@ describe("addressMatchesNetwork", () => {
     expect(addressMatchesNetwork(MAINNET_BECH32.toUpperCase(), "bitcoin")).toBe(
       true,
     );
+  });
+});
+
+describe("looksLikeLightningDestination", () => {
+  it("catches the Lightning things heirs actually paste", () => {
+    // Lightning address, the Blink / Wallet of Satoshi kind.
+    expect(looksLikeLightningDestination("fola@blink.sv")).toBe(true);
+    expect(looksLikeLightningDestination("Someone@walletofsatoshi.com")).toBe(
+      true,
+    );
+    // BOLT11 invoices, with and without an amount.
+    expect(
+      looksLikeLightningDestination(
+        "lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypq",
+      ),
+    ).toBe(true);
+    expect(looksLikeLightningDestination("lntb20m1pvjluezpp5qqqsyqcyq5")).toBe(
+      true,
+    );
+    // LNURL and lightning: URIs.
+    expect(
+      looksLikeLightningDestination("lnurl1dp68gurn8ghj7um9wfmxjcm99e3k7mf0"),
+    ).toBe(true);
+    expect(looksLikeLightningDestination("lightning:lnbc1pvjluez")).toBe(true);
+  });
+
+  it("leaves Bitcoin addresses and ordinary junk alone", () => {
+    expect(looksLikeLightningDestination(MAINNET_BECH32)).toBe(false);
+    expect(looksLikeLightningDestination(TESTNET_BECH32)).toBe(false);
+    expect(looksLikeLightningDestination(MAINNET_P2PKH)).toBe(false);
+    expect(looksLikeLightningDestination("")).toBe(false);
+    expect(looksLikeLightningDestination("not an address")).toBe(false);
+    // An email-less handle isn't a Lightning address.
+    expect(looksLikeLightningDestination("fola@blink")).toBe(false);
   });
 });
 

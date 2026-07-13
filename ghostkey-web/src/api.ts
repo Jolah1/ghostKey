@@ -346,6 +346,12 @@ export interface ClaimView {
    *  heir through the claim without moving anything. Optional so an
    *  older server (which never sends it) reads as "not a drill". */
   drill?: boolean;
+  /** Set only after the claim completed: the txid of the broadcast
+   *  that moved the funds. The page shows the heir their receipt
+   *  instead of a "link already used" dead end. */
+  claimed_txid?: string | null;
+  /** Explorer link for `claimed_txid`. */
+  claimed_explorer_url?: string | null;
 }
 
 /** Response from `POST /vaults/:id/drill` (#223). */
