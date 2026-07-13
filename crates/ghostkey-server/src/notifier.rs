@@ -460,8 +460,8 @@ enum WorkerOutcome {
     Retry,
     /// Final failure -- attempts exhausted.
     Permanent,
-    /// SMTP not configured for this channel; we left the row alone
-    /// so a future deployment with SMTP configured can pick it up.
+    /// No backend configured for this channel; the row was failed
+    /// with a clear `last_error` so the gap is visible (#278).
     Skip,
 }
 
@@ -472,6 +472,30 @@ enum WorkerOutcome {
 /// inner Option is independent — operators can wire SMTP without
 /// Twilio (or vice versa) and the worker just skips rows whose
 /// channel has no backend configured.
+/// Whether this deployment can actually deliver on `channel`, judged
+/// from the same env config the worker's backends are built from.
+/// Consulted by `/health` — so the setup UI never offers a channel the
+/// server would drop (#277) — and by enqueue-and-report endpoints like
+/// the practice drill's `heir_notified` (#278).
+pub fn channel_deliverable(channel: Channel) -> bool {
+    match channel {
+        Channel::Email => SmtpConfig::from_env().is_some(),
+        Channel::Sms | Channel::Whatsapp => TwilioConfig::from_env().is_some(),
+        Channel::WebPush => crate::push::VapidConfig::from_env().is_some(),
+    }
+}
+
+/// Operator-facing reason a channel can't deliver, recorded as the
+/// row's `last_error` so `notifications_failed` tells the real story.
+fn undeliverable_reason(channel: Channel) -> &'static str {
+    match channel {
+        Channel::Email => "SMTP not configured; email undeliverable",
+        Channel::Sms => "Twilio not configured; sms undeliverable",
+        Channel::Whatsapp => "Twilio not configured; whatsapp undeliverable",
+        Channel::WebPush => "VAPID keys not configured; web push undeliverable",
+    }
+}
+
 struct Backends {
     smtp: Option<SmtpConfig>,
     twilio: Option<TwilioConfig>,
@@ -496,7 +520,7 @@ pub async fn run(pool: SqlitePool, tick: Duration) {
     match &backends.smtp {
         None => tracing::warn!(
             "SMTP_HOST unset; notification worker will accept enqueues but \
-             every email-channel send will be Skipped (row stays pending). \
+             every email-channel send will FAIL with an undeliverable error. \
              Configure SMTP_HOST / SMTP_PORT / SMTP_FROM (and SMTP_USER/PASS \
              if needed) to enable delivery."
         ),
@@ -508,8 +532,8 @@ pub async fn run(pool: SqlitePool, tick: Duration) {
     }
     match &backends.twilio {
         None => tracing::info!(
-            "TWILIO_* not configured; sms/whatsapp channels will be Skipped \
-             (row stays pending). Configure TWILIO_ACCOUNT_SID + \
+            "TWILIO_* not configured; sms/whatsapp notifications will FAIL \
+             with an undeliverable error. Configure TWILIO_ACCOUNT_SID + \
              TWILIO_AUTH_TOKEN + TWILIO_SMS_FROM + TWILIO_WHATSAPP_FROM to \
              enable delivery."
         ),
@@ -522,8 +546,8 @@ pub async fn run(pool: SqlitePool, tick: Duration) {
     }
     match &backends.vapid {
         None => tracing::info!(
-            "GHOSTKEY_VAPID_PRIVATE_KEY unset; webpush channel will be \
-             Skipped (row stays pending). Generate a keypair with \
+            "GHOSTKEY_VAPID_PRIVATE_KEY unset; webpush notifications will \
+             FAIL with an undeliverable error. Generate a keypair with \
              `npx web-push generate-vapid-keys` and set \
              GHOSTKEY_VAPID_PRIVATE_KEY + GHOSTKEY_VAPID_SUBJECT to \
              enable delivery."
@@ -634,16 +658,24 @@ async fn tick_once(pool: &SqlitePool, backends: Arc<Backends>) -> anyhow::Result
         };
 
         // Dispatch to the right backend. `None` means "no backend
-        // configured for this channel" — leave the row pending so a
-        // future deployment with the backend wired can pick it up;
-        // do NOT count it as an attempt.
+        // configured for this channel". This used to leave the row
+        // pending "for a future deployment", which in practice was a
+        // silent black hole (#278): /health degraded forever, the UI
+        // told the owner the message went out, and no operator signal
+        // ever fired. Fail it loudly instead — if the backend is
+        // configured later, the sender can re-enqueue.
         let dispatch = dispatch_send(pool, &backends, channel, &vault_id, &draft).await;
         let outcome = match dispatch {
             None => {
-                sqlx::query("UPDATE notifications SET status = 'pending' WHERE id = ?")
-                    .bind(id)
-                    .execute(pool)
-                    .await?;
+                let reason = undeliverable_reason(channel);
+                tracing::warn!(
+                    notif_id = id,
+                    kind = %kind,
+                    channel = ?channel,
+                    reason,
+                    "channel has no configured backend; failing notification"
+                );
+                mark_permanent(pool, id, reason).await?;
                 WorkerOutcome::Skip
             }
             Some(Ok(())) => WorkerOutcome::Sent,
@@ -684,7 +716,7 @@ async fn tick_once(pool: &SqlitePool, backends: Arc<Backends>) -> anyhow::Result
 ///
 /// Return values:
 ///   - `None`: no backend configured for this channel; the caller
-///     should leave the row pending (a Skip, not a failure).
+///     fails the row with a clear error (#278).
 ///   - `Some(Ok)`: delivered. Caller flips to `sent`.
 ///   - `Some(Err)`: backend rejected or timed out. Caller decides
 ///     retry vs. permanent.
@@ -1196,6 +1228,15 @@ pub async fn enqueue_owner_email(
     Ok(true)
 }
 
+/// Serialises every test that reads or writes `SMTP_*` env, so a test
+/// that asserts SMTP is unset can't race a concurrent setter. Lives at
+/// module scope (not inside `mod tests`) so the drill tests, which set
+/// `SMTP_HOST` to make an email heir look deliverable, share the exact
+/// same lock as the SMTP-config unit test here. Mirrors the existing
+/// `TWILIO_ENV_LOCK` pattern.
+#[cfg(test)]
+pub(crate) static SMTP_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1224,7 +1265,10 @@ mod tests {
 
     #[test]
     fn smtp_config_defaults_when_only_host_set() {
-        // SAFETY: tests run in one process; we restore.
+        // Hold the shared SMTP env lock so the remove→is_none() check
+        // below can't race a concurrent setter (e.g. the drill tests).
+        let _g = SMTP_ENV_LOCK.lock().unwrap();
+        // SAFETY: tests run in one process; the lock serialises access.
         unsafe {
             std::env::set_var("SMTP_HOST", "smtp.example");
             std::env::remove_var("SMTP_PORT");
@@ -1517,5 +1561,77 @@ mod tests {
             }
             other => panic!("expected Twilio error, got {other:?}"),
         }
+    }
+
+    /// A row whose channel has no configured backend must FAIL with a
+    /// clear `last_error`, not sit pending forever (#278). The eternal
+    /// pending row was observed live: a WhatsApp drill invite waited 5
+    /// days with 0 attempts while /health degraded and the owner was
+    /// told "Practice sent".
+    #[tokio::test]
+    async fn unconfigured_channel_fails_row_with_reason() {
+        if std::env::var("GHOSTKEY_MASTER_KEY").is_err() {
+            let zeros = [0u8; 32];
+            let b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode(zeros);
+            // SAFETY: tests are single-process; the value is fixed.
+            unsafe {
+                std::env::set_var("GHOSTKEY_MASTER_KEY", &b64);
+            }
+        }
+        let _ = crate::crypto::ensure_master_key_loaded();
+
+        let pool: SqlitePool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect sqlite::memory");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+        // Minimal vault row so the notifications FK holds.
+        sqlx::query(
+            r#"INSERT INTO vaults (id, network, descriptor_external, descriptor_internal,
+                    timelock_blocks, checkin_period_secs, grace_period_secs,
+                    created_at, next_deadline_at, status)
+               VALUES ('v-notif-1','regtest','d-ext-notif','d-int-notif',
+                    144, 86400, 3600,
+                    '2026-01-01T00:00:00Z','2026-01-02T00:00:00Z','ok')"#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert vault");
+
+        let sms_id = enqueue(
+            &pool,
+            "v-notif-1",
+            NotificationKind::DrillInvite,
+            Channel::Whatsapp,
+            "+15558675309",
+            "practice",
+            "hello",
+        )
+        .await
+        .expect("enqueue whatsapp");
+
+        // Worker with NO backends at all — the signet/dev shape.
+        let backends = Arc::new(Backends {
+            smtp: None,
+            twilio: None,
+            vapid: None,
+            http: reqwest::Client::new(),
+        });
+        tick_once(&pool, backends).await.expect("tick");
+
+        let (status, last_error): (String, Option<String>) =
+            sqlx::query_as("SELECT status, last_error FROM notifications WHERE id = ?")
+                .bind(sms_id)
+                .fetch_one(&pool)
+                .await
+                .expect("row");
+        assert_eq!(status, "failed_permanent");
+        let err = last_error.expect("must carry a reason");
+        assert!(err.contains("Twilio"), "reason names the config: {err}");
+        assert!(err.contains("whatsapp"), "reason names the channel: {err}");
     }
 }

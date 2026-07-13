@@ -686,6 +686,13 @@ export const api = {
        *  server has no push keypair configured. Presence gates the
        *  reminder opt-in card on the dashboard. */
       push_public_key?: string | null;
+      /** Which contact channels this server can actually deliver
+       *  (#277). Absent on older servers — treated as deliverable so
+       *  a stale pairing doesn't lock every channel away. The setup
+       *  and edit-heir flows disable channels reported false. */
+      email_enabled?: boolean;
+      sms_enabled?: boolean;
+      whatsapp_enabled?: boolean;
     }>("/health"),
   /** Deep probe of the Lightning sidecar. `/health` only tells us
    *  whether the operator wired up env vars; this issues the

@@ -356,6 +356,13 @@ struct Health {
     /// `applicationServerKey` to `pushManager.subscribe()` and hides
     /// the reminder opt-in entirely when null.
     push_public_key: Option<String>,
+    /// Which contact channels this server can actually deliver (#277).
+    /// The setup and edit-heir flows disable channels that are false
+    /// here, so an owner can never pick a contact the notifier would
+    /// have to drop. Same gating pattern as `lightning_enabled`.
+    email_enabled: bool,
+    sms_enabled: bool,
+    whatsapp_enabled: bool,
 
     /// Monitoring: RFC3339 time of the last successful scheduler tick,
     /// null if it has never ticked since boot.
@@ -475,6 +482,9 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         default_network: crate::config::default_network(),
         assist_enabled,
         push_public_key: crate::push::VapidConfig::public_key_from_env(),
+        email_enabled: crate::notifier::channel_deliverable(crate::notifier::Channel::Email),
+        sms_enabled: crate::notifier::channel_deliverable(crate::notifier::Channel::Sms),
+        whatsapp_enabled: crate::notifier::channel_deliverable(crate::notifier::Channel::Whatsapp),
         scheduler_last_tick_at,
         scheduler_age_secs,
         scheduler_healthy,

@@ -49,6 +49,10 @@ import {
 import { saveVaultMeta } from "./vaultStore";
 import { HEIR_CHANNELS as CHANNELS, type HeirContactChannel } from "./heirChannels";
 import {
+  useChannelCapability,
+  CHANNEL_UNAVAILABLE_NOTE,
+} from "./useChannelCapability";
+import {
   DEFAULT_CADENCE_ID,
   DEFAULT_GRACE_ID,
   cadencePresetsFor,
@@ -638,6 +642,7 @@ function StepHeir({
 }) {
   const channelMeta =
     CHANNELS.find((c) => c.id === draft.heirContactChannel) ?? CHANNELS[0];
+  const cap = useChannelCapability();
   const hasOriginTag = isOriginTagged(draft.heirXpub);
   const detectedFp = hasOriginTag ? extractFingerprint(draft.heirXpub) : null;
 
@@ -667,9 +672,10 @@ function StepHeir({
               <Tile
                 key={c.id}
                 title={c.title}
-                sub={c.sub}
+                sub={cap[c.id] ? c.sub : CHANNEL_UNAVAILABLE_NOTE}
                 selected={draft.heirContactChannel === c.id}
                 onClick={() => patch({ heirContactChannel: c.id })}
+                disabled={!cap[c.id]}
               />
             ))}
           </div>

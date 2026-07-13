@@ -18,6 +18,10 @@ import { PracticeClaimCard, type HeirChannel } from "./PracticeClaimCard";
 import { PanicCard, PushOptInCard } from "./Dashboard";
 import { Button, Field, Tile, InlineAlert } from "./ui";
 import {
+  useChannelCapability,
+  CHANNEL_UNAVAILABLE_NOTE,
+} from "./useChannelCapability";
+import {
   HEIR_CHANNELS,
   contactShapeError,
   type HeirContactChannel,
@@ -390,6 +394,7 @@ function HeirContactCard({
   }, [vaultId, ownerToken]);
 
   const meta = HEIR_CHANNELS.find((c) => c.id === channel) ?? HEIR_CHANNELS[0];
+  const cap = useChannelCapability();
 
   async function save() {
     const trimmed = contact.trim();
@@ -446,16 +451,30 @@ function HeirContactCard({
             <Tile
               key={c.id}
               title={c.title}
-              sub={c.sub}
+              sub={cap[c.id] ? c.sub : CHANNEL_UNAVAILABLE_NOTE}
               selected={channel === c.id}
               onClick={() => {
                 setChannel(c.id);
                 setSaved(false);
                 setError(null);
               }}
+              disabled={!cap[c.id]}
             />
           ))}
         </div>
+        {/* An existing vault may already sit on a channel this server
+            can't deliver (#277) — the exact silent failure that stranded
+            a WhatsApp heir for 5 days. Say it here, where it can be
+            fixed, instead of at claim time when it can't. */}
+        {!cap[channel] ? (
+          <div className="mt-3">
+            <InlineAlert tone="warning">
+              This server can't send {meta.title} messages right now, so
+              nothing will reach them this way. Switch to a channel that
+              works, or messages to your heir won't be delivered.
+            </InlineAlert>
+          </div>
+        ) : null}
       </Field>
 
       <Field
