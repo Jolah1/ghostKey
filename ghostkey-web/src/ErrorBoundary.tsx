@@ -17,19 +17,24 @@ interface Props {
 
 interface State {
   error: Error | null;
+  componentStack: string | null;
 }
 
 export class ErrorBoundary extends Component<Props, State> {
-  state: State = { error: null };
+  state: State = { error: null, componentStack: null };
 
   static getDerivedStateFromError(error: Error): State {
-    return { error };
+    return { error, componentStack: null };
   }
 
   componentDidCatch(error: Error, info: { componentStack?: string | null }) {
     // Console only — there's no telemetry sink yet, and the message
     // may contain user data we'd rather not ship anywhere.
     console.error("GhostKey UI crashed:", error, info.componentStack);
+    // Also keep it in state so the card can offer it behind a
+    // disclosure. On a phone there's no console to open, so without
+    // this a production crash is undiagnosable from a user's report.
+    this.setState({ componentStack: info.componentStack ?? null });
   }
 
   render() {
@@ -59,6 +64,19 @@ export class ErrorBoundary extends Component<Props, State> {
             again. And remember, your money is always reachable with
             your emergency recovery file.
           </p>
+          {/* Tucked behind a disclosure: nobody needs this to recover,
+              but when an owner reports "it keeps doing this" it's the
+              difference between a fix and a guess. Phones have no
+              console to open. */}
+          <details className="mt-6 w-full text-left">
+            <summary className="cursor-pointer text-xs text-dim">
+              Technical details
+            </summary>
+            <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[var(--surface-2,var(--surface))] p-3 text-[11px] leading-relaxed text-muted">
+              {this.state.error.message}
+              {this.state.componentStack ?? ""}
+            </pre>
+          </details>
         </div>
       </main>
     );
