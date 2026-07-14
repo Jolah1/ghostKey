@@ -11,25 +11,53 @@
  */
 import { Component, type ReactNode } from "react";
 
+/**
+ * Whether to surface the raw error on the crash card.
+ *
+ * Off for everyone by default: an owner mid-check-in or a grieving
+ * heir must never be shown a stack trace. It's opt-in per browser, so
+ * only someone debugging sees it:
+ *
+ *   localStorage.setItem("gk:debug", "1")   — sticky, survives reloads
+ *   https://ghostkeyapp.com/?debug=1#/...   — one-off, no console needed
+ *
+ * The query form matters on mobile, where there's no console to open.
+ * Reads are wrapped because localStorage throws in some privacy modes.
+ */
+function debugEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const q = new URLSearchParams(window.location.search).get("debug");
+    if (q === "1") return true;
+    return window.localStorage.getItem("gk:debug") === "1";
+  } catch {
+    return false;
+  }
+}
+
 interface Props {
   children: ReactNode;
 }
 
 interface State {
   error: Error | null;
+  componentStack: string | null;
 }
 
 export class ErrorBoundary extends Component<Props, State> {
-  state: State = { error: null };
+  state: State = { error: null, componentStack: null };
 
   static getDerivedStateFromError(error: Error): State {
-    return { error };
+    return { error, componentStack: null };
   }
 
   componentDidCatch(error: Error, info: { componentStack?: string | null }) {
     // Console only — there's no telemetry sink yet, and the message
     // may contain user data we'd rather not ship anywhere.
     console.error("GhostKey UI crashed:", error, info.componentStack);
+    // Kept so the debug-gated block below can show it. A phone has no
+    // console, so without this a crash there is undiagnosable.
+    this.setState({ componentStack: info.componentStack ?? null });
   }
 
   render() {
@@ -59,6 +87,13 @@ export class ErrorBoundary extends Component<Props, State> {
             again. And remember, your money is always reachable with
             your emergency recovery file.
           </p>
+          {debugEnabled() ? (
+            <pre className="mt-8 w-full overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[var(--surface-2,var(--surface))] p-3 text-left text-[11px] leading-relaxed text-muted">
+              {this.state.error.message}
+              {this.state.error.stack ? `\n\n${this.state.error.stack}` : ""}
+              {this.state.componentStack ?? ""}
+            </pre>
+          ) : null}
         </div>
       </main>
     );
