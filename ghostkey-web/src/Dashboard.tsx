@@ -336,6 +336,7 @@ export function Dashboard({ onNavigate }: Props) {
           isClosed={isClosed}
           isUnfunded={isUnfunded}
           isPastDeadline={isPastDeadline}
+          multiHeir={groupVaults.length > 1}
         />
 
         {vault?.status === "frozen" ? (
@@ -367,14 +368,31 @@ export function Dashboard({ onNavigate }: Props) {
               {isClosed ? (
                 <VaultClosedCard
                   meta={meta}
+                  multiHeir={groupVaults.length > 1}
                   onDismiss={() => {
-                    // Final close-out: drop the local meta so the next
-                    // dashboard visit isn't tied to a terminal vault.
-                    // The server-side row stays — claim history is the
-                    // owner's record. They can also "Remove heir" before
-                    // dismissing if they want it gone server-side too.
+                    // Final close-out for this heir's share: drop the
+                    // local meta so the dashboard stops treating this
+                    // terminal vault as active. The server-side row
+                    // stays — claim history is the owner's record. They
+                    // can also "Remove heir" before dismissing if they
+                    // want it gone server-side too.
                     removeVaultMeta(meta.id);
-                    onNavigate("landing");
+                    const remaining = groupVaults.filter(
+                      (v) => v.id !== meta.id,
+                    );
+                    if (remaining.length === 0) {
+                      onNavigate("landing");
+                      return;
+                    }
+                    // Multi-heir: the other heirs' vaults are still
+                    // live and still need check-ins. Switch to the next
+                    // one and reload so the dashboard re-derives against
+                    // it rather than bouncing the owner to the landing
+                    // page.
+                    setActiveVaultId(remaining[0].id);
+                    if (typeof window !== "undefined") {
+                      window.location.reload();
+                    }
                   }}
                 />
               ) : isClaiming ? (
@@ -440,6 +458,7 @@ export function Dashboard({ onNavigate }: Props) {
                 <HeirGroupList
                   groupVaults={groupVaults}
                   activeId={activeId}
+                  activeClosed={isClosed}
                   onSelect={(id) => {
                     // Switch active vault. Reload so the dashboard
                     // re-runs against the new active id. We could do
@@ -1337,6 +1356,7 @@ function Greeting({
   isClosed,
   isUnfunded,
   isPastDeadline,
+  multiHeir,
 }: {
   meta: VaultMeta;
   vault: VaultView | null;
@@ -1345,6 +1365,7 @@ function Greeting({
   isClosed: boolean;
   isUnfunded: boolean;
   isPastDeadline: boolean;
+  multiHeir: boolean;
 }) {
   const last = vault?.last_checkin_at
     ? parseRfc(vault.last_checkin_at)
@@ -1363,8 +1384,11 @@ function Greeting({
     headline = "Fund your vault to start";
     sub = `Add Bitcoin to your vault to start it. Check-ins begin once the funds arrive, not before.`;
   } else if (isClosed) {
-    headline = "Vault closed";
-    sub = `${meta.heir.name || "Your heir"} claimed the funds.`;
+    const heirName = meta.heir.name || "Your heir";
+    headline = multiHeir ? `${heirName}'s share claimed` : "Vault closed";
+    sub = multiHeir
+      ? `${heirName} claimed their share. Your other heirs are unaffected.`
+      : `${heirName} claimed the funds.`;
   } else if (isClaiming) {
     const heirName = meta.heir.name || "Your heir";
     if (vault?.status === "claiming") {
@@ -1448,9 +1472,11 @@ function AwaitingFundingCard({ meta }: { meta: VaultMeta }) {
  */
 function VaultClosedCard({
   meta,
+  multiHeir,
   onDismiss,
 }: {
   meta: VaultMeta;
+  multiHeir: boolean;
   onDismiss: () => void;
 }) {
   return (
@@ -1462,10 +1488,15 @@ function VaultClosedCard({
         >
           ✓
         </div>
-        <h2 className="mt-6 font-serif text-2xl">Vault closed</h2>
+        <h2 className="mt-6 font-serif text-2xl">
+          {multiHeir
+            ? `${meta.heir.name || "Your heir"}'s share claimed`
+            : "Vault closed"}
+        </h2>
         <p className="mt-2 max-w-md text-sm text-muted">
-          {meta.heir.name || "Your heir"} claimed the funds. Check-ins are
-          no longer needed. This vault's work is done.
+          {multiHeir
+            ? `${meta.heir.name || "Your heir"} claimed their share. This part is done. Your other heirs' vaults are still active, so keep checking in for them.`
+            : `${meta.heir.name || "Your heir"} claimed the funds. Check-ins are no longer needed. This vault's work is done.`}
         </p>
         <Button onClick={onDismiss} className="mt-6">
           Done
@@ -2104,11 +2135,17 @@ function HeirCard({
 function HeirGroupList({
   groupVaults,
   activeId,
+  activeClosed,
   onSelect,
   onRemove,
 }: {
   groupVaults: VaultMeta[];
   activeId: string | null;
+  // Whether the currently-selected heir's vault is claimed/closed. We
+  // only know the live status of the active vault (see note above), so
+  // this is the one sibling we can label "Claimed" rather than a
+  // selection state.
+  activeClosed: boolean;
   onSelect: (id: string) => void;
   onRemove: (id: string, heirName: string) => void;
 }) {
@@ -2147,7 +2184,15 @@ function HeirGroupList({
                 </p>
               </div>
               {isActive ? (
-                <span className="text-xs text-accent font-medium">Active</span>
+                activeClosed ? (
+                  <span className="text-xs text-muted font-medium">
+                    Claimed
+                  </span>
+                ) : (
+                  <span className="text-xs text-accent font-medium">
+                    Viewing
+                  </span>
+                )
               ) : (
                 <span className="text-xs text-muted">Tap to view</span>
               )}
