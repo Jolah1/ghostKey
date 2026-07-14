@@ -55,16 +55,22 @@ No one at GhostKey can touch the funds. The rules are enforced by Bitcoin, not b
 
 ## Status
 
-**Alpha.** The cryptography is tested end-to-end on regtest and signet.
-Mainnet is technically supported (set `GHOSTKEY_DEFAULT_NETWORK=bitcoin`
-on the server) but has not had an external security review yet — treat
-real funds as at risk until that lands. The default network is
-`testnet`; operators have to opt into mainnet explicitly.
+**Live on mainnet, early real users.** The hosted app at
+[ghostkeyapp.vercel.app](https://ghostkeyapp.vercel.app) runs on Bitcoin
+mainnet (`default_network: bitcoin`), with a small group of early users
+holding real funds in vaults. The core cryptography is tested end-to-end
+on regtest and signet, and the full owner + heir flows have been exercised
+on signet and mainnet.
+
+It has **not yet had an external security review**, so it is still early
+software: keep amounts modest, keep your own backup of the recovery kit,
+and read the threat model before trusting it with anything you cannot
+afford to lose. Self-hosters default to `testnet` and opt into mainnet
+explicitly (`GHOSTKEY_DEFAULT_NETWORK=bitcoin`).
 
 The written threat model lives at [`docs/threat-model.md`](./docs/threat-model.md):
 who can attack the system, what the design defends against, which risks
 were accepted eyes-open, and the open questions for an external review.
-It is the input to the mainnet review, not the output of one.
 
 What works today:
 - Full vault setup from xpub (legacy / CLI flow) **and** in-browser password setup (no seed phrase shown to the user; owner xprv sealed with Argon2id-derived KEK)
