@@ -1,10 +1,10 @@
-# GhostKey — Design
+# GhostKey Design
 
 The long, plain-English version of why GhostKey is built this way and what we'd build next.
 
-- **[README](./README.md)** — what it is and how to use it
-- **[ARCHITECTURE](./ARCHITECTURE.md)** — the technical reference
-- **[JOURNAL](./JOURNAL.md)** — how decisions were made over time
+- **[README](./README.md)**: what it is and how to use it
+- **[ARCHITECTURE](./ARCHITECTURE.md)**: the technical reference
+- **[JOURNAL](./JOURNAL.md)**: how decisions were made over time
 
 If you're contributing and only read one document, read this one.
 
@@ -26,7 +26,7 @@ If you're contributing and only read one document, read this one.
 
 ## 1. What problem are we solving
 
-Bitcoin is bearer money. If you die without telling anyone how to access your wallet, the coins are gone — not stolen, gone. No bank to call, no probate court that can move them, no recovery email.
+Bitcoin is bearer money. If you die without telling anyone how to access your wallet, the coins are gone. Not stolen, gone. No bank to call, no probate court that can move them, no recovery email.
 
 The existing answers are all bad:
 
@@ -38,7 +38,7 @@ The existing answers are all bad:
 
 **Multisig with a trustee co-signer.** Better, but the co-signer can collude with the heir, block a legitimate spend, or simply lose their key.
 
-GhostKey is a different option: you keep full control of your Bitcoin. Your heir can claim it only after you've been silent for a chosen amount of time. Nobody else can ever touch it. The rule that enforces this lives on the Bitcoin network itself — no third party can override it.
+GhostKey is a different option: you keep full control of your Bitcoin. Your heir can claim it only after you've been silent for a chosen amount of time. Nobody else can ever touch it. The rule that enforces this lives on the Bitcoin network itself, and no third party can override it.
 
 ---
 
@@ -46,7 +46,7 @@ GhostKey is a different option: you keep full control of your Bitcoin. Your heir
 
 Every GhostKey vault is a single Bitcoin address with a rule attached: the owner can spend from it any time; the heir can spend from it only after a chosen number of blocks have passed since the coins last moved.
 
-Everything else — the dashboard, the notifier server, the check-in button, the heir's claim page — is comfort software. It makes the system pleasant to use. It cannot change who controls the coins.
+Everything else (the dashboard, the notifier server, the check-in button, the heir's claim page) is comfort software. It makes the system pleasant to use. It cannot change who controls the coins.
 
 If GhostKey shut down tomorrow, every existing vault would still work. The Bitcoin network does not care whether our servers are up.
 
@@ -60,17 +60,17 @@ Let's walk through the life of one vault. The owner is Ada. The heir is Ben.
 
 Each runs the GhostKey setup wizard or any standard Bitcoin wallet that can export an extended public key (xpub). Out comes a 12-word recovery phrase. Ada keeps hers; Ben keeps his. Neither phrase ever leaves their device.
 
-Each phrase produces an xpub — public information that lets someone watch incoming transactions but not spend them. Ada and Ben exchange xpubs.
+Each phrase produces an xpub: public information that lets someone watch incoming transactions but not spend them. Ada and Ben exchange xpubs.
 
 ### Ada creates the vault
 
-Ada pastes both xpubs into the setup wizard and chooses a timelock — say, 90 days. The wizard sends the xpubs to the server, which computes a Bitcoin address and matching descriptor. Ada funds that address from her regular wallet.
+Ada pastes both xpubs into the setup wizard and chooses a timelock, say 90 days. The wizard sends the xpubs to the server, which computes a Bitcoin address and matching descriptor. Ada funds that address from her regular wallet.
 
 To anyone watching the chain, it looks like a normal payment. The vault's two-branch logic is hidden inside a Taproot address and won't be visible until someone spends from it.
 
 ### Ada registers with the notifier
 
-Ada sets her check-in cadence (say, every two weeks) and a grace period (how long after a missed check-in before the alarm fires). She enters Ben's contact info — phone number or email. The server encrypts this at rest; the plain version never touches the database.
+Ada sets her check-in cadence (say, every two weeks) and a grace period (how long after a missed check-in before the alarm fires). She enters Ben's contact info, phone number or email. The server encrypts this at rest; the plain version never touches the database.
 
 The server now knows: a vault exists, here's its descriptor, here's the cadence, here's how to reach Ben if Ada goes quiet. It does not know Ada's seed phrase, Ben's seed phrase, or anything that would let it spend the coins.
 
@@ -78,7 +78,7 @@ The server now knows: a vault exists, here's its descriptor, here's the cadence,
 
 Every two weeks Ada opens the dashboard and taps "I'm still here." The server records the timestamp and pushes the deadline forward.
 
-This is a server-side check-in only — it does not touch the chain. For mainnet-grade security, owners should also do periodic on-chain re-vaulting (the CLI's `check-in` command moves the UTXO to a fresh vault address, resetting the BIP68 timer). Most families won't do this weekly, so the web flow uses the cheaper server-only heartbeat, with on-chain re-vaulting as an optional layer.
+This is a server-side check-in only. It does not touch the chain. For mainnet-grade security, owners should also do periodic on-chain re-vaulting (the CLI's `check-in` command moves the UTXO to a fresh vault address, resetting the BIP68 timer). Most families won't do this weekly, so the web flow uses the cheaper server-only heartbeat, with on-chain re-vaulting as an optional layer.
 
 ### Ada stops checking in
 
@@ -88,7 +88,7 @@ The vault moves from `ok` to `alarmed`. Ada gets an alert: "you missed a check-i
 
 ### The eligibility window passes
 
-If Ada stays silent through the grace period, the server generates a one-time claim token — 32 random bytes, base64-encoded. The hash goes into the database; the raw token goes into an event row for the notification worker to pick up and send to Ben via the channel Ada chose.
+If Ada stays silent through the grace period, the server generates a one-time claim token: 32 random bytes, base64-encoded. The hash goes into the database; the raw token goes into an event row for the notification worker to pick up and send to Ben via the channel Ada chose.
 
 ### Ben receives a link
 
@@ -101,12 +101,12 @@ He taps it. The claim page explains what's happening, who left him the inheritan
 ### Ben claims the funds
 
 1. Enter the Bitcoin address where he wants the funds to land.
-2. Click "Prepare transaction" — the server scans the chain, builds an unsigned PSBT, shows a summary (amount, fee, destination).
+2. Click "Prepare transaction". The server scans the chain, builds an unsigned PSBT, shows a summary (amount, fee, destination).
 3. Copy the unsigned PSBT into his wallet. His wallet signs it with his key (which has never left his device).
 4. Paste the signed PSBT back. The server assembles the timelock-branch witness and broadcasts.
 5. Done. The coins move. The vault is marked claimed.
 
-GhostKey never sees Ben's signing key. The server's role is chain scanning, PSBT plumbing, and broadcast — all of which require blockchain access but no private keys.
+GhostKey never sees Ben's signing key. The server's role is chain scanning, PSBT plumbing, and broadcast, all of which require blockchain access but no private keys.
 
 ---
 
@@ -138,7 +138,7 @@ This is the most important section in the document. If you read one thing and re
 
 ### Why this boundary matters
 
-This is not a promise — it is a structural property of the software. The server binary has no code path that touches a private key. Anything that touches keys lives in `ghostkey-core` (descriptors) or `ghostkey-cli` (signing) or the heir's own wallet (the actual signature). If this boundary is ever blurred in a pull request, it should be treated as a security defect.
+This is not a promise. It is a structural property of the software. The server binary has no code path that touches a private key. Anything that touches keys lives in `ghostkey-core` (descriptors) or `ghostkey-cli` (signing) or the heir's own wallet (the actual signature). If this boundary is ever blurred in a pull request, it should be treated as a security defect.
 
 ### Guardian vaults (underage heirs)
 
@@ -164,11 +164,11 @@ The heir is usually the least technical person in the system. They may never hav
 
 **One decision per step.** Step 1: do you have a wallet? Step 2: paste your address. Step 3: sign this PSBT in your wallet, paste back. Each step unlocks the next.
 
-**No fake successes.** If the chain scan finds no coins — timelock hasn't elapsed, funds already moved, indexer down — the page says so in plain English. It does not pretend the transaction succeeded.
+**No fake successes.** If the chain scan finds no coins (timelock hasn't elapsed, funds already moved, indexer down) the page says so in plain English. It does not pretend the transaction succeeded.
 
 **The link doesn't expire on first view.** The heir will probably open it on their phone, then move to a desktop to sign. The claim token is consumed only on a successful broadcast. Viewing does nothing destructive.
 
-**End with proof.** After a successful broadcast, the page shows the transaction ID and a block explorer link. Not a thank-you screen — a "here's how to watch it confirm" screen. The heir wants proof, not branding.
+**End with proof.** After a successful broadcast, the page shows the transaction ID and a block explorer link. Not a thank-you screen, but a "here's how to watch it confirm" screen. The heir wants proof, not branding.
 
 ---
 
@@ -184,7 +184,7 @@ Taproot lets us encode the same logic in a single output that looks like a norma
 
 ### Relative timelocks over absolute ones
 
-An absolute timelock (`after(H)`) expires at a fixed block height. If the owner is still alive at that height, they have to migrate the vault before the heir's window opens — forever.
+An absolute timelock (`after(H)`) expires at a fixed block height. If the owner is still alive at that height, they have to migrate the vault before the heir's window opens, forever.
 
 A relative timelock (`older(N)`, BIP68) measures from when the UTXO last moved. Every on-chain check-in resets the heir's timer. No calendar to race against, no vault expiry.
 
@@ -192,7 +192,7 @@ Trade-off: relative timelocks require periodic on-chain re-vaulting for the guar
 
 ### Encrypting heir contact, not descriptors
 
-Descriptors are public information by design — anyone who sees the vault address can derive the spending rules. Encrypting them would be theatre.
+Descriptors are public information by design: anyone who sees the vault address can derive the spending rules. Encrypting them would be theatre.
 
 Heir contact (name, email, phone) is PII. It's encrypted with a per-vault key derived via HKDF from a server-wide master key in an environment variable. If the database is exfiltrated alone, the contacts remain encrypted ciphertext.
 
@@ -201,13 +201,13 @@ Heir contact (name, email, phone) is PII. It's encrypted with a per-vault key de
 A claim token is 32 bytes of random data sent to the heir in a URL. We store only its SHA-256 hash.
 
 The trade-off: anyone who intercepts the URL can act as the heir. We accept this because:
-- The link travels via the same channel as any bearer-link system (password resets, Stripe checkout, calendar invites) — no less private
+- The link travels via the same channel as any bearer-link system (password resets, Stripe checkout, calendar invites), no less private
 - The heir's wallet still has to sign the PSBT. An attacker who steals the link cannot sign without the heir's seed phrase
 - Damage from a stolen link is bounded: they see the heir's display name and the vault's network. They cannot see heir contacts, owner identity, or sign anything
 
 ### SQLite over Postgres
 
-The notifier's data fits comfortably in one file on one disk. A busy deployment might serve hundreds of thousands of vaults — SQLite handles that on a $5/month VPS with WAL mode enabled. Postgres adds an operational dependency and failure modes we don't need. If the project ever outgrows SQLite, switching is a small `sqlx` change. We'd rather have the problem first.
+The notifier's data fits comfortably in one file on one disk. A busy deployment might serve hundreds of thousands of vaults, and SQLite handles that on a $5/month VPS with WAL mode enabled. Postgres adds an operational dependency and failure modes we don't need. If the project ever outgrows SQLite, switching is a small `sqlx` change. We'd rather have the problem first.
 
 ### Lightning check-ins vs button heartbeat vs on-chain re-vault
 
@@ -223,13 +223,13 @@ Honest framing: the Lightning check-in is *stronger than the button* (it's crypt
 
 Why we ship the Lightning option at all, given the button does the same database work:
 
-1. **Trust minimisation.** A compromised server could record a fake button check-in. It cannot forge a Lightning payment without spending sats from its own node — the audit trail is on the Lightning network itself.
+1. **Trust minimisation.** A compromised server could record a fake button check-in. It cannot forge a Lightning payment without spending sats from its own node: the audit trail is on the Lightning network itself.
 2. **Anti-grief.** A leaked owner token still costs 1 sat per fake check-in. Sustained griefing has a marginal cost.
-3. **Path to better.** Once Lightning is wired we have a notification rail for the owner that doesn't require an email server. (Future work — not in the current build.)
+3. **Path to better.** Once Lightning is wired we have a notification rail for the owner that doesn't require an email server. (Future work, not in the current build.)
 
 The Lightning backend is intentionally abstracted behind a `LightningProvider` trait (`crates/ghostkey-server/src/lightning.rs`) with a `NoopProvider` default and an `HttpProvider` that talks over localhost to the sibling crate `crates/ghostkey-lightning-breez`. That sibling crate wraps Breez SDK - Liquid and is excluded from the root workspace so its heavy / git-only dependency graph (pinned `reqwest =0.12.18`, ~6 forked transitives) does not poison the main build. Selection is env-driven (`GHOSTKEY_LN_BREEZ_URL` + `GHOSTKEY_LN_BREEZ_SHARED_SECRET`); if either is unset the server falls back to `NoopProvider`, the `/lightning-checkin/*` routes return 503, and the web UI hides the button via `health.lightning_enabled`.
 
-Known constraint at the time of writing: Breez SDK - Liquid tag `0.12.2` does not currently compile from a clean checkout (a transitive `boltz-client` git rev references MuSig types absent from the resolved `secp256k1_zkp`). This affects only the sidecar binary, not the main `ghostkey-server` — operators who can't build the sidecar today can run with `NoopProvider`, or implement the same three-route HTTP surface (`POST /v1/invoice`, `GET /v1/status/:hash`, `GET /v1/health`) against any other Lightning backend (LND, CLN, LNbits, BTCPay, Phoenixd). The wire protocol, documented in `crates/ghostkey-lightning-breez/README.md`, is the long-lived contract; Breez is the first implementation, not the only possible one.
+Known constraint at the time of writing: Breez SDK - Liquid tag `0.12.2` does not currently compile from a clean checkout (a transitive `boltz-client` git rev references MuSig types absent from the resolved `secp256k1_zkp`). This affects only the sidecar binary, not the main `ghostkey-server`. Operators who can't build the sidecar today can run with `NoopProvider`, or implement the same three-route HTTP surface (`POST /v1/invoice`, `GET /v1/status/:hash`, `GET /v1/health`) against any other Lightning backend (LND, CLN, LNbits, BTCPay, Phoenixd). The wire protocol, documented in `crates/ghostkey-lightning-breez/README.md`, is the long-lived contract; Breez is the first implementation, not the only possible one.
 
 ### Check-in cadence and grace period as user choices
 
@@ -238,25 +238,25 @@ Earlier builds hard-coded the check-in cadence to "every 2 weeks or every month"
 - **Cadence:** weekly · 2-weekly (default) · monthly · quarterly
 - **Grace period:** 3 days (default) · 1 week · 2 weeks · 1 month
 
-Both are explicit enumerations (`ghostkey-web/src/timing.ts`) rather than free-form numeric inputs, so a careless user can't pick `graceSecs = 60` and lock themselves out of recovery. The presets cover the realistic spectrum, from "I want to be reminded weekly and have a tight 3-day budget" to "quarterly nudge, full month of slack." The owner picks once at setup; changing it later requires recreating the vault (no migration path planned for the alpha).
+Both are explicit enumerations (`ghostkey-web/src/timing.ts`) rather than free-form numeric inputs, so a careless user can't pick `graceSecs = 60` and lock themselves out of recovery. The presets cover the realistic spectrum, from "I want to be reminded weekly and have a tight 3-day budget" to "quarterly nudge, full month of slack." The owner picks once at setup; changing it later requires recreating the vault (no migration path yet).
 
 ---
 
 ## 7. Where AI fits and where it doesn't
 
-GhostKey is security-critical. The trusted compute surface is small on purpose. Adding a language model to the hot path of moving real money would be a mistake — models hallucinate, network calls fail, output is hard to test deterministically.
+GhostKey is security-critical. The trusted compute surface is small on purpose. Adding a language model to the hot path of moving real money would be a mistake: models hallucinate, network calls fail, output is hard to test deterministically.
 
 That said, there are real places where a model could make the product genuinely better. Here they are, in descending order of clarity and shipping effort.
 
-### Option A — Plain-English error explainers on the heir claim page ✓ Recommended
+### Option A: Plain-English error explainers on the heir claim page ✓ Recommended
 
 **What it does.** When the server returns a chain error (no UTXOs, timelock not mined, PSBT malformed, mempool rejection), a model translates the raw message into a plain sentence alongside the original.
 
 Example:
 - Raw: `psbt parse: invalid base64 character at position 47`
-- Human: "The signed PSBT didn't paste cleanly — part of it may have been cut off. Try copying the entire string again."
+- Human: "The signed PSBT didn't paste cleanly. Part of it may have been cut off. Try copying the entire string again."
 
-**What data it sees.** The error string. Nothing else — no keys, no contacts, no tokens.
+**What data it sees.** The error string. Nothing else: no keys, no contacts, no tokens.
 
 **Failure mode.** If the model is down, show the raw message. The heir is no worse off than today.
 
@@ -264,7 +264,7 @@ Example:
 
 **Worth it?** Yes. The realistic worst case for a heir is hitting a confusing error and giving up. This fixes that at almost no cost.
 
-### Option B — Setup wizard concierge
+### Option B: Setup wizard concierge
 
 **What it does.** A chat sidebar on the setup page where owners ask things like "what's an xpub?", "how do I find this in Sparrow?", "how long should I set the timelock?"
 
@@ -274,9 +274,9 @@ Example:
 
 **Effort.** About a week. Vector store of our docs, retrieval-augmented prompt, chat UI, abuse protection.
 
-**Worth it?** Maybe — but write better inline documentation first. Add this only if drop-off analytics show people actually get stuck.
+**Worth it?** Maybe, but write better inline documentation first. Add this only if drop-off analytics show people actually get stuck.
 
-### Option C — Commit message assistant for contributors
+### Option C: Commit message assistant for contributors
 
 **What it does.** A small tool in `tools/` that takes a `git diff` and produces a draft commit message matching this repo's style. The contributor edits before committing.
 
@@ -288,25 +288,25 @@ Example:
 
 **Worth it?** The cheapest AI addition to the project. No runtime dependency, no user-facing risk, helps keep the journal consistent as contributors join.
 
-### Option D — Address sanity check on claim
+### Option D: Address sanity check on claim
 
 **What it does.** Before "Prepare transaction", check the heir's destination address against known scam addresses or flagged mixing services.
 
 **What data it sees.** A Bitcoin address. Public information.
 
-**Effort.** Medium-large — the hard part is a good data source. A chain analytics subscription is expensive; building our own is years of work.
+**Effort.** Medium-large. The hard part is a good data source. A chain analytics subscription is expensive; building our own is years of work.
 
 **Worth it?** Not yet. Without good source data, the check produces false confidence or false positives. Revisit once the product is mature.
 
-### Option E — Check-in anomaly detection
+### Option E: Check-in anomaly detection
 
-**What it does.** Flag vaults whose check-in pattern suddenly changes — long pause then flurry of check-ins, new geographic IP, unusual hours. Alert the owner: "someone checked in for you from a new device — was it you?"
+**What it does.** Flag vaults whose check-in pattern suddenly changes: long pause then flurry of check-ins, new geographic IP, unusual hours. Alert the owner: "someone checked in for you from a new device, was it you?"
 
 **What data it sees.** Server-side check-in logs (timestamps, IPs). No keys.
 
 **Effort.** Large. Needs a training set, inference pipeline, and careful alert UX.
 
-**Worth it?** Eventually. Needs real usage data first — no signal of "normal" without users.
+**Worth it?** Eventually. Needs real usage data first: no signal of "normal" without users.
 
 ### What we will not use AI for
 
@@ -319,7 +319,7 @@ Example:
 
 ## 8. What we measure and why
 
-GhostKey ships with one analytics surface: the landing page. We need to know which parts of the page actually move people from "what is this?" to "set up a vault" so we can cut what doesn't and double down on what does. We do not need — and refuse to collect — a profile of who visited.
+GhostKey ships with one analytics surface: the landing page. We need to know which parts of the page actually move people from "what is this?" to "set up a vault" so we can cut what doesn't and double down on what does. We do not need, and refuse to collect, a profile of who visited.
 
 ### What we collect
 
@@ -328,7 +328,7 @@ Two event types, both fired from the React landing page to `POST /events` on our
 - `landing.section_viewed` with a `label` per section (`hero`, `how_it_works`, `lifecycle`, `why_bitcoin`, `comparison`, `faq`, `final_cta`). Fired once per page load when an `IntersectionObserver` first reports the section ≥25% visible.
 - `landing.cta_clicked` with a `label` per button (`hero_setup`, `hero_inherit`, `how_it_works_setup`, `final_setup`, `final_docs`). Fired on click.
 
-Each event increments a single row in the `analytics_events` table keyed on `(event_name, label, day_UTC)`. The body of that row is a counter — nothing else.
+Each event increments a single row in the `analytics_events` table keyed on `(event_name, label, day_UTC)`. The body of that row is a counter, nothing else.
 
 ### What we deliberately do not collect
 
@@ -355,11 +355,11 @@ GROUP BY label
 ORDER BY impressions DESC;
 ```
 
-An admin view that renders this funnel is a clean follow-up — see issue tracker for "landing analytics UI."
+An admin view that renders this funnel is a clean follow-up. See issue tracker for "landing analytics UI."
 
 ### Validation and abuse
 
-`event` and `label` are constrained to `^[a-z][a-z0-9_.]{0,63}$` server-side. The endpoint always returns 204 on shape-valid input (best-effort beacon — we never 500 the visitor's browser if SQLite is briefly contended) and 400 on a malformed name. A per-IP token bucket in `routes.rs` (`analytics_limiter`, configurable via `GHOSTKEY_RL_ANALYTICS`) caps flood damage to "more rows in one table."
+`event` and `label` are constrained to `^[a-z][a-z0-9_.]{0,63}$` server-side. The endpoint always returns 204 on shape-valid input (best-effort beacon: we never 500 the visitor's browser if SQLite is briefly contended) and 400 on a malformed name. A per-IP token bucket in `routes.rs` (`analytics_limiter`, configurable via `GHOSTKEY_RL_ANALYTICS`) caps flood damage to "more rows in one table."
 
 ---
 
@@ -367,32 +367,25 @@ An admin view that renders this funnel is a clean follow-up — see issue tracke
 
 In rough priority order. Some are weeks of work; some are afternoons.
 
-### Tier 1 — Before recommending to a real family
+### Tier 1: Before recommending to a real family
 
-**Live signet smoke test.** The PSBT build → sign → broadcast flow passes its unit tests but has never been driven against a live Bitcoin signet node with a real heir wallet. Do this before mainnet:
-1. Deploy a signet server instance
-2. Create a vault with a 6-block timelock on signet
-3. Fund from a signet faucet
-4. Wait out the timelock
-5. Walk through the claim page on signet (manual-PSBT flow signs in Bitcoin Core — Sparrow/Liana can't open these descriptors; the default password-vault flow signs in the browser and needs no wallet)
-6. Confirm the transaction lands
+Mostly shipped. Kept here with outcomes so the reasoning stays legible.
 
-This is the single highest-value piece of remaining work.
+**Live signet smoke test.** Done. The PSBT build → sign → broadcast flow has been driven end to end against live signet, and the full owner + heir flow has since been exercised on mainnet with a real heir claiming real funds. The repeatable procedure lives in [SIGNET_E2E_RUNBOOK](./SIGNET_E2E_RUNBOOK.md); note that the manual-PSBT flow signs in Bitcoin Core (Sparrow/Liana can't open these descriptors), while the default password-vault flow signs in the browser and needs no wallet.
 
-**Real notification delivery.** The scheduler issues claim tokens but sends nothing. Wire at least one channel:
-- Email first (SMTP via Postmark, SES, or Resend) — easiest
-- SMS next (Twilio, or Africa's Talking for Nigerian numbers) — more useful for our audience
-- WhatsApp eventually — highest reach in Nigeria, non-trivial Business API approval
+The single highest-value piece of remaining work is now an external security review.
 
-Add a `notifications` table, a worker that polls unsent events and pushes through the configured channel, and a retry policy. Failures should be loud, not silent.
+**Real notification delivery.** Done. The `notifications` table, the polling worker, and the retry policy all ship in `notifier.rs`. Email goes out over SMTP (`lettre`), and SMS + WhatsApp over Twilio (optional, off by default). Failures are surfaced rather than swallowed: an undeliverable channel fails visibly and is gated at setup.
 
-**Owner alarm notifications.** Same fan-out infrastructure, but for the owner. When a vault moves to `alarmed`, the owner should be told immediately and given a window to respond before the heir is contacted.
+Still open: Africa's Talking as an SMS alternative for Nigerian numbers.
 
-**Master key rotation.** Tag each ciphertext row with the key version that produced it. Support N versions in memory simultaneously. Add a background re-encryption job for old rows. Do this before the data volume makes it painful.
+**Owner alarm notifications.** Done. The owner is notified on the same fan-out infrastructure, with pre-deadline reminders and daily alarm escalation, and gets the grace period to respond before the heir is contacted.
 
-### Tier 2 — Soon, in any order
+**Master key rotation.** Still open, and still worth doing before the data volume makes it painful: tag each ciphertext row with the key version that produced it, support N versions in memory simultaneously, and add a background re-encryption job for old rows. The operational procedure is written up in [docs/master-key-rotation.md](./docs/master-key-rotation.md).
 
-**k-of-n heirs.** One-line change in `descriptor.rs` (generalise the heir branch to `thresh(k, pk(HEIR1), pk(HEIR2), ...)`), plus setup UI to accept multiple heir xpubs and a threshold. Good first contribution — about a week.
+### Tier 2: Soon, in any order
+
+**k-of-n heirs.** One-line change in `descriptor.rs` (generalise the heir branch to `thresh(k, pk(HEIR1), pk(HEIR2), ...)`), plus setup UI to accept multiple heir xpubs and a threshold. Good first contribution, about a week.
 
 **Cold signing for owner check-ins.** Add `--export-psbt` (write unsigned PSBT to disk) and `--sign-psbt` (import signed PSBT, broadcast) to the CLI. Owners can then sign on an offline device without the seed phrase ever touching an internet-connected machine. BDK already produces standard PSBTs; this is pure CLI plumbing.
 
@@ -400,20 +393,20 @@ Add a `notifications` table, a worker that polls unsent events and pushes throug
 
 **Encrypted off-host backups.** The `ghostkey.sqlite` file is the entire notifier state. Encrypt snapshots with `age`, push to S3-compatible storage on a schedule, document a one-line restore procedure.
 
-### Tier 3 — Quality of life
+### Tier 3: Quality of life
 
-**Operator audit log.** Every state change already produces an event row. Add an operator-facing view filterable by vault, event type, and time range — so a support engineer can answer "what happened to vault X?" without writing SQL.
+**Operator audit log.** Every state change already produces an event row. Add an operator-facing view filterable by vault, event type, and time range, so a support engineer can answer "what happened to vault X?" without writing SQL.
 
 **Guided wallet import.** Screenshots and step-by-step instructions for the three most common wallets (Sparrow, Blue Wallet, Cake Wallet) on the "find your xpub" step of setup.
 
-**Translations.** All copy is English. Pidgin (BCP-47 `pcm`) is the first translation we plan to ship — single language, broadest reach in Nigeria, lets us stand up the i18n shell with one target instead of three. Yoruba, Igbo, and Hausa follow once the shell is proven. Mechanical work; no architectural changes needed.
+**Translations.** All copy is English. Pidgin (BCP-47 `pcm`) is the first translation we plan to ship: single language, broadest reach in Nigeria, lets us stand up the i18n shell with one target instead of three. Yoruba, Igbo, and Hausa follow once the shell is proven. Mechanical work; no architectural changes needed.
 
 **CLI claim from link.** Add `claim --from-link <url>` so a paranoid heir can complete the claim locally without trusting our Esplora endpoint, using a local Bitcoin node instead.
 
-### Tier 4 — Speculative
+### Tier 4: Speculative
 
 **Self-hosted Esplora.** We currently use Blockstream's free public endpoint. For a production product we'd want our own indexer, or an enterprise subscription, so we're not at the mercy of a free service.
 
 **Privacy-preserving check-ins.** A Tor-routed check-in with no IP logging and no account binding, for owners concerned about revealing their activity pattern to the server.
 
-**Multi-server federation.** A single notifier is a single point of failure for reminders. A federation of independent notifiers watching the same vault set would mean the heir gets notified even if one server goes down. Real work — partitioning, deduplication, mutual distrust between notifiers — only worth doing once there's a meaningful user base.
+**Multi-server federation.** A single notifier is a single point of failure for reminders. A federation of independent notifiers watching the same vault set would mean the heir gets notified even if one server goes down. Real work (partitioning, deduplication, mutual distrust between notifiers) only worth doing once there's a meaningful user base.
