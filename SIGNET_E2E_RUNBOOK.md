@@ -55,7 +55,7 @@ fly secrets set \
 # Required: CORS allowlist for the web frontend you'll point at this.
 # If you're testing from the production Vercel build, list it here.
 fly secrets set \
-  GHOSTKEY_ALLOWED_ORIGINS="https://ghostkeyapp.vercel.app" \
+  GHOSTKEY_ALLOWED_ORIGINS="https://www.ghostkeyapp.com" \
   -a ghostkey-signet
 
 # THE key env var. Tells the web UI to default new vaults to signet
@@ -103,8 +103,8 @@ most likely way to burn faucet time later.
 
 ### Web frontend
 
-Point a browser at the production Vercel build
-(`ghostkeyapp.vercel.app`) but with the API origin overridden to
+Point a browser at the production build
+(`www.ghostkeyapp.com`) but with the API origin overridden to
 your signet app. The simplest way is via `vercel.json`'s rewrite
 rule in a feature branch, OR by running the web dashboard locally:
 

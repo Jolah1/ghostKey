@@ -107,7 +107,7 @@ check in. It:
 2. Generates a random 32-byte claim token (stores only the
    SHA-256 hash; returns the raw token once, in the email).
 3. Enqueues the "heir claim" email — the heir gets a link like
-   `https://ghostkeyapp.vercel.app/claim/<token>`.
+   `https://www.ghostkeyapp.com/claim/<token>`.
 
 ### Step 2 — the heir opens the link
 

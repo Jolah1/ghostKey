@@ -2,11 +2,11 @@
 
 **Your Bitcoin shouldn’t die with you.**
 
-Most people with Bitcoin have no plan for what happens when they die. Not because they don't care — because the tools are too complicated, too expensive, or require trusting a company that might not exist in 20 years.
+Most people with Bitcoin have no plan for what happens when they die. Not because they don't care. It's because the tools are too complicated, too expensive, or require trusting a company that might not exist in 20 years.
 
-GhostKey is a free, open-source way to make sure your Bitcoin reaches the people you love. You keep your keys. You stay in control. If you ever stop checking in, a countdown begins — and when it ends, your heir can claim what you left them. No lawyer. No middleman. No permission needed from anyone.
+GhostKey is a free, open-source way to make sure your Bitcoin reaches the people you love. You keep your keys. You stay in control. If you ever stop checking in, a countdown begins, and when it ends your heir can claim what you left them. No lawyer. No middleman. No permission needed from anyone.
 
-[**Try it → ghostkeyapp.vercel.app**](https://ghostkeyapp.vercel.app)
+[**Try it → www.ghostkeyapp.com**](https://www.ghostkeyapp.com)
 
 ---
 
@@ -27,7 +27,7 @@ If you stop tapping, a countdown starts. When it ends, your heir gets one email 
 
 **GhostKey works with Bitcoin you actually control.**
 
-If your sats are on Blink, Yellow Card, Binance, or any exchange — those sats belong to the exchange, not to you. GhostKey cannot reach them. If you want them to be inheritable, move them to a wallet where you hold the keys first (Cake Wallet, Blue Wallet, Sparrow, or a hardware wallet). We'll show you how.
+If your sats are on Blink, Yellow Card, Binance, or any exchange, those sats belong to the exchange, not to you. GhostKey cannot reach them. If you want them to be inheritable, move them to a wallet where you hold the keys first (Cake Wallet, Blue Wallet, Sparrow, or a hardware wallet). We'll show you how.
 
 
 ---
@@ -36,7 +36,7 @@ If your sats are on Blink, Yellow Card, Binance, or any exchange — those sats 
 
 Most inheritance tools assume you can run a full node, read a script policy, and manage a multisig setup. Most people can't, and shouldn't have to.
 
-GhostKey packages one specific, well-tested Bitcoin inheritance pattern into something you can set up in five minutes from your phone. The rules are written into Bitcoin itself — even if GhostKey shut down tomorrow, the on-chain script would still work. Anyone holding the pre-built transaction can broadcast it once the timelock expires.
+GhostKey packages one specific, well-tested Bitcoin inheritance pattern into something you can set up in five minutes from your phone. The rules are written into Bitcoin itself. Even if GhostKey shut down tomorrow, the on-chain script would still work. Anyone holding the pre-built transaction can broadcast it once the timelock expires.
 
 ---
 
@@ -44,10 +44,10 @@ GhostKey packages one specific, well-tested Bitcoin inheritance pattern into som
 
 Your Bitcoin sits in a special address with two keys:
 
-- **Your key** — you can spend it any time
-- **Your heir's key** — they can spend it only after your countdown has expired
+- **Your key**: you can spend it any time
+- **Your heir's key**: they can spend it only after your countdown has expired
 
-Tapping "I'm still here" resets the countdown. Stop tapping long enough, and the countdown reaches zero — at which point only your heir's key works.
+Tapping "I'm still here" resets the countdown. Stop tapping long enough, and the countdown reaches zero, at which point only your heir's key works.
 
 No one at GhostKey can touch the funds. The rules are enforced by Bitcoin, not by this website.
 
@@ -56,7 +56,7 @@ No one at GhostKey can touch the funds. The rules are enforced by Bitcoin, not b
 ## Status
 
 **Live on mainnet, early real users.** The hosted app at
-[ghostkeyapp.vercel.app](https://ghostkeyapp.vercel.app) runs on Bitcoin
+[www.ghostkeyapp.com](https://www.ghostkeyapp.com) runs on Bitcoin
 mainnet (`default_network: bitcoin`), with a small group of early users
 holding real funds in vaults. The core cryptography is tested end-to-end
 on regtest and signet, and the full owner + heir flows have been exercised
@@ -93,7 +93,7 @@ What works today:
 What's still being built:
 - Hardware wallet PSBT export (`--export-psbt` / `--sign-psbt` on the CLI)
 - Setup from a plain Bitcoin address (without needing an xpub)
-- Translations — Pidgin first (planned), then Yoruba, Igbo, Hausa
+- Translations: Pidgin first (planned), then Yoruba, Igbo, Hausa
 - External mainnet security review
 
 ---
@@ -173,9 +173,9 @@ The on-chain script, threat model, and design decisions are in [ARCHITECTURE.md]
 
 ## Contributing
 
-PRs welcome — especially on anything in the "still being built" list above, plus bug fixes, accessibility improvements, and translations. See [CONTRIBUTING.md](./CONTRIBUTING.md).
+PRs welcome, especially on anything in the "still being built" list above, plus bug fixes, accessibility improvements, and translations. See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
-Security issues: [SECURITY.md](./SECURITY.md) — please report privately first.
+Security issues: [SECURITY.md](./SECURITY.md). Please report privately first.
 
 
 **License:** MIT License.

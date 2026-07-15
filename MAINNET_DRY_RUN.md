@@ -59,9 +59,11 @@ nothing to query.
 
 ### 2. Set the public base URL
 
-As of 2026-06-13 this is unset in production, so claim links and
-email-verification links in outgoing mail point at
-`ghostkeyapp.vercel.app` instead of the canonical domain:
+This is set in production (verified 2026-07-15), so claim links and
+email-verification links in outgoing mail point at the canonical
+domain. If you are standing up your own deployment, set it: without
+it the server falls back to `https://www.ghostkeyapp.com`, which is
+almost certainly not where your dashboard lives.
 
 ```sh
 fly secrets set --stage GHOSTKEY_PUBLIC_BASE_URL="https://www.ghostkeyapp.com" -a ghostkey

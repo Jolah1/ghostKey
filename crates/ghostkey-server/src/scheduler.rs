@@ -1854,12 +1854,16 @@ pub(crate) async fn load_heir_intro(state: &AppState, vault_id: &str) -> Option<
 }
 
 /// The public base URL the heir's claim link should point at. We
-/// keep this configurable so a deployment serving the dashboard at
-/// e.g. `ghostkeyapp.vercel.app` can produce links that go there
-/// rather than to the API host.
+/// keep this configurable so a deployment serving the dashboard on
+/// its own domain can produce links that go there rather than to the
+/// API host.
+///
+/// The fallback is the canonical domain, not the Vercel preview host:
+/// if the env var is ever dropped, a heir's one-time claim link still
+/// has to land somewhere that works.
 pub(crate) fn public_base_url() -> String {
     std::env::var("GHOSTKEY_PUBLIC_BASE_URL")
-        .unwrap_or_else(|_| "https://ghostkeyapp.vercel.app".to_string())
+        .unwrap_or_else(|_| "https://www.ghostkeyapp.com".to_string())
 }
 
 /* -------------------------------------------------------------------------- *

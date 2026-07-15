@@ -310,7 +310,7 @@ fly secrets set GHOSTKEY_MASTER_KEY="$KEY" -a ghostkey
 # 2. CORS allowlist — comma-separated exact-match origins.
 #    Default (when unset) is localhost:5173 only, which is correct for
 #    `cargo run` but breaks every browser pointed at the live frontend.
-fly secrets set GHOSTKEY_ALLOWED_ORIGINS="https://ghostkeyapp.vercel.app" -a ghostkey
+fly secrets set GHOSTKEY_ALLOWED_ORIGINS="https://www.ghostkeyapp.com" -a ghostkey
 ```
 
 **About `GHOSTKEY_MASTER_KEY`:** lose it and every heir-contact row
