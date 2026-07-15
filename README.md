@@ -86,7 +86,7 @@ What works today:
 - One-time claim link and two heir-claim flows:
   - **Password-vault flow** (default): heir pastes a receive address, server signs in-memory with the just-unwrapped heir xprv, broadcasts in one call.
   - **Manual PSBT flow** (legacy): server hands the heir an unsigned PSBT, accepts the signed string back.
-- F2 "heir has no Bitcoin wallet" support: server derives the heir's BIP86 key from `(master_key, heir_email, vault_id)` and the heir's browser recomputes the same xprv at claim time
+- "Heir has no Bitcoin wallet" support: the browser generates the heir's key and seals it under their one-time claim token, so the heir needs no wallet and no account. The server cannot open that blob. New vaults never ask the server to derive an heir key from its master key: that would make every such heir key recoverable from one secret. The older server-derivation path (`derive_heir_seed` over `(master_key, heir_email, vault_id)`) is kept reachable only so vaults created before that change can still be claimed.
 - In-app AI guide chat (`/assist/chat`) proxied to Claude; refuses to forward seed-shaped strings
 - Per-IP rate limiting on the unauthenticated endpoints (`/assist/chat`, `/vaults`, `/vaults/from-xpub`, `/vaults/find`, `/claim/:token/*`), with per-deploy `GHOSTKEY_RL_*` overrides (see DEPLOY.md)
 
