@@ -339,4 +339,4 @@ on GitHub for bite-sized work that's already scoped out.
 ## License
 
 By contributing, you agree your work will be licensed under the same
-terms as the project: MIT or Apache-2.0 at the user's option.
+terms as the project: the MIT License, as in [LICENSE](./LICENSE).

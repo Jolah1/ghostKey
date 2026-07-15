@@ -2,7 +2,7 @@
 name = "ghostkey-lightning-breez"
 version = "0.1.0"
 edition = "2021"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 description = "Standalone Breez SDK Liquid sidecar for the GhostKey Lightning check-in system"
 publish = false
 
