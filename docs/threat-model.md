@@ -65,9 +65,15 @@ Same shape as A1, owned by the heir.
   [`crypto/sealing.ts`](../ghostkey-web/src/crypto/sealing.ts) →
   `unsealHeirXprv`, [`psbt_routes.rs`](../crates/ghostkey-server/src/psbt_routes.rs)
   → `get_sealed_heir_xprv`.
-- **F2 server-derived flow**: there is no on-disk heir key; it is
-  recomputed deterministically from `(GHOSTKEY_MASTER_KEY, heir_email,
-  vault_id)` on both sides. Source:
+- **F2 server-derived flow (legacy vaults only)**: there is no on-disk
+  heir key; it is recomputed deterministically from
+  `(GHOSTKEY_MASTER_KEY, heir_email, vault_id)` on both sides. **No new
+  vault uses this.** #124 stopped opting into server derivation:
+  `heir_derivation` is null on every vault created since, in both
+  `PasswordSetupPortal` and `AddHeirPortal`, and a no-wallet heir now
+  gets a browser-generated key sealed under their claim token (the
+  password-vault flow above). The derivation path stays reachable only
+  so vaults created before that change can still be claimed. Source:
   [`crates/ghostkey-core/src/keys.rs`](../crates/ghostkey-core/src/keys.rs)
   → `derive_heir_seed`,
   [`ghostkey-web/src/crypto/heirKey.ts`](../ghostkey-web/src/crypto/heirKey.ts).
@@ -95,10 +101,14 @@ Two distinct uses with different blast radii:
    over the master key + vault id; used to encrypt heir / owner /
    trusted-contact rows at rest with XChaCha20-Poly1305. A leak of
    the master key + the DB exposes all contact PII.
-2. **F2 heir-key derivation.** For F2 vaults the master key is also
-   the salt for `derive_heir_seed`. A leak of the master key + the
-   heir's email + the vault id reconstructs the heir's mnemonic
-   for that vault.
+2. **F2 heir-key derivation (legacy vaults only).** For F2 vaults the
+   master key is also the salt for `derive_heir_seed`. A leak of the
+   master key + the heir's email + the vault id reconstructs the heir's
+   mnemonic for that vault. This blast radius is **closed for new
+   vaults** and does not grow: since #124 no vault is created with
+   `heir_derivation`, so the exposed set is exactly the F2 vaults that
+   already existed. Their heir keys are recoverable from one secret,
+   which is why that path was removed.
 
 The master key is **never** part of the script-path spend, so a
 leak does not directly let an attacker spend funds. It does, for F2
@@ -228,6 +238,14 @@ does not have. Even with full root on the host, a malicious
 operator cannot construct a valid `or_d → and_v → pk(HEIR) +
 older(N)` witness without either the owner's xprv or the heir's
 xprv.
+
+Two caveats, so this isn't read as stronger than it is. On a **legacy
+F2 vault** the operator can *derive* the heir's xprv from the master
+key (A3.2), so for those vaults this section does not hold: only the
+on-chain timelock stands in the way. New vaults are not F2. And the
+owner's xprv is sealed under an Argon2id KEK from their password, so
+an operator with the DB and the master key still needs to break that
+password to spend as the owner.
 
 - Lives at:
   [`crates/ghostkey-core/src/descriptor.rs`](../crates/ghostkey-core/src/descriptor.rs)
