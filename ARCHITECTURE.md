@@ -1,4 +1,4 @@
-# GhostKey — Architecture
+# GhostKey Architecture
 
 How the Bitcoin script works, why it's shaped this way, what each layer owns, and where the security boundaries are.
 
@@ -35,15 +35,15 @@ or_d(
 
 ### Why a relative timelock, not an absolute one
 
-Absolute timelocks (`after(H)`) expire at a fixed block height — the owner has to create a new vault before that date, forever. Relative timelocks (`older(N)`, BIP68) measure from when the UTXO was last confirmed. Checking in — moving the funds to a fresh vault address — automatically resets the countdown. No calendar to race against, no vault expiry.
+Absolute timelocks (`after(H)`) expire at a fixed block height, so the owner has to create a new vault before that date, forever. Relative timelocks (`older(N)`, BIP68) measure from when the UTXO was last confirmed. Checking in, which moves the funds to a fresh vault address, automatically resets the countdown. No calendar to race against, no vault expiry.
 
 ### Why the internal key is unspendable
 
-Every Taproot address has a keypath that bypasses all scripts — just one key signature, no conditions. We don't want that shortcut to exist. The internal key is set to a NUMS point (Nothing Up My Sleeve — a value with no known discrete log), which is verifiably unspendable. Every spend goes through the explicit script; there are no exceptions.
+Every Taproot address has a keypath that bypasses all scripts: just one key signature, no conditions. We don't want that shortcut to exist. The internal key is set to a NUMS point (Nothing Up My Sleeve: a value with no known discrete log), which is verifiably unspendable. Every spend goes through the explicit script; there are no exceptions.
 
 ### What checking in actually does on-chain
 
-The server-side heartbeat button records a deadline reset for reminder purposes. The real on-chain check-in is a Bitcoin transaction (built by the CLI's `check-in` command) that spends the vault UTXO back into a fresh vault address with the same script. That fresh UTXO has a new confirmation count — so the heir's countdown restarts from zero.
+The server-side heartbeat button records a deadline reset for reminder purposes. The real on-chain check-in is a Bitcoin transaction (built by the CLI's `check-in` command) that spends the vault UTXO back into a fresh vault address with the same script. That fresh UTXO has a new confirmation count, so the heir's countdown restarts from zero.
 
 ---
 
@@ -69,16 +69,16 @@ No network calls, no disk reads, no database. Pure functions in, pure Bitcoin da
 - Constructs owner check-in PSBTs (owner spend path, no timelock branch revealed)
 - Constructs heir claim PSBTs (heir spend path + `nSequence = N` for BIP68)
 
-**The BDK policy path gotcha.** When building a transaction, BDK needs to know which spend path to use. For check-ins: select the owner path, explicitly mark the timelock child as not needed. For claims: select *both* the heir's key child and the timelock child — selecting only the timelock causes BDK's "Not enough items selected" error. This logic is in `ghostkey-core/src/psbt.rs` and should not be changed without running the regtest end-to-end test.
+**The BDK policy path gotcha.** When building a transaction, BDK needs to know which spend path to use. For check-ins: select the owner path, explicitly mark the timelock child as not needed. For claims: select *both* the heir's key child and the timelock child. Selecting only the timelock causes BDK's "Not enough items selected" error. This logic is in `ghostkey-core/src/psbt.rs` and should not be changed without running the regtest end-to-end test.
 
 ### ghostkey-cli
 
-Holds key material. Owned by whoever runs it — owner or heir.
+Holds key material. Owned by whoever runs it, owner or heir.
 
 State lives under `.ghostkey/<profile>/`:
-- `mnemonic` — BIP39 seed phrase (`chmod 600`)
-- `vault.json` — descriptor pair, network, timelock
-- `wallet_state.json` — last synced block height (no file locking yet — see JOURNAL entry 1)
+- `mnemonic`: BIP39 seed phrase (`chmod 600`)
+- `vault.json`: descriptor pair, network, timelock
+- `wallet_state.json`: last synced block height (no file locking yet, see JOURNAL entry 1)
 
 Chain data via `bdk_bitcoind_rpc::Emitter`.
 
@@ -97,14 +97,14 @@ Chain data via `bdk_bitcoind_rpc::Emitter`.
 
 Watch-only **for the vast majority of operations**. The server stores no
 long-term key material and cannot move funds in the steady state. There
-is one narrow exception — the password-vault heir-claim flow — covered
+is one narrow exception, the password-vault heir-claim flow, covered
 in detail under [Threat model](#threat-model) below.
 
 SQLite tables:
-- `vaults` — descriptor pair, network, timelock, cadence, deadline, status, sealed contacts, sealed (password-wrapped) owner/heir key material, claim tokens, one-tap check-in tokens, panic-freeze state.
-- `events` — append-only: `registered` / `checkin` / `warning` / `alarmed` / `timelock_started` / `claimed` / `claim_resolved` / `claim_broadcast` / `lightning_invoice_issued` / etc.
-- `notifications` — outbound notification queue (subject/body sealed at rest).
-- `lightning_invoices` — per-vault Lightning invoice records for check-in and panic flows.
+- `vaults`: descriptor pair, network, timelock, cadence, deadline, status, sealed contacts, sealed (password-wrapped) owner/heir key material, claim tokens, one-tap check-in tokens, panic-freeze state.
+- `events`: append-only: `registered` / `checkin` / `warning` / `alarmed` / `timelock_started` / `claimed` / `claim_resolved` / `claim_broadcast` / `lightning_invoice_issued` / etc.
+- `notifications`: outbound notification queue (subject/body sealed at rest).
+- `lightning_invoices`: per-vault Lightning invoice records for check-in and panic flows.
 
 Background workers:
 - Scheduler (30s default tick) advances vault state, issues claim tokens, mints per-cycle one-tap tokens, enqueues notifications.
@@ -117,7 +117,7 @@ Auth: each vault has a random 32-byte `owner_token` issued at creation. SHA-256 
 
 Heir / owner / trusted contacts are encrypted at rest with XChaCha20-Poly1305. Per-vault key derived via HKDF-SHA256 from `GHOSTKEY_MASTER_KEY` (loaded at startup). Server refuses to boot without it.
 
-**Password-vault material** (added 20260525): when a user creates a vault through the in-browser password flow, the server stores three opaque ciphertexts the browser produced — the owner xprv (wrapped under an Argon2id-derived KEK), the owner token (same KEK), and the heir xprv (wrapped under HKDF(claim_token)). The server cannot open any of these blobs.
+**Password-vault material** (added 20260525): when a user creates a vault through the in-browser password flow, the server stores three opaque ciphertexts the browser produced: the owner xprv (wrapped under an Argon2id-derived KEK), the owner token (same KEK), and the heir xprv (wrapped under HKDF(claim_token)). The server cannot open any of these blobs.
 
 | Route | Method | Purpose |
 |---|---|---|
@@ -160,7 +160,7 @@ React + Vite + TypeScript + Tailwind. Read/write only against the server REST AP
 
 Owner dashboard: vault cards with live countdown, status pill, check-in button, event log drawer. Polls `/api/vaults` every 5 seconds.
 
-Heir claim page (`/claim/:token`): five states — loading, not found, already used, not ready, claimable. Claimable state drives the full PSBT round trip: address input → unsigned PSBT + fee summary → paste signed PSBT → broadcast → txid + explorer link.
+Heir claim page (`/claim/:token`): five states: loading, not found, already used, not ready, claimable. Claimable state drives the full PSBT round trip: address input → unsigned PSBT + fee summary → paste signed PSBT → broadcast → txid + explorer link.
 
 `/api` proxied to `127.0.0.1:8787` in dev. Same-origin in production via reverse proxy.
 
@@ -170,13 +170,13 @@ Heir claim page (`/claim/:token`): five states — loading, not found, already u
 
 | Compromised | Can do | Cannot do |
 |---|---|---|
-| GhostKey server (steady state) | Record false check-ins, suppress alarms, learn sealed contacts only after master-key compromise | Spend funds — no plaintext keys held; sealed blobs are encrypted to the owner password / heir claim token |
-| GhostKey server (during a password-vault heir claim) | Briefly hold the heir xprv in process memory for the duration of one `POST /claim/:token/heir-claim` call | Persist the xprv — never touches disk or logs; dropped at end of scope. See [Server-side signing exception](#server-side-signing-exception). |
+| GhostKey server (steady state) | Record false check-ins, suppress alarms, learn sealed contacts only after master-key compromise | Spend funds: no plaintext keys held; sealed blobs are encrypted to the owner password / heir claim token |
+| GhostKey server (during a password-vault heir claim) | Briefly hold the heir xprv in process memory for the duration of one `POST /claim/:token/heir-claim` call | Persist the xprv: never touches disk or logs; dropped at end of scope. See [Server-side signing exception](#server-side-signing-exception). |
 | GhostKey master key (`GHOSTKEY_MASTER_KEY`) leaks | Decrypt every sealed contact; recompute the heir mnemonic for every F2 server-derived heir vault | Touch funds before the on-chain timelock matures. See [F2 server-derived heirs](#f2-server-derived-heirs). |
 | Web dashboard XSS | Send heartbeat requests; read the owner token from localStorage | Sign transactions client-side, decrypt sealed material without the user's password |
-| Heir's key (timelock active) | Nothing useful | Spend — mempool rejects as non-BIP68-final |
-| Heir's key (timelock expired, owner gone) | Claim — as intended | — |
-| Owner's key | Spend or move funds — as the owner always could | — |
+| Heir's key (timelock active) | Nothing useful | Spend: mempool rejects as non-BIP68-final |
+| Heir's key (timelock expired, owner gone) | Claim, as intended | — |
+| Owner's key | Spend or move funds, as the owner always could | — |
 | A colluding guardian (guardian vaults) | Co-sign a claim together with the child-heir's key once the timelock matures | Claim alone (the policy requires the heir's signature and only one of two guardians); act while the timelock is active or before the optional `after(H)` unlock height |
 | Network observer | See broadcasts after they're public | See script structure before first spend (Taproot hides it) |
 
@@ -210,7 +210,7 @@ The original spec was "server never signs." The password-vault flow
 relaxes that in exactly one place: `POST /claim/:token/heir-claim`. When
 an heir who never owned Bitcoin opens their claim link, their browser
 unwraps the heir xprv from the sealed blob using the claim-token KEK
-(server cannot reproduce this — it only stores the hash), then ships the
+(server cannot reproduce this: it only stores the hash), then ships the
 xprv over TLS to the server, which:
 
 1. Reconstructs the heir-side BDK wallet from the stored descriptor.
@@ -220,14 +220,14 @@ xprv over TLS to the server, which:
 4. Drops the xprv at function exit. It is never written to disk or
    tracing output.
 
-This is a real trust transfer — an attacker who compromises the server
+This is a real trust transfer. An attacker who compromises the server
 mid-call could redirect funds to an address they control. The on-chain
 trail is public, so the legitimate heir notices immediately, but the
 funds are gone. The exposure window is bounded to the seconds the call
 takes. We chose this trade-off because re-implementing Taproot
 script-path PSBT signing in the browser would add a significant chunk
 of audited Bitcoin code, and at the moment of the call the timelock has
-already matured — only the heir benefits from spending the UTXO.
+already matured: only the heir benefits from spending the UTXO.
 
 The legacy two-step heir flow (`build-psbt` + `broadcast`) still exists
 for heirs who own Bitcoin and want to sign with their own wallet. It is
@@ -262,7 +262,7 @@ attacker and the heir's funds. Operationally that means:
 
 **Rate limiting.** Mutation endpoints have no per-IP throttling yet. `/assist/chat` is unauthenticated and proxies the Anthropic Messages API; `/vaults/from-xpub` and `/vaults/find` are also unauthenticated by design (they support cross-device onboarding and recovery). All three are reasonable rate-limit targets before mainnet.
 
-**PSBT export for hardware wallets.** The CLI signs in-process. Adding `--export-psbt` (write unsigned PSBT to disk) and `--sign-psbt` (import signed PSBT, broadcast) would support air-gapped and hardware signers. The PSBTs are already standard — it's a CLI workflow change, not a cryptography change.
+**PSBT export for hardware wallets.** The CLI signs in-process. Adding `--export-psbt` (write unsigned PSBT to disk) and `--sign-psbt` (import signed PSBT, broadcast) would support air-gapped and hardware signers. The PSBTs are already standard, so it's a CLI workflow change, not a cryptography change.
 
 **Setup from a plain address.** The wizard requires an xpub. Supporting a single receive address (watches one address, not the full wallet) would remove a barrier for beginners.
 

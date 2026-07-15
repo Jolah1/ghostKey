@@ -3,7 +3,7 @@
 The single highest-priority open item from `JOURNAL.md` Entry 9: "watch
 real Bitcoin move through a real claim on a public network." Until
 this has been done by a human at least once, GhostKey is not ready
-for mainnet — there's a class of bug (fee estimation under real
+for mainnet. There's a class of bug (fee estimation under real
 mempool pressure, indexer quirks, BIP68 timer interacting with real
 block intervals, web/server network agreement) that only surfaces in
 production-shaped runs.
@@ -25,14 +25,14 @@ which is waiting for signet blocks to confirm.
   GhostKey generates and seals both the owner and heir keys in the
   browser, so neither side installs anything. For that flow, skip the
   xpub steps and use the web `/setup` page (see the note in Phase 1).
-- **The legacy xpub script flow below needs two signet xpubs** — one
+- **The legacy xpub script flow below needs two signet xpubs**: one
   for the owner, one for the heir (the server refuses a vault where
   they match). Any BIP86 wallet can export one; Sparrow's File → New
   Wallet → Network: Signet is one easy way. This only *exports* an
-  xpub: no consumer wallet — Sparrow or Liana included — can open the
+  xpub: no consumer wallet (Sparrow or Liana included) can open the
   finished vault, whose Taproot timelock miniscript loads only in
   Bitcoin Core (see the "Heir claim" step and MAINNET_DRY_RUN.md).
-- **Two email addresses** — one for the owner (reminders + alarm
+- **Two email addresses**: one for the owner (reminders + alarm
   notice), one for the heir (claim link).
 - **`curl` and `python3`** on your laptop. Optional: `jq` for
   prettier JSON output.
@@ -55,7 +55,7 @@ fly secrets set \
 # Required: CORS allowlist for the web frontend you'll point at this.
 # If you're testing from the production Vercel build, list it here.
 fly secrets set \
-  GHOSTKEY_ALLOWED_ORIGINS="https://ghostkeyapp.vercel.app" \
+  GHOSTKEY_ALLOWED_ORIGINS="https://www.ghostkeyapp.com" \
   -a ghostkey-signet
 
 # THE key env var. Tells the web UI to default new vaults to signet
@@ -86,7 +86,7 @@ fly secrets set \
   -a ghostkey-signet
 
 # Deploy. NOTE: CI (deploy-fly.yml) only auto-deploys the mainnet
-# `ghostkey` app on merges to main — this signet app is manual-only,
+# `ghostkey` app on merges to main: this signet app is manual-only,
 # so re-run this from a clean main checkout after any server merge
 # you want live here (found 18 days stale on 2026-07-08).
 fly deploy -a ghostkey-signet
@@ -98,13 +98,13 @@ curl https://ghostkey-signet.fly.dev/health
 
 If `default_network` says `signet` and `demo_mode` is `true`, the
 server is ready. If either is wrong, fix the secrets and redeploy
-before going further — a wrong network value here is the single
+before going further: a wrong network value here is the single
 most likely way to burn faucet time later.
 
 ### Web frontend
 
-Point a browser at the production Vercel build
-(`ghostkeyapp.vercel.app`) but with the API origin overridden to
+Point a browser at the production build
+(`www.ghostkeyapp.com`) but with the API origin overridden to
 your signet app. The simplest way is via `vercel.json`'s rewrite
 rule in a feature branch, OR by running the web dashboard locally:
 
@@ -117,7 +117,7 @@ DEV_PROXY_TARGET=https://ghostkey-signet.fly.dev npm run dev
 (`DEV_PROXY_TARGET` is the variable `vite.config.ts` reads for the
 dev-server proxy; it defaults to the local server at 127.0.0.1:8787.
 If you see "Reminder service is unreachable" plus ECONNREFUSED
-proxy errors in the vite log, the variable didn't take — it must be
+proxy errors in the vite log, the variable didn't take. It must be
 on the same line as `npm run dev`. `VITE_API_BASE` is different: it
 bakes an absolute API origin into a production build.)
 
@@ -133,7 +133,7 @@ Both confirm the server is wired up the way you expected.
 
 ---
 
-## Phase 1 — Create the vault
+## Phase 1: Create the vault
 
 You can do this two ways. The runbook uses the script because it's
 faster, exits cleanly on misconfiguration, and persists the vault id
@@ -142,14 +142,14 @@ through the wizard manually, the same flow works in the browser.
 
 ### Get your xpubs
 
-Only needed for the script flow below — the password-vault flow needs
+Only needed for the script flow below: the password-vault flow needs
 no xpubs. In your signet wallet (Sparrow shown here), open both
 wallets. For each:
 
 - Settings → Keystores → expand → "xpub". Copy the `tpub...` string
   AND the master fingerprint (eight hex characters near the top).
 - Or, click the "..." menu → "Show as origin-tagged" if you want
-  the wallet to bundle them as `[fingerprint/86'/1'/0']tpub...` — in
+  the wallet to bundle them as `[fingerprint/86'/1'/0']tpub...`: in
   which case the fingerprint comes along for the ride and you don't
   need to copy it separately.
 
@@ -178,20 +178,20 @@ The script:
    `.signet-e2e.json` (mode 0600, gitignored).
 5. Prints the next steps.
 
-The script's output ends with the funding address — a `tb1p...`
+The script's output ends with the funding address: a `tb1p...`
 P2TR address. Signet shares the testnet HRP so it looks identical
 to a testnet address; the network is determined by which Esplora
 the server queries, not by the address shape.
 
 ---
 
-## Phase 2 — Fund the vault from a signet faucet
+## Phase 2: Fund the vault from a signet faucet
 
 Pick one of:
 
-- https://signet.bc-2.jp/ — straightforward, ~10000 sats per request
-- https://signetfaucet.com/ — alternate, sometimes faster
-- https://alt.signetfaucet.com/ — backup
+- https://signet.bc-2.jp/: straightforward, ~10000 sats per request
+- https://signetfaucet.com/: alternate, sometimes faster
+- https://alt.signetfaucet.com/: backup
 
 Paste the funding address. Request the smallest amount the faucet
 offers; 5000–10000 sats is plenty for the test (the heir's claim
@@ -204,13 +204,13 @@ https://mempool.space/signet/address/<the address>
 ```
 
 Wait for **1 confirmation**. Signet blocks come every 10 minutes on
-average, but in practice the inter-block gap is highly variable —
+average, but in practice the inter-block gap is highly variable:
 sometimes seconds, sometimes 30+ minutes. Don't worry about it; this
 is just signet acting like a real network.
 
 ---
 
-## Phase 3 — Watch the alarm fire
+## Phase 3: Watch the alarm fire
 
 The vault is now in `status='ok'` with the 30-second check-in cadence
 demo mode lets us use. If you do nothing, the scheduler will:
@@ -251,7 +251,7 @@ the chain shows.
 
 ---
 
-## Phase 4 — Heir claims (browser)
+## Phase 4: Heir claims (browser)
 
 Open the claim link from the heir's email in a fresh browser tab.
 The URL looks like:
@@ -276,7 +276,7 @@ created:
   heir material): the page hands the heir an unsigned PSBT to sign in
   a **miniscript-aware** wallet. The vault is a Taproot timelock
   miniscript, so this means **Bitcoin Core** (Sparrow and Liana can't
-  open these descriptors — see MAINNET_DRY_RUN.md step 4). The heir
+  open these descriptors: see MAINNET_DRY_RUN.md step 4). The heir
   signs, pastes the signed PSBT back, and the server broadcasts.
 
 For a signet runbook you probably want the password-vault flow
@@ -290,8 +290,8 @@ requires the browser; if you want to exercise it, use the web UI's
 The heir claim transaction is invalid until `timelock_blocks` blocks
 after the funding tx confirmed. With `TIMELOCK_BLOCKS=6` and signet's
 ~10-min block interval, that's about an hour. If you try to broadcast
-earlier the network rejects it with a `non-BIP68-final` error —
-that's not a GhostKey bug, that's Bitcoin telling you to wait.
+earlier the network rejects it with a `non-BIP68-final` error.
+That's not a GhostKey bug, that's Bitcoin telling you to wait.
 
 While you wait, the heir's page will fail at the broadcast step. The
 error surfaces verbatim in the UI. Wait, refresh, try again.
@@ -326,7 +326,7 @@ Before declaring victory and updating `JOURNAL.md` Entry 15:
 1. **Did the pre-deadline reminder fire?** Check the owner email. It
    should land before the alarm-fired email (24h before deadline in
    production; in demo mode the reminder/alarm distinction collapses
-   because the lead time exceeds the cadence — both may fire near
+   because the lead time exceeds the cadence: both may fire near
    each other on the first cycle).
 2. **Does the one-tap link in the reminder/alarm email work?** Tap
    it. The server should reset the cadence and show "you're checked
@@ -336,8 +336,8 @@ Before declaring victory and updating `JOURNAL.md` Entry 15:
    `mempool.space/tx/...`. The latter would mean the server's
    `explorer_url` function picked the wrong network branch.
 4. **Anything in the server logs?** `fly logs -a ghostkey-signet`
-   while the test is running. Look for `warn` or `error` entries —
-   the audit flagged the `heir_claim` retry path
+   while the test is running. Look for `warn` or `error` entries:
+the audit flagged the `heir_claim` retry path
    (`psbt_routes.rs:690-706`) as untested against live CSV; if the
    first broadcast attempt returns `finalized=false`, that's worth
    noting in the journal entry.
@@ -364,7 +364,7 @@ email-channel send will be Skipped (row stays pending).
 ```
 
 If the row stayed pending, the heir will get the email the moment
-you `fly secrets set SMTP_HOST=...` and redeploy — the queue picks
+you `fly secrets set SMTP_HOST=...` and redeploy: the queue picks
 up on the next tick.
 
 ### Heir claim broadcast says "no UTXOs"
@@ -397,8 +397,8 @@ Difference must be ≥ `TIMELOCK_BLOCKS`. Wait, refresh, try again.
 If you discover mid-test that the vault was created on testnet
 instead of signet (this happens when `default_network` is wrong),
 the funding faucet sent real signet sats to a script that the testnet
-Esplora can't see. The sats aren't lost — they're still on signet,
-in the vault — but you can't drive the heir claim through this
+Esplora can't see. The sats aren't lost (they're still on signet,
+in the vault) but you can't drive the heir claim through this
 server. Either:
 
 - Throw away the server, redeploy with the correct
@@ -429,7 +429,7 @@ if you don't plan to keep the signet server around.
 
 If the test surfaced bugs, file issues with `tracing` log snippets.
 The most likely bug class is "the server claimed it finalized but
-mempool.space rejected the broadcast" — that needs the raw error
+mempool.space rejected the broadcast". That needs the raw error
 from the broadcast response captured. Save it.
 
 Once Entry 15 lands with a green run, "Live signet end-to-end test"

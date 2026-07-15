@@ -14,7 +14,7 @@ Heading: **How should your heir's wallet work?**
 
 Sub: One choice. You can change it before you create the vault.
 
-### Door A (default) — We set up the wallet for them
+### Door A (default): We set up the wallet for them
 
 Label: **We set up the wallet (easiest)**
 
@@ -23,7 +23,7 @@ Body:
 >
 > The trade: this is the convenient path, not the strictest one. So claiming can be one tap, GhostKey is able to unlock this wallet. We only ever do that for a real claim, after the waiting period, and it shows on the public blockchain. If you'd rather no company could ever touch it, pick the other door.
 
-### Door B — Your heir holds their own key
+### Door B: Your heir holds their own key
 
 Label: **Your heir holds the key (most private)**
 

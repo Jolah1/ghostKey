@@ -54,6 +54,6 @@ a problem post-merge.
 
 <!--
 Honest caveats. e.g. "didn't smoke-test on signet", "no live Esplora
-exercise". This is mandatory for non-trivial changes — see the commit
+exercise". This is mandatory for non-trivial changes: see the commit
 message style in JOURNAL.md.
 -->

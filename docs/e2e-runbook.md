@@ -21,7 +21,7 @@ owner-only smoke on mainnet.
 
 ---
 
-## Path 1 — Local demo (start here)
+## Path 1: Local demo (start here)
 
 One command brings up the server (demo mode) and the dashboard:
 
@@ -37,13 +37,13 @@ flow.
 Then, in the dashboard at `http://127.0.0.1:5173`:
 
 1. **Owner setup.** Create a vault. Pick a short waiting period
-   (seconds). Heir contact can be any email — delivery is faked locally
+   (seconds). Heir contact can be any email: delivery is faked locally
    (see step 3).
 2. **Download both artifacts.** On the funding screen, download the
    **owner kit** and the **heir envelope**, and write down the envelope
    passphrase (shown once). These are two separate files with two
    separate audiences: the owner kit unlocks the owner branch (spend
-   anytime — never hand it to anyone); the heir envelope unlocks only
+   anytime: never hand it to anyone); the heir envelope unlocks only
    the timelocked heir branch.
 3. **Watch the alarm fire.** Do nothing for ~45s. The vault moves
    `ok → alarmed → timelock_started`. Because there's no real delivery
@@ -58,7 +58,7 @@ Then, in the dashboard at `http://127.0.0.1:5173`:
 4. **Play the heir.** Open that link in a fresh tab. Walk the claim.
    Then open **"Advanced: save your own recovery file"** to get the
    block-B heir recovery file (re-seals the heir key under a password
-   you choose — durable, GhostKey-independent from claim onward).
+   you choose: durable, GhostKey-independent from claim onward).
 
 What this path does NOT exercise: actually moving coins. The owner kit's
 "find coins / sign / broadcast" and the heir sweep need a funded UTXO and
@@ -66,17 +66,17 @@ a real chain. For that, use path 2.
 
 ---
 
-## Path 2 — Signet (real coins move)
+## Path 2: Signet (real coins move)
 
 Use this to prove money actually moves on a real network, for free. The
 deep mechanics (deploying the `ghostkey-signet` app, faucets, waiting out
 the on-chain timelock, the xpub/PSBT path, troubleshooting) are in
-**`SIGNET_E2E_RUNBOOK.md`** — follow that for the on-chain parts. The
+**`SIGNET_E2E_RUNBOOK.md`**: follow that for the on-chain parts. The
 notes below cover only what's new on top of it.
 
 Two gotchas baked into the steps:
 
-- **Signet email is test-mode** — only the operator's own verified test
+- **Signet email is test-mode**: only the operator's own verified test
   address actually receives mail. Use that address for both owner and heir so you see the
   claim link land.
 - **SMS/WhatsApp won't send** until `TWILIO_*` secrets are set. Until
@@ -89,18 +89,18 @@ The new flows to verify on signet, in order:
    so the timelock is 1 block (matures in ~10 min, not hours). Download
    the owner kit and heir envelope on the funding screen. Fund the
    address from a faucet, wait 1 conf, then do a check-in from the
-   dashboard and confirm the deadline moves out — this proves GhostKey is
+   dashboard and confirm the deadline moves out. This proves GhostKey is
    the check-in interface.
 2. **Owner kit recovery (GhostKey-independent owner path).** Open the
    downloaded owner kit HTML in a browser. Unlock with the owner
    password → paste the signet Esplora URL → Find coins → Sign →
    Broadcast. This is the path the in-browser e2e automates, here against
    the live signet explorer with real coins.
-3. **Heir claim (window 1 — GhostKey alive).** Let the grace window
+3. **Heir claim (window 1: GhostKey alive).** Let the grace window
    lapse; the scheduler emails the claim link. Open it, walk the claim,
    then open **"Advanced: save your own recovery file"** (block B) and
    download it.
-4. **Heir envelope (window 2 — GhostKey gone before claim).** Open the
+4. **Heir envelope (window 2: GhostKey gone before claim).** Open the
    heir envelope from step 1 in a fresh browser. Unlock with its
    passphrase → Find coins → Sign → Broadcast. Works only once the vault
    has aged past the timelock with no owner movement (demo mode's 1-block
@@ -113,7 +113,7 @@ The new flows to verify on signet, in order:
 
 ---
 
-## Path 3 — Mainnet smoke (owner only, last)
+## Path 3: Mainnet smoke (owner only, last)
 
 After signet passes:
 
@@ -133,9 +133,9 @@ e2e (`cd ghostkey-web && npm run e2e`).
 
 You don't need to re-prove these by hand:
 
-- `cargo test --workspace` — server state machine, claim broker, notifier
+- `cargo test --workspace`: server state machine, claim broker, notifier
   routing (incl. the SMS/WhatsApp claim-link enqueue).
-- `cd ghostkey-web && npm run e2e` — the recovery kit driven in real
+- `cd ghostkey-web && npm run e2e`: the recovery kit driven in real
   headless Chrome: unlock → find coins → sign in wasm → broadcast, with a
   mocked Esplora. Same DOM + wasm wiring the owner kit and heir envelope
   use.

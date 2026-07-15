@@ -10,14 +10,14 @@ for owner check-ins.
 
 The Breez SDK pins `reqwest = "=0.12.18"` exactly, which is
 incompatible with every other crate in the GhostKey workspace.
-Including it as a direct dependency — even an optional one — breaks
+Including it as a direct dependency (even an optional one) breaks
 `cargo build` on the main repo. The sidecar pattern solves this
 cleanly: the Breez SDK lives entirely behind a localhost HTTP
 boundary, so its dependency graph never touches `ghostkey-server`.
 
 This is the same shape Lexe and Breez themselves use for their public
-SDKs. The trade-off — one extra process to run alongside the main
-server — buys a clean main workspace, independent restarts, and the
+SDKs. The trade-off (one extra process to run alongside the main
+server) buys a clean main workspace, independent restarts, and the
 ability for contributors to clone and build GhostKey without ever
 needing a Breez API key.
 
@@ -37,7 +37,7 @@ produces ~16 unresolved-import / type errors inside
 
 We knowingly accept this for now because:
 
-* The main `ghostkey-server` is completely insulated — it compiles,
+* The main `ghostkey-server` is completely insulated: it compiles,
   ships, and runs identically whether this sidecar builds or not.
   Without the sidecar URL configured, the server uses
   `NoopProvider` and the Lightning UI hides itself.

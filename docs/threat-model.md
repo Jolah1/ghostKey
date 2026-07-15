@@ -10,10 +10,10 @@ the right place to argue with it.
 
 Related documents:
 
-- [`ARCHITECTURE.md`](../ARCHITECTURE.md) — what each layer does and
+- [`ARCHITECTURE.md`](../ARCHITECTURE.md): what each layer does and
   where the security boundaries are.
-- [`DESIGN.md`](../DESIGN.md) — why the system is shaped this way.
-- [`SECURITY.md`](../SECURITY.md) — how to report a vulnerability,
+- [`DESIGN.md`](../DESIGN.md): why the system is shaped this way.
+- [`SECURITY.md`](../SECURITY.md): how to report a vulnerability,
   the known-limitations list, and accepted supply-chain advisories.
 
 A few framing decisions before the body:
@@ -45,9 +45,9 @@ The 12-word BIP39 mnemonic that derives the owner's Taproot xprv.
 Spending control over every vault that owner has set up. There are
 two storage shapes today:
 
-- **CLI flow** — written to `.ghostkey/<profile>/mnemonic` (chmod
+- **CLI flow**: written to `.ghostkey/<profile>/mnemonic` (chmod
   600) on the owner's own machine. Source: `crates/ghostkey-cli/`.
-- **Password-vault flow** — generated in the browser, never sent in
+- **Password-vault flow**: generated in the browser, never sent in
   plaintext to the server. The server stores only a sealed blob
   (XChaCha20-Poly1305 under an Argon2id-derived KEK). Source:
   `ghostkey-web/src/crypto/sealing.ts`,
@@ -57,15 +57,15 @@ two storage shapes today:
 ### A2. The heir's private key
 Same shape as A1, owned by the heir.
 
-- **CLI flow** — heir's own machine.
-- **Password-vault flow** — sealed in the server's `vaults` row
+- **CLI flow**: heir's own machine.
+- **Password-vault flow**: sealed in the server's `vaults` row
   under HKDF-SHA256(claim token). The server cannot reproduce the
   KEK; it only stores the claim-token *hash*. Browser unwraps at
   claim time. Source:
   [`crypto/sealing.ts`](../ghostkey-web/src/crypto/sealing.ts) →
   `unsealHeirXprv`, [`psbt_routes.rs`](../crates/ghostkey-server/src/psbt_routes.rs)
   → `get_sealed_heir_xprv`.
-- **F2 server-derived flow** — there is no on-disk heir key; it is
+- **F2 server-derived flow**: there is no on-disk heir key; it is
   recomputed deterministically from `(GHOSTKEY_MASTER_KEY, heir_email,
   vault_id)` on both sides. Source:
   [`crates/ghostkey-core/src/keys.rs`](../crates/ghostkey-core/src/keys.rs)
@@ -122,13 +122,13 @@ hold once the master key is rotated out of memory).
 Three flavours, all 32 random bytes, stored hash-only with a
 constant-time compare path (`auth.rs`):
 
-- **Owner token** — returned exactly once at vault creation. Required
+- **Owner token**: returned exactly once at vault creation. Required
   on owner-mutation endpoints. Persisted on the owner's device
   (`vaultStore.ts`).
-- **One-tap check-in token** — minted per period, expires when the
+- **One-tap check-in token**: minted per period, expires when the
   next deadline rolls; used as `Authorization` for
   `/vaults/:id/checkin-from-link/:token`.
-- **Claim token** — minted when a vault enters `alarmed`, sent to
+- **Claim token**: minted when a vault enters `alarmed`, sent to
   the heir over email / SMS / WhatsApp. The hash is the CAS gate
   that makes the one-shot heir-claim race-safe
   (`claim_token_used_at IS NULL` predicate in
@@ -170,7 +170,7 @@ GET. Cannot sign Bitcoin transactions on the owner's behalf.
 
 This is the operator we are usually our own. If GhostKey is
 self-hosted by a family, the "operator" is the family member who
-runs the VPS — they are not the threat to the owner. In the hosted
+runs the VPS. They are not the threat to the owner. In the hosted
 case (`ghostkey.fly.dev`), the operator is whoever maintains the
 shared deployment.
 
@@ -182,7 +182,7 @@ what they can see; differs in motive.
 
 ### Att-4. A compromised heir
 An attacker who knows they are named as the heir for some specific
-owner — e.g. a scorned relative. They have the heir's contact
+owner: e.g. a scorned relative. They have the heir's contact
 details but not the heir's seed phrase.
 
 ### Att-5. A compromised owner
@@ -251,8 +251,8 @@ fully visible here so it can be argued with:
 
 - A *compromised* server during that call could redirect the
   matured-timelock UTXO to an attacker-controlled address. The
-  on-chain trail is public, so the real heir notices immediately —
-  but the funds are gone.
+  on-chain trail is public, so the real heir notices immediately,
+but the funds are gone.
 - We chose this trade-off because re-implementing Taproot script-
   path PSBT signing in the browser would add a significant chunk
   of audited Bitcoin code, and at the moment of this call the
@@ -301,7 +301,7 @@ referer headers) typically do not see.
 
 ### D5. Att-5 (compromised owner) can spend, but cannot retroactively bypass the timelock
 A compromised owner is the owner. They can sweep funds via the
-owner branch. They cannot make the heir branch claimable sooner —
+owner branch. They cannot make the heir branch claimable sooner:
 the timelock measures from the UTXO's last confirmation, and no
 server action can reset that.
 
@@ -334,11 +334,11 @@ rate limit, for the security of these tokens.
 ### D8. The "fail closed" startup checks
 Two combinations are forbidden at boot:
 
-- `GHOSTKEY_AUTH_DISABLED=1` without `GHOSTKEY_ALLOW_INSECURE=1` —
-  the server refuses to boot with an "auth disabled but
+- `GHOSTKEY_AUTH_DISABLED=1` without `GHOSTKEY_ALLOW_INSECURE=1`:
+the server refuses to boot with an "auth disabled but
   ALLOW_INSECURE not set" error
   ([`main.rs`](../crates/ghostkey-server/src/main.rs)).
-- Missing `GHOSTKEY_MASTER_KEY` — the server refuses to boot, so
+- Missing `GHOSTKEY_MASTER_KEY`: the server refuses to boot, so
   there is no window where it might write plaintext contact PII
   ([`crypto.rs`](../crates/ghostkey-server/src/crypto.rs) →
   `ensure_master_key_loaded`).
@@ -370,8 +370,8 @@ mnemonic is a function of `(GHOSTKEY_MASTER_KEY, heir_email,
 vault_id)`. An attacker who simultaneously holds all three can
 reconstruct the heir's xprv. The on-chain relative timelock is the
 only check between such an attacker and the heir's funds. We accept
-this because the alternative — requiring every heir to set up a
-Bitcoin wallet before they can be named — defeats the F2 product
+this because the alternative (requiring every heir to set up a
+Bitcoin wallet before they can be named) defeats the F2 product
 intent.
 
 - Mitigation: master-key custody is the load-bearing secret for
@@ -385,7 +385,7 @@ intent.
 ### R2. Server-side signing window in the password-vault claim
 See D2 above. A compromised server during one specific call can
 redirect the matured-timelock UTXO. Window is bounded to the seconds
-the handler takes. Mitigation: structural — no key persistence; only
+the handler takes. Mitigation: structural: no key persistence; only
 the live heir benefits from spending the UTXO post-timelock.
 
 ### R3. The notifier can read contact PII while the master key is loaded
@@ -411,12 +411,12 @@ verbatim. The heir-side flow is now classified into plain English
 ### R5. Sealed owner key is offline-crackable given the vault id + a weak password
 Password-vault sealing uses Argon2id with `m=64MiB, t=3, p=1`
 ([`ghostkey-web/src/crypto/sealing.ts`](../ghostkey-web/src/crypto/sealing.ts)).
-Tuned for ~3s on a mid-range Android phone — deliberately the
+Tuned for ~3s on a mid-range Android phone: deliberately the
 slowest we could justify without user-visible jank in the wizard.
 `/vaults/:id/sealed-blobs` is unauthenticated by design: cross-device
 recovery has to hand the sealed owner xprv (plus its KDF parameters)
 to any browser that presents the vault id, because the whole point is
-"recover with two things you know — your email and your password."
+"recover with two things you know: your email and your password."
 The sealed blob is useless without the password, but that means an
 attacker who learns a vault id can grind the password offline at the
 KDF cost, which is public in the blob.
@@ -439,8 +439,8 @@ allows and gate the online reach of the endpoint.
   are behind a dedicated per-IP rate limit (`GHOSTKEY_RL_RECOVERY`,
   default 10 burst / ~1 per 10s) so a scraper holding a list of vault
   ids cannot bulk-harvest every sealed owner key at once for offline
-  attack. The limit does not stop a single targeted fetch — one is
-  enough — but it defeats mass harvesting.
+  attack. The limit does not stop a single targeted fetch (one is
+  enough) but it defeats mass harvesting.
 - Tracked: SECURITY.md "Known limitations" #4; internal audit
   2026-07-02.
 
@@ -502,8 +502,8 @@ load-bearing user decision here, the same way master-key custody
 ### R11. Vault existence is discoverable from an owner's email
 `/vaults/find` takes an unsalted hash of the owner's email and returns
 that owner's vault ids, labels, statuses, and dates (no key material).
-An unsalted deterministic hash is required — the owner's browser must
-be able to recompute it on any device to find their vaults — so anyone
+An unsalted deterministic hash is required (the owner's browser must
+be able to recompute it on any device to find their vaults) so anyone
 who knows or guesses an email can confirm it owns a GhostKey vault and
 learn the coarse status. This is a privacy exposure, not a funds risk,
 and it feeds R5's "attacker learns the vault id" step.
@@ -588,7 +588,7 @@ should:
   the tree or open an issue for whatever's drifted.
 - Add new entries for any feature that touches a key, a token, the
   master key, or a sealed blob.
-- Keep the cross-references current — broken links here are the
+- Keep the cross-references current: broken links here are the
   signal that the doc has fallen behind the code.
 
 If a finding from the external mainnet review contradicts a claim

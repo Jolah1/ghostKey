@@ -1,9 +1,9 @@
-# Nunchuk — export an xpub
+# Nunchuk: export an xpub
 
 Nunchuk is a mobile (iOS/Android) and desktop Bitcoin wallet known for
 multisig, but it also does **single-signature Taproot**, which is what
 GhostKey wants. The cleanest thing to hand GhostKey from Nunchuk is the
-wallet's **descriptor** — it already contains the xpub *and* the
+wallet's **descriptor**: it already contains the xpub *and* the
 origin tag (`[fingerprint/86'/0'/0']`), so the wizard can read both
 pieces from one paste.
 
@@ -31,7 +31,7 @@ Open **Wallets → Add wallet** (the **+**). Choose:
 Select the key you want to use, then create the wallet. Name it
 something like `ghostkey-vault`.
 
-[SCREENSHOT 1 — the Add wallet screen with Single sig + Taproot]
+[SCREENSHOT 1: the Add wallet screen with Single sig + Taproot]
 
 ### 2. Open the wallet's configuration
 
@@ -39,7 +39,7 @@ Open the new wallet, then its **settings** (the gear, or the **⋯ /
 More** menu). Look for **Wallet configuration**, **Wallet info**, or
 an **Export / Share** action.
 
-[SCREENSHOT 2 — the wallet settings with the export/configuration
+[SCREENSHOT 2: the wallet settings with the export/configuration
 option]
 
 ### 3. Export the descriptor
@@ -56,7 +56,7 @@ Copy that whole string. The part in square brackets is the origin tag
 (your key's fingerprint + derivation path); the `xpub6...` after it is
 the account xpub.
 
-[SCREENSHOT 3 — the exported descriptor with the origin tag and xpub]
+[SCREENSHOT 3: the exported descriptor with the origin tag and xpub]
 
 ### 4. Paste into the GhostKey wizard
 
@@ -68,14 +68,14 @@ pulls out the fingerprint for you), or just the `xpub6...` on its own.
 If you paste only the xpub and the wizard asks for a fingerprint, it's
 the 8 hex characters inside the square brackets.
 
-[SCREENSHOT 4 — GhostKey wizard with the pasted key accepted]
+[SCREENSHOT 4: GhostKey wizard with the pasted key accepted]
 
 ## Troubleshooting
 
 - **No Taproot option when creating the wallet.** Update Nunchuk;
   older versions only offered Native SegWit for single-sig. A Native
   SegWit key (its export shows `wpkh(...)` and a `zpub`) still works on
-  the heir side — see "What GhostKey expects" in the
+  the heir side: see "What GhostKey expects" in the
   [README](./README.md).
 - **The key starts with `tpub` / the descriptor says testnet.** Your
   Nunchuk is on a test network. Switch it to mainnet, or set the

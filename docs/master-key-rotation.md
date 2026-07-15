@@ -6,15 +6,15 @@ rotating it after a suspected leak, and no story for routine
 hygiene rotation.
 
 This document proposes a rotation design and a runbook. **It is the
-design step of issue #27 — no code changes ship with this PR.** The
+design step of issue #27: no code changes ship with this PR.** The
 implementation is the follow-up PR, separated so the model can be
 argued with before the migration goes near production data.
 
 Related material:
 
-- [Threat model § R1](./threat-model.md#r1-master-key-compromise-gives-an-attacker-the-f2-heirs-keys) — what a master-key leak actually buys an attacker.
-- [`crates/ghostkey-server/src/crypto.rs`](../crates/ghostkey-server/src/crypto.rs) — current single-key implementation (`master_key()`, `vault_contact_key`, `seal_for_vault`, `open_for_vault`).
-- [`crates/ghostkey-core/src/keys.rs`](../crates/ghostkey-core/src/keys.rs) → `derive_heir_seed`, `compute_vault_secret` — the F2 derivation chain.
+- [Threat model § R1](./threat-model.md#r1-master-key-compromise-gives-an-attacker-the-f2-heirs-keys): what a master-key leak actually buys an attacker.
+- [`crates/ghostkey-server/src/crypto.rs`](../crates/ghostkey-server/src/crypto.rs): current single-key implementation (`master_key()`, `vault_contact_key`, `seal_for_vault`, `open_for_vault`).
+- [`crates/ghostkey-core/src/keys.rs`](../crates/ghostkey-core/src/keys.rs) → `derive_heir_seed`, `compute_vault_secret`: the F2 derivation chain.
 
 ---
 
@@ -24,7 +24,7 @@ The master key does two structurally different jobs. Conflating
 them is what makes "rotation" feel hard. Split them apart and only
 one role is actually tricky.
 
-### Role A — PII encryption at rest
+### Role A: PII encryption at rest
 
 Used by `crypto::seal_for_vault` / `open_for_vault` to encrypt heir,
 owner, and trusted-contact rows at rest under per-vault keys
@@ -36,7 +36,7 @@ SQLite DB; nothing about the master key appears on Bitcoin. To
 rotate, you re-encrypt every row under a new key and throw away
 the old key.
 
-### Role B — F2 server-derived heir keys
+### Role B: F2 server-derived heir keys
 
 Used by `ghostkey_core::keys::derive_heir_seed` to deterministically
 recompute an F2 heir's BIP86 account xpub from `(heir_email,
@@ -49,13 +49,13 @@ target; you cannot change the master key without producing a
 different xpub, which produces a different descriptor, which
 produces a different Bitcoin address. The UTXOs are locked to the
 old descriptor and remain spendable only by the old heir xpub. So
-"rotation" for Role B is not actually rotation — it is
+"rotation" for Role B is not actually rotation. It is
 "re-vaulting under a new key generation," which moves funds
 on-chain.
 
 ---
 
-## 2. Design — key generations, indexed per role
+## 2. Design: key generations, indexed per role
 
 We introduce two independent generation counters, one per role:
 
@@ -65,7 +65,7 @@ F2  generations:   f2_key_v1,  f2_key_v2,  ...
 ```
 
 The server can hold any subset of generations in memory simultaneously.
-Exactly one generation per role is the *current* one — that's what
+Exactly one generation per role is the *current* one. That's what
 new writes use. Older generations linger as long as there is at
 least one row still tagged to them.
 
@@ -126,7 +126,7 @@ ambiguous. Per-vault is the smallest correct granularity.
 Three flavours, each with a different urgency profile and a
 different blast radius.
 
-### Workflow 3A — Routine PII rotation (quarterly)
+### Workflow 3A: Routine PII rotation (quarterly)
 
 Goal: limit the lifetime of any single PII key without disrupting
 service. Cadence: every 90 days.
@@ -154,7 +154,7 @@ server can decrypt both generations; the background job catches
 the long tail. New vaults created during rotation use the new
 generation directly.
 
-### Workflow 3B — Owner-triggered F2 re-vaulting
+### Workflow 3B: Owner-triggered F2 re-vaulting
 
 Goal: rotate Role B for one F2 vault. Cadence: opt-in, owner-
 driven, rare.
@@ -170,25 +170,25 @@ Mechanism: there is no in-place rotation for F2. The owner taps
 3. After the sweep confirms on-chain, server marks the old vault
    as `superseded` and the new one as the heir-of-record. The old
    vault stays in the DB for audit, but `issue-claim` against it
-   returns "superseded — claim against vault <new>".
+   returns "superseded: claim against vault <new>".
 
-This is structurally a *new* vault, not a rotated one — but from
+This is structurally a *new* vault, not a rotated one, but from
 the owner's perspective it's "press a button, follow the wallet
 prompt, you're done". The cost is one on-chain transaction
 (network fee). No heir-side action required if the rotation
 completes before the timelock matures.
 
 Edge: if the timelock matured before the owner finished sweeping,
-the heir can claim against the old vault. That's by design — we
+the heir can claim against the old vault. That's by design. We
 don't want a rotation that exists to "delay an heir's claim."
 
-### Workflow 3C — Emergency rotation after suspected leak
+### Workflow 3C: Emergency rotation after suspected leak
 
 Goal: minimise the window of exposure after a master-key
 compromise. Cadence: as fast as the operator can move.
 
 Trigger: anything that suggests `GHOSTKEY_MASTER_KEY` (or a
-generation key) is in unauthorised hands — git history exposure,
+generation key) is in unauthorised hands: git history exposure,
 container image leak, accidental log line, employee departure
 under bad conditions.
 
@@ -210,15 +210,15 @@ Steps within 24 hours:
    coordinated disclosure when the operator finds a vulnerability;
    the same channel applies here.
 6. Re-encryption job has now caught the long tail. Audit
-   `pii_key_gen` distribution — every row should be at `<N+1>`.
+   `pii_key_gen` distribution: every row should be at `<N+1>`.
    Remove `GHOSTKEY_PII_KEY_V<N>`. Restart.
 
 Steps within one week:
 
 7. Audit how many F2 vaults still have `f2_key_gen = <N>` (i.e.
    owners who did not act). For those, the timelock + the on-chain
-   fact that the funds haven't moved is the only line of defence —
-   document in the incident write-up and offer in-person help where
+   fact that the funds haven't moved is the only line of defence:
+document in the incident write-up and offer in-person help where
    the owner is reachable.
 8. Post-mortem in `JOURNAL.md`.
 
@@ -227,7 +227,7 @@ to the owner. The protocol commits to an xpub on-chain; only the
 owner can move funds to a new commitment. The best we can do is
 notify quickly and reduce friction.
 
-### Workflow 3D — PII-only rotation without touching F2 (reset path)
+### Workflow 3D: PII-only rotation without touching F2 (reset path)
 
 Goal: rotate the PII secret without doing anything on-chain.
 Cadence: any time a contributor needs to swap out the PII key
@@ -265,7 +265,7 @@ only `GHOSTKEY_MASTER_KEY` set. The migration is:
 4. **Operator rotates PII (optional, recommended within 30 days).**
    Workflow 3A.
 
-The migration is opt-in beyond step 1 — an operator who never
+The migration is opt-in beyond step 1: an operator who never
 sets the new vars keeps the existing single-key world working.
 
 ---
@@ -280,7 +280,7 @@ sets the new vars keeps the existing single-key world working.
   Manager, GCP KMS). The crypto code does not care where the
   bytes came from.
 - **Online F2 rotation** (rotating without a new on-chain
-  commitment). Not possible by design — the heir xpub is part of
+  commitment). Not possible by design: the heir xpub is part of
   the descriptor. Any future flow that tries to "rotate F2
   in-place" is a bug.
 - **Envelope encryption for the PII key.** A future redesign could

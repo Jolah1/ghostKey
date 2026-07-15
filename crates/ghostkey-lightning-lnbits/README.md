@@ -9,7 +9,7 @@ calls, but backed by an [LNbits] instance instead of Breez SDK Liquid.
 ## Why this exists
 
 The Breez sidecar's `breez-sdk-liquid` 0.12.2 dep does not compile
-from a clean checkout as of 2026-05-26 — see the breez crate's
+from a clean checkout as of 2026-05-26: see the breez crate's
 README, "Current upstream build status". Until Breez fixes their
 transitive `boltz-client` / `secp256k1_zkp` skew, this sidecar lets
 an operator get Lightning check-ins working in production today.
@@ -17,7 +17,7 @@ an operator get Lightning check-ins working in production today.
 The main `ghostkey-server` is provider-agnostic: point its
 `GHOSTKEY_LN_SIDECAR_URL` env var at either sidecar and the dashboard
 renders the check-in button. The env var name keeps the `BREEZ`
-prefix for backwards compatibility — same wire protocol, same
+prefix for backwards compatibility: same wire protocol, same
 shared-secret bearer, swappable backend.
 
 ## API
@@ -88,13 +88,13 @@ You need an LNbits instance with:
 
 - A funded wallet (any amount is fine; this sidecar only ever
   *receives*).
-- The **invoice key** for that wallet. Do not pass the admin key —
-  this sidecar never sends, so the lower-privilege key is correct.
+- The **invoice key** for that wallet. Do not pass the admin key:
+this sidecar never sends, so the lower-privilege key is correct.
 
 Three ways to get an LNbits instance, in order of operational
 complexity:
 
-1. **Self-host the official Docker image** — recommended for prod.
+1. **Self-host the official Docker image**: recommended for prod.
    See <https://docs.lnbits.org/guide/installation.html>.
 2. **Use a managed LNbits provider** (e.g. <https://my.lnbits.com>).
    Convenient, but introduces a third-party dependency.

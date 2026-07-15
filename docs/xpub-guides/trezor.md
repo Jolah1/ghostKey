@@ -1,10 +1,10 @@
-# Trezor Suite — export an xpub
+# Trezor Suite: export an xpub
 
 Trezor Suite is the desktop and web app for Trezor hardware wallets.
 It can create a **Taproot (BIP86)** account and show you its xpub in a
 few clicks. These steps assume a recent Trezor Suite (2023 or later)
 and a device that supports Taproot: **Trezor Model T, Safe 3, or
-Safe 5**. The older **Model One does not support Taproot** — see
+Safe 5**. The older **Model One does not support Taproot**: see
 Troubleshooting if that's your device.
 
 Estimated time: 3 minutes.
@@ -21,7 +21,7 @@ Estimated time: 3 minutes.
 On the Suite dashboard, select **Bitcoin** in the left-hand coin
 list. If you have no Bitcoin account yet, Suite offers to create one.
 
-[SCREENSHOT 1 — Trezor Suite dashboard with Bitcoin selected]
+[SCREENSHOT 1: Trezor Suite dashboard with Bitcoin selected]
 
 ### 2. Add a Taproot account
 
@@ -33,16 +33,16 @@ dropdown (or **+ Add account**) and choose the account **type**:
 Give it a moment to sync. The account label will then read
 **Taproot**.
 
-[SCREENSHOT 2 — the Add account dialog with Taproot selected]
+[SCREENSHOT 2: the Add account dialog with Taproot selected]
 
 ### 3. Open Account details
 
 With the Taproot account selected, click the **• • •** menu near the
 account name and choose **Account details**, then **Show public key
 (XPUB)**. Trezor asks you to **confirm on the device** that you want
-to reveal the public key — press the checkmark on the Trezor itself.
+to reveal the public key: press the checkmark on the Trezor itself.
 
-[SCREENSHOT 3 — the Show public key (XPUB) panel]
+[SCREENSHOT 3: the Show public key (XPUB) panel]
 
 ### 4. Copy the xpub
 
@@ -57,17 +57,17 @@ your wallet" step and paste the xpub into the **Your xpub** field.
 
 If the wizard also asks for a **fingerprint**, that's your device's
 master fingerprint (8 hex characters). Trezor Suite doesn't show it in
-the XPUB panel, so leave it blank if you don't have it to hand —
+the XPUB panel, so leave it blank if you don't have it to hand:
 GhostKey accepts the xpub on its own.
 
-[SCREENSHOT 4 — GhostKey wizard with the pasted xpub accepted]
+[SCREENSHOT 4: GhostKey wizard with the pasted xpub accepted]
 
 ## Troubleshooting
 
 - **No "Taproot" account type offered.** Your device is likely a
   **Model One**, which has no Taproot support. You can still export a
   **Native SegWit** account (its key starts with `zpub`) and use it on
-  the heir side — but read "What GhostKey expects" in the
+  the heir side, but read "What GhostKey expects" in the
   [README](./README.md): the heir's signing wallet must be
   Taproot-aware at claim time regardless.
 - **The xpub starts with `tpub` or `vpub`.** Suite is in **testnet**

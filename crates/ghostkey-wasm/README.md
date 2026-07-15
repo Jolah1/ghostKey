@@ -16,9 +16,9 @@ See `src/lib.rs` for the exact `SweepRequest` / `SweepResponse` JSON shape.
 
 The build needs two things beyond the normal Rust toolchain:
 
-1. **`clang`** — secp256k1 ships C that must be compiled to wasm.
+1. **`clang`**: secp256k1 ships C that must be compiled to wasm.
    - Debian/Ubuntu: `sudo apt-get install -y clang`
-2. **`wasm-pack`** — `cargo install wasm-pack` (or `wasm-bindgen-cli`).
+2. **`wasm-pack`**: `cargo install wasm-pack` (or `wasm-bindgen-cli`).
 
 Then:
 

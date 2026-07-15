@@ -55,8 +55,13 @@
      midpoint colour swaps for legibility. */
   --title-gradient-dark:
     linear-gradient(135deg, rgba(255,255,255,0.55) 0%, #BBBBBB 50%, rgba(255,255,255,0.55) 100%);
+  /* The light variant used a #555 midpoint at 85% alpha, which left
+     every headline sitting at roughly mid-grey — the single biggest
+     reason light mode read as faded. Same brushed-metal shape, but
+     anchored on near-black with a much shallower dip, so the sheen
+     survives and the headline still reads as a headline. */
   --title-gradient-light:
-    linear-gradient(135deg, rgba(20,20,20,0.85) 0%, #555555 50%, rgba(20,20,20,0.85) 100%);
+    linear-gradient(135deg, #0B0B0D 0%, #3B4149 50%, #0B0B0D 100%);
 }
 
 /* Keyboard-only "skip to content" link: parked off-screen until it
@@ -126,20 +131,27 @@
 [data-theme="light"] {
   color-scheme: light;
 
-  --bg:           #FFFFFF;
+  /* The page is a soft grey and cards are pure white, not the other
+     way round. Previously both were white (#FFF page, #FAFAFA cards):
+     a 2% difference behind a hairline border, so every surface
+     dissolved into the next and the whole theme read as washed out.
+     Putting the tint on the page instead lets each card lift off it,
+     which is what carries the layout in light mode — dark mode gets
+     that separation from its shadows. */
+  --bg:           #F1F4F7;
   --bg-elev:      #FFFFFF;
-  --surface:      #FAFAFA;
-  --surface-2:    #F2F2F2;
-  --surface-hi:   #E8E8E8;
+  --surface:      #FFFFFF;
+  --surface-2:    #E9EDF2;
+  --surface-hi:   #DCE2E9;
 
   /* Darker than a hairline so cards, inputs, and dividers keep
-     definition on the white background instead of dissolving into it. */
-  --border:       #DCE0E4;
-  --border-hi:    #C2C8CE;
+     definition instead of dissolving into the page. */
+  --border:       #D3DAE2;
+  --border-hi:    #B6BFCA;
   --border-focus: rgba(11, 117, 104, 0.50);
 
-  --card-outline: #D7DBDF;
-  --card-grad:    linear-gradient(345deg, #FAFAFA, #FFFFFF);
+  --card-outline: #DCE2E9;
+  --card-grad:    linear-gradient(345deg, #FFFFFF, #FFFFFF);
 
   --text:         #070709;
   --text-strong:  #000000;

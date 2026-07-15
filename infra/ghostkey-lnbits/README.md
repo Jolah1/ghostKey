@@ -1,4 +1,4 @@
-# ghostkey-lnbits — self-hosted Lightning backend for check-ins
+# ghostkey-lnbits: self-hosted Lightning backend for check-ins
 
 A Fly app that runs **phoenixd** (Acinq's headless Lightning node) +
 **LNbits** (invoice/API layer) side-by-side in one container, behind
@@ -22,7 +22,7 @@ What this app *does* hold:
 - 1-sat heartbeat payments accumulated from owners checking in.
   These are operator revenue, not assets held in trust.
 - A 12-word BIP39 seed for the phoenixd Lightning wallet (stored in
-  `/data/phoenix/seed.dat`). Back this up — it's the recovery
+  `/data/phoenix/seed.dat`). Back this up. It's the recovery
   secret for the accumulated heartbeat balance.
 
 ## First-time setup
@@ -60,7 +60,7 @@ Fly volume is lost.
 
 ### 4. Liquidity (no manual bootstrap required)
 
-Phoenixd 0.8+ uses Acinq's LSP with a **fee-credit** model — small
+Phoenixd 0.8+ uses Acinq's LSP with a **fee-credit** model: small
 inbound payments (below the channel-open fee) accumulate as fee
 credit on Acinq's side until they exceed a threshold (default 50k
 sat), at which point Acinq splices in a real channel automatically.
@@ -75,7 +75,7 @@ fly ssh console -a ghostkey-lnbits -C \
 ```
 
 Expect a `nodeId` and current block height. Before the first
-splice, `listchannels` is empty — that is expected; payments still
+splice, `listchannels` is empty. That is expected; payments still
 land as fee credit.
 
 If you'd rather pre-open a channel (for predictable sweep
@@ -88,7 +88,7 @@ optional and unnecessary for the heartbeat workload.
 
 LNbits 1.x auto-creates a superuser + default wallet on first boot
 (the superuser ID is written to `/data/lnbits/.super_user`). Fetch
-the wallet **invoice key** (`inkey` — the sidecar only ever
+the wallet **invoice key** (`inkey`: the sidecar only ever
 receives, never sends, so the admin key is intentionally not
 copied off the box):
 
@@ -99,7 +99,7 @@ fly ssh console -a ghostkey-lnbits -C \
 
 (The `sqlite3` CLI binary is not installed in the LNbits image,
 hence the Python one-liner. LNbits also has a web UI but it's only
-reachable over Fly 6PN — the query above is the path of least
+reachable over Fly 6PN: the query above is the path of least
 resistance.)
 
 ### 6. Wire the sidecar

@@ -1,4 +1,4 @@
-# Specter Desktop — export an xpub
+# Specter Desktop: export an xpub
 
 Specter Desktop is the go-to wallet for users who want a polished
 multisig experience and tight hardware-wallet integration. It has
@@ -20,24 +20,24 @@ Estimated time: 3 minutes.
 ### 1. Open the device that holds the keys
 
 In Specter's left sidebar, click the device whose xpub you want
-to export — for example a Coldcard you've already added, or a
+to export: for example a Coldcard you've already added, or a
 "Specter DIY" device.
 
-[SCREENSHOT 1 — Specter sidebar with a device selected]
+[SCREENSHOT 1: Specter sidebar with a device selected]
 
 ### 2. Add a Taproot key (if you haven't already)
 
 Click **Add new key**. In the dialog, set:
 
 - **Key origin:** the device you just selected.
-- **Address type:** *Taproot (single signature)* — this is the
+- **Address type:** *Taproot (single signature)*: this is the
   BIP86 path `m/86'/0'/0'`. If you pick *Native SegWit* by
   mistake the export will be a `zpub` instead.
 
 Specter walks the device through the derivation and adds the new
 key under the device.
 
-[SCREENSHOT 2 — Add new key dialog with Taproot selected]
+[SCREENSHOT 2: Add new key dialog with Taproot selected]
 
 ### 3. Open the key details
 
@@ -45,7 +45,7 @@ In the device view, click the row for the new Taproot key. Specter
 shows the **xpub**, the **fingerprint** (8 hex characters), and
 the **derivation path** (`m/86'/0'/0'`).
 
-[SCREENSHOT 3 — key details panel showing xpub, fingerprint,
+[SCREENSHOT 3: key details panel showing xpub, fingerprint,
 and derivation path]
 
 ### 4. Copy the xpub (and fingerprint)
@@ -54,7 +54,7 @@ Specter provides copy buttons next to both. Click them in turn
 and paste each value into a notes app or directly into the
 GhostKey wizard.
 
-The origin-tagged form — useful because it's a single paste —
+The origin-tagged form (useful because it's a single paste) 
 looks like:
 
 ```
@@ -71,7 +71,7 @@ Switch to the GhostKey setup wizard's "Connect your wallet" step.
 Paste the xpub (and, if you copied them separately, the
 fingerprint).
 
-[SCREENSHOT 4 — GhostKey wizard with the paste accepted]
+[SCREENSHOT 4: GhostKey wizard with the paste accepted]
 
 ## Troubleshooting
 
