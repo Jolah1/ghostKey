@@ -178,4 +178,4 @@ PRs welcome, especially on anything in the "still being built" list above, plus 
 Security issues: [SECURITY.md](./SECURITY.md). Please report privately first.
 
 
-**License:** MIT License.
+**License:** Apache-2.0 or MIT, at your option. See [LICENSE.md](./LICENSE.md).
