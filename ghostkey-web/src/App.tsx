@@ -22,7 +22,14 @@
  * heir metadata) via vaultStore.ts. There is no global store beyond
  * route + health.
  */
-import { Suspense, lazy, useEffect, useState } from "react";
+import {
+  Suspense,
+  lazy,
+  useEffect,
+  useState,
+  type ComponentType,
+  type LazyExoticComponent,
+} from "react";
 import { NavBar } from "./NavBar";
 import { Landing } from "./Landing";
 import { ServerOfflineBanner } from "./ServerOfflineBanner";
@@ -35,73 +42,145 @@ import {
   touchSession,
 } from "./vaultStore";
 
+/**
+ * Session flag marking that we've already burned our one reload on a
+ * stale-chunk failure in this tab.
+ */
+const CHUNK_RELOAD_KEY = "gk:chunk-reload";
+
+/** Browsers word this differently; match all the common phrasings. */
+function isStaleChunkError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed/i.test(
+    msg,
+  );
+}
+
+/**
+ * `lazy()`, but a stale bundle heals itself instead of crashing.
+ *
+ * Every deploy changes the chunks' content hashes. A tab (or an
+ * installed PWA) still holding the previous index.html then asks for
+ * filenames that no longer exist. The import 404s, and React.lazy
+ * surfaces that as a *render* error — so the ErrorBoundary's crash
+ * card appears the moment the user navigates. Real owners hit this
+ * mid sign-in, and heirs hit it mid claim, which is the worst
+ * possible moment to show someone an error they can't act on.
+ *
+ * One reload fixes it (fresh index.html, current chunk names), so do
+ * it for them. The sessionStorage flag bounds it to a single retry per
+ * tab: if the chunk is genuinely missing (a broken deploy) rather than
+ * merely stale, the second failure falls through to the boundary
+ * instead of reload-looping.
+ */
+// `any` mirrors React's own `lazy<T extends ComponentType<any>>` — a
+// narrower bound (unknown/never) won't accept components with props.
+function lazyRoute<T extends ComponentType<any>>(
+  factory: () => Promise<{ default: T }>,
+): LazyExoticComponent<T> {
+  return lazy(() =>
+    factory().then(
+      (m) => {
+        // Loaded fine — clear the guard so a later deploy in this same
+        // tab still gets its own retry.
+        try {
+          sessionStorage.removeItem(CHUNK_RELOAD_KEY);
+        } catch {
+          // Storage can throw in private modes. Not worth failing over.
+        }
+        return m;
+      },
+      (err: unknown) => {
+        let alreadyTried = false;
+        try {
+          alreadyTried = sessionStorage.getItem(CHUNK_RELOAD_KEY) === "1";
+        } catch {
+          // See above; treat as "not tried" and let the reload guard
+          // itself be best-effort.
+        }
+        if (!isStaleChunkError(err) || alreadyTried) throw err;
+        try {
+          sessionStorage.setItem(CHUNK_RELOAD_KEY, "1");
+        } catch {
+          // If we can't persist the guard we still reload once; a loop
+          // would need storage to be broken *and* the deploy bad.
+        }
+        window.location.reload();
+        // Never settles: the reload is tearing this document down, and
+        // resolving here would only race it.
+        return new Promise<{ default: T }>(() => {});
+      },
+    ),
+  );
+}
+
 // Every route except the landing page is code-split. A visitor's
 // first paint only pays for the marketing page + shell; the heavier
 // flows (setup with its crypto stack, the dashboard, the claim page)
 // download when — and only when — they're navigated to. AssistChat is
 // shared by two lazy routes, so Vite hoists it into its own chunk.
-const SetupPortal = lazy(() =>
+const SetupPortal = lazyRoute(() =>
   import("./SetupPortal").then((m) => ({ default: m.SetupPortal })),
 );
-const PasswordSetupPortal = lazy(() =>
+const PasswordSetupPortal = lazyRoute(() =>
   import("./PasswordSetupPortal").then((m) => ({ default: m.PasswordSetupPortal })),
 );
-const CheckinPortal = lazy(() =>
+const CheckinPortal = lazyRoute(() =>
   import("./CheckinPortal").then((m) => ({ default: m.CheckinPortal })),
 );
-const SignInPortal = lazy(() =>
+const SignInPortal = lazyRoute(() =>
   import("./SignInPortal").then((m) => ({ default: m.SignInPortal })),
 );
-const InheritPortal = lazy(() =>
+const InheritPortal = lazyRoute(() =>
   import("./InheritPortal").then((m) => ({ default: m.InheritPortal })),
 );
-const Dashboard = lazy(() =>
+const Dashboard = lazyRoute(() =>
   import("./Dashboard").then((m) => ({ default: m.Dashboard })),
 );
-const ActivityPage = lazy(() =>
+const ActivityPage = lazyRoute(() =>
   import("./ActivityPage").then((m) => ({ default: m.ActivityPage })),
 );
-const HeirMessagePage = lazy(() =>
+const HeirMessagePage = lazyRoute(() =>
   import("./VaultToolPages").then((m) => ({ default: m.HeirMessagePage })),
 );
-const PracticeRunPage = lazy(() =>
+const PracticeRunPage = lazyRoute(() =>
   import("./VaultToolPages").then((m) => ({ default: m.PracticeRunPage })),
 );
-const EmergencyPage = lazy(() =>
+const EmergencyPage = lazyRoute(() =>
   import("./VaultToolPages").then((m) => ({ default: m.EmergencyPage })),
 );
-const RemindersPage = lazy(() =>
+const RemindersPage = lazyRoute(() =>
   import("./VaultToolPages").then((m) => ({ default: m.RemindersPage })),
 );
-const HeirContactPage = lazy(() =>
+const HeirContactPage = lazyRoute(() =>
   import("./VaultToolPages").then((m) => ({ default: m.HeirContactPage })),
 );
-const ToolsPage = lazy(() =>
+const ToolsPage = lazyRoute(() =>
   import("./VaultToolPages").then((m) => ({ default: m.ToolsPage })),
 );
-const RecoveryKitPage = lazy(() =>
+const RecoveryKitPage = lazyRoute(() =>
   import("./RecoveryKitPage").then((m) => ({ default: m.RecoveryKitPage })),
 );
-const RecoveryGuide = lazy(() =>
+const RecoveryGuide = lazyRoute(() =>
   import("./RecoveryGuide").then((m) => ({ default: m.RecoveryGuide })),
 );
-const ClaimPage = lazy(() =>
+const ClaimPage = lazyRoute(() =>
   import("./ClaimPage").then((m) => ({ default: m.ClaimPage })),
 );
-const OneTapCheckinPage = lazy(() =>
+const OneTapCheckinPage = lazyRoute(() =>
   import("./OneTapCheckinPage").then((m) => ({ default: m.OneTapCheckinPage })),
 );
-const VerifyEmailPage = lazy(() =>
+const VerifyEmailPage = lazyRoute(() =>
   import("./VerifyEmailPage").then((m) => ({ default: m.VerifyEmailPage })),
 );
-const StatusPage = lazy(() =>
+const StatusPage = lazyRoute(() =>
   import("./StatusPage").then((m) => ({ default: m.StatusPage })),
 );
 // Terms + Privacy share one chunk (both static, same layout).
-const TermsPage = lazy(() =>
+const TermsPage = lazyRoute(() =>
   import("./Legal").then((m) => ({ default: m.TermsPage })),
 );
-const PrivacyPage = lazy(() =>
+const PrivacyPage = lazyRoute(() =>
   import("./Legal").then((m) => ({ default: m.PrivacyPage })),
 );
 
