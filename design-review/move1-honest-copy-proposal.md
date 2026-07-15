@@ -12,14 +12,14 @@ What must change: any blanket "we can never spend your Bitcoin" / "100% non-cust
 Verified scope of edits (confirmed by grep across all of ghostkey-web/src + assist.rs): Landing.tsx (2 spots), assist.rs (3 spots), Legal.tsx (2 spots).
 
 Checked and deliberately LEFT ALONE (true as written):
-- Landing.tsx:325 "no one can move funds BEFORE the timer runs out. Not us, not them, not anyone." — timelock-scoped and true; this is the honest version of the teeth.
-- SetupPortal.tsx:469 "GhostKey never sees your private keys." — the advanced xpub (Door B) screen, where it is fully true.
-- Legal.tsx:139/142/259, ClaimPage.tsx:800 — all "never hold/store/see," defensible: the server keeps ciphertext and re-derives, it does not hold keys at rest.
-- PasswordSetupPortal.tsx:1393 "honestly non-custodial" — in context this is the owner's own password/key, where it is true.
+- Landing.tsx:325 "no one can move funds BEFORE the timer runs out. Not us, not them, not anyone.": timelock-scoped and true; this is the honest version of the teeth.
+- SetupPortal.tsx:469 "GhostKey never sees your private keys.": the advanced xpub (Door B) screen, where it is fully true.
+- Legal.tsx:139/142/259, ClaimPage.tsx:800: all "never hold/store/see," defensible: the server keeps ciphertext and re-derives, it does not hold keys at rest.
+- PasswordSetupPortal.tsx:1393 "honestly non-custodial": in context this is the owner's own password/key, where it is true.
 
 ---
 
-## 1. Landing.tsx — trust stat row (lines 115-116)
+## 1. Landing.tsx: trust stat row (lines 115-116)
 
 Before:
 ```
@@ -39,7 +39,7 @@ Why: "Your key, never stored" is true without exception (the owner's key is pass
 
 ---
 
-## 2. Landing.tsx — "Self-custodied keys" card (line 340)
+## 2. Landing.tsx: "Self-custodied keys" card (line 340)
 
 Before:
 ```
@@ -55,7 +55,7 @@ Why: drops the false absolute "we can never spend your Bitcoin on our own" (fals
 
 ---
 
-## 3. assist.rs — system prompt fact (line 48)
+## 3. assist.rs: system prompt fact (line 48)
 
 Before:
 ```
@@ -69,7 +69,7 @@ After:
 
 ---
 
-## 4. assist.rs — opening line (line 38)
+## 4. assist.rs: opening line (line 38)
 
 Before:
 ```
@@ -85,7 +85,7 @@ Why: keeps the self-custody identity, drops the unqualified "non-custodial" labe
 
 ---
 
-## 5. assist.rs — hard rule (line 52)
+## 5. assist.rs: hard rule (line 52)
 
 Before:
 ```
@@ -101,11 +101,11 @@ Why: this is the grounding fix from A2. It stops the model from confidently repe
 
 ---
 
-## 6. Legal.tsx — ToS summary (lines 96-98)
+## 6. Legal.tsx: ToS summary (lines 96-98)
 
 Before:
 ```
-We never hold your bitcoin, your keys, or your password — so we can't move your money, and we can't recover it for you either.
+We never hold your bitcoin, your keys, or your password, so we can't move your money, and we can't recover it for you either.
 ```
 
 After:
@@ -117,7 +117,7 @@ Why: "we can't move your money" is the same false absolute as Landing:340. The r
 
 ---
 
-## 7. Legal.tsx — "What GhostKey is — and is not" (lines 118-123)
+## 7. Legal.tsx ("What GhostKey is) and is not" (lines 118-123)
 
 This section is the right home for the scoping. Keep the existing paragraph and add one sentence at the end of it:
 

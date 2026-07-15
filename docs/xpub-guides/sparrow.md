@@ -1,4 +1,4 @@
-# Sparrow Wallet — export an xpub
+# Sparrow Wallet: export an xpub
 
 Sparrow is the easiest wallet to export a Taproot (BIP86) xpub from.
 It supports Taproot end-to-end: the export, the signing, and the
@@ -29,10 +29,10 @@ In the Settings panel that opens, set:
 
 Then click **New or Imported Software Wallet** (or your hardware
 wallet device row). Generate a new seed phrase or import the
-existing one. **Write the seed down on paper** — Sparrow will not
+existing one. **Write the seed down on paper**: Sparrow will not
 let you proceed without confirming you've recorded it.
 
-[SCREENSHOT 1 — the Wallet Settings dialog with Script Type set to
+[SCREENSHOT 1: the Wallet Settings dialog with Script Type set to
 Taproot (P2TR)]
 
 ### 2. Open the wallet's settings
@@ -40,7 +40,7 @@ Taproot (P2TR)]
 Click the **Settings** cog in the bottom-left, or **Wallet →
 Settings** in the menu bar.
 
-[SCREENSHOT 2 — Sparrow main window with the Settings tab open]
+[SCREENSHOT 2: Sparrow main window with the Settings tab open]
 
 ### 3. Find the xpub on the Keystores tab
 
@@ -51,7 +51,7 @@ derivation path. For a Taproot wallet the path is
 
 The xpub is in the **xpub** field. Click the copy icon next to it.
 
-[SCREENSHOT 3 — the Keystores tab with the xpub field and copy
+[SCREENSHOT 3: the Keystores tab with the xpub field and copy
 button highlighted]
 
 ### 4. (Optional) Copy the origin-tagged form
@@ -63,7 +63,7 @@ Sparrow also exposes the descriptor for this wallet under the
 tr([abcdef12/86'/0'/0']xpub6...)
 ```
 
-The bit in square brackets is the **origin info** — your wallet's
+The bit in square brackets is the **origin info**: your wallet's
 master fingerprint plus the derivation path. GhostKey accepts the
 xpub on its own (the wizard will ask for the fingerprint as a
 separate field), or you can paste the entire `[abcdef12/86'/0'/0']xpub6...`
@@ -77,7 +77,7 @@ If the wizard reports the fingerprint is missing, paste it from
 Sparrow's Settings → Keystores tab (the 8 hex characters next to
 the derivation path).
 
-[SCREENSHOT 4 — GhostKey wizard with the pasted xpub and a green
+[SCREENSHOT 4: GhostKey wizard with the pasted xpub and a green
 "looks good" indicator]
 
 ## Troubleshooting

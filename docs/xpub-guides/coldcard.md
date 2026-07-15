@@ -1,4 +1,4 @@
-# Coldcard — export an xpub
+# Coldcard: export an xpub
 
 Coldcard is an air-gapped hardware wallet. The xpub export happens
 on the device itself and travels to your computer by SD card or
@@ -12,7 +12,7 @@ Estimated time: 4 minutes.
 - A Coldcard you've already initialised (set up with a seed and
   PIN).
 - A microSD card formatted FAT32 (any size; the file Coldcard
-  writes is < 5 KB), OR — on Mk4 — a QR-capable scanner you can
+  writes is < 5 KB), OR (on Mk4) a QR-capable scanner you can
   point at the screen.
 
 ## Steps
@@ -22,7 +22,7 @@ Estimated time: 4 minutes.
 Enter your PIN on the device. You should end up on the home
 screen.
 
-[SCREENSHOT 1 — Coldcard home screen after PIN entry]
+[SCREENSHOT 1: Coldcard home screen after PIN entry]
 
 ### 2. Navigate to "Export Wallet → Generic JSON"
 
@@ -37,7 +37,7 @@ predates Taproot support. Upgrade via
 **Advanced/Tools → Upgrade Firmware** with a firmware file on the
 microSD card.
 
-[SCREENSHOT 2 — Coldcard menu showing Generic JSON export option]
+[SCREENSHOT 2: Coldcard menu showing Generic JSON export option]
 
 ### 3. Insert the microSD card and confirm
 
@@ -45,7 +45,7 @@ Coldcard writes the export to the SD card as a file named like
 `coldcard-export.json`. Confirm the prompt to write the file, then
 remove the SD card and read it on your computer.
 
-[SCREENSHOT 3 — Coldcard "Saved as coldcard-export.json" screen]
+[SCREENSHOT 3: Coldcard "Saved as coldcard-export.json" screen]
 
 ### 4. Find the `bip86` entry
 
@@ -70,14 +70,14 @@ The fields GhostKey needs:
 - `bip86.xpub` → the **Your xpub** field in the wizard.
 - `xfp` → the **fingerprint** field in the wizard.
 
-[SCREENSHOT 4 — JSON file open with the bip86 object highlighted]
+[SCREENSHOT 4: JSON file open with the bip86 object highlighted]
 
 ### 5. Paste into the GhostKey wizard
 
 Switch to the GhostKey wizard's "Connect your wallet" step. Paste
 the `xpub` and the `xfp` (master fingerprint).
 
-[SCREENSHOT 5 — GhostKey wizard with the paste accepted]
+[SCREENSHOT 5: GhostKey wizard with the paste accepted]
 
 ## QR variant (Mk4 only)
 
@@ -106,7 +106,7 @@ default for a reason.
 
 ## Tell me what changed
 
-The Coldcard menu wording changes between firmware versions —
+The Coldcard menu wording changes between firmware versions:
 "Export Wallet" used to be under a different parent menu. If your
 firmware doesn't match, please open a PR with the corrected steps
 and a fresh screenshot.

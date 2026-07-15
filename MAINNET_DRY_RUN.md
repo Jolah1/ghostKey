@@ -3,7 +3,7 @@
 The last gate before telling anyone to put real money in: one vault,
 **5,000 sats of your own**, on production, on mainnet, exercised
 end-to-end and drained back out. The claim path is deliberately *not*
-part of this run — it was proven on a real chain by the signet e2e
+part of this run. It was proven on a real chain by the signet e2e
 (`SIGNET_E2E_RUNBOOK.md`) and through the web UI by the demo-mode
 lifecycle test (2026-06-12, which is what caught the #77 claim bug).
 A mainnet claim would also require waiting out a real one-month
@@ -14,11 +14,11 @@ What this run *does* prove, which nothing else can:
 - the production server creates and watches a **mainnet** vault
   (network agreement between web wizard, server, and descriptors);
 - the balance card and claim machinery talk to **your chosen Esplora
-  endpoints** (mainnet has no public default — see pre-flight);
+  endpoints** (mainnet has no public default: see pre-flight);
 - owner **Send** estimates fees against the real mempool and
   broadcasts a real transaction;
 - the **independence proof** actually recovers the wallet in Bitcoin
-  Core with no GhostKey involvement — the non-custodial promise,
+  Core with no GhostKey involvement: the non-custodial promise,
   observed with real sats (Sparrow and Liana **cannot** open these
   vaults; see step 4);
 - Lightning check-in (20 sats) works against the production sidecar.
@@ -34,7 +34,7 @@ Lightning check-in. The 5,000 sats themselves come back to you.
 Run these from your own terminal. As always: secrets are set with
 `fly secrets set` directly, never pasted into a chat.
 
-### 1. Choose and set Esplora endpoints — REQUIRED
+### 1. Choose and set Esplora endpoints: REQUIRED
 
 Mainnet deliberately ships with **no default block explorer**: every
 explorer you query sees every address it is asked about, which over
@@ -76,7 +76,7 @@ fly secrets set --stage GHOSTKEY_DEFAULT_NETWORK=bitcoin -a ghostkey
 ```
 
 This changes which network **new** vaults are created on. Existing
-testnet vaults are untouched — network is stored per vault and every
+testnet vaults are untouched: network is stored per vault and every
 existing vault keeps working exactly as before.
 
 This is also the real go-live switch. If the drill below fails in a
@@ -94,7 +94,7 @@ fly deploy -a ghostkey   # OR: fly machine restart, OR merge any PR and let CI d
 ```
 
 > CI auto-deploys `main` on merge. Only deploy manually if no CI
-> deploy is in flight, and only from an up-to-date `main` checkout —
+> deploy is in flight, and only from an up-to-date `main` checkout:
 > concurrent deploys contend for machine leases and have hit live
 > traffic before. If a merge to main is imminent anyway, just let
 > CI's deploy pick the staged secrets up.
@@ -106,7 +106,7 @@ curl -s https://ghostkey.fly.dev/health | python3 -m json.tool
 ```
 
 Expect `"default_network": "bitcoin"` and `"demo_mode": false`. Then
-check the boot log — the server prints an unmissable warning when it
+check the boot log: the server prints an unmissable warning when it
 boots with mainnet as the default, and must NOT print any demo-mode
 warning:
 
@@ -124,7 +124,7 @@ fly logs -a ghostkey | grep -i "snapshot written" | tail -3
 ```
 
 For a password vault, the database holds the sealed heir key and the
-claim-token hash — if the DB is lost, the *owner* can still recover
+claim-token hash: if the DB is lost, the *owner* can still recover
 funds from the recovery file or independence proof, but a future
 *heir claim through GhostKey* depends on the Litestream replica
 restoring. The restore fire-drill (DEPLOY.md, "Restoring from
@@ -141,7 +141,7 @@ At https://www.ghostkeyapp.com, run the normal setup wizard as a real
 user:
 
 - Heir: a second email address you control.
-- Waiting period: **1 month** (the minimum — you will delete the
+- Waiting period: **1 month** (the minimum: you will delete the
   vault at the end, so it never fires).
 - Cadence: **weekly**, so a reminder lands while the vault exists and
   you can exercise one-tap check-in.
@@ -150,13 +150,13 @@ user:
 - A strong password you save in your password manager.
 
 Verify on the dashboard: the deposit address starts with `bc1` (a
-`tb1` address means the network flip didn't take — stop and recheck
+`tb1` address means the network flip didn't take: stop and recheck
 pre-flight step 5), and download both the recovery file and the
 independence proof now.
 
 ### 2. Fund it (~30 min, mostly confirmation wait)
 
-Send **5,000 sats** from your own wallet to the vault address — scan
+Send **5,000 sats** from your own wallet to the vault address: scan
 the Receive card's QR and confirm the address it encodes matches the
 one displayed. After ~1 confirmation the dashboard balance card must
 show 5,000 sats. While you wait, check `fly logs` for any Esplora
@@ -174,7 +174,7 @@ default.
 
 The vault is a Taproot timelock miniscript. **Sparrow, Electrum, and
 mobile wallets cannot open it** (no miniscript support), and **Liana
-cannot either** — Liana only accepts its own descriptor shape and
+cannot either**: Liana only accepts its own descriptor shape and
 refuses ours ("invalid or incompatible with network"), verified
 2026-06-14. The one tool that reads these vaults is **Bitcoin Core
 26+**. This was confirmed on mainnet on 2026-06-14.
@@ -193,7 +193,7 @@ bitcoin-cli deriveaddresses "<RECEIVE_DESCRIPTOR_WITH_CHECKSUM>" "[0,5]"
 
 The first address must match the deposit address GhostKey gave you to
 fund the vault. Look it up on a block explorer and you'll see the
-5,000 sats — GhostKey nowhere in the loop. If Bitcoin Core derives
+5,000 sats: GhostKey nowhere in the loop. If Bitcoin Core derives
 your funded address from the kit alone, recovery is proven.
 
 **Full balance proof (needs a synced, non-pruned node).** Import both
@@ -209,7 +209,7 @@ bitcoin-cli -rpcwallet=ghostkey_check getbalances
 ```
 
 This is the "if GhostKey is down, funds are still accessible"
-guarantee — observe it with real money once before asking users to
+guarantee: observe it with real money once before asking users to
 trust it. (Note: Bitcoin Core is a technical tool; the recovery kit
 tells a non-technical heir to get a Bitcoin-savvy helper, and the
 file is self-contained so no password is needed just to *see* the
@@ -226,7 +226,7 @@ drop to zero.
 ### 6. Clean up
 
 Either keep the vault as your own genuine first mainnet vault (fund
-it properly and keep checking in weekly — it's real now), or delete
+it properly and keep checking in weekly. It's real now), or delete
 it from the dashboard. If you keep it, consider re-creating it with a
 cadence you'll actually sustain.
 
@@ -250,5 +250,5 @@ stays the default and GhostKey is live for real deposits.
   verified on Mutinynet via the local demo, 2026-06-16.
 - Email (Resend), web push, Lightning check-ins, Litestream backups
   all verified working in production.
-- Web claim-probe bug (#77) fixed and deployed — heirs of password
+- Web claim-probe bug (#77) fixed and deployed: heirs of password
   vaults reach the guided claim flow.

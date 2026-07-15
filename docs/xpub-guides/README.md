@@ -1,6 +1,6 @@
 # Wallet xpub export guides
 
-GhostKey's setup wizard asks for an **xpub** — an extended public key
+GhostKey's setup wizard asks for an **xpub**: an extended public key
 from your Bitcoin wallet. The xpub lets GhostKey watch the addresses
 your wallet generates and build the inheritance script around them.
 It **cannot** move your funds; only your wallet's private key can.
@@ -14,13 +14,13 @@ receiving but has never exported an xpub before.
 
 | Wallet | Type | Guide | Taproot xpub? |
 |---|---|---|---|
-| [Cake Wallet](./cake.md) | Mobile (iOS/Android) | [cake.md](./cake.md) | No — exports a single SegWit-class public key |
-| [BlueWallet](./bluewallet.md) | Mobile (iOS/Android) | [bluewallet.md](./bluewallet.md) | Limited — see guide |
+| [Cake Wallet](./cake.md) | Mobile (iOS/Android) | [cake.md](./cake.md) | No (exports a single SegWit-class public key |
+| [BlueWallet](./bluewallet.md) | Mobile (iOS/Android) | [bluewallet.md](./bluewallet.md) | Limited) see guide |
 | [Nunchuk](./nunchuk.md) | Mobile + Desktop | [nunchuk.md](./nunchuk.md) | Yes (single-sig) |
 | [Sparrow](./sparrow.md) | Desktop (Linux/macOS/Windows) | [sparrow.md](./sparrow.md) | Yes |
 | [Specter Desktop](./specter.md) | Desktop (multisig-friendly) | [specter.md](./specter.md) | Yes |
 | [Coldcard](./coldcard.md) | Hardware | [coldcard.md](./coldcard.md) | Yes (firmware 5.x+) |
-| [Trezor Suite](./trezor.md) | Hardware (Model T / Safe 3 / Safe 5) | [trezor.md](./trezor.md) | Yes — not Model One |
+| [Trezor Suite](./trezor.md) | Hardware (Model T / Safe 3 / Safe 5) | [trezor.md](./trezor.md) | Yes, not Model One |
 
 ## What GhostKey expects
 
@@ -31,7 +31,7 @@ prefers a **BIP86** Taproot xpub at the derivation path
 If your wallet does not support Taproot / BIP86, GhostKey will still
 accept a non-Taproot xpub for the heir side and use it as the public
 key in the script. The signing wallet on the heir's side must then
-produce a Schnorr signature over the Taproot witness — which means
+produce a Schnorr signature over the Taproot witness, which means
 the wallet has to be Taproot-aware *at signing time* even if it
 exported a non-Taproot xpub. In practice, prefer wallets that
 support Taproot end-to-end (Sparrow, Specter, Coldcard).
@@ -49,7 +49,7 @@ anyone who holds it:
 GhostKey's server holds the xpub in order to compute the inheritance
 descriptor and watch the vault address for activity. The server
 stores no plaintext keys other than the xpub, and the xpub it holds
-is the **vault** xpub — the account dedicated to GhostKey — not your
+is the **vault** xpub (the account dedicated to GhostKey) not your
 main spending wallet. Keep them separate: use a fresh wallet (or a
 new account inside your existing wallet) for the GhostKey vault.
 
@@ -68,7 +68,7 @@ the wallet open and can produce screenshots:
 4. Open a PR. Add `area:docs` and `good first issue` labels.
 
 If a step in any of these guides is wrong because the wallet UI
-moved between versions, that's also a great first PR — fix the
+moved between versions, that's also a great first PR: fix the
 text in the same PR as the new screenshot.
 
 ## When in doubt
@@ -77,4 +77,4 @@ The setup wizard accepts a paste; if your xpub starts with `xpub`,
 `tpub`, `vpub`, `upub`, `ypub`, or `zpub`, the wizard will parse it.
 It also accepts the origin-tagged form `[fingerprint/path]xpub...`.
 If the wizard rejects the string, the in-page error tells you what
-shape it expected — that error is the fastest way to debug a paste.
+shape it expected. That error is the fastest way to debug a paste.

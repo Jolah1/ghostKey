@@ -1,7 +1,7 @@
 # Contributing to GhostKey
 
 Thank you for considering a contribution. GhostKey is open-source by
-design — the whole point is that the protocol survives the project. The
+design: the whole point is that the protocol survives the project. The
 more eyes on the code, the better.
 
 This document covers:
@@ -25,8 +25,8 @@ For security issues, **do not open a public issue.** See
 - **Read [`DESIGN.md`](./DESIGN.md) first.** It's the plain-English
   explanation of why the project is shaped the way it is. Most
   arguments about what should change boil down to "the design doc
-  already addresses this" or "the design doc is wrong about this" —
-  both are valuable, but only after you've read it.
+  already addresses this" or "the design doc is wrong about this":
+both are valuable, but only after you've read it.
 - **Skim [`JOURNAL.md`](./JOURNAL.md)** for context on past decisions.
   A change that contradicts a past decision is fine, but you should
   know which decision you're overturning.
@@ -85,7 +85,7 @@ the server on `127.0.0.1:8787`.
    Branch names: `feat/...`, `fix/...`, `docs/...`, `refactor/...`,
    `test/...`, `chore/...`. Keep them short.
 
-2. **Make your changes.** Keep PRs focused — one branch, one logical
+2. **Make your changes.** Keep PRs focused: one branch, one logical
    change. If you find yourself wanting to fix five unrelated things,
    open five branches.
 
@@ -100,45 +100,45 @@ the server on `127.0.0.1:8787`.
    - Anything you're unsure about or want feedback on?
 
 5. **Expect review.** A maintainer will read the diff. Reviews are not
-   personal — they're about the code. Push back if you disagree.
+   personal. They're about the code. Push back if you disagree.
 
 ### Issue labels
 
 Every issue carries at least one **area** label and one **priority**
 label. The current taxonomy:
 
-- **`area:*`** — which part of the codebase the work touches:
-  - `area:core` — `crates/ghostkey-core` (pure Bitcoin logic)
-  - `area:cli` — `crates/ghostkey-cli`
-  - `area:server` — `crates/ghostkey-server`
-  - `area:web` — `ghostkey-web/` (React frontend)
-  - `area:lightning` — Lightning sidecars + check-in flow
-  - `area:ci` — GitHub Actions, cargo audit, runners
-  - `area:ops` — runbooks, deploys, infra
-  - `area:docs` — Markdown under `docs/` and at the repo root
-  - `area:ux` — copy, accessibility, conversion
-  - `area:meta` — labels, contributor onboarding, repo housekeeping
-  - `area:security` — non-custody hardening, threat-model work
+- **`area:*`**: which part of the codebase the work touches:
+  - `area:core`: `crates/ghostkey-core` (pure Bitcoin logic)
+  - `area:cli`: `crates/ghostkey-cli`
+  - `area:server`: `crates/ghostkey-server`
+  - `area:web`: `ghostkey-web/` (React frontend)
+  - `area:lightning`: Lightning sidecars + check-in flow
+  - `area:ci`: GitHub Actions, cargo audit, runners
+  - `area:ops`: runbooks, deploys, infra
+  - `area:docs`: Markdown under `docs/` and at the repo root
+  - `area:ux`: copy, accessibility, conversion
+  - `area:meta`: labels, contributor onboarding, repo housekeeping
+  - `area:security`: non-custody hardening, threat-model work
 
   Most issues get one `area:*`. An issue that genuinely spans two
   (a Lightning UI bug is `area:lightning` + `area:web`) gets both;
   three is usually a sign the issue should be split.
 
-- **`priority:*`** — `priority:high` / `priority:medium` /
+- **`priority:*`** (`priority:high` / `priority:medium` /
   `priority:low`. **`priority:high` requires a one-line "why it
-  matters now" in the issue summary** — without it, the label is
+  matters now" in the issue summary**) without it, the label is
   noise. Reach for `priority:low` for docs / meta / "would be nice"
   work that wouldn't block a release.
 
 - **Scope tags** (apply when relevant, not always):
-  - `good first issue` — bite-sized, well-scoped, includes a
+  - `good first issue`: bite-sized, well-scoped, includes a
     "Hints for contributors" section with file entry points.
-  - `help wanted` — extra eyes welcome; the maintainer isn't
+  - `help wanted`: extra eyes welcome; the maintainer isn't
     actively working on it.
-  - `tracking` — parent issue that closes when its sub-issues do.
-  - `epic` — multi-PR effort with its own sub-issues.
+  - `tracking`: parent issue that closes when its sub-issues do.
+  - `epic`: multi-PR effort with its own sub-issues.
 
-- **Type** — `bug`, `enhancement`, `question`, `discussion`. Skip
+- **Type**: `bug`, `enhancement`, `question`, `discussion`. Skip
   the type label if the area label already implies it (e.g. an
   `area:docs` issue doesn't need `enhancement`).
 
@@ -168,7 +168,7 @@ if you want a small, well-scoped first contribution.
 - Prefer named exports.
 - All API calls go through `src/api.ts`. Don't call `fetch` directly
   from components.
-- Loading and error states are not optional — every data-fetching
+- Loading and error states are not optional: every data-fetching
   component needs both. See `ClaimPage.tsx` for the pattern.
 - Accessibility: every interactive element needs a meaningful
   accessible name. Animations need a `prefers-reduced-motion`
@@ -187,7 +187,7 @@ if you want a small, well-scoped first contribution.
 - **Integration tests** for `ghostkey-core` live in
   `crates/ghostkey-core/tests/`. The regtest e2e test is `#[ignore]`
   so CI without `bitcoind` stays green.
-- **Web tests** — currently we rely on TypeScript and Vite's build to
+- **Web tests**: currently we rely on TypeScript and Vite's build to
   catch regressions. Component tests are welcome but not required.
 - **Manual testing** for anything user-facing: run the dashboard
   locally and walk through your change. If a change touches the heir
@@ -218,7 +218,7 @@ prints in this order:
      GhostKey's threat model,
    - the upstream condition that would let us drop the ignore.
 
-   Match the level of detail in the existing entries — a bare
+   Match the level of detail in the existing entries: a bare
    `ignore` line with no reasoning will be sent back in review.
 
 3. **Is the vulnerable code path actually reachable in our
@@ -286,7 +286,7 @@ on GitHub for bite-sized work that's already scoped out.
 ### Engineering
 - **Notification fan-out** (email first via Postmark / Resend / AWS
   SES; SMS via Twilio; WhatsApp via the Business API). The server
-  already generates claim tokens — we just need to deliver them.
+  already generates claim tokens. We just need to deliver them.
 - **Address-only setup.** A wizard mode that accepts a bare Bitcoin
   address instead of an xpub, for users who can't easily export an
   xpub. Requires backend work to track a single address as a vault.
@@ -302,13 +302,13 @@ on GitHub for bite-sized work that's already scoped out.
   Nigerian, and Pidgin is the single language with the widest reach
   across the country. We've scoped a small i18n shell + an EN/PCM
   toggle (auto-detecting `*-NG` browser locales) as the first
-  translation milestone — see the JOURNAL "left for later" lists.
+  translation milestone: see the JOURNAL "left for later" lists.
   Help reviewing draft Pidgin copy for tone and accuracy will be
   the gating step; the engineering side is straightforward.
 - **Yoruba, Igbo, Hausa.** Family-inheritance conversations happen
   in the family's first language, not English. Once the Pidgin
   shell ships, adding more locales is a `vocab/<lang>.ts` file plus
-  a toggle option — mechanical work. We need native speakers to
+  a toggle option: mechanical work. We need native speakers to
   translate user-facing copy (the landing page, the setup wizard,
   the claim page) without losing the calm, plain-English tone of
   the original. See `ghostkey-web/src/vocab.ts` for centralised
@@ -318,7 +318,7 @@ on GitHub for bite-sized work that's already scoped out.
 
 ### Documentation
 - **Wallet-specific xpub guides.** Step-by-step screenshots for
-  Sparrow, BlueWallet, Specter, Coldcard, and Cake — where in each
+  Sparrow, BlueWallet, Specter, Coldcard, and Cake: where in each
   wallet to find the xpub. Today these live as one-line hints in the
   setup wizard; full guides with screenshots would lower the
   friction for non-technical owners.

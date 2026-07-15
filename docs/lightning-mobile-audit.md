@@ -4,7 +4,7 @@ A reusable test plan for the Lightning surfaces in the dashboard.
 Use this when validating a Lightning sidecar deploy, after a major
 change to `LightningCheckin.tsx` / `Dashboard.tsx`, or quarterly as
 a regression sweep. The actual audit needs **real phones and real
-wallets** — this document doesn't replace that, it makes the
+wallets**. This document doesn't replace that, it makes the
 testing reproducible.
 
 For context on why the QR / deep-link surfaces look the way they do,
@@ -27,14 +27,14 @@ Before you start, you need:
    [`crates/ghostkey-lightning-breez/`](../crates/ghostkey-lightning-breez/README.md).
 2. **A test vault on the staging app.** Demo mode is fine; the
    audit isn't time-sensitive.
-3. **Two phones if possible** — one iOS, one Android — and at least
+3. **Two phones if possible** (one iOS, one Android) and at least
    five wallets installed across them (see matrix below).
 4. **Testnet sats** on the wallets you're paying *from*. Invoices
    default to 20 sats (`GHOSTKEY_LN_CHECKIN_SAT`); a few thousand
    sats is plenty for the whole audit.
 5. **Permission to take screenshots** of the wallets you test.
    Blur preimages, balances, and addresses before attaching them
-   to follow-up issues — see [SECURITY.md](../SECURITY.md) on
+   to follow-up issues: see [SECURITY.md](../SECURITY.md) on
    what counts as sensitive.
 
 ## The three surfaces being tested
@@ -52,14 +52,14 @@ Test each surface on each wallet/OS combination in the matrix.
 Copy this table into the issue / PR description and fill it in.
 Cells use:
 
-- ✅ **works** — invoice paid, vault deadline reset (or panic
+- ✅ **works**: invoice paid, vault deadline reset (or panic
   triggered), no friction worth noting.
-- ⚠ **works with friction** — payment succeeds but there's a
+- ⚠ **works with friction**: payment succeeds but there's a
   rough edge (e.g. user has to long-press copy because the QR
   scanner missed). Add a one-line note in the cell.
-- ❌ **broken** — payment cannot be completed. File a follow-up
+- ❌ **broken**: payment cannot be completed. File a follow-up
   issue and link it.
-- ➖ **not tested** — couldn't get to this combo this round.
+- ➖ **not tested**: couldn't get to this combo this round.
 
 ### iOS
 
@@ -119,7 +119,7 @@ Record:
 - Did the OS know to launch a wallet? (iOS sometimes shows a
   picker; Android usually goes direct.)
 - Was the right wallet picked? (If multiple LN wallets are
-  installed, the user gets a chooser — log which wallets appear.)
+  installed, the user gets a chooser: log which wallets appear.)
 - Did the wallet open at the confirm screen, or did it open at
   its main view and require the user to manually paste?
 
@@ -164,9 +164,9 @@ Example:
  *   - ✅ Android Phoenix 2.5.5 (QR + deep-link)
  *   - ✅ iOS Wallet of Satoshi 3.1.2 (QR; deep-link untested)
  *   - ⚠ Android BlueWallet 6.5.7 (QR ok; deep-link opens wallet
- *     but fails to parse — issue #XX)
- *   - ❌ iOS Muun 56.7 (QR decodes, "unsupported invoice" —
- *     Muun rejects sub-min amounts; issue #YY)
+ *     but fails to parse: issue #XX)
+ *   - ❌ iOS Muun 56.7 (QR decodes, "unsupported invoice":
+*     Muun rejects sub-min amounts; issue #YY)
  */
 ```
 
@@ -178,7 +178,7 @@ the procedure to produce it.
 - The public QR service (`api.qrserver.com`) the issue's
   "Background" quotes is gone: QRs now render locally via
   `qrcode-generator` into a `data:` URL (shipped with the CSP
-  work — external image hosts are blocked). The QR *content*
+  work: external image hosts are blocked). The QR *content*
   is unchanged, so the matrix above still applies as written.
 - The check-in amount was raised from 1 sat to a 20-sat default
   because several wallets (Bitnob-class) refuse sub-20-sat

@@ -2,10 +2,10 @@
 
 Two parts to put online:
 
-1. **`ghostkey-server`** — Rust binary, listens on a TCP port, persists to a SQLite file. Needs a small Linux host.
-2. **`ghostkey-web`** — static SPA. Drop it on any CDN.
+1. **`ghostkey-server`**: Rust binary, listens on a TCP port, persists to a SQLite file. Needs a small Linux host.
+2. **`ghostkey-web`**: static SPA. Drop it on any CDN.
 
-There's no CLI to deploy — the CLI lives on each user's own machine, alongside their seed phrase. The website never sees keys.
+There's no CLI to deploy: the CLI lives on each user's own machine, alongside their seed phrase. The website never sees keys.
 
 This guide picks the **smallest, cheapest viable stack**: a $5/mo VPS for the server + a free static host for the web. Total cost: ≤ $5/month.
 
@@ -15,16 +15,16 @@ This guide picks the **smallest, cheapest viable stack**: a $5/mo VPS for the se
 
 | Piece | Where | Cost |
 |---|---|---|
-| `ghostkey-server` | Hetzner CX11, DigitalOcean Basic, Fly.io 256 MB, Oracle ARM free tier — pick one | $0–$5/mo |
+| `ghostkey-server` | Hetzner CX11, DigitalOcean Basic, Fly.io 256 MB, Oracle ARM free tier: pick one | $0–$5/mo |
 | TLS + reverse proxy | Caddy on the same VPS (auto-renews Let's Encrypt) | free |
 | `ghostkey-web` | Cloudflare Pages, Vercel, or Netlify | free |
 | Domain | Pick any registrar. Example: `gk.example.com` for the app, `api.example.com` for the server. | ~$10/year |
 
-You can put both on a single VPS behind one domain if you prefer — see "Alternative: single-VPS" at the end.
+You can put both on a single VPS behind one domain if you prefer: see "Alternative: single-VPS" at the end.
 
 ---
 
-## Part A — server on a VPS
+## Part A: server on a VPS
 
 ### 1. Provision a Linux host
 
@@ -97,7 +97,7 @@ sudo systemctl status ghostkey-server
 sudo journalctl -u ghostkey-server -n 50 --no-pager
 ```
 
-The server is now listening on **`127.0.0.1:8787`** (loopback only — we'll put TLS in front of it next).
+The server is now listening on **`127.0.0.1:8787`** (loopback only. We'll put TLS in front of it next).
 
 ### 4. TLS + reverse proxy (Caddy)
 
@@ -134,7 +134,7 @@ curl https://api.example.com/health   # → {"ok":true,"version":"0.1.0"}
 
 ### 5. Backups (mandatory)
 
-The SQLite file at `/var/lib/ghostkey/ghostkey.sqlite` is the entire state of the notifier. Lose it → every registered vault disappears from the dashboard (the on-chain promise is still intact — but reminders stop firing).
+The SQLite file at `/var/lib/ghostkey/ghostkey.sqlite` is the entire state of the notifier. Lose it → every registered vault disappears from the dashboard (the on-chain promise is still intact, but reminders stop firing).
 
 Minimal nightly backup with `sqlite3 .backup`:
 
@@ -171,7 +171,7 @@ Database migrations are baked into the binary (`sqlx::migrate!`), so they apply 
 
 ---
 
-## Part B — web on a static host
+## Part B: web on a static host
 
 The web app is a pure static bundle (`dist/`) after `npm run build`. It talks to the server via `/api/*`.
 
@@ -183,7 +183,7 @@ Open `ghostkey-web/src/api.ts`:
 const BASE = "/api";
 ```
 
-That works if the web and the server share a hostname. Since we put them on different hostnames in the recommended setup, change it to a full URL via an env var. The simplest fix — change the line to:
+That works if the web and the server share a hostname. Since we put them on different hostnames in the recommended setup, change it to a full URL via an env var. The simplest fix: change the line to:
 
 ```ts
 const BASE = import.meta.env.VITE_API_BASE ?? "/api";
@@ -212,7 +212,7 @@ npm run build
    - Environment variables: `VITE_API_BASE=https://api.example.com`, `NODE_VERSION=20`
 4. Add your custom domain `gk.example.com`.
 
-That's it — every push to `main` redeploys.
+That's it: every push to `main` redeploys.
 
 #### Option b: Vercel / Netlify
 
@@ -300,14 +300,14 @@ preflight will reject every browser request unless `GHOSTKEY_ALLOWED_ORIGINS`
 includes your frontend origin. Set both before the first deploy:
 
 ```sh
-# 1. Server master key — encrypts heir-contact rows at rest.
+# 1. Server master key: encrypts heir-contact rows at rest.
 #    Generate ONE fresh 32-byte key, save a copy to your password
 #    manager, then set it:
 KEY=$(openssl rand 32 | base64 | tr -d '=\n')
 echo "$KEY"       # <-- save this somewhere safe BEFORE pasting it into Fly
 fly secrets set GHOSTKEY_MASTER_KEY="$KEY" -a ghostkey
 
-# 2. CORS allowlist — comma-separated exact-match origins.
+# 2. CORS allowlist: comma-separated exact-match origins.
 #    Default (when unset) is localhost:5173 only, which is correct for
 #    `cargo run` but breaks every browser pointed at the live frontend.
 fly secrets set GHOSTKEY_ALLOWED_ORIGINS="https://www.ghostkeyapp.com" -a ghostkey
@@ -317,7 +317,7 @@ fly secrets set GHOSTKEY_ALLOWED_ORIGINS="https://www.ghostkeyapp.com" -a ghostk
 already in the database becomes unrecoverable. The heir's *Bitcoin* is
 still safe (the on-chain script enforces inheritance independently),
 but the server can no longer email the heir when the alarm fires. Treat
-it the way you'd treat your database backup key — back it up to a
+it the way you'd treat your database backup key: back it up to a
 second location.
 
 **Loading the key from a KMS instead of an env var (recommended for
@@ -327,7 +327,7 @@ it out of the environment, the server resolves the key at boot from the
 first of these that is set, fail-closed (if a higher-priority source is
 set but fails, the server refuses to boot rather than fall through):
 
-1. `GHOSTKEY_MASTER_KEY_CMD` — a shell command whose stdout is the key.
+1. `GHOSTKEY_MASTER_KEY_CMD`: a shell command whose stdout is the key.
    This is the KMS / secrets-manager hook. Examples:
    ```bash
    # AWS KMS: decrypt a wrapped key blob baked into the image/secret
@@ -341,9 +341,9 @@ set but fails, the server refuses to boot rather than fall through):
    The command runs once at boot; its stdout is parsed as the 32-byte
    base64 key. Errors carry the exit status and stderr, never stdout, so
    the key can't leak into logs.
-2. `GHOSTKEY_MASTER_KEY_FILE` — a path whose contents are the key (a
+2. `GHOSTKEY_MASTER_KEY_FILE`: a path whose contents are the key (a
    mounted secret, or a KMS sidecar's decrypted output).
-3. `GHOSTKEY_MASTER_KEY` — the key directly in the env (simplest; fine
+3. `GHOSTKEY_MASTER_KEY`: the key directly in the env (simplest; fine
    for dev and current deploys, weakest for production).
 
 The key still lives in process memory while the server runs (it has to,
@@ -366,7 +366,7 @@ for the design + procedure).
 
 Claims, broadcasts, and the balance card talk to a Bitcoin block
 explorer (Esplora API). `GHOSTKEY_ESPLORA_URL` accepts a single URL or
-an **ordered, comma-separated fallback list** — each request tries the
+an **ordered, comma-separated fallback list**: each request tries the
 entries left to right and fails over when an explorer is down:
 
 ```sh
@@ -385,7 +385,7 @@ fly secrets set GHOSTKEY_ESPLORA_URL="https://your.indexer/api,https://backup.in
 
 ### Rotating the master key
 
-`GHOSTKEY_MASTER_KEY` plays two structurally different roles —
+`GHOSTKEY_MASTER_KEY` plays two structurally different roles:
 encrypting heir-contact PII at rest, and deriving F2 server-derived
 heir keys whose xpubs are committed on-chain. The rotation design
 splits those roles so you can rotate the off-chain one without doing
@@ -408,7 +408,7 @@ Within the **first hour:**
 
 ```sh
 # 1. Generate fresh keys for BOTH roles. Treat both as compromised
-#    even if you only suspect one — the cost is low.
+#    even if you only suspect one: the cost is low.
 PII_NEW=$(openssl rand 32 | base64 | tr -d '=\n')
 F2_NEW=$(openssl rand 32 | base64 | tr -d '=\n')
 
@@ -437,7 +437,7 @@ Within the **first 24 hours:**
 
 Within **one week:**
 
-- Audit `pii_key_gen` distribution — every row should be at `V2`.
+- Audit `pii_key_gen` distribution: every row should be at `V2`.
 - Remove the compromised generation:
   ```sh
   fly secrets unset GHOSTKEY_PII_KEY_V1 GHOSTKEY_F2_KEY_V1 -a ghostkey
@@ -445,7 +445,7 @@ Within **one week:**
   ```
   If the server refuses to boot, a row still references V1; fix the
   row, then retry. **Do not** force-remove the env var while rows
-  reference it — those vaults become permanently un-decryptable.
+  reference it: those vaults become permanently un-decryptable.
 - Post-mortem entry in [`JOURNAL.md`](../JOURNAL.md).
 
 #### Routine rotation: quarterly
@@ -453,7 +453,7 @@ Within **one week:**
 Same shape as the emergency procedure, but you pace yourself:
 
 ```sh
-# Once a quarter, generate a fresh PII key only — F2 rotation is the
+# Once a quarter, generate a fresh PII key only: F2 rotation is the
 # owner's call, not yours (see the design doc § 1).
 PII_NEW=$(openssl rand 32 | base64 | tr -d '=\n')
 fly secrets set GHOSTKEY_PII_KEY_V<N+1>="$PII_NEW" GHOSTKEY_PII_KEY_CURRENT=V<N+1> -a ghostkey
@@ -464,7 +464,7 @@ fly secrets unset GHOSTKEY_PII_KEY_V<N> -a ghostkey
 fly deploy -a ghostkey
 ```
 
-There is no outage at any step — the dual-loaded server can decrypt
+There is no outage at any step: the dual-loaded server can decrypt
 both generations during the overlap.
 
 #### Audit checklist (run before declaring rotation complete)
@@ -483,7 +483,7 @@ Both flavours of rotation are "done" only when *all four* are true:
 
 The F2 heir's xpub is a function of `(master_key, heir_email,
 vault_id)` and is committed on-chain via the vault's Taproot
-descriptor. Rotating the master key changes the derived xpub —
+descriptor. Rotating the master key changes the derived xpub,
 which is fine for a *new* vault, but breaks the existing UTXO's
 claimability. You cannot rotate Role B (heir derivation) without
 moving funds on-chain to a fresh vault under the new generation.
@@ -504,7 +504,7 @@ in [`docs/master-key-rotation.md`](./docs/master-key-rotation.md)
 The notifier worker accepts enqueues on any channel and skips delivery
 when the backend for that channel is not configured. A vault with a
 sealed owner contact on a channel without a backend stays `pending`
-until a deployment with the backend wired comes up — no data is lost,
+until a deployment with the backend wired comes up: no data is lost,
 no row is dropped.
 
 #### Email (SMTP)
@@ -541,7 +541,7 @@ fly secrets set \
   -a ghostkey
 ```
 
-All four are required together — setting some but not others puts the
+All four are required together: setting some but not others puts the
 worker in a partial state and logs a loud warning. Set every
 `TWILIO_*` var or none.
 
@@ -552,7 +552,7 @@ Twilio will deliver the backlog automatically on its first tick.
 
 #### Web push (browser reminders)
 
-Check-in reminders can also arrive as browser notifications — no
+Check-in reminders can also arrive as browser notifications: no
 email or phone number required. The server signs push messages with
 a VAPID keypair (RFC 8292); only the private key is configured, the
 public key is derived from it and exposed via `/health` so the web
@@ -574,10 +574,10 @@ fly secrets set \
   -a ghostkey
 ```
 
-The private key is a 32-byte P-256 scalar in base64url — exactly what
+The private key is a 32-byte P-256 scalar in base64url: exactly what
 `web-push generate-vapid-keys` prints. Discard the public key it
 prints; the server re-derives it. Don't paste the private key into
-chats or issue trackers — treat it like any other signing key.
+chats or issue trackers: treat it like any other signing key.
 
 Rotating the keypair invalidates every existing browser subscription:
 deliveries to old subscriptions fail permanently until each user
@@ -610,7 +610,7 @@ them, but every budget is overridable per-deploy via two env vars:
 `BURST` is the worst-legitimate-burst size (a u32). `PER_SEC` is the
 steady-state allowance in tokens per second (a float). A value that
 is unparseable or out of range (`BURST < 1` or `PER_SEC <= 0`) logs a
-warning at boot and falls back to the default — a fat-fingered env
+warning at boot and falls back to the default: a fat-fingered env
 var doesn't take the server offline.
 
 Example: an operator running an open demo where chat traffic is the
@@ -626,7 +626,7 @@ Caveats:
   in that order. Behind any other reverse proxy, audit the header
   semantics before trusting the bucket.
 - The limiter is in-process. Horizontal scale-out across multiple
-  Fly machines means each machine has its own bucket — limits scale
+  Fly machines means each machine has its own bucket: limits scale
   with replica count. If you scale past one replica per region,
   revisit whether shared-state limiting (Redis, CDN-level) is needed.
 - `/health` and the LNURL endpoints are deliberately not rate-limited;
@@ -635,8 +635,8 @@ Caveats:
 ### Picking which Bitcoin network the UI defaults to
 
 The web UI defaults new vaults to **testnet**. The server-side
-allow-list accepts all four — `bitcoin`, `testnet`, `signet`,
-`regtest` — but the wizards POST whichever the server reports on
+allow-list accepts all four (`bitcoin`, `testnet`, `signet`,
+`regtest`) but the wizards POST whichever the server reports on
 `GET /health.default_network`. This means: a single web bundle on
 Vercel can serve testnet on `ghostkey.fly.dev`, signet on
 `ghostkey-signet.fly.dev`, etc., with no per-deployment rebuild.
@@ -668,8 +668,8 @@ to one second and surfaces an amber "Demo mode" banner in the web UI.
 Use it for sandbox deployments (a `ghostkey-demo.fly.dev` you point
 at conference attendees, a local laptop for screen recordings) and
 nowhere else. The flag is forbidden in combination with mainnet
-vault creation — the server refuses to create a `"bitcoin"` vault
-when demo mode is on — but a careless owner who tapped through a
+vault creation (the server refuses to create a `"bitcoin"` vault
+when demo mode is on) but a careless owner who tapped through a
 demo signup with a 10-second cadence would still be locked out of
 recovery the moment they closed the tab. Keep demo and production
 deployments on different fly apps / different `GHOSTKEY_BIND` ports
@@ -743,12 +743,12 @@ showed maps to these values:
 |---|---|
 | **App name** | `ghostkey` |
 | **Branch** | `main` (or whichever branch carries `Dockerfile` + `fly.toml`) |
-| **Region** | Any — pick the one closest to your users. `ams` is the example. |
+| **Region** | Any: pick the one closest to your users. `ams` is the example. |
 | **Internal port** | `8080` |
 | **CPU** | `shared-cpu-1x` |
 | **Memory** | `256 MB` (bump to 512 MB if you start running into OOM kills) |
 | **Environment variables** | None needed; `fly.toml` sets them. If you must add one in the UI: `GHOSTKEY_BIND=0.0.0.0:8080`. |
-| **Managed Postgres** | **OFF** — the server uses SQLite on a volume, not Postgres. |
+| **Managed Postgres** | **OFF**: the server uses SQLite on a volume, not Postgres. |
 | **Working directory** | Leave blank (defaults to `./`). |
 | **Config path** | Leave blank (defaults to `./fly.toml`). |
 
@@ -790,8 +790,8 @@ config flags:
 
 `scheduler_healthy` goes false when the scheduler has never ticked
 since boot, or its last tick is older than three ticks (floored at
-120s). The endpoint deliberately still returns HTTP 200 in that case —
-it reflects process liveness, and we don't want a Fly health check to
+120s). The endpoint deliberately still returns HTTP 200 in that case.
+It reflects process liveness, and we don't want a Fly health check to
 restart-loop a machine on a transient stall.
 
 Wire an external uptime monitor (Better Stack, UptimeRobot, a cron, or
@@ -801,7 +801,7 @@ Fly's own checks) to poll `/health` every minute and alert you when:
 - `scheduler_healthy` is `false` (process up, scheduler stalled).
 
 Most monitors support a JSON/keyword assertion for the second case. Set
-the alert to reach you on a channel you actually watch — a missed alarm
+the alert to reach you on a channel you actually watch: a missed alarm
 is the one failure with no user-visible warning.
 
 `/health` also reports notifier-queue health, so you can catch the other
@@ -818,7 +818,7 @@ go out.
 ```
 
 - `notifier_healthy` goes `false` when the oldest due-but-unsent
-  notification has been waiting more than 15 minutes — the notifier
+  notification has been waiting more than 15 minutes: the notifier
   worker is stuck (dead SMTP/Twilio creds, a crash loop in the drain).
 - `notifications_failed` counts messages that exhausted their retries;
   a non-zero value warrants a look (bad recipient, expired creds).
@@ -836,11 +836,11 @@ and fix it rather than leave owners unable to check in.
 The Fly volume is single-host. A corrupted block, an accidental
 `fly volumes destroy`, or a long region outage takes the only copy
 of the database with it. For password vaults the sealed **heir xprv
-exists only in this database** — lose it and the inheritance promise
+exists only in this database**: lose it and the inheritance promise
 breaks even though the owner can still move their funds. Bitcoin
 custody-adjacent software cannot live on a single-copy database.
 
-#### Continuous replication (Litestream — the real backup)
+#### Continuous replication (Litestream: the real backup)
 
 The container ships with [Litestream](https://litestream.io) baked in.
 When the four `LITESTREAM_*` secrets are present, the entrypoint
@@ -907,13 +907,13 @@ Put the quarterly re-run on a calendar.
 `/data/ghostkey.sqlite` over `fly ssh sftp`, verifies the SQLite
 magic bytes, and keeps the 12 most recent copies in a cloud-synced
 folder (`BACKUP_DIR`). Run it monthly as an independent second
-channel — it doesn't share failure modes with Litestream/R2.
+channel. It doesn't share failure modes with Litestream/R2.
 
 #### Secret escrow (the backup the backup needs)
 
 The database replica is ciphertext without the keys. If
 `GHOSTKEY_MASTER_KEY` is lost, every sealed heir contact and F2
-derivation becomes permanently unreadable — no backup can fix that.
+derivation becomes permanently unreadable: no backup can fix that.
 Escrow these, today:
 
 - `GHOSTKEY_MASTER_KEY` (print from the machine:
@@ -937,8 +937,8 @@ chats, issues, or commit messages.
 - **Auto-stop must stay OFF**. `fly.toml` sets
   `auto_stop_machines = "off"` on purpose: the scheduler that fires
   alarms runs in-process, and a machine that sleeps when idle stops
-  ticking — the dead-man switch dies with it. Don't "optimize" this.
-- **Backups**. Litestream replication is built into the image — see
+  ticking: the dead-man switch dies with it. Don't "optimize" this.
+- **Backups**. Litestream replication is built into the image: see
   "Backups & disaster recovery" above. The Fly volume itself is
   single-host SSD with no built-in redundancy.
 
@@ -969,7 +969,7 @@ fly secrets set GHOSTKEY_LN_CHECKIN_SAT="20" -a ghostkey
 the server stamps the claim, emails the owner (with a one-tap check-in
 link that cancels the whole claim) and the trusted contact, and locks
 the heir's key material and every claim endpoint for
-`GHOSTKEY_CLAIM_CHALLENGE_SECS` seconds — default **172800** (48 h),
+`GHOSTKEY_CLAIM_CHALLENGE_SECS` seconds: default **172800** (48 h),
 `0` disables, and demo mode defaults to 15 s so the full arc fits in a
 live demo. When the window elapses the scheduler emails the heir that
 they can finish.
@@ -989,7 +989,7 @@ fly secrets set GHOSTKEY_CLAIM_CHALLENGE_SECS="86400" -a ghostkey
 
 The sidecar lives at `crates/ghostkey-lightning-breez/`. It's a
 **separate Fly app** in the same Fly organisation as the main
-`ghostkey` app — they reach each other over the 6PN private network.
+`ghostkey` app. They reach each other over the 6PN private network.
 
 > **Upstream status.** As of 2026-05-26, `breez-sdk-liquid` 0.12.2
 > does not compile from a clean checkout (transitive `boltz-client` /
@@ -1019,7 +1019,7 @@ flat across regions, so cross-region works, but co-locating shaves
 
 The sidecar refuses to start without `BREEZ_API_KEY`, `BREEZ_MNEMONIC`,
 and `GHOSTKEY_LN_SIDECAR_SHARED_SECRET`. The Breez API key is free from
-<https://breez.technology>. The mnemonic is a 12-word BIP39 seed —
+<https://breez.technology>. The mnemonic is a 12-word BIP39 seed:
 **this is the sidecar's own Lightning wallet**, not anyone's vault
 key. Generate a fresh seed; do not reuse one.
 
@@ -1031,7 +1031,7 @@ fly secrets set \
   -a ghostkey-lightning-breez
 ```
 
-Copy the shared secret somewhere safe — you need to set the same value
+Copy the shared secret somewhere safe. You need to set the same value
 on the main app in step 4.
 
 ### 3. Deploy the sidecar
@@ -1044,7 +1044,7 @@ This builds `crates/ghostkey-lightning-breez/Dockerfile` and pushes the
 image. The Dockerfile only sees the crate dir (not the workspace), so
 the build is isolated from the main `ghostkey` workspace.
 
-Confirm the sidecar is reachable from inside the Fly network — open an
+Confirm the sidecar is reachable from inside the Fly network: open an
 SSH session on the **main** app's machine and curl the sidecar's health
 endpoint:
 
@@ -1108,7 +1108,7 @@ will not amplify load on the sidecar.
 The shared secret is a HMAC-of-rest bearer token shipped on every
 sidecar request. Rotate it by setting the **new** value on both apps
 in the order: sidecar first, then main. There is a brief window
-(seconds) during which invoice mints will 401 — that's acceptable;
+(seconds) during which invoice mints will 401. That's acceptable;
 the failed POST surfaces in the dashboard as "Lightning check-in
 failed, try again."
 
@@ -1156,7 +1156,7 @@ walk of [`SIGNET_E2E_RUNBOOK.md`](./SIGNET_E2E_RUNBOOK.md).
 | `SIGNET_HEIR_FINGERPRINT` | 8 hex chars |
 | `SIGNET_NIGHTLY_WEBHOOK` (optional) | Discord/Slack webhook for failure notifications |
 
-The xpubs are watch-only — they cannot move funds — but they
+The xpubs are watch-only (they cannot move funds) but they
 should still come from a fresh, non-production wallet so the
 smoke vault never holds real value.
 
@@ -1164,22 +1164,22 @@ smoke vault never holds real value.
 
 The script prints `PASS:` / `FAIL:` per step. A failure means:
 
-- **/health failed** — staging signet app is down. Check
+- **/health failed**: staging signet app is down. Check
   `fly status -a ghostkey-signet` and recent `fly logs`.
-- **POST /vaults/from-xpub failed** — server is up but rejecting
+- **POST /vaults/from-xpub failed**: server is up but rejecting
   the create. Most likely cause: a recent migration changed the
   validation surface. The body printed by the script will say
   which field is wrong.
-- **/checkin failed** — the owner-token bearer header isn't being
+- **/checkin failed**: the owner-token bearer header isn't being
   accepted. Most likely cause: a route auth refactor.
-- **events log missing rows** — the SQLite write path didn't
+- **events log missing rows**: the SQLite write path didn't
   commit. Investigate the scheduler / database tier.
-- **DELETE failed** — cascade delete regression; inspect the
+- **DELETE failed**: cascade delete regression; inspect the
   cascade trigger in the latest migration.
 
 This job is a **smoke signal, not a merge gate**. It runs on
 schedule only and does not block PRs.
-## Lightning sidecar — LNbits alternative
+## Lightning sidecar: LNbits alternative
 
 If the Breez sidecar build is broken on your toolchain (see the
 upstream-status note in `crates/ghostkey-lightning-breez/README.md`),
@@ -1189,8 +1189,8 @@ The main `ghostkey-server` is provider-agnostic; point its
 `GHOSTKEY_LN_SIDECAR_URL` env var at whichever sidecar you deployed and
 the dashboard renders the check-in button either way.
 
-Deploy is the same shape as the Breez sidecar — see the Breez
-section above for the verify/wire/rotate steps — with these
+Deploy is the same shape as the Breez sidecar (see the Breez
+section above for the verify/wire/rotate steps) with these
 substitutions:
 
 ```sh
@@ -1216,8 +1216,8 @@ fly secrets set \
 ```
 
 Use the LNbits wallet's **invoice key** (receive-only), not the
-admin key. This sidecar never sends — it only mints inbound invoices
-for the 1-sat check-in heartbeats and polls their status — so the
+admin key. This sidecar never sends (it only mints inbound invoices
+for the 1-sat check-in heartbeats and polls their status) so the
 lower-privilege key is the right choice.
 
 The sidecar holds no on-disk state; the LNbits instance owns the

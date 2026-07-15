@@ -1,4 +1,4 @@
-# Cake Wallet — export an xpub
+# Cake Wallet: export an xpub
 
 Cake Wallet is a multi-asset mobile wallet (iOS and Android) with
 sizeable reach in the GhostKey audience. These steps assume the
@@ -10,7 +10,7 @@ Estimated time: 2 minutes.
 
 Cake Wallet's Bitcoin support is primarily **Native SegWit**. As
 of writing, exporting a BIP86 Taproot xpub from Cake is not a
-first-class flow — Cake exposes the wallet's public material as a
+first-class flow: Cake exposes the wallet's public material as a
 single string (the "Public key" in Show Keys), which is a Native
 SegWit-class extended public key on the BIP84 path.
 
@@ -26,7 +26,7 @@ implications. For end-to-end Taproot, prefer
 
 - Cake Wallet installed with a Bitcoin wallet created. (Cake
   prompts you to create wallets per coin; pick **Bitcoin**.)
-- Your Cake Wallet PIN or biometric unlock — you'll be prompted
+- Your Cake Wallet PIN or biometric unlock: you'll be prompted
   before keys are shown.
 
 ## Steps
@@ -37,7 +37,7 @@ If you have multiple wallets (e.g. Monero + Bitcoin), open the
 **Wallets** screen from the hamburger menu and tap the Bitcoin
 wallet so it becomes the active one.
 
-[SCREENSHOT 1 — Wallets list with the Bitcoin wallet selected]
+[SCREENSHOT 1: Wallets list with the Bitcoin wallet selected]
 
 ### 2. Open "Show keys"
 
@@ -45,17 +45,17 @@ From the active Bitcoin wallet, open the hamburger menu (☰), tap
 **Security and backup**, then **Show keys**. Authenticate with
 your PIN / biometrics when prompted.
 
-[SCREENSHOT 2 — Security and backup screen with Show keys row]
+[SCREENSHOT 2: Security and backup screen with Show keys row]
 
 ### 3. Copy the public key
 
 Cake displays several fields. The one GhostKey wants is the
-**Public key** field — that's the extended public key Cake derived
+**Public key** field. That's the extended public key Cake derived
 for the Bitcoin account.
 
 Tap the copy icon next to it.
 
-[SCREENSHOT 3 — Show keys screen with Public key field and copy
+[SCREENSHOT 3: Show keys screen with Public key field and copy
 button]
 
 **Do not paste the private key, the seed phrase, or the mnemonic

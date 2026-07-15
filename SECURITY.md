@@ -5,11 +5,11 @@
 **Do not open a public GitHub issue for security vulnerabilities.**
 
 GhostKey guards Bitcoin inheritance. A vulnerability disclosed in
-public — before a fix is ready — gives attackers time to act before
+public (before a fix is ready) gives attackers time to act before
 users can update.
 
 To report a vulnerability, use GitHub's **private vulnerability
-reporting** — the "Report a vulnerability" button under this
+reporting**: the "Report a vulnerability" button under this
 repository's **Security** tab
 ([github.com/Jolah1/ghostKey/security](https://github.com/Jolah1/ghostKey/security)).
 It opens a private channel with the maintainers; nothing is public until
@@ -63,8 +63,8 @@ version:
 > comfort software. Compromising the server delays or denies
 > *notifications*; it cannot move coins.
 
-If your finding contradicts that summary — e.g., you've found a way
-to move coins by attacking the server — that's a top-priority issue.
+If your finding contradicts that summary (e.g., you've found a way
+to move coins by attacking the server) that's a top-priority issue.
 
 
 
@@ -90,8 +90,8 @@ These are documented gaps, not findings:
 - `/vaults/:id/sealed-blobs` is unauthenticated by design (the
   blobs are useless without the user's password), but does allow
   an offline Argon2id brute-force against weak passwords once the
-  vault UUID is known. KDF parameters are `m=64MiB, t=2, p=1` —
-  tuned for ~2s on a mid-range phone, deliberately the slowest we
+  vault UUID is known. KDF parameters are `m=64MiB, t=2, p=1`:
+tuned for ~2s on a mid-range phone, deliberately the slowest we
   could justify without user-visible jank.
 - The F2 server-derived-heir flow ties the heir's mnemonic to
   `(GHOSTKEY_MASTER_KEY, heir_email, vault_id)`. An attacker who
@@ -125,13 +125,13 @@ The TL;DR:
 
 `npm audit` also reports two **moderate** dev-only advisories
 (`esbuild ≤0.24.2`, `vite ≤6.4.1`). These affect the local
-`npm run dev` server only — the production bundle on Vercel is the
+`npm run dev` server only: the production bundle on Vercel is the
 output of `npm run build`, which doesn't ship the affected code. The
 fix is `vite@8`, which is a major-version jump with breaking changes
 to our build config; we'll bundle it with the next planned Vite
 upgrade rather than chase a green badge for a non-issue.
 
-Genuine new advisories — anything not in the table above — will fail
+Genuine new advisories (anything not in the table above) will fail
 the `audit` job and block the next merge.
 
 ## Credit

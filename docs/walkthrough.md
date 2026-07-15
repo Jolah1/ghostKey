@@ -13,12 +13,12 @@ Pre-reqs: skim [`README.md`](../README.md) for the product framing and
 
 ---
 
-## 60 seconds — what is GhostKey?
+## 60 seconds: what is GhostKey?
 
 A Bitcoin inheritance vault. The owner picks an heir and a timeout
 (say "9 months"). As long as the owner clicks a button every so often
-("checking in"), nothing happens. If they stop clicking — they died,
-got hit by a bus, lost their phone — the heir can claim the funds
+("checking in"), nothing happens. If they stop clicking (they died,
+got hit by a bus, lost their phone) the heir can claim the funds
 after the timeout elapses.
 
 The product promise:
@@ -36,27 +36,27 @@ glue around a single Bitcoin transaction.
 
 ---
 
-## 3 minutes — what happens when an owner taps "Check in"
+## 3 minutes: what happens when an owner taps "Check in"
 
 The check-in button is the most common interaction. Trace it once and
 you know how the server is wired.
 
-### Step 1 — the click
+### Step 1: the click
 
 [`ghostkey-web/src/Dashboard.tsx`](../ghostkey-web/src/Dashboard.tsx)
 renders the dashboard. The check-in button issues
 `POST /vaults/:id/checkin` with the owner's bearer token (kept in
 `localStorage` after vault creation).
 
-### Step 2 — the request hits the server
+### Step 2: the request hits the server
 
-The router is wired in `crates/ghostkey-server/src/routes.rs` —
+The router is wired in `crates/ghostkey-server/src/routes.rs`:
 look for the `.route("/vaults/:id/checkin", post(checkin))` line.
 The handler is `checkin` in the same file. It:
 
 1. Looks up the vault by id.
 2. Validates the bearer token against the stored hash (constant-time
-   compare — see `auth.rs`).
+   compare: see `auth.rs`).
 3. Enforces the once-per-period rule (the server will refuse a second
    check-in inside the configured cadence; this is the "you can't
    spam the button to fake activity" guard).
@@ -64,11 +64,11 @@ The handler is `checkin` in the same file. It:
 5. Appends a `checkin` event to the `events` table.
 
 The one-tap email variant lives in the `checkin_from_link` handler
-right below it — same effect, but the token *is* the auth, no
+right below it: same effect, but the token *is* the auth, no
 password needed. That is how the "tap the link in the email"
 reminder works.
 
-### Step 3 — the scheduler picks up the new deadline
+### Step 3: the scheduler picks up the new deadline
 
 The background scheduler ticks every 30 seconds
 (`crates/ghostkey-server/src/scheduler.rs`). On each tick it:
@@ -93,12 +93,12 @@ check-in periodically, but the daily / weekly cadence is off-chain.
 
 ---
 
-## 5 minutes — what happens during a claim
+## 5 minutes: what happens during a claim
 
 The hard path. Two flows exist; we'll walk through the
 password-vault flow because it's the most surprising.
 
-### Step 1 — the owner has gone silent
+### Step 1: the owner has gone silent
 
 The scheduler notices the deadline passed and the owner did not
 check in. It:
@@ -106,10 +106,10 @@ check in. It:
 1. Marks the vault `alarmed`.
 2. Generates a random 32-byte claim token (stores only the
    SHA-256 hash; returns the raw token once, in the email).
-3. Enqueues the "heir claim" email — the heir gets a link like
+3. Enqueues the "heir claim" email: the heir gets a link like
    `https://www.ghostkeyapp.com/claim/<token>`.
 
-### Step 2 — the heir opens the link
+### Step 2: the heir opens the link
 
 [`ghostkey-web/src/Claim.tsx`](../ghostkey-web/src/Claim.tsx) (or
 the routed claim view) hits `GET /claim/:token` on the server.
@@ -119,19 +119,19 @@ used, not ready (timelock hasn't elapsed yet), or claimable. The UI
 renders accordingly.
 
 If the vault was created via the password wizard (most common for
-non-Bitcoiners), the server also has a sealed heir xprv — the
+non-Bitcoiners), the server also has a sealed heir xprv: the
 private key encrypted with a KEK derived from the claim token. The
 browser will need this in step 3.
 
-### Step 3 — the heir provides a destination address
+### Step 3: the heir provides a destination address
 
-The heir pastes a Bitcoin address from any wallet they control —
+The heir pastes a Bitcoin address from any wallet they control:
 hardware wallet, Sparrow, Cake, whatever. The browser unwraps the
 sealed heir xprv using HKDF over the claim token, then ships the
 xprv over TLS to the server's `POST /claim/:token/heir-claim`
 endpoint along with the destination.
 
-### Step 4 — the server signs and broadcasts
+### Step 4: the server signs and broadcasts
 
 `heir_claim` lives in
 [`crates/ghostkey-server/src/psbt_routes.rs`](../crates/ghostkey-server/src/psbt_routes.rs).
@@ -152,21 +152,21 @@ It:
 intro.** During the seconds this call takes, a compromised server
 could redirect the funds. We accept this because:
 
-- The timelock has already matured by this point — only the heir
+- The timelock has already matured by this point: only the heir
   benefits from spending the UTXO.
 - The on-chain trail is public; theft is detectable immediately.
 - Re-implementing Taproot script-path PSBT signing in the browser
   is a significant chunk of audited cryptography we didn't want to
   ship before getting the product validated.
 
-A second claim flow — the legacy two-step `build-psbt` +
-`broadcast` — exists for heirs who own Bitcoin and want to sign
+A second claim flow (the legacy two-step `build-psbt` +
+`broadcast`) exists for heirs who own Bitcoin and want to sign
 with their own wallet. It uses the same PSBT machinery without the
 server-signing step. CLI-created vaults default to this flow.
 
 ---
 
-## 1 minute — what we deliberately don't do
+## 1 minute: what we deliberately don't do
 
 These come up a lot in contributor questions. The answer is "no,
 on purpose":
@@ -183,7 +183,7 @@ on purpose":
   design: a "support recovery" path would be a custody path.
 - **No early access for the heir.** The script enforces the
   timelock on the Bitcoin mainnet. Even a fully malicious server
-  cannot let the heir claim before `N` blocks elapse — the
+  cannot let the heir claim before `N` blocks elapse: the
   mempool will reject the transaction as non-BIP68-final.
 - **No mainnet (yet).** The web UI ships pinned to testnet /
   signet. See [`SIGNET_E2E_RUNBOOK.md`](../SIGNET_E2E_RUNBOOK.md)
@@ -195,18 +195,18 @@ on purpose":
 
 If you want to:
 
-- **Touch the Bitcoin script logic** — start with
+- **Touch the Bitcoin script logic**: start with
   [`crates/ghostkey-core/src/psbt.rs`](../crates/ghostkey-core/src/psbt.rs)
   and the regtest end-to-end test
   (`crates/ghostkey-core/tests/regtest_e2e.rs`). Run it with
   `cargo test --workspace --ignored regtest`.
-- **Touch the server** — start with `routes.rs` (the route table at
+- **Touch the server**: start with `routes.rs` (the route table at
   the top tells you what handlers exist), then `scheduler.rs` if
   you want to understand the background loops.
-- **Touch the dashboard** — start with
+- **Touch the dashboard**: start with
   `ghostkey-web/src/Dashboard.tsx`. The wizard for creating a
   vault is `ghostkey-web/src/SetupWizard.tsx`.
-- **Touch ops / CI** — `.github/workflows/`, `Dockerfile`,
+- **Touch ops / CI**: `.github/workflows/`, `Dockerfile`,
   `fly.toml`, and the runbooks in this `docs/` directory.
 
 If you find this walkthrough out of date (file moved, function
