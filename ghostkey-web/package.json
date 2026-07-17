@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "GhostKey owner/heir dashboard.",
+  "license": "MIT OR Apache-2.0",
   "scripts": {
     "dev": "vite",
     "build": "npm run build:kit && tsc -b && vite build",
