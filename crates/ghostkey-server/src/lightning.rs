@@ -439,9 +439,14 @@ pub async fn mark_paid_and_checkin(
     // payment doesn't get a free extension. NOTE: no early return —
     // siblings may still be overdue (that desync is exactly what
     // #231 is about), so the fan-out below runs either way.
-    let paid_vault_reset = !inside_current_period(last_checkin_at.as_deref(), checkin_secs, now);
+    // `reset_vault_clock` has the final say: it refuses a claimed vault,
+    // so a payment that lands after the heir claimed is recorded as paid
+    // but changes nothing.
+    let mut paid_vault_reset =
+        !inside_current_period(last_checkin_at.as_deref(), checkin_secs, now);
     if paid_vault_reset {
-        reset_vault_clock(&mut tx, &vault_id, checkin_secs, grace_secs, now).await?;
+        paid_vault_reset =
+            reset_vault_clock(&mut tx, &vault_id, checkin_secs, grace_secs, now).await?;
     } else {
         tracing::info!(
             vault_id = %vault_id,
@@ -485,8 +490,9 @@ pub async fn mark_paid_and_checkin(
             if inside_current_period(sib_last.as_deref(), sib_checkin, now) {
                 continue; // already covered this cycle; skip silently
             }
-            reset_vault_clock(&mut tx, &sib_id, sib_checkin, sib_grace, now).await?;
-            sibling_resets.push(sib_id);
+            if reset_vault_clock(&mut tx, &sib_id, sib_checkin, sib_grace, now).await? {
+                sibling_resets.push(sib_id);
+            }
         }
     }
 
@@ -555,16 +561,26 @@ fn inside_current_period(
 /// unwinds that state cleanly. Clearing the alarm-reminder columns
 /// (F3) is what stops the daily-escalation emails the moment the
 /// owner checks in. See routes::checkin for the matching SQL.
+///
+/// Never resets a `claimed` vault: the coins have moved, and this SQL
+/// would flip the status back to `ok` and null the claim token columns,
+/// erasing the heir's claim (see `routes::claim_is_final`). The routes
+/// refuse a check-in on a claimed vault up front, so reaching here with
+/// one means an invoice was minted while the vault was live and paid
+/// after the heir claimed. That race is exactly what this guard is for.
+///
+/// Returns whether the clock actually moved, so callers don't log a
+/// check-in that didn't happen.
 async fn reset_vault_clock(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     vault_id: &str,
     checkin_secs: i64,
     grace_secs: i64,
     now: chrono::DateTime<Utc>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let next = now + chrono::Duration::seconds(checkin_secs + grace_secs);
     let claim_eligible = next + chrono::Duration::seconds(grace_secs);
-    sqlx::query(
+    let res = sqlx::query(
         r#"UPDATE vaults
               SET last_checkin_at      = ?,
                   next_deadline_at     = ?,
@@ -579,7 +595,8 @@ async fn reset_vault_clock(
                   checkin_link_token_hash      = NULL,
                   checkin_link_token_issued_at = NULL,
                   checkin_link_token_used_at   = NULL
-            WHERE id = ?"#,
+            WHERE id = ?
+              AND status != 'claimed'"#,
     )
     .bind(now.to_rfc3339())
     .bind(next.to_rfc3339())
@@ -587,7 +604,15 @@ async fn reset_vault_clock(
     .bind(vault_id)
     .execute(&mut **tx)
     .await?;
-    Ok(())
+    let moved = res.rows_affected() > 0;
+    if !moved {
+        tracing::warn!(
+            vault_id = %vault_id,
+            "lightning payment landed on an already-claimed vault; \
+             clock not reset"
+        );
+    }
+    Ok(moved)
 }
 
 /// How long a panic-stop holds a vault frozen, in days.
@@ -649,7 +674,7 @@ pub async fn mark_panic_paid(db: &sqlx::SqlitePool, payment_hash: &str) -> anyho
         anyhow::bail!("panic invoice {payment_hash} has no vault row");
     };
 
-    sqlx::query(
+    let frozen = sqlx::query(
         r#"UPDATE vaults
               SET status                       = 'frozen',
                   panic_frozen_until           = ?,
@@ -664,7 +689,8 @@ pub async fn mark_panic_paid(db: &sqlx::SqlitePool, payment_hash: &str) -> anyho
                   checkin_link_token_hash      = NULL,
                   checkin_link_token_issued_at = NULL,
                   checkin_link_token_used_at   = NULL
-            WHERE id = ?"#,
+            WHERE id = ?
+              AND status != 'claimed'"#,
     )
     .bind(&frozen_until_s)
     .bind(&vault_id)
@@ -672,6 +698,19 @@ pub async fn mark_panic_paid(db: &sqlx::SqlitePool, payment_hash: &str) -> anyho
     .await?;
 
     tx.commit().await?;
+
+    // A panic paid after the heir claimed freezes nothing: the coins
+    // are gone, and applying it would erase the claim record. Same race
+    // as `reset_vault_clock`. Stop before the audit trail and the
+    // trusted-contact alert claim a freeze that never happened.
+    if frozen.rows_affected() == 0 {
+        tracing::warn!(
+            vault_id = %vault_id,
+            payment_hash = %payment_hash,
+            "panic payment landed on an already-claimed vault; not frozen"
+        );
+        return Ok(());
+    }
 
     record_event(
         db,
@@ -1250,6 +1289,70 @@ mod tests {
         .flatten();
         let detail = detail.expect("checkin event must exist");
         assert!(detail.contains("\"lightning\""), "got: {detail}");
+    }
+
+    /// The routes refuse a check-in on a claimed vault, but an invoice
+    /// minted while the vault was still live can be paid *after* the
+    /// heir claims. The poller must not apply it: resetting the clock
+    /// would flip the vault back to `ok` and null the claim token
+    /// columns, erasing the claim. The payment is still recorded as
+    /// paid (Lightning has no refund) — it just changes nothing.
+    #[tokio::test]
+    async fn payment_landing_after_a_claim_does_not_erase_it() {
+        let pool = fresh_db().await;
+        insert_vault(&pool, "v-late", 14 * 86400, 3 * 86400).await;
+
+        let now = Utc::now();
+        sqlx::query(
+            r#"INSERT INTO lightning_invoices
+                  (vault_id, bolt11, payment_hash, amount_sat, status, created_at, expires_at)
+               VALUES ('v-late', 'lnbc1...', 'late-hash', 20, 'pending', ?, ?)"#,
+        )
+        .bind(now.to_rfc3339())
+        .bind((now + chrono::Duration::hours(1)).to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // The heir claims between the mint and the payment.
+        sqlx::query(
+            "UPDATE vaults SET status = 'claimed', claim_token_hash = 'claimhash', \
+                    claim_token_used_at = '2026-07-13T08:03:01Z' WHERE id = 'v-late'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        mark_paid_and_checkin(&pool, "late-hash").await.unwrap();
+
+        // Invoice settles (nothing to refund), vault is untouched.
+        let (inv_status,): (String,) = sqlx::query_as(
+            "SELECT status FROM lightning_invoices WHERE payment_hash = 'late-hash'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(inv_status, "paid");
+
+        let (v_status, claim_hash, used): (String, Option<String>, Option<String>) =
+            sqlx::query_as(
+                "SELECT status, claim_token_hash, claim_token_used_at FROM vaults \
+                  WHERE id = 'v-late'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(v_status, "claimed", "a late payment must not un-claim");
+        assert_eq!(claim_hash.as_deref(), Some("claimhash"));
+        assert_eq!(used.as_deref(), Some("2026-07-13T08:03:01Z"));
+
+        // And no check-in was logged for a reset that didn't happen.
+        let events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE vault_id = 'v-late'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(events, 0, "no checkin event for a refused reset");
     }
 
     /// Double-processing the same payment_hash must be a no-op. The

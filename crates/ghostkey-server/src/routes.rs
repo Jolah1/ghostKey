@@ -2710,6 +2710,30 @@ fn claim_is_live(status: &str) -> bool {
     matches!(status, "timelock_started" | "claiming" | "claimed")
 }
 
+/// Whether the heir has finished claiming, which makes a check-in
+/// meaningless: the coins have moved and there is no clock left to
+/// reset. Every check-in path refuses on this.
+///
+/// The refusal matters beyond tidiness. A check-in resets `status` to
+/// `ok` and nulls `claim_token_hash` / `claim_token_used_at`, so one
+/// accepted on a claimed vault kills the heir's claim link, drops the
+/// broadcast receipt (see `claimed_txid`), and hands the vault back to
+/// the scheduler, which re-alarms it and mails the heir a fresh claim
+/// link for an empty vault. That happened once in production: a
+/// multi-heir fan-out tapped a claimed sibling.
+fn claim_is_final(status: &str) -> bool {
+    status == "claimed"
+}
+
+/// Shared refusal for a check-in on a claimed vault.
+fn claimed_checkin_conflict() -> ApiError {
+    ApiError::Conflict(
+        "This heir has already claimed their share. There is nothing left \
+         to check in for."
+            .into(),
+    )
+}
+
 async fn delete_vault(
     auth: OwnerAuth,
     State(state): State<Arc<AppState>>,
@@ -3070,6 +3094,12 @@ async fn checkin(
         ));
     }
 
+    // The heir already claimed: nothing to reset, and accepting this
+    // would erase the claim. See `claim_is_final`.
+    if claim_is_final(&row.3) {
+        return Err(claimed_checkin_conflict());
+    }
+
     let now = Utc::now();
     // Once-per-period guard: if the owner already checked in inside
     // the current cycle, refuse the duplicate so the deadline doesn't
@@ -3203,11 +3233,12 @@ async fn checkin_from_link(
         i64,            // grace_period_secs
         Option<String>, // last_checkin_at
         Option<String>, // claim_eligible_at
+        String,         // status
     );
     let row: Option<Row> = sqlx::query_as(
         r#"SELECT checkin_link_token_hash, checkin_link_token_used_at,
                   checkin_period_secs, grace_period_secs, last_checkin_at,
-                  claim_eligible_at
+                  claim_eligible_at, status
              FROM vaults
             WHERE id = ?
               AND checkin_link_token_hash = ?"#,
@@ -3217,8 +3248,15 @@ async fn checkin_from_link(
     .fetch_optional(&state.db)
     .await?;
 
-    let (stored_hash, used_at, checkin_secs, grace_secs, last_checkin_at, claim_eligible_at) =
-        row.ok_or(ApiError::NotFound)?;
+    let (
+        stored_hash,
+        used_at,
+        checkin_secs,
+        grace_secs,
+        last_checkin_at,
+        claim_eligible_at,
+        status,
+    ) = row.ok_or(ApiError::NotFound)?;
     let stored_hash = stored_hash.ok_or(ApiError::NotFound)?;
     if !crypto::claim_token_matches(&token, &stored_hash) {
         return Err(ApiError::NotFound);
@@ -3228,6 +3266,12 @@ async fn checkin_from_link(
         // tapped this link. Don't silently re-check-in; tell the caller
         // so they can show "already used" rather than "success".
         return Err(ApiError::Conflict("check-in link already used".into()));
+    }
+
+    // Same rule as the button and Lightning paths: a claimed vault has
+    // no clock to reset, and a check-in here would erase the claim.
+    if claim_is_final(&status) {
+        return Err(claimed_checkin_conflict());
     }
 
     // Free check-in via the link is a last resort: only allowed inside the
@@ -4109,14 +4153,13 @@ async fn create_checkin_invoice(
     state: &Arc<AppState>,
     vault_id: &str,
 ) -> Result<LightningInvoiceView, ApiError> {
-    if !state.lightning.is_enabled() {
-        return Err(ApiError::Validation(
-            "lightning provider not configured on this server".into(),
-        ));
-    }
-
+    // Vault state is checked before the provider. Whether this server
+    // has Lightning wired up says nothing about whether the vault can
+    // be checked in at all, and "already claimed" is the more useful
+    // answer than "no provider" on a self-hosted server without one.
+    //
     // Refuse to mint a duplicate check-in invoice inside the current
-    // period. Spec: at most one successful check-in per period. We
+    // period too. Spec: at most one successful check-in per period. We
     // catch it at mint time so the owner doesn't pay sats that won't
     // count.
     let cad: Option<(i64, Option<String>, String)> = sqlx::query_as(
@@ -4131,6 +4174,18 @@ async fn create_checkin_invoice(
     if matches!(&cad, Some((_, _, status)) if status == "unfunded") {
         return Err(ApiError::Conflict(
             "Fund your vault first. Check-ins begin once your Bitcoin is in the vault.".into(),
+        ));
+    }
+
+    // Nor on a vault whose heir has already claimed. Caught at mint
+    // time so the owner is never shown a QR for sats that buy nothing.
+    if matches!(&cad, Some((_, _, status)) if claim_is_final(status)) {
+        return Err(claimed_checkin_conflict());
+    }
+
+    if !state.lightning.is_enabled() {
+        return Err(ApiError::Validation(
+            "lightning provider not configured on this server".into(),
         ));
     }
 
@@ -4374,16 +4429,17 @@ async fn lnurlp_pay_request_inner(
     vault_id: String,
     is_panic: bool,
 ) -> axum::response::Response {
-    if !state.lightning.is_enabled() {
-        return lnurl_error("lightning disabled on this server");
-    }
-    let Some(base) = crate::config::api_base_url() else {
-        return lnurl_error("server misconfigured (no GHOSTKEY_API_BASE_URL)");
-    };
-
-    // Confirm the vault row exists; an LNURL on a deleted vault should
-    // fail clean rather than mint orphan invoices.
-    let exists: Option<(String,)> = match sqlx::query_as("SELECT id FROM vaults WHERE id = ?")
+    // Vault state first, before the provider and config checks. Whether
+    // this server has Lightning wired up says nothing about whether the
+    // vault can be paid to at all, and the wallet is about to draw a
+    // payable QR: on a claimed vault a check-in has nothing to reset and
+    // a panic has nothing to freeze, so either would take real sats for
+    // nothing. LNURL twin of the guards in `checkin` and
+    // `create_checkin_invoice`.
+    //
+    // The lookup doubles as the existence check: an LNURL on a deleted
+    // vault should fail clean rather than mint orphan invoices.
+    let exists: Option<(String,)> = match sqlx::query_as("SELECT status FROM vaults WHERE id = ?")
         .bind(&vault_id)
         .fetch_optional(&state.db)
         .await
@@ -4394,9 +4450,19 @@ async fn lnurlp_pay_request_inner(
             return lnurl_error("internal");
         }
     };
-    if exists.is_none() {
+    let Some((status,)) = exists else {
         return lnurl_error("unknown vault");
+    };
+    if claim_is_final(&status) {
+        return lnurl_error("This vault is closed. Your heir already claimed the money.");
     }
+
+    if !state.lightning.is_enabled() {
+        return lnurl_error("lightning disabled on this server");
+    }
+    let Some(base) = crate::config::api_base_url() else {
+        return lnurl_error("server misconfigured (no GHOSTKEY_API_BASE_URL)");
+    };
 
     let cb_path = if is_panic { "/panic/cb" } else { "/cb" };
     let segment = if is_panic { "/panic" } else { "" };
@@ -4437,6 +4503,28 @@ async fn lnurlp_callback_inner(
     params: LnurlCallbackParams,
     is_panic: bool,
 ) -> axum::response::Response {
+    // Claim state first, same as the pay_request above. Re-checked here
+    // and not just there: a wallet can hold a cached pay_response across
+    // the moment the heir claims, and this is the call that actually
+    // mints a payable invoice.
+    let row: Option<(String,)> = match sqlx::query_as("SELECT status FROM vaults WHERE id = ?")
+        .bind(&vault_id)
+        .fetch_optional(&state.db)
+        .await
+    {
+        Ok(row) => row,
+        Err(e) => {
+            tracing::error!(vault_id = %vault_id, error = ?e, "lnurlp_callback db error");
+            return lnurl_error("internal");
+        }
+    };
+    let Some((status,)) = row else {
+        return lnurl_error("unknown vault");
+    };
+    if claim_is_final(&status) {
+        return lnurl_error("This vault is closed. Your heir already claimed the money.");
+    }
+
     if !state.lightning.is_enabled() {
         return lnurl_error("lightning disabled on this server");
     }
@@ -5227,10 +5315,13 @@ mod tests {
             .expect("Door B create should succeed");
         let id = created.vault.id.clone();
 
-        // Attach a one-tap check-in link token to the vault.
+        // Attach a one-tap check-in link token to the vault, and mark it
+        // funded. Vault state is checked before the provider, so a still-
+        // unfunded vault would stop at "fund your vault first" and never
+        // exercise the deferral this test is about.
         let token = "a".repeat(64);
         let hash = hash_claim_token(&token);
-        sqlx::query("UPDATE vaults SET checkin_link_token_hash = ? WHERE id = ?")
+        sqlx::query("UPDATE vaults SET checkin_link_token_hash = ?, status = 'ok' WHERE id = ?")
             .bind(&hash)
             .bind(&id)
             .execute(&state.db)
@@ -5339,6 +5430,139 @@ mod tests {
             matches!(&err, ApiError::Validation(m) if m.contains("both present or both absent")),
             "got {err:?}"
         );
+    }
+
+    /// A check-in on a claimed vault must be refused on every path.
+    ///
+    /// Regression test for a production incident: a multi-heir fan-out
+    /// tapped a sibling whose heir had already claimed. The check-in was
+    /// accepted, which flipped `status` back to `ok` and nulled the claim
+    /// token columns — killing the heir's claim link, dropping the
+    /// broadcast receipt, and handing an emptied vault back to the
+    /// scheduler to re-alarm.
+    #[tokio::test]
+    async fn checkin_refused_on_claimed_vault() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+
+        let link_token = "t".repeat(64);
+        let used_at = "2026-07-13T08:03:01+00:00";
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status, claim_eligible_at,
+                claim_token_hash, claim_token_used_at, checkin_link_token_hash
+            ) VALUES ('v-claimed','regtest','tr(a)','tr(b)',144,86400,3600,
+                      '2026-01-01T00:00:00Z','2099-01-01T00:00:00Z','claimed',
+                      '2099-01-02T00:00:00Z','claimhash', ?, ?)"#,
+        )
+        .bind(used_at)
+        .bind(hash_claim_token(&link_token))
+        .execute(&state.db)
+        .await
+        .expect("insert claimed vault");
+
+        let is_claimed_conflict = |e: &ApiError| matches!(e, ApiError::Conflict(m) if m.contains("already claimed their share"));
+
+        // Path 1: the dashboard button.
+        let err = checkin(
+            OwnerAuth {
+                vault_id: "v-claimed".into(),
+            },
+            State(state.clone()),
+        )
+        .await
+        .expect_err("button check-in on a claimed vault");
+        assert!(is_claimed_conflict(&err), "got {err:?}");
+
+        // Path 2: the one-tap link from a reminder email.
+        let err = checkin_from_link(
+            State(state.clone()),
+            Path(("v-claimed".to_string(), link_token.clone())),
+        )
+        .await
+        .expect_err("one-tap check-in on a claimed vault");
+        assert!(is_claimed_conflict(&err), "got {err:?}");
+
+        // Path 3: minting a Lightning invoice. Refused before any sats
+        // are quoted, so the owner never pays for a no-op.
+        let err = create_checkin_invoice(&state, "v-claimed")
+            .await
+            .expect_err("lightning check-in on a claimed vault");
+        assert!(is_claimed_conflict(&err), "got {err:?}");
+
+        // The claim record survived all three attempts untouched.
+        let (status, token_hash, used): (String, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT status, claim_token_hash, claim_token_used_at FROM vaults WHERE id = 'v-claimed'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .expect("read back");
+        assert_eq!(status, "claimed", "status must not revert to ok");
+        assert_eq!(token_hash.as_deref(), Some("claimhash"));
+        assert_eq!(used.as_deref(), Some(used_at));
+    }
+
+    /// The LNURL endpoints mint invoices without going through
+    /// `create_checkin_invoice`, so they need their own claimed-vault
+    /// guard — and unlike the free paths, reaching the poller here costs
+    /// the owner real sats. Both the pay_request (what the wallet reads
+    /// to draw the QR) and the callback (what actually mints) refuse,
+    /// for check-in and panic alike.
+    #[tokio::test]
+    async fn lnurl_refuses_claimed_vault_before_minting() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status, claim_eligible_at
+            ) VALUES ('v-lnurl','regtest','tr(a)','tr(b)',144,86400,3600,
+                      '2026-01-01T00:00:00Z','2099-01-01T00:00:00Z','claimed',
+                      '2099-01-02T00:00:00Z')"#,
+        )
+        .execute(&state.db)
+        .await
+        .expect("insert claimed vault");
+
+        async fn body_of(resp: axum::response::Response) -> String {
+            let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+                .await
+                .expect("read body");
+            String::from_utf8(bytes.to_vec()).expect("utf-8 body")
+        }
+
+        for is_panic in [false, true] {
+            let resp = lnurlp_pay_request_inner(state.clone(), "v-lnurl".into(), is_panic).await;
+            let body = body_of(resp).await;
+            assert!(
+                body.contains("This vault is closed"),
+                "pay_request (panic={is_panic}) should refuse, got {body}"
+            );
+
+            let resp = lnurlp_callback_inner(
+                state.clone(),
+                "v-lnurl".into(),
+                LnurlCallbackParams { amount: Some(1000) },
+                is_panic,
+            )
+            .await;
+            let body = body_of(resp).await;
+            assert!(
+                body.contains("This vault is closed"),
+                "callback (panic={is_panic}) should refuse, got {body}"
+            );
+        }
+
+        // Nothing payable was created.
+        let (invoices,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM lightning_invoices WHERE vault_id = 'v-lnurl'")
+                .fetch_one(&state.db)
+                .await
+                .expect("count invoices");
+        assert_eq!(invoices, 0, "a claimed vault must never mint an invoice");
     }
 
     fn guardian_party(seed: u8, token: &str) -> GuardianParty {

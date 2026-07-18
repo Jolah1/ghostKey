@@ -62,7 +62,7 @@ import {
 } from "./push";
 import { unsealOwner } from "./crypto/sealing";
 import { usePrice, btcAndUsd, satsToUsd, formatUsd } from "./fiat";
-import { lastResortCheckinOpen } from "./checkin";
+import { fanOutCheckin, lastResortCheckinOpen } from "./checkin";
 import { useToolDoneState } from "./toolStatus";
 import type { Route } from "./App";
 
@@ -221,31 +221,37 @@ export function Dashboard({ onNavigate }: Props) {
       // latency, not server work; sub-second total even for 5
       // heirs.
       //
-      // If any sibling fails, we surface the FIRST error and stop —
-      // partial fan-out leaves the group in mixed-state, which is
-      // visible in the dashboard list as "Heir #3 is alarmed but
-      // Heirs #1 and #2 are ok." Better than rolling back the
-      // successful ones (which would require an admin route we
-      // don't have).
-      for (const sibling of groupVaults) {
-        const token = getVaultOwnerToken(sibling.id);
-        await api.checkin(sibling.id, token);
-      }
+      // A refusal on one sibling doesn't stop the rest: see
+      // `fanOutCheckin`. A 409 is the normal answer for a sibling that
+      // can't be checked in right now (already checked in this period,
+      // or already claimed), so we skip it and keep going.
+      const { checkedIn, skipped, hardError } = await fanOutCheckin(
+        groupVaults.map((g) => g.id),
+        async (id) => {
+          try {
+            await api.checkin(id, getVaultOwnerToken(id));
+            return "checked-in";
+          } catch (e) {
+            if (e instanceof ApiError && e.status === 409) return "skipped";
+            return { error: e instanceof ApiError ? e.message : String(e) };
+          }
+        },
+      );
       await refresh();
-      setJustChecked(true);
-      window.setTimeout(() => setJustChecked(false), 4000);
-    } catch (e) {
-      // 409 = already checked in this period. Treat as a soft "you're
-      // good" rather than a failure: the button's locked anyway, the
-      // user just got their answer.
-      if (e instanceof ApiError && e.status === 409) {
+      if (checkedIn > 0) {
+        // At least one heir's clock moved. Any 409s alongside it are
+        // heirs that didn't need the tap, which isn't worth an error.
+        setJustChecked(true);
+        window.setTimeout(() => setJustChecked(false), 4000);
+      } else if (hardError) {
+        setError(hardError);
+      } else if (skipped > 0) {
         setError(
           "Already checked in this period. Your next check-in opens when the current cycle ends.",
         );
-        await refresh();
-      } else {
-        setError(e instanceof ApiError ? e.message : String(e));
       }
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
     } finally {
       setBusy(false);
     }
