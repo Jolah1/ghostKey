@@ -2032,6 +2032,113 @@ mod tests {
         .expect("read")
     }
 
+    /// Every column a scheduler stage could touch on a vault.
+    type VaultLifecycleRow = (
+        String,         // status
+        String,         // next_deadline_at
+        Option<String>, // claim_eligible_at
+        Option<String>, // claim_token_hash
+        Option<String>, // claim_token_issued_at
+        Option<String>, // claim_token_used_at
+        Option<String>, // claim_opened_at
+        Option<String>, // claim_ready_notified_at
+        Option<String>, // pre_deadline_reminder_sent_at
+        Option<String>, // last_alarm_reminder_sent_at
+        i64,            // alarm_reminder_count
+        Option<String>, // panic_frozen_until
+    );
+
+    async fn read_lifecycle(pool: &SqlitePool, id: &str) -> VaultLifecycleRow {
+        sqlx::query_as::<_, VaultLifecycleRow>(
+            r#"SELECT status, next_deadline_at, claim_eligible_at,
+                      claim_token_hash, claim_token_issued_at, claim_token_used_at,
+                      claim_opened_at, claim_ready_notified_at,
+                      pre_deadline_reminder_sent_at, last_alarm_reminder_sent_at,
+                      alarm_reminder_count, panic_frozen_until
+                 FROM vaults WHERE id = ?"#,
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .expect("read lifecycle")
+    }
+
+    /// A claimed vault is done: the coins have moved and no scheduler
+    /// stage may touch it again.
+    ///
+    /// Every stage filters on `status`, so this should hold by
+    /// construction — but "by construction" is exactly what was assumed
+    /// about the check-in routes before a claimed vault got reset to
+    /// `ok` in production and the scheduler started counting down toward
+    /// re-alarming it. This pins the behaviour instead of assuming it.
+    ///
+    /// The row is set up so that EVERY stage would fire if it were not
+    /// status-filtered: deadline long past, claim-eligibility long past,
+    /// a panic freeze whose expiry has passed, and a claim-challenge
+    /// window that has elapsed.
+    #[tokio::test]
+    async fn scheduler_never_touches_a_claimed_vault() {
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+
+        let long_past = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
+        insert_vault(
+            &pool,
+            "vault-claimed",
+            "claimed",
+            &long_past,
+            Some(&long_past),
+        )
+        .await;
+        sqlx::query(
+            r#"UPDATE vaults
+                  SET claim_token_hash    = 'claimhash',
+                      claim_token_used_at = ?,
+                      claim_opened_at     = ?,
+                      panic_frozen_until  = ?
+                WHERE id = 'vault-claimed'"#,
+        )
+        .bind(&long_past)
+        .bind(&long_past)
+        .bind(&long_past)
+        .execute(&pool)
+        .await
+        .expect("arm every stage");
+
+        let before = read_lifecycle(&pool, "vault-claimed").await;
+
+        // Several ticks, in case a stage is only reachable on a later
+        // pass (escalation counters, dedupe markers).
+        for _ in 0..3 {
+            tick_once(&state).await.expect("tick");
+        }
+
+        let after = read_lifecycle(&pool, "vault-claimed").await;
+        assert_eq!(
+            before, after,
+            "no scheduler stage may modify a claimed vault"
+        );
+
+        // And nothing was queued or logged against it.
+        let notifications: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE vault_id = 'vault-claimed'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count notifications");
+        assert_eq!(notifications, 0, "a claimed vault must not be notified");
+
+        let events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE vault_id = 'vault-claimed'")
+                .fetch_one(&pool)
+                .await
+                .expect("count events");
+        assert_eq!(events, 0, "a claimed vault must not generate events");
+    }
+
     #[tokio::test]
     async fn ok_past_deadline_transitions_to_alarmed() {
         let pool = fresh_db().await;
