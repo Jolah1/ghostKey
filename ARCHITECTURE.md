@@ -138,6 +138,12 @@ Heir / owner / trusted contacts are encrypted at rest with XChaCha20-Poly1305. P
 | `/vaults/:id/checkin-from-link/:token` | POST | One-tap check-in from email link (token IS the auth) |
 | `/vaults/:id/events` | GET | Event log (owner-auth) |
 | `/vaults/:id/issue-claim` | POST | Manually issue a claim token (owner-auth) |
+
+Recovery requests use a database-backed 10-minute per-email cooldown: repeated
+requests preserve the current live link and do not enqueue another message. Expired
+rows and used rows older than 24 hours are pruned opportunistically. The uniform
+response has a 200 ms minimum duration to reduce coarse timing differences; this is
+a floor, not a constant-time guarantee under load.
 | `/vaults/:id/lightning-checkin/invoice` | POST | Mint a 1-sat Lightning check-in invoice (owner-auth) |
 | `/vaults/:id/lightning-checkin/status/:hash` | GET | Poll invoice status (owner-auth) |
 | `/lnurlp/:vault_id`, `/lnurlp/:vault_id/cb` | GET | LNURL-pay endpoints (LUD-06) for static QR check-in |

@@ -587,6 +587,27 @@ is disabled: `/health` reports no `push_public_key`, the web app
 never shows the opt-in card, and any queued `webpush` notifications
 stay pending until a keyed deployment comes up.
 
+### Email-recovery rollout
+
+The recovery security change replaces `POST /vaults/find` and public
+`GET /vaults/:id/sealed-blobs`. Deploy it without breaking stale frontend
+bundles in three steps:
+
+1. Deploy the server and migration with
+   `GHOSTKEY_LEGACY_PUBLIC_RECOVERY=1`. This enables both the new recovery
+   API and the two old public routes. The server emits a boot warning while
+   this temporary exposure is active.
+2. Deploy the Vercel frontend and verify request, email delivery, exchange,
+   password retry, and signed-in sealed-blob tools.
+3. Remove `GHOSTKEY_LEGACY_PUBLIC_RECOVERY` and restart the server. Confirm
+   unauthenticated sealed-blob reads return `401` and `POST /vaults/find`
+   returns `404` or `405`.
+
+Do not leave the flag enabled as a compatibility default: it deliberately
+restores the enumeration and offline-blob-harvesting surfaces this release
+closes. Monitor old-route traffic during the short rollout window; stale-chunk
+healing should move most clients to the new frontend automatically.
+
 ### Rate-limit budgets
 
 The unauthenticated endpoints (`/assist/chat`, `/vaults`,

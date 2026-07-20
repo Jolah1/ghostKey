@@ -29,6 +29,16 @@ use crate::crypto::{
 use crate::AppState;
 
 pub fn router(state: Arc<AppState>) -> Router {
+    router_with_legacy_recovery(state, legacy_public_recovery_enabled())
+}
+
+fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: bool) -> Router {
+    if legacy_public_recovery {
+        tracing::warn!(
+            "GHOSTKEY_LEGACY_PUBLIC_RECOVERY is enabled: legacy email enumeration \
+             and unauthenticated sealed-blob routes are temporarily exposed"
+        );
+    }
     // Build the CORS allowlist from env (or default to local dev
     // frontends). We tighten this from the previous Any/Any/Any
     // configuration so a hostile site can't drive the API from a
@@ -115,20 +125,30 @@ pub fn router(state: Arc<AppState>) -> Router {
 
     let find_routes: Router<Arc<AppState>> = Router::new()
         .route("/recovery/request", post(request_owner_recovery))
-        .route("/recovery/exchange", post(exchange_owner_recovery))
-        .layer(axum::middleware::from_fn_with_state(
-            find_limiter,
-            crate::rate_limit::enforce,
-        ));
+        .route("/recovery/exchange", post(exchange_owner_recovery));
+    let find_routes = if legacy_public_recovery {
+        find_routes.route("/vaults/find", post(find_vaults_by_email_legacy))
+    } else {
+        find_routes
+    }
+    .layer(axum::middleware::from_fn_with_state(
+        find_limiter,
+        crate::rate_limit::enforce,
+    ));
 
     // Unauthenticated, UUID-keyed funding-address read. Sealed owner
     // blobs no longer live on this public sub-router.
-    let recovery_routes: Router<Arc<AppState>> = Router::new()
-        .route("/vaults/:id/address", get(get_vault_address))
-        .layer(axum::middleware::from_fn_with_state(
-            recovery_limiter,
-            crate::rate_limit::enforce,
-        ));
+    let recovery_routes: Router<Arc<AppState>> =
+        Router::new().route("/vaults/:id/address", get(get_vault_address));
+    let recovery_routes = if legacy_public_recovery {
+        recovery_routes.route("/vaults/:id/sealed-blobs", get(get_sealed_blobs_legacy))
+    } else {
+        recovery_routes
+    }
+    .layer(axum::middleware::from_fn_with_state(
+        recovery_limiter,
+        crate::rate_limit::enforce,
+    ));
 
     // /events (aggregate analytics), /newsletter (update signups), and
     // /price (cached BTC/USD for fiat display) share the same posture —
@@ -233,10 +253,6 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/vaults/:id/balance",
             get(crate::psbt_routes::get_vault_balance),
         )
-        .route(
-            "/vaults/:id/sealed-blobs",
-            get(get_sealed_blobs_authenticated),
-        )
         .route("/vaults/:id/send", post(crate::psbt_routes::owner_send))
         .route("/vaults/:id/seal-owner-token", post(seal_owner_token))
         .route("/vaults/:id/checkin", post(checkin))
@@ -284,6 +300,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         // the credential, so the owner can confirm from any device.
         .route("/vaults/:id/verify-contact/:token", post(verify_contact))
         .route("/vaults/:id/resend-verification", post(resend_verification));
+    let open_routes = if legacy_public_recovery {
+        open_routes
+    } else {
+        open_routes.route(
+            "/vaults/:id/sealed-blobs",
+            get(get_sealed_blobs_authenticated),
+        )
+    };
 
     Router::new()
         .merge(open_routes)
@@ -3854,7 +3878,50 @@ pub struct FoundVault {
     pub next_deadline_at: DateTime<Utc>,
 }
 
+fn legacy_public_recovery_enabled() -> bool {
+    matches!(
+        std::env::var("GHOSTKEY_LEGACY_PUBLIC_RECOVERY").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
+/// Temporary rollout bridge for old frontend bundles. Disabled by
+/// default; remove after deployment telemetry shows no stale clients.
+async fn find_vaults_by_email_legacy(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<OwnerRecoveryRequest>,
+) -> Result<Json<Vec<FoundVault>>, ApiError> {
+    let hash = req.owner_email_hash.trim().to_lowercase();
+    if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ApiError::Validation(
+            "owner_email_hash must be 64 hex characters".into(),
+        ));
+    }
+    let rows = sqlx::query_as::<_, (String, Option<String>, String, String, String)>(
+        r#"SELECT id, label, status, created_at, next_deadline_at
+             FROM vaults
+            WHERE owner_email_hash = ?
+            ORDER BY created_at DESC"#,
+    )
+    .bind(&hash)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|(id, label, status, created, next)| FoundVault {
+                id,
+                label,
+                status,
+                created_at: parse_rfc(&created),
+                next_deadline_at: parse_rfc(&next),
+            })
+            .collect(),
+    ))
+}
+
 const OWNER_RECOVERY_TTL_MINUTES: i64 = 15;
+const OWNER_RECOVERY_COOLDOWN_MINUTES: i64 = 10;
+const OWNER_RECOVERY_USED_RETENTION_HOURS: i64 = 24;
 
 async fn request_owner_recovery(
     State(state): State<Arc<AppState>>,
@@ -3893,16 +3960,47 @@ async fn request_owner_recovery(
             channel.as_deref(),
         ) {
             Ok(Some(contact)) if matches!(contact.channel, crate::notifier::Channel::Email) => {
-                let issued = issue_claim_token();
                 let now = Utc::now();
                 let expires = now + Duration::minutes(OWNER_RECOVERY_TTL_MINUTES);
+                let cooldown_cutoff = now - Duration::minutes(OWNER_RECOVERY_COOLDOWN_MINUTES);
+                let used_retention_cutoff =
+                    now - Duration::hours(OWNER_RECOVERY_USED_RETENTION_HOURS);
 
-                // Only the newest link for an address remains useful. This
-                // bounds outstanding credentials and makes repeated requests
-                // predictable without revealing whether the address exists.
-                // Keep invalidation + insert in one SQLite write transaction
-                // so concurrent requests cannot leave two live challenges.
+                // Serialize cleanup, cooldown check, invalidation, and insert.
+                // This is database-backed, so multiple server instances cannot
+                // independently mail-bomb the same address.
                 let mut tx = state.db.begin().await?;
+                sqlx::query(
+                    r#"DELETE FROM owner_recovery_challenges
+                        WHERE expires_at <= ?
+                           OR (used_at IS NOT NULL AND used_at < ?)"#,
+                )
+                .bind(now.to_rfc3339())
+                .bind(used_retention_cutoff.to_rfc3339())
+                .execute(&mut *tx)
+                .await?;
+
+                let recent_live: Option<i64> = sqlx::query_scalar(
+                    r#"SELECT 1 FROM owner_recovery_challenges
+                        WHERE owner_email_hash = ?
+                          AND used_at IS NULL
+                          AND created_at > ?
+                        LIMIT 1"#,
+                )
+                .bind(&hash)
+                .bind(cooldown_cutoff.to_rfc3339())
+                .fetch_optional(&mut *tx)
+                .await?;
+                if recent_live.is_some() {
+                    tx.commit().await?;
+                    tokio::time::sleep_until(respond_not_before).await;
+                    return Ok((
+                        StatusCode::ACCEPTED,
+                        Json(OwnerRecoveryAccepted { accepted: true }),
+                    ));
+                }
+
+                // An older still-live link is replaced after the cooldown.
                 sqlx::query(
                     "DELETE FROM owner_recovery_challenges \
                      WHERE owner_email_hash = ? AND used_at IS NULL",
@@ -3910,6 +4008,7 @@ async fn request_owner_recovery(
                 .bind(&hash)
                 .execute(&mut *tx)
                 .await?;
+                let issued = issue_claim_token();
                 sqlx::query(
                     r#"INSERT INTO owner_recovery_challenges
                        (token_hash, owner_email_hash, created_at, expires_at)
@@ -4136,6 +4235,15 @@ async fn get_sealed_blobs_authenticated(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SealedBlobsView>, ApiError> {
     Ok(Json(load_sealed_blobs(&state.db, &auth.vault_id).await?))
+}
+
+/// Temporary companion to [`find_vaults_by_email_legacy`]. This route
+/// exists only when the rollout flag is explicitly enabled.
+async fn get_sealed_blobs_legacy(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<SealedBlobsView>, ApiError> {
+    Ok(Json(load_sealed_blobs(&state.db, &id).await?))
 }
 
 /* -------------------------------------------------------------------------- *
@@ -5192,7 +5300,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn newer_recovery_request_invalidates_the_previous_link() {
+    async fn recovery_cooldown_reuses_the_live_link_without_another_email() {
         ensure_test_master_key();
         let state = fresh_state().await;
         let hash = "f".repeat(64);
@@ -5218,20 +5326,120 @@ mod tests {
         .await
         .expect("replacement request");
         let second = recovery_token_from_notification(&state, id).await;
-        assert_ne!(first, second);
-
-        let old = exchange_owner_recovery(
-            State(state.clone()),
+        assert_eq!(first, second, "cooldown keeps the current link valid");
+        let notifications: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications \
+             WHERE vault_id = ? AND kind = 'owner_recovery'",
+        )
+        .bind(id)
+        .fetch_one(&state.db)
+        .await
+        .expect("notification count");
+        assert_eq!(notifications, 1, "cooldown suppresses duplicate email");
+        let _ = exchange_owner_recovery(
+            State(state),
             Json(ExchangeOwnerRecoveryRequest { token: first }),
         )
-        .await;
-        assert!(matches!(old, Err(ApiError::NotFound)));
+        .await
+        .expect("original link remains valid");
+    }
+
+    #[tokio::test]
+    async fn request_after_cooldown_replaces_the_older_live_link() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let hash = "1".repeat(64);
+        let id = "v-recover-after-cooldown";
+        insert_password_recovery_vault(&state, id, "owner@example.com", &hash).await;
+        let _ = request_owner_recovery(
+            State(state.clone()),
+            Json(OwnerRecoveryRequest {
+                owner_email_hash: hash.clone(),
+            }),
+        )
+        .await
+        .expect("first request");
+        let first = recovery_token_from_notification(&state, id).await;
+        sqlx::query("UPDATE owner_recovery_challenges SET created_at = ?")
+            .bind(
+                (Utc::now() - Duration::minutes(OWNER_RECOVERY_COOLDOWN_MINUTES + 1)).to_rfc3339(),
+            )
+            .execute(&state.db)
+            .await
+            .expect("age challenge past cooldown");
+
+        let _ = request_owner_recovery(
+            State(state.clone()),
+            Json(OwnerRecoveryRequest {
+                owner_email_hash: hash,
+            }),
+        )
+        .await
+        .expect("replacement request");
+        let second = recovery_token_from_notification(&state, id).await;
+        assert_ne!(first, second);
+        assert!(matches!(
+            exchange_owner_recovery(
+                State(state.clone()),
+                Json(ExchangeOwnerRecoveryRequest { token: first }),
+            )
+            .await,
+            Err(ApiError::NotFound)
+        ));
         let _ = exchange_owner_recovery(
             State(state),
             Json(ExchangeOwnerRecoveryRequest { token: second }),
         )
         .await
-        .expect("newest link remains valid");
+        .expect("replacement link remains valid");
+    }
+
+    #[tokio::test]
+    async fn recovery_request_prunes_expired_and_old_used_challenges() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let hash = "2".repeat(64);
+        let id = "v-recover-prune";
+        insert_password_recovery_vault(&state, id, "owner@example.com", &hash).await;
+        let now = Utc::now();
+        for (token_hash, expires_at, used_at) in [
+            ("expired", (now - Duration::minutes(1)).to_rfc3339(), None),
+            (
+                "old-used",
+                (now + Duration::days(1)).to_rfc3339(),
+                Some((now - Duration::hours(OWNER_RECOVERY_USED_RETENTION_HOURS + 1)).to_rfc3339()),
+            ),
+        ] {
+            sqlx::query(
+                r#"INSERT INTO owner_recovery_challenges
+                   (token_hash, owner_email_hash, created_at, expires_at, used_at)
+                   VALUES (?, 'stale', ?, ?, ?)"#,
+            )
+            .bind(token_hash)
+            .bind((now - Duration::days(2)).to_rfc3339())
+            .bind(expires_at)
+            .bind(used_at)
+            .execute(&state.db)
+            .await
+            .expect("insert stale challenge");
+        }
+
+        let _ = request_owner_recovery(
+            State(state.clone()),
+            Json(OwnerRecoveryRequest {
+                owner_email_hash: hash,
+            }),
+        )
+        .await
+        .expect("request triggers prune");
+        let stale: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM owner_recovery_challenges \
+             WHERE token_hash IN ('expired', 'old-used')",
+        )
+        .fetch_one(&state.db)
+        .await
+        .expect("stale count");
+        assert_eq!(stale, 0);
     }
 
     #[tokio::test]
@@ -5243,7 +5451,7 @@ mod tests {
         let hash = "e".repeat(64);
         let id = "v-recover-closed";
         insert_password_recovery_vault(&state, id, "owner@example.com", &hash).await;
-        let app = router(state);
+        let app = router_with_legacy_recovery(state, false);
 
         let sealed = app
             .clone()
@@ -5281,6 +5489,45 @@ mod tests {
             ),
             "email-hash enumeration endpoint must stay closed"
         );
+    }
+
+    #[tokio::test]
+    async fn rollout_flag_restores_both_legacy_recovery_routes() {
+        use tower::ServiceExt;
+
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let hash = "3".repeat(64);
+        let id = "v-recover-rollout";
+        insert_password_recovery_vault(&state, id, "owner@example.com", &hash).await;
+        let app = router_with_legacy_recovery(state, true);
+
+        let lookup = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method(Method::POST)
+                    .uri("/vaults/find")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(format!(
+                        r#"{{"owner_email_hash":"{hash}"}}"#
+                    )))
+                    .expect("lookup request"),
+            )
+            .await
+            .expect("lookup response");
+        assert_eq!(lookup.status(), StatusCode::OK);
+
+        let sealed = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/vaults/{id}/sealed-blobs"))
+                    .body(axum::body::Body::empty())
+                    .expect("sealed request"),
+            )
+            .await
+            .expect("sealed response");
+        assert_eq!(sealed.status(), StatusCode::OK);
     }
 
     #[tokio::test]

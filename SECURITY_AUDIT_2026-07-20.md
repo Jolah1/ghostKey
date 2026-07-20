@@ -217,7 +217,10 @@ Remediation:
 
 Remediation status: implemented on `security/email-verified-recovery`. Recovery
 responses are uniform; a 15-minute single-use email challenge now gates vault
-summaries and sealed blobs; signed-in blob reads require OwnerAuth.
+summaries and sealed blobs; signed-in blob reads require OwnerAuth. A database-backed
+10-minute per-email cooldown suppresses duplicate mail across instances, and
+expired/old-used challenge rows are pruned opportunistically. The 200 ms timing pad
+is explicitly treated as a best-effort floor, not a constant-time guarantee.
 
 Affected:
 

@@ -522,10 +522,18 @@ load-bearing user decision here, the same way master-key custody
 ### R11. Recovery-request email abuse
 Vault existence is no longer disclosed by the recovery response.
 Someone who knows an owner's email hash can still cause recovery emails
-to be sent. The endpoint is rate-limited, newer requests invalidate
-older unused links, and the message explains how to ignore an
-unrequested attempt. Distributed inbox abuse remains an operational
-risk for upstream rate limiting and monitoring.
+to be sent. The endpoint is rate-limited and a database-backed
+per-email cooldown permits at most one live-link email per 10 minutes,
+including across server instances. Repeated requests preserve the
+current link. The message explains how to ignore an unrequested attempt.
+Distributed traffic can still generate one message per cooldown window,
+so upstream monitoring remains appropriate.
+
+Known-address work can exceed the 200 ms minimum response duration under
+load, while unknown-address work usually cannot. The timing pad is a
+floor, not a cap or a constant-time guarantee; sophisticated repeated
+timing analysis remains a low-severity existence oracle. A fully uniform
+asynchronous request queue would close that gap at greater complexity.
 
 ### R12. A vault's funding address is readable given the vault id
 `/vaults/:id/address` returns the first receive address for a vault
