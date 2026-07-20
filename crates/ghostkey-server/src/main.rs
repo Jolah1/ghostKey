@@ -14,7 +14,7 @@
 //! reconstruct that heir key, although CSV prevents spending before
 //! maturity. See `docs/threat-model.md`.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -132,6 +132,14 @@ async fn main() -> Result<()> {
     tracing::info!(default_network = %config::default_network(), "config loaded");
 
     let pool = db::connect(&args.database_url).await?;
+    let token_migration = db::seal_legacy_claim_tokens(&pool)
+        .await
+        .context("legacy claim-token sealing migration")?;
+    tracing::info!(
+        vault_tokens_sealed = token_migration.vault_tokens_sealed,
+        guardian_tokens_sealed = token_migration.guardian_tokens_sealed,
+        "legacy claim-token sealing migration complete"
+    );
 
     // Lightning provider: HttpProvider talking to a sidecar (either
     // Breez or LNbits — same wire protocol) when
