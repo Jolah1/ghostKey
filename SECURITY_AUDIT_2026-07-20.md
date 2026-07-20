@@ -5,10 +5,12 @@ Reviewer: OpenAI Codex (repository-level internal review)
 Commit reviewed: `df0a801`
 Status: Preliminary internal audit; not a substitute for an independent professional audit
 
-Remediation status: GK-01 documentation and invariant tests implemented; GK-04
-application-log redaction implemented (upstream proxy logging remains to verify);
-GK-08 HSTS implemented. GK-03 is implemented on the
-`security/email-verified-recovery` branch pending review. Other findings remain open.
+Remediation status: GK-01 documentation and invariant tests implemented; GK-03
+email-verified recovery implemented; GK-04 application-log redaction implemented
+(upstream proxy logging remains to verify); GK-05 trusted-proxy identity and
+per-process provider ceilings implemented; GK-08 HSTS implemented. GK-06 is
+implemented on `security/verified-email-bindings` pending review. Other findings
+remain open.
 
 ## Executive summary
 
@@ -320,6 +322,8 @@ shared limiter or provider quota.
 
 ### GK-06 — Medium — Unauthenticated vault creation permits email squatting
 
+**Status: remediated on `security/verified-email-bindings`.**
+
 Affected:
 
 - `crates/ghostkey-server/src/routes.rs:115-122`
@@ -340,6 +344,15 @@ Remediation:
 - Verify email ownership before making an email/key binding authoritative.
 - Permit an unverified pending row to expire without blocking verified setup.
 - Rate-limit by more than client IP and cap pending creations per email/domain.
+
+Implemented controls treat only a verified email/owner-key pair as authoritative.
+Verification propagates only to sibling vaults with the same owner account key, and
+a SQLite trigger prevents competing keys from becoming verified concurrently across
+replicas. Verification email sends share an atomic per-email-hash cooldown across
+pending vaults when the browser supplied that hash; legacy rows without one retain
+an atomic per-vault cooldown. Unverified rows remain stored because deleting an
+on-chain vault record merely for failing email verification would be unsafe; they do
+not reserve or block the address.
 
 ### GK-07 — Medium — Legacy plaintext claim-token compatibility retains bearer secrets
 

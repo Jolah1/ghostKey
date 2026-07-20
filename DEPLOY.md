@@ -169,6 +169,27 @@ sudo systemctl start ghostkey-server
 
 Database migrations are baked into the binary (`sqlx::migrate!`), so they apply automatically at startup.
 
+Before deploying the verified-owner-binding migration, inventory historical
+email hashes that were marked verified under more than one owner key:
+
+```sql
+SELECT owner_email_hash,
+       COUNT(DISTINCT COALESCE(owner_xpub_fragment_external, '<missing>')) AS owner_keys
+  FROM vaults
+ WHERE owner_contact_verified_at IS NOT NULL
+   AND status != 'claimed'
+   AND owner_email_hash IS NOT NULL
+ GROUP BY owner_email_hash
+HAVING owner_keys > 1;
+```
+
+An empty result needs no action. If rows are returned, determine the legitimate
+binding from owner records before deployment and clear
+`owner_contact_verified_at` on the incorrect pending binding. Do not delete a
+vault merely to resolve email metadata: it may already correspond to an
+on-chain deposit. The migration prevents new conflicts but deliberately does
+not guess how to rewrite historical ownership data.
+
 ---
 
 ## Part B: web on a static host

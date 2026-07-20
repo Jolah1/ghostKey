@@ -1050,16 +1050,17 @@ pub struct SealedSetup {
     pub claim_token_b64: Option<String>,
 }
 
-/// One *owner* per email — but an owner may have several heirs, each
+/// One *verified owner* per email — but an owner may have several heirs, each
 /// its own vault row sharing the same `owner_email_hash` and the same
 /// owner key. That's how a single owner adds heirs over time (and how
 /// multi-heir setup creates several at once). So we no longer reject
 /// every duplicate email; we reject only a vault whose owner *key*
-/// differs from the ones already on file for this email — a genuine
-/// collision (someone else's email, or the owner rotating keys) that
-/// would confuse sign-in and dashboard grouping. A row with no owner
-/// key fragment recorded is treated as a conflict, conservatively.
-/// Claimed vaults don't count: their story is over, the email is free.
+/// differs from a verified binding. Unverified rows are deliberately
+/// non-authoritative: otherwise an attacker who knows an address could
+/// pre-register its hash and prevent the real owner from setting up.
+/// A verified row with no owner key fragment is treated as a conflict,
+/// conservatively. Claimed vaults don't count: their story is over, the
+/// email is free.
 async fn reject_conflicting_owner_email(
     db: &sqlx::SqlitePool,
     owner_email_hash: &str,
@@ -1069,6 +1070,7 @@ async fn reject_conflicting_owner_email(
         "SELECT id FROM vaults \
           WHERE owner_email_hash = ? \
             AND status != 'claimed' \
+            AND owner_contact_verified_at IS NOT NULL \
             AND (owner_xpub_fragment_external IS NULL \
                  OR owner_xpub_fragment_external != ?) \
           LIMIT 1",
@@ -1531,10 +1533,12 @@ async fn create_vault_from_xpub(
                 "SELECT id FROM vaults \
                  WHERE owner_email_hash = ? \
                    AND owner_contact_verified_at IS NOT NULL \
+                   AND owner_xpub_fragment_external = ? \
                    AND id != ? \
                  LIMIT 1",
             )
             .bind(hash)
+            .bind(&owner_ext)
             .bind(&id)
             .fetch_optional(&state.db)
             .await?;
@@ -1974,10 +1978,12 @@ async fn create_vault_guardian(
             "SELECT id FROM vaults \
               WHERE owner_email_hash = ? \
                 AND owner_contact_verified_at IS NOT NULL \
+                AND owner_xpub_fragment_external = ? \
                 AND id != ? \
               LIMIT 1",
         )
         .bind(&s.owner_email_hash)
+        .bind(&owner_ext)
         .bind(&id)
         .fetch_optional(&state.db)
         .await?;
@@ -2044,18 +2050,78 @@ async fn send_contact_verification(
     email: &str,
 ) -> Result<(), ApiError> {
     let issued = issue_claim_token();
-    let now_s = Utc::now().to_rfc3339();
-    sqlx::query(
-        r#"UPDATE vaults
-              SET owner_contact_verify_token_hash = ?,
-                  owner_contact_verify_sent_at    = ?
-            WHERE id = ?"#,
-    )
-    .bind(&issued.hash_hex)
-    .bind(&now_s)
-    .bind(vault_id)
-    .execute(&state.db)
-    .await?;
+    let now = Utc::now();
+    let now_s = now.to_rfc3339();
+    let cutoff = (now - Duration::seconds(VERIFY_RESEND_COOLDOWN_SECS)).timestamp();
+    let cutoff_s = (now - Duration::seconds(VERIFY_RESEND_COOLDOWN_SECS)).to_rfc3339();
+    let email_hash: Option<String> =
+        sqlx::query_scalar("SELECT owner_email_hash FROM vaults WHERE id = ?")
+            .bind(vault_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(ApiError::NotFound)?;
+
+    if let Some(email_hash) = email_hash {
+        // Reserve the send against the normalized email hash, not the
+        // vault id. Otherwise an attacker can create many pending vaults
+        // for one victim and bypass the per-vault resend timer. The UPSERT
+        // predicate is atomic, so separate replicas share this ceiling.
+        let reserved = sqlx::query(
+            r#"INSERT INTO email_send_cooldowns (purpose, email_hash, last_sent_at)
+               VALUES ('contact_verification', ?, ?)
+               ON CONFLICT(purpose, email_hash) DO UPDATE
+                 SET last_sent_at = excluded.last_sent_at
+               WHERE email_send_cooldowns.last_sent_at <= ?"#,
+        )
+        .bind(email_hash)
+        .bind(now.timestamp())
+        .bind(cutoff)
+        .execute(&state.db)
+        .await?;
+        if reserved.rows_affected() != 1 {
+            return Err(ApiError::Conflict(
+                "a confirmation email was just sent to this address. Give it a minute, then check spam"
+                    .into(),
+            ));
+        }
+
+        sqlx::query(
+            r#"UPDATE vaults
+                  SET owner_contact_verify_token_hash = ?,
+                      owner_contact_verify_sent_at    = ?
+                WHERE id = ?"#,
+        )
+        .bind(&issued.hash_hex)
+        .bind(&now_s)
+        .bind(vault_id)
+        .execute(&state.db)
+        .await?;
+    } else {
+        // Legacy and non-password vaults may have a sealed email contact
+        // but no browser-computed NFKC email hash. Do not invent a hash
+        // with subtly different normalization rules. Preserve their old
+        // per-vault behavior, with the reservation folded into this
+        // conditional update so concurrent replicas cannot double-send.
+        let reserved = sqlx::query(
+            r#"UPDATE vaults
+                  SET owner_contact_verify_token_hash = ?,
+                      owner_contact_verify_sent_at    = ?
+                WHERE id = ?
+                  AND (owner_contact_verify_sent_at IS NULL
+                       OR julianday(owner_contact_verify_sent_at) <= julianday(?))"#,
+        )
+        .bind(&issued.hash_hex)
+        .bind(&now_s)
+        .bind(vault_id)
+        .bind(&cutoff_s)
+        .execute(&state.db)
+        .await?;
+        if reserved.rows_affected() != 1 {
+            return Err(ApiError::Conflict(
+                "a confirmation email was just sent. Give it a minute, then check spam".into(),
+            ));
+        }
+    }
 
     let base = crate::scheduler::public_base_url();
     let link = format!("{base}/#/verify-email/{vault_id}/{}", issued.token);
@@ -2919,16 +2985,19 @@ async fn verify_contact(
         Option<String>, // owner_contact_verify_sent_at
         Option<String>, // owner_email_hash
         String,         // status (drives the welcome email's next step)
+        Option<String>, // owner_xpub_fragment_external
     );
     let row: Option<VerifyRow> = sqlx::query_as(
         "SELECT owner_contact_verify_token_hash, owner_contact_verified_at, \
-                owner_contact_verify_sent_at, owner_email_hash, status \
+                owner_contact_verify_sent_at, owner_email_hash, status, \
+                owner_xpub_fragment_external \
            FROM vaults WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.db)
     .await?;
-    let (stored_hash, verified_at, sent_at, email_hash, status) = row.ok_or(ApiError::NotFound)?;
+    let (stored_hash, verified_at, sent_at, email_hash, status, owner_xpub) =
+        row.ok_or(ApiError::NotFound)?;
 
     // Already confirmed: report success whatever token was presented.
     // The common path here is the owner tapping the same email link
@@ -2953,6 +3022,14 @@ async fn verify_contact(
              and resend the confirmation email."
                 .into(),
         ));
+    }
+
+    // Email hashes supplied during setup do not become authoritative
+    // until this proof succeeds. Refuse to confirm a second, different
+    // owner key if the address is already bound to a verified live
+    // vault. Unverified squatter rows never block this check.
+    if let (Some(hash), Some(owner_xpub)) = (email_hash.as_deref(), owner_xpub.as_deref()) {
+        reject_conflicting_owner_email(&state.db, hash, owner_xpub).await?;
     }
 
     let won = sqlx::query(
@@ -2988,9 +3065,11 @@ async fn verify_contact(
             "SELECT id FROM vaults \
               WHERE owner_email_hash = ? \
                 AND owner_contact_verified_at IS NULL \
+                AND owner_xpub_fragment_external = ? \
                 AND id != ?",
         )
         .bind(hash)
+        .bind(owner_xpub.as_deref())
         .bind(&id)
         .fetch_all(&state.db)
         .await?;
@@ -5050,23 +5129,27 @@ mod tests {
                 descriptor_external, descriptor_internal,
                 timelock_blocks, checkin_period_secs, grace_period_secs,
                 created_at, next_deadline_at, status,
-                owner_contact_ciphertext, owner_contact_nonce, owner_contact_channel
+                owner_contact_ciphertext, owner_contact_nonce, owner_contact_channel,
+                owner_email_hash, owner_xpub_fragment_external
             ) VALUES (?, 'regtest', ?, ?, 144, 86400, 3600,
                       '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', 'ok',
-                      ?, ?, 'email')"#,
+                      ?, ?, 'email', ?, ?)"#,
         )
         .bind(id)
         .bind(format!("tr(fake/{id}/0/*)"))
         .bind(format!("tr(fake/{id}/1/*)"))
         .bind(&sealed.ciphertext_b64)
         .bind(&sealed.nonce_b64)
+        .bind(hash_claim_token(email))
+        .bind(format!("tr(owner/{id}/0/*)"))
         .execute(&state.db)
         .await
         .expect("insert vault");
     }
 
     #[tokio::test]
-    async fn same_owner_may_add_heirs_but_different_owner_key_conflicts() {
+    async fn only_verified_owner_key_bindings_block_a_different_owner() {
+        ensure_test_master_key();
         let state = fresh_state().await;
         let hash = "a".repeat(64);
         let owner_frag = "tr(OWNERKEY/0/*)";
@@ -5088,7 +5171,21 @@ mod tests {
         .await
         .expect("set email hash + owner fragment");
 
-        // Same owner key, same email → adding another heir is allowed.
+        // An unverified row is pending, not authoritative. It must not
+        // let somebody squat an email hash and block the real owner.
+        reject_conflicting_owner_email(&state.db, &hash, "tr(SOMEONEELSE/0/*)")
+            .await
+            .expect("unverified email binding must not block setup");
+
+        sqlx::query(
+            "UPDATE vaults SET owner_contact_verified_at = '2026-01-01T00:00:00Z' \
+              WHERE id = 'v-dup-1'",
+        )
+        .execute(&state.db)
+        .await
+        .expect("verify binding");
+
+        // Same verified owner key, same email → adding another heir is allowed.
         reject_conflicting_owner_email(&state.db, &hash, owner_frag)
             .await
             .expect("same owner may add more heirs under one email");
@@ -5113,6 +5210,101 @@ mod tests {
         reject_conflicting_owner_email(&state.db, &hash, "tr(SOMEONEELSE/0/*)")
             .await
             .expect("claimed vault frees the email");
+    }
+
+    #[tokio::test]
+    async fn verifying_email_only_confirms_vaults_for_the_same_owner_key() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let hash = "c".repeat(64);
+        let issued = issue_claim_token();
+
+        insert_vault_with_email(&state, "v-owner-a", "owner@example.com").await;
+        insert_vault_with_email(&state, "v-owner-b", "owner@example.com").await;
+        sqlx::query(
+            "UPDATE vaults \
+                SET owner_email_hash = ?, \
+                    owner_xpub_fragment_external = 'tr(OWNER-A/0/*)', \
+                    owner_contact_verify_token_hash = ?, \
+                    owner_contact_verify_sent_at = ? \
+              WHERE id = 'v-owner-a'",
+        )
+        .bind(&hash)
+        .bind(&issued.hash_hex)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&state.db)
+        .await
+        .expect("prepare owner A");
+        sqlx::query(
+            "UPDATE vaults \
+                SET owner_email_hash = ?, \
+                    owner_xpub_fragment_external = 'tr(OWNER-B/0/*)' \
+              WHERE id = 'v-owner-b'",
+        )
+        .bind(&hash)
+        .execute(&state.db)
+        .await
+        .expect("prepare owner B");
+
+        verify_contact(
+            State(state.clone()),
+            Path(("v-owner-a".to_string(), issued.token)),
+        )
+        .await
+        .expect("verify owner A");
+
+        assert!(verified_at(&state, "v-owner-a").await.is_some());
+        assert!(
+            verified_at(&state, "v-owner-b").await.is_none(),
+            "proof for one owner key must not authorize a different key"
+        );
+    }
+
+    #[tokio::test]
+    async fn database_rejects_two_verified_owner_keys_for_one_email() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let hash = "d".repeat(64);
+
+        insert_vault_with_email(&state, "v-binding-a", "owner@example.com").await;
+        insert_vault_with_email(&state, "v-binding-b", "owner@example.com").await;
+        for (id, owner) in [
+            ("v-binding-a", "tr(OWNER-A/0/*)"),
+            ("v-binding-b", "tr(OWNER-B/0/*)"),
+        ] {
+            sqlx::query(
+                "UPDATE vaults SET owner_email_hash = ?, \
+                    owner_xpub_fragment_external = ? WHERE id = ?",
+            )
+            .bind(&hash)
+            .bind(owner)
+            .bind(id)
+            .execute(&state.db)
+            .await
+            .expect("prepare binding");
+        }
+
+        sqlx::query(
+            "UPDATE vaults SET owner_contact_verified_at = '2026-01-01T00:00:00Z' \
+              WHERE id = 'v-binding-a'",
+        )
+        .execute(&state.db)
+        .await
+        .expect("verify first owner");
+
+        let error = sqlx::query(
+            "UPDATE vaults SET owner_contact_verified_at = '2026-01-01T00:00:00Z' \
+              WHERE id = 'v-binding-b'",
+        )
+        .execute(&state.db)
+        .await
+        .expect_err("database invariant must reject conflicting verified key");
+        assert!(
+            error
+                .to_string()
+                .contains("verified owner email belongs to a different owner key"),
+            "unexpected database error: {error}"
+        );
     }
 
     #[test]
@@ -5640,6 +5832,16 @@ mod tests {
                 .await
                 .expect("read hash");
 
+        // The email-wide cooldown must elapse before a resend can rotate
+        // the token. Backdate the reservation to exercise that path.
+        sqlx::query(
+            "UPDATE email_send_cooldowns \
+                SET last_sent_at = 0 \
+              WHERE purpose = 'contact_verification'",
+        )
+        .execute(&state.db)
+        .await
+        .expect("elapse email cooldown");
         send_contact_verification(&state, "v-verify-3", "owner@example.com")
             .await
             .expect("second send");
@@ -5660,6 +5862,57 @@ mod tests {
             .await
             .expect("count");
         assert_eq!(n, 2);
+    }
+
+    #[tokio::test]
+    async fn verification_email_cooldown_is_shared_across_vaults() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        insert_vault_with_email(&state, "v-mail-a", "victim@example.com").await;
+        insert_vault_with_email(&state, "v-mail-b", "victim@example.com").await;
+
+        send_contact_verification(&state, "v-mail-a", "victim@example.com")
+            .await
+            .expect("first email");
+        let error = send_contact_verification(&state, "v-mail-b", "victim@example.com")
+            .await
+            .expect_err("second vault must share the address cooldown");
+        assert!(matches!(error, ApiError::Conflict(_)));
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE kind = 'contact_verification'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .expect("count verification emails");
+        assert_eq!(count, 1, "one address gets at most one email per cooldown");
+    }
+
+    #[tokio::test]
+    async fn verification_email_without_stored_hash_uses_per_vault_cooldown() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        insert_vault_with_email(&state, "v-mail-legacy", "legacy@example.com").await;
+        sqlx::query("UPDATE vaults SET owner_email_hash = NULL WHERE id = 'v-mail-legacy'")
+            .execute(&state.db)
+            .await
+            .expect("simulate legacy vault without email hash");
+
+        send_contact_verification(&state, "v-mail-legacy", "legacy@example.com")
+            .await
+            .expect("legacy verification email");
+        let error = send_contact_verification(&state, "v-mail-legacy", "legacy@example.com")
+            .await
+            .expect_err("legacy vault still has a per-vault cooldown");
+        assert!(matches!(error, ApiError::Conflict(_)));
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE vault_id = 'v-mail-legacy'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .expect("count legacy verification emails");
+        assert_eq!(count, 1);
     }
 
     /* ---------------- Door B: heir holds their own key ---------------- */
