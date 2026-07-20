@@ -7,7 +7,8 @@ Status: Preliminary internal audit; not a substitute for an independent professi
 
 Remediation status: GK-01 documentation and invariant tests implemented; GK-04
 application-log redaction implemented (upstream proxy logging remains to verify);
-GK-08 HSTS implemented. Other findings remain open.
+GK-08 HSTS implemented. GK-03 is implemented on the
+`security/email-verified-recovery` branch pending review. Other findings remain open.
 
 ## Executive summary
 
@@ -213,6 +214,10 @@ Remediation:
   an owner private key.
 
 ### GK-03 — High — Email enumeration leads directly to offline owner-key cracking
+
+Remediation status: implemented on `security/email-verified-recovery`. Recovery
+responses are uniform; a 15-minute single-use email challenge now gates vault
+summaries and sealed blobs; signed-in blob reads require OwnerAuth.
 
 Affected:
 

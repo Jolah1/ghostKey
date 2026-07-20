@@ -590,7 +590,7 @@ stay pending until a keyed deployment comes up.
 ### Rate-limit budgets
 
 The unauthenticated endpoints (`/assist/chat`, `/vaults`,
-`/vaults/from-xpub`, `/vaults/find`, `/claim/:token/*`) are protected
+`/vaults/from-xpub`, `/recovery/request`, `/recovery/exchange`, `/claim/:token/*`) are protected
 by an in-process per-IP token-bucket limiter. Buckets refill
 continuously; on exhaustion the server returns `429 Too Many Requests`
 with a `Retry-After` header and a `tracing::info` line tagged
@@ -604,7 +604,7 @@ them, but every budget is overridable per-deploy via two env vars:
 |---|---|---|---|---|
 | `GHOSTKEY_RL_ASSIST_*` | `POST /assist/chat` | 3 | 0.2 | ~12/min |
 | `GHOSTKEY_RL_CREATE_*` | `POST /vaults`, `POST /vaults/from-xpub` | 3 | 0.05 | ~3/min |
-| `GHOSTKEY_RL_FIND_*` | `POST /vaults/find` | 30 | 0.5 | ~30/min |
+| `GHOSTKEY_RL_FIND_*` | Recovery request + exchange | 30 | 0.5 | ~30/min |
 | `GHOSTKEY_RL_CLAIM_*` | `GET/POST /claim/:token/*` | 20 | 0.333 | ~20/min |
 
 `BURST` is the worst-legitimate-burst size (a u32). `PER_SEC` is the

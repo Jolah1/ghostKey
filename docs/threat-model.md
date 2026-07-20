@@ -342,18 +342,19 @@ server action can reset that.
 - Verified: [x] the relative-timelock decision is documented in
   [`DESIGN.md` § 6](../DESIGN.md#relative-timelocks-over-absolute-ones).
 
-### D6. Att-1 cannot enumerate vaults from `/vaults`
+### D6. Att-1 cannot enumerate vaults through owner recovery
 `GET /vaults` (the list-all route) requires the optional admin
-token (`GHOSTKEY_ADMIN_TOKEN_HASH`). `GET /vaults/find` is a
-single-shot lookup keyed on `SHA-256(owner email)` and is rate-
-limited per IP; an attacker without the owner's email cannot derive
-the right hash.
+token (`GHOSTKEY_ADMIN_TOKEN_HASH`). `POST /recovery/request` returns
+the same accepted body for known and unknown email hashes. Vault
+summaries and sealed owner blobs are returned only after atomically
+redeeming a 15-minute, single-use link sent to the encrypted owner
+email.
 
 - Lives at:
   [`crates/ghostkey-server/src/auth.rs`](../crates/ghostkey-server/src/auth.rs)
   → `AdminAuth`,
   [`crates/ghostkey-server/src/routes.rs`](../crates/ghostkey-server/src/routes.rs)
-  → `find_vaults_by_email`.
+  → `request_owner_recovery` and `exchange_owner_recovery`.
 
 ### D7. Att-1 / Att-4 cannot brute-force a 256-bit token at network speed
 Owner tokens, one-tap tokens, and claim tokens are 32 random bytes;
@@ -440,39 +441,26 @@ verbatim. The heir-side flow is now classified into plain English
 - Tracked: subsume into a future "owner UX polish" issue if owners
   start complaining; not currently a blocker.
 
-### R5. Sealed owner key is offline-crackable given the vault id + a weak password
+### R5. A recovered sealed owner key is offline-crackable with a weak password
 Password-vault sealing uses Argon2id with `m=64MiB, t=3, p=1`
 ([`ghostkey-web/src/crypto/sealing.ts`](../ghostkey-web/src/crypto/sealing.ts)).
 Tuned for ~3s on a mid-range Android phone: deliberately the
 slowest we could justify without user-visible jank in the wizard.
-`/vaults/:id/sealed-blobs` is unauthenticated by design: cross-device
-recovery has to hand the sealed owner xprv (plus its KDF parameters)
-to any browser that presents the vault id, because the whole point is
-"recover with two things you know: your email and your password."
-The sealed blob is useless without the password, but that means an
-attacker who learns a vault id can grind the password offline at the
-KDF cost, which is public in the blob.
-
-The vault id is derivable: `/vaults/find` maps a hash of the owner's
-email to their vault ids (see R11), and an email is low-entropy. So in
-the worst case, owner-key confidentiality reduces to
-Argon2id-over-password strength. This is inherent to the recovery
-model; we cannot both let an owner recover from a blank browser with
-email + password AND withhold the sealed material from someone who
-supplies those. We make the offline grind as costly as the UX budget
-allows and gate the online reach of the endpoint.
+Sealed blobs are no longer public by vault id. Signed-in tools require
+the owner bearer token; blank-browser recovery requires a short-lived
+single-use link delivered to the owner email. An attacker who controls
+that mailbox/link can still obtain the ciphertext and grind the password
+offline at the public KDF cost. Email proof removes bulk harvesting; it
+does not make weak passwords safe after mailbox compromise.
 
 - Mitigation: the wizard enforces a length minimum (10) and a zxcvbn
   score floor (≥ 3), refusing common/guessable passwords, so the
   grind starts at ≥ ~10^8 guesses; each guess costs a 64 MiB / t=3
   Argon2id. A user who picks a strong passphrase is safe; a user who
   ignores the meter and picks `password123` is not.
-- Mitigation: `/vaults/:id/sealed-blobs` (and `/vaults/:id/address`)
-  are behind a dedicated per-IP rate limit (`GHOSTKEY_RL_RECOVERY`,
-  default 10 burst / ~1 per 10s) so a scraper holding a list of vault
-  ids cannot bulk-harvest every sealed owner key at once for offline
-  attack. The limit does not stop a single targeted fetch (one is
-  enough) but it defeats mass harvesting.
+- Mitigation: recovery responses are uniform, links expire after 15
+  minutes and are consumed atomically, and authenticated tools require
+  the per-vault owner token.
 - Tracked: SECURITY.md "Known limitations" #4; internal audit
   2026-07-02.
 
@@ -531,22 +519,13 @@ load-bearing user decision here, the same way master-key custody
 [`descriptor.rs`](../crates/ghostkey-core/src/descriptor.rs),
 [`psbt.rs`](../crates/ghostkey-core/src/psbt.rs).
 
-### R11. Vault existence is discoverable from an owner's email
-`/vaults/find` takes an unsalted hash of the owner's email and returns
-that owner's vault ids, labels, statuses, and dates (no key material).
-An unsalted deterministic hash is required (the owner's browser must
-be able to recompute it on any device to find their vaults) so anyone
-who knows or guesses an email can confirm it owns a GhostKey vault and
-learn the coarse status. This is a privacy exposure, not a funds risk,
-and it feeds R5's "attacker learns the vault id" step.
-
-- Mitigation: `/vaults/find` is rate-limited per IP
-  (`GHOSTKEY_RL_FIND`), which slows bulk email scraping but does not
-  stop a targeted check. The response deliberately omits descriptors,
-  contacts, and any sealed material.
-- Accepted: the deterministic lookup is the recovery UX; salting it
-  would break recovery. Documented so no copy implies vault existence
-  is private.
+### R11. Recovery-request email abuse
+Vault existence is no longer disclosed by the recovery response.
+Someone who knows an owner's email hash can still cause recovery emails
+to be sent. The endpoint is rate-limited, newer requests invalidate
+older unused links, and the message explains how to ignore an
+unrequested attempt. Distributed inbox abuse remains an operational
+risk for upstream rate limiting and monitoring.
 
 ### R12. A vault's funding address is readable given the vault id
 `/vaults/:id/address` returns the first receive address for a vault
@@ -556,8 +535,7 @@ correlate it to an on-chain address and watch its balance. On-chain
 addresses are public once used, so the marginal leak is the vault-id
 → address linkage.
 
-- Mitigation: behind the `GHOSTKEY_RL_RECOVERY` limiter alongside
-  sealed-blobs to stop bulk id → address correlation.
+- Mitigation: behind the `GHOSTKEY_RL_RECOVERY` limiter.
 - Accepted: low severity for an on-chain-public tool; funds cannot be
   moved with an address.
 
@@ -587,13 +565,12 @@ Rotating the master key requires re-encrypting every row (issue
 master KEK, only KEK rotates) would make rotation cheap. Is the
 implementation cost worth the operational simplicity?
 
-### Q4. Should `/vaults/sealed-blobs` be tightened?
-Currently unauthenticated because the blobs are sealed under the
-user's password (R5). A weak password makes this an offline
-oracle. Options on the table: require a CAPTCHA before serving;
-rate-limit much harder; bind the response to a short-lived token
-from a prior endpoint. None of these change the fundamental
-"password strength is the moat" picture, but they raise the floor.
+### Q4. Should recovery require another factor beyond email?
+Sealed blobs now require OwnerAuth or a short-lived, single-use link
+sent to the owner email. A compromised mailbox plus a weak password
+still exposes the owner key to offline guessing. Hardware-backed owner
+keys or an additional recovery factor would raise this floor at a
+significant simplicity cost.
 
 ### Q5. What's the policy for an Esplora swap?
 The default Esplora URL is operator-controlled. A hostile operator

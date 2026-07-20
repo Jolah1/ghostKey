@@ -3,8 +3,8 @@
 //! The audit (2026-05-31) flagged three routes that are reachable
 //! without a bearer token and either cost real money per call
 //! (`/assist/chat` proxies to Anthropic) or could be abused for
-//! resource exhaustion (`/vaults/from-xpub` creates DB rows;
-//! `/vaults/find` enumerates email-vault relationships). The legacy
+//! resource exhaustion (`/vaults/from-xpub` creates DB rows and
+//! recovery requests can generate email). The legacy
 //! heir-claim routes (`/claim/:token/*`) are guarded by a 256-bit
 //! token, so brute-force is infeasible — but we still cap them in
 //! aggregate so a single client cannot drive a runaway Esplora full-

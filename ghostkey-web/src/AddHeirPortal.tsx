@@ -118,7 +118,9 @@ export function AddHeirPortal({
     let ownerXprv: string;
     let ownerXpubTagged: string;
     try {
-      const blobs = await api.getSealedBlobs(siblingVaultId);
+      const siblingToken = getVaultMeta(siblingVaultId)?.ownerToken;
+      if (!siblingToken) throw new Error("Sign in again before adding an heir.");
+      const blobs = await api.getSealedBlobs(siblingVaultId, siblingToken);
       if (!blobs.owner_xpub_fragment_external) {
         setPhase({ kind: "form" });
         setError(

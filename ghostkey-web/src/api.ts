@@ -237,13 +237,23 @@ export interface SealedSetup {
   claim_token_b64?: string;
 }
 
-/** One vault entry returned by `POST /vaults/find`. */
+/** One vault entry returned after one-time recovery-link exchange. */
 export interface FoundVault {
   id: string;
   label: string | null;
   status: VaultStatus;
   created_at: string;
   next_deadline_at: string;
+}
+
+export interface OwnerRecoveryBundle {
+  vault: FoundVault;
+  sealed_blobs: SealedBlobsView;
+}
+
+export interface OwnerRecoveryExchange {
+  owner_email: string;
+  vaults: OwnerRecoveryBundle[];
 }
 
 /** Sealed blobs the server hands the owner's browser during cross-device
@@ -777,19 +787,28 @@ export const api = {
       method: "POST",
       body: JSON.stringify(req),
     }),
-  /** Cross-device recovery: list vaults whose owner email SHA-256
-   *  matches. The browser hashes the email locally first; we never
-   *  POST the plaintext. */
-  findVaultsByEmailHash: (owner_email_hash: string) =>
-    request<FoundVault[]>("/vaults/find", {
+  /** Request a cross-device recovery email. The response is deliberately
+   *  identical whether or not the hash belongs to a vault. */
+  requestOwnerRecovery: (owner_email_hash: string) =>
+    request<{ accepted: boolean }>("/recovery/request", {
       method: "POST",
       body: JSON.stringify({ owner_email_hash }),
     }),
-  /** Fetch the sealed-blobs view so the browser can unwrap locally
-   *  with the user's password. No auth — the blobs are useless
-   *  without the password. */
-  getSealedBlobs: (id: string) =>
-    request<SealedBlobsView>(`/vaults/${id}/sealed-blobs`),
+  /** Atomically consume the one-time email challenge and receive the
+   *  matching summaries + password-encrypted blobs. */
+  exchangeOwnerRecovery: (token: string) =>
+    request<OwnerRecoveryExchange>("/recovery/exchange", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    }),
+  /** Fetch sealed owner material for an already authenticated owner
+   *  workflow. Public recovery uses the one-time exchange above. */
+  getSealedBlobs: (id: string, ownerToken: string) =>
+    request<SealedBlobsView>(
+      `/vaults/${id}/sealed-blobs`,
+      undefined,
+      ownerToken,
+    ),
   /** Next external (receive) address from the vault descriptor.
    *  Public; used to fund a freshly-created vault. */
   getVaultAddress: (id: string) =>

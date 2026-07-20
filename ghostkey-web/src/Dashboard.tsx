@@ -1133,7 +1133,7 @@ function SendCard({
     try {
       // Legacy (non-password) vaults have no sealed blobs; the server
       // 400s with a self-explanatory message.
-      const blobs = await api.getSealedBlobs(vaultId);
+      const blobs = await api.getSealedBlobs(vaultId, ownerToken);
       const unsealed = await unsealOwner({
         password,
         passwordSalt: blobs.password_salt_b64,
