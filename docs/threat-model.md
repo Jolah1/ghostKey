@@ -177,6 +177,15 @@ provider concurrency ceilings live in
 They bound one replica; distributed limits remain an upstream
 operational responsibility.
 
+Owner email hashes are pending assertions until the inbox holder verifies
+them. A pending row cannot block setup under another owner key, verification
+only propagates across vaults carrying the same owner key, and SQLite enforces
+that two different live owner keys cannot both hold a verified binding.
+Verification-message cooldowns are keyed by email hash across vaults when that
+normalized hash is available. Legacy rows without one fall back to an atomic
+per-vault cooldown rather than re-hashing with potentially different
+normalization rules.
+
 ---
 
 ## 2. Attackers
