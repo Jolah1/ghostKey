@@ -159,7 +159,11 @@ Claim tokens: 32 random bytes, base64-url-no-pad for transport, with a SHA-256 v
 
 Owner / one-tap tokens follow the same shape (random 32 bytes, hash-only at rest, constant-time compare).
 
-Blocking Esplora calls (`full_scan`, `broadcast`) run in `tokio::task::spawn_blocking` to avoid blocking the async runtime.
+Blocking Esplora calls (`full_scan`, `broadcast`) run in
+`tokio::task::spawn_blocking` to avoid blocking the async runtime and
+share a process-wide semaphore (default: 4 concurrent operations).
+Anthropic requests use a separate semaphore with the same default.
+Both ceilings are configurable through the deployment environment.
 
 ### ghostkey-web
 

@@ -285,6 +285,8 @@ Remediation:
 
 ### GK-05 — Medium — Client-controlled forwarding headers can bypass rate limits
 
+**Status: remediated on `security/trusted-proxy-rate-limits`.**
+
 Affected:
 
 - `crates/ghostkey-server/src/rate_limit.rs:200-273`
@@ -308,6 +310,13 @@ Remediation:
 - Put cost-bearing and storage-creating endpoints behind an upstream distributed
   limiter and global quotas.
 - Add global concurrency limits for Esplora scans and message-provider calls.
+
+Implemented controls bind forwarding-header trust to explicit
+`GHOSTKEY_TRUSTED_PROXY_CIDRS`, parse `Fly-Client-IP` as an address and walk XFF
+right-to-left while removing trusted hops. Process-wide semaphores cap Anthropic
+and Esplora work; the notification worker is already serial. The remaining
+multi-replica/distributed-rate risk is operational and still requires an upstream
+shared limiter or provider quota.
 
 ### GK-06 — Medium — Unauthenticated vault creation permits email squatting
 

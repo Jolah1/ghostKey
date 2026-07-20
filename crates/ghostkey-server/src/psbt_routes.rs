@@ -290,6 +290,7 @@ pub async fn build_claim_psbt(
     let finalized;
     let psbt_b64;
     {
+        let _concurrency_permit = crate::concurrency::acquire_esplora().await;
         let built = tokio::task::spawn_blocking(move || -> Result<BlockingBuilt, BlockingErr> {
             let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
                 .map_err(|e| BlockingErr::Vault(e.to_string()))?;
@@ -447,6 +448,7 @@ pub async fn broadcast_claim(
         }
     };
     let network = row.network;
+    let _concurrency_permit = crate::concurrency::acquire_esplora().await;
     let txid_result = tokio::task::spawn_blocking(move || -> Result<bitcoin::Txid, BlockingErr> {
         let wallet = ghostkey_core::wallet::build_watch_only(&vault)
             .map_err(|e| BlockingErr::Vault(e.to_string()))?;
@@ -901,6 +903,7 @@ pub async fn heir_claim(
     let network = row.network;
 
     let vault_id = row.id.clone();
+    let _concurrency_permit = crate::concurrency::acquire_esplora().await;
     let result =
         tokio::task::spawn_blocking(move || -> Result<(bitcoin::Txid, u64, u64), BlockingErr> {
             let mut wallet = ghostkey_core::wallet::build_signing_from_account(&vault, &heir_xprv)
@@ -1200,6 +1203,7 @@ pub async fn guardian_claim(
     let network = row.network;
     let vault_id = row.id.clone();
 
+    let _concurrency_permit = crate::concurrency::acquire_esplora().await;
     let result =
         tokio::task::spawn_blocking(move || -> Result<(bitcoin::Txid, u64, u64), BlockingErr> {
             // Both keys spliced in → the loaded-key satisfier picks the
@@ -1410,6 +1414,7 @@ pub async fn owner_send(
     let urls = esplora_urls(network)?;
     let dest_spk = dest.script_pubkey();
 
+    let _concurrency_permit = crate::concurrency::acquire_esplora().await;
     let (txid, total_in, sent_sat, fee_sat, remaining_sat) = tokio::task::spawn_blocking(
         move || -> Result<(bitcoin::Txid, u64, u64, u64, u64), BlockingErr> {
             let mut wallet = ghostkey_core::wallet::build_signing_from_account(&vault, &owner_xprv)
@@ -1758,6 +1763,7 @@ pub(crate) async fn scan_unlock_estimate(
     };
     let vault = Vault::from_config(vault_config).map_err(|e| BlockingErr::Vault(e.to_string()))?;
 
+    let _concurrency_permit = crate::concurrency::acquire_esplora().await;
     tokio::task::spawn_blocking(move || -> Result<UnlockEstimate, BlockingErr> {
         let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
             .map_err(|e| BlockingErr::Vault(e.to_string()))?;
@@ -2210,6 +2216,7 @@ pub async fn get_vault_balance(
     let urls = esplora_urls(network)?;
     let id_for_resp = id.clone();
     type ScanResult = (u64, u64, u64, Vec<ConfirmedDeposit>);
+    let _concurrency_permit = crate::concurrency::acquire_esplora().await;
     let (confirmed_sat, unconfirmed_sat, total_sat, deposits) =
         tokio::task::spawn_blocking(move || -> Result<ScanResult, BlockingErr> {
             let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)

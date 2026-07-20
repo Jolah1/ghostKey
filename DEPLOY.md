@@ -643,13 +643,28 @@ fly secrets set GHOSTKEY_RL_ASSIST_BURST=10 GHOSTKEY_RL_ASSIST_PER_SEC=0.5 -a gh
 
 Caveats:
 
-- Per-IP keying uses `Fly-Client-IP` → `X-Forwarded-For` → TCP peer
-  in that order. Behind any other reverse proxy, audit the header
-  semantics before trusting the bucket.
+- Set `GHOSTKEY_TRUSTED_PROXY_CIDRS` to the comma-separated CIDRs of
+  the reverse proxies that connect directly to the server. Forwarding
+  headers are ignored unless the immediate TCP peer matches this
+  allow-list. For a trusted peer, a valid `Fly-Client-IP` is preferred;
+  otherwise `X-Forwarded-For` is walked right-to-left while trusted
+  proxy hops are removed. Obtain the actual peer ranges from the
+  deployment network configuration or observed peer logs; do not
+  substitute a broad private-network range without verifying it.
+- If `GHOSTKEY_TRUSTED_PROXY_CIDRS` is unset or invalid, the server
+  safely keys on the TCP peer. Behind a proxy, this can collapse many
+  users into one bucket and cause false `429` responses, so treat the
+  startup warning as a deployment error.
 - The limiter is in-process. Horizontal scale-out across multiple
   Fly machines means each machine has its own bucket: limits scale
   with replica count. If you scale past one replica per region,
   revisit whether shared-state limiting (Redis, CDN-level) is needed.
+- Expensive provider work also has per-process concurrency ceilings:
+  `GHOSTKEY_MAX_AI_CONCURRENCY` and
+  `GHOSTKEY_MAX_ESPLORA_CONCURRENCY`, both defaulting to `4`.
+  Requests wait for a permit rather than being rejected. Notification
+  delivery is already serial, with an effective email-send ceiling of
+  one per server process.
 - `/health` and the LNURL endpoints are deliberately not rate-limited;
   see the same code comment for the rationale.
 

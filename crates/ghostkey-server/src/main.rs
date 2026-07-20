@@ -23,6 +23,7 @@ mod admin;
 mod analytics;
 mod assist;
 mod auth;
+mod concurrency;
 mod config;
 mod crypto;
 mod db;
@@ -199,8 +200,8 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(args.bind).await?;
     // `into_make_service_with_connect_info` makes the TCP peer
     // address available via `ConnectInfo<SocketAddr>` extractors.
-    // The rate-limit middleware uses it as the last-resort key when
-    // neither `Fly-Client-IP` nor `X-Forwarded-For` is set.
+    // The rate-limit middleware trusts forwarding headers only when
+    // this peer belongs to an explicitly configured proxy CIDR.
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),

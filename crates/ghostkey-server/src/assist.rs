@@ -155,6 +155,7 @@ pub async fn assist_chat(
         .build()
         .map_err(|e| ApiError::Validation(format!("http client: {e}")))?;
 
+    let _concurrency_permit = crate::concurrency::acquire_ai().await;
     let resp = client
         .post(ANTHROPIC_URL)
         .header("x-api-key", api_key)
