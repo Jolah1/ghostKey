@@ -20,11 +20,12 @@ A few framing decisions before the body:
 
 - **Scope.** This model covers attackers against the GhostKey
   binaries (`ghostkey-server`, `ghostkey-cli`), the static web
-  bundle (`ghostkey-web`), and the data they touch. It does **not**
-  cover attacks against Bitcoin itself (51% mining, breaking
-  secp256k1, consensus rewrites), against the operator's underlying
-  cloud platform (Fly, Vercel), or against the third-party wallets
-  the heir signs with.
+  bundle (`ghostkey-web`), its build and delivery path, and the data
+  they touch. It does **not** cover attacks against Bitcoin itself
+  (51% mining, breaking secp256k1, consensus rewrites) or against the
+  third-party wallets the heir signs with. Fly and Vercel are explicit
+  trusted dependencies, not excluded infrastructure: compromise of
+  either has the capabilities described under Att-3.
 - **Style.** Each claim points at the code that makes it true.
   Claims the maintainer has re-verified against the current tree
   carry a checked box `[x]`; unchecked `[ ]` boxes are claims that
@@ -212,11 +213,18 @@ runs the VPS. They are not the threat to the owner. In the hosted
 case (`ghostkey.fly.dev`), the operator is whoever maintains the
 shared deployment.
 
+Server access alone cannot sign through the owner's branch without the
+owner password. If the same operator also controls frontend delivery,
+Att-3 applies and malicious JavaScript can capture that password and key
+when the owner next uses the site.
+
 ### Att-3. A malicious hosting provider
 The cloud platform underneath the server (Fly, Hetzner, Vercel). Can
-read the disk, dump RAM, observe the process environment. From
-GhostKey's perspective, indistinguishable from Att-2 in terms of
-what they can see; differs in motive.
+read server disk/RAM and observe the process environment. A frontend
+host or compromised deployment account can replace the same-origin
+JavaScript and capture passwords, owner keys and claim keys while a
+user types, creates or unlocks them. CSP does not prevent replacement
+of a script that the origin itself is trusted to serve.
 
 ### Att-4. A compromised heir
 An attacker who knows they are named as the heir for some specific
@@ -559,6 +567,26 @@ addresses are public once used, so the marginal leak is the vault-id
 - Mitigation: behind the `GHOSTKEY_RL_RECOVERY` limiter.
 - Accepted: low severity for an on-chain-public tool; funds cannot be
   moved with an address.
+
+### R13. Hosted frontend delivery is a key-handling trust boundary
+The password-vault web bundle generates owner keys and later unseals
+them with the owner's password. Correct code does not send either to
+the backend in plaintext, but the browser must hold them briefly. A
+malicious same-origin release, compromised Vercel/deployment account,
+or poisoned build dependency can exfiltrate them at that moment.
+
+- Mitigation: all GitHub Actions are pinned to immutable commits; CI
+  produces a deterministic web archive, CycloneDX SBOM, SHA-256
+  manifest and GitHub build-provenance attestations for `main`.
+- Mitigation: the single-file independence kit can be saved and used
+  offline, outside the hosted application's availability boundary.
+- Operational requirement: protect `main`, require reviewed production
+  deployments, and promote the attested CI artifact instead of asking
+  the hosting provider to rebuild mutable source independently.
+- Accepted residual risk: users of the hosted password flow still trust
+  the exact JavaScript their browser receives. CSP cannot remove this
+  trust. A signed native/offline owner application or hardware-wallet-
+  first flow would reduce it further.
 
 ---
 

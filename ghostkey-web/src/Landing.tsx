@@ -478,7 +478,7 @@ const FAQS = [
   },
   {
     q: "What if I forget my password?",
-    a: "You lose time, not money. There is no reset, because we never see your password. But the plan still works without it: your heir's claim doesn't need your password, and you also hold your heir's file and its unlock code, so once the waiting period passes you can open that file yourself and move the funds to a new wallet. A password manager is still the best protection.",
+    a: "You lose time, not money. There is no reset, because GhostKey's server does not receive or store your password. The website uses it briefly on your device to unlock your key. But the plan works without it: your heir's claim doesn't need your password, and you also hold your heir's file and its unlock code, so once the waiting period passes you can open that file yourself and move the funds to a new wallet. A password manager is still the best protection.",
   },
   {
     q: "Can I change my heir after creating a vault?",

@@ -93,9 +93,10 @@ export function TermsPage() {
         <>
           <p>
             GhostKey schedules reminders and notifications around your
-            Bitcoin. We never store your keys or your password, so we
-            can't recover them for you, and we can't touch your funds
-            while you keep checking in. The one exception: on the easy
+            Bitcoin. Our backend does not store your readable owner key or
+            password. The published application is designed so the backend
+            cannot recover them or move owner funds, but the hosted website
+            remains trusted because it handles both in your browser. The one exception: on the easy
             heir setup we can unlock your heir's wallet to deliver a claim
             after the waiting period, and the advanced setup removes even
             that. You're responsible for your password and your recovery
@@ -144,11 +145,16 @@ export function TermsPage() {
       </Section>
 
       <Section n={3} title="What you are responsible for">
-        <p>Because we never hold your keys, some things are only yours to do:</p>
+        <p>
+          Because our backend does not hold your readable owner key, some
+          things are only yours to do. The hosted website is still trusted
+          code: it handles your key and password briefly in your browser.
+        </p>
         <ul role="list" className="list-disc space-y-1.5 pl-5">
           <li>
-            <strong>Your password.</strong> We never see it and cannot
-            reset it. Your recovery file opens with this same password, so
+            <strong>Your password.</strong> Our backend does not receive or
+            store it and cannot reset it. The website code handles it in
+            your browser while locking or unlocking your key. Your recovery file opens with this same password, so
             it cannot rescue a forgotten one. If you forget your password,
             the funds remain reachable only through the inheritance path:
             your heir's claim, or your own copy of your heir's file once
@@ -267,8 +273,9 @@ export function PrivacyPage() {
         <>
           <p>
             We store your check-in schedule and the contact details you
-            give us, encrypted. We never see your password, and we don't
-            hold your own spending key. One exception: on the easy heir
+            give us, encrypted. Our backend does not store your readable
+            password or owner spending key. The hosted website does handle
+            both briefly in browser memory. One exception: on the easy heir
             setup we hold your heir's key, locked, so we can deliver their
             claim after the waiting period; the advanced setup removes even
             that. No ads, no tracking cookies, no selling data. Delete your
@@ -323,9 +330,10 @@ export function PrivacyPage() {
 
       <Section n={3} title="What we never store">
         <p>
-          Your password (it never leaves your browser in readable form),
-          unencrypted private keys, tracking cookies, or browsing
-          profiles. Our site analytics are anonymous daily counters
+          Our backend database does not store your readable password,
+          unencrypted private keys, tracking cookies, or browsing profiles.
+          Passwords and keys do exist briefly in browser memory when the
+          website creates or unlocks them. Our site analytics are anonymous daily counters
           ("how many people visited the setup page today") with no IP
           address, no cookie, and no fingerprint attached.
         </p>
@@ -350,7 +358,9 @@ export function PrivacyPage() {
           </li>
           <li>
             <strong>Fly.io</strong> hosts our server; <strong>Vercel</strong>{" "}
-            hosts this website.
+            hosts this website. Because Vercel delivers the JavaScript that
+            handles keys in your browser, the hosted frontend and its
+            deployment account are trusted security components.
           </li>
           <li>
             <strong>Cloudflare</strong> stores our database backups,

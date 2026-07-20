@@ -185,6 +185,9 @@ alive, has their signing key and cooperates. Unfunded vaults can simply be recre
 
 ### GK-02 — High — Hosted frontend delivery can capture owner keys and passwords
 
+**Status: partially mitigated on `security/frontend-supply-chain`; the hosted
+frontend remains an explicit trusted component.**
+
 Affected:
 
 - `ghostkey-web/src/crypto/keygen.ts`
@@ -214,6 +217,15 @@ Remediation:
   statement for release artifacts.
 - Consider a hardware-wallet-first mode in which browser JavaScript never receives
   an owner private key.
+
+Implemented controls pin every GitHub Action to an immutable commit, reduce default
+workflow permissions, and build a deterministic web archive with a CycloneDX SBOM,
+SHA-256 manifest and main-branch provenance attestations. Canonical architecture,
+threat-model, deployment and user-facing legal copy now state that same-origin
+frontend delivery can capture secrets while they are in browser memory. Repository
+branch protection, production-environment reviewers and promotion of the attested
+artifact require operator configuration; a hardware-wallet-first owner flow remains
+future work.
 
 ### GK-03 — High — Email enumeration leads directly to offline owner-key cracking
 

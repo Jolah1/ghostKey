@@ -21,6 +21,9 @@ on:
       - "ghostkey-web/**"
       - ".github/workflows/web.yml"
 
+permissions:
+  contents: read
+
 concurrency:
   group: web-${{ github.ref }}
   cancel-in-progress: true
@@ -34,8 +37,8 @@ jobs:
     name: typecheck + build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "20"
           cache: npm
@@ -56,3 +59,42 @@ jobs:
       # 0.95). LHCI's console summary groups the two hash-routed URLs
       # under one path; every run is still collected and asserted.
       - run: npm run lhci
+      - name: Package reproducible web release
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          npm sbom --package-lock-only --sbom-format cyclonedx \
+            > release/ghostkey-web-sbom.cdx.json
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+            -C dist -cf - . \
+            | gzip -n > "release/ghostkey-web-${GITHUB_SHA}.tar.gz"
+          cd release
+          sha256sum "ghostkey-web-${GITHUB_SHA}.tar.gz" \
+            ghostkey-web-sbom.cdx.json > SHA256SUMS
+      - name: Upload web release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ghostkey-web-${{ github.sha }}
+          path: ghostkey-web/release/
+          if-no-files-found: error
+          retention-days: 30
+
+  attest:
+    name: attest main web artifact
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download exact artifact built by CI
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: ghostkey-web-${{ github.sha }}
+          path: release
+      - name: Attest web bundle, checksum manifest and SBOM
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: release/*
