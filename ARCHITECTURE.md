@@ -126,17 +126,24 @@ Heir / owner / trusted contacts are encrypted at rest with XChaCha20-Poly1305. P
 | `/vaults` | POST | Register vault from pre-rendered descriptors (CLI flow) |
 | `/vaults` | GET | List all vaults (admin only) |
 | `/vaults/from-xpub` | POST | Register vault from xpubs + (optional) sealed password-vault blobs |
-| `/vaults/find` | POST | Locate vaults by SHA-256(owner email) for cross-device sign-in |
+| `/recovery/request` | POST | Uniformly accept an email-hash recovery request and, on a match, enqueue a one-time link |
+| `/recovery/exchange` | POST | Atomically consume a 15-minute recovery link and return matching summaries + password-wrapped blobs |
 | `/vaults/:id` | GET / DELETE | Vault detail / owner-initiated removal (cascades) |
 | `/vaults/:id/address` | GET | First external receive address |
 | `/vaults/:id/balance` | GET | Confirmed + unconfirmed sats via Esplora scan |
 | `/vaults/:id/heir` | GET / PUT | Read the sealed heir profile (name/contact/channel); PUT re-seals a new contact + channel (owner-auth). Rejects a contact that doesn't fit the channel; on F2 vaults both address and channel are locked to email. |
-| `/vaults/:id/sealed-blobs` | GET | Password-wrapped owner xprv + owner-token ciphertexts for recovery |
+| `/vaults/:id/sealed-blobs` | GET | Owner-authenticated password-wrapped owner xprv + owner-token ciphertexts for signed-in tools |
 | `/vaults/:id/seal-owner-token` | POST | Re-seal owner token after creation (owner-auth) |
 | `/vaults/:id/checkin` | POST | Record heartbeat (owner-auth, once-per-period) |
 | `/vaults/:id/checkin-from-link/:token` | POST | One-tap check-in from email link (token IS the auth) |
 | `/vaults/:id/events` | GET | Event log (owner-auth) |
 | `/vaults/:id/issue-claim` | POST | Manually issue a claim token (owner-auth) |
+
+Recovery requests use a database-backed 10-minute per-email cooldown: repeated
+requests preserve the current live link and do not enqueue another message. Expired
+rows and used rows older than 24 hours are pruned opportunistically. The uniform
+response has a 200 ms minimum duration to reduce coarse timing differences; this is
+a floor, not a constant-time guarantee under load.
 | `/vaults/:id/lightning-checkin/invoice` | POST | Mint a 1-sat Lightning check-in invoice (owner-auth) |
 | `/vaults/:id/lightning-checkin/status/:hash` | GET | Poll invoice status (owner-auth) |
 | `/lnurlp/:vault_id`, `/lnurlp/:vault_id/cb` | GET | LNURL-pay endpoints (LUD-06) for static QR check-in |
@@ -262,7 +269,7 @@ attacker and the heir's funds. Operationally that means:
 
 ## What isn't built yet
 
-**Rate limiting.** Mutation endpoints have no per-IP throttling yet. `/assist/chat` is unauthenticated and proxies the Anthropic Messages API; `/vaults/from-xpub` and `/vaults/find` are also unauthenticated by design (they support cross-device onboarding and recovery). All three are reasonable rate-limit targets before mainnet.
+**Rate limiting.** Cost-bearing public routes use per-IP buckets. Recovery requests are uniformly answered and rate-limited to bound email abuse; vault metadata and sealed owner blobs are released only by a short-lived one-time email challenge.
 
 **PSBT export for hardware wallets.** The CLI signs in-process. Adding `--export-psbt` (write unsigned PSBT to disk) and `--sign-psbt` (import signed PSBT, broadcast) would support air-gapped and hardware signers. The PSBTs are already standard, so it's a CLI workflow change, not a cryptography change.
 

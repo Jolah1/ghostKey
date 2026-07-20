@@ -149,6 +149,10 @@ pub enum NotificationKind {
     /// as a theft alarm: a send the owner didn't make means the
     /// vault password has leaked.
     OwnerSend,
+    /// Owner-side, on a cross-device sign-in request. The link contains
+    /// a short-lived, single-use recovery challenge; no vault metadata
+    /// is returned until that challenge is redeemed.
+    OwnerRecovery,
 }
 
 impl NotificationKind {
@@ -168,6 +172,7 @@ impl NotificationKind {
             NotificationKind::Funded => "funded",
             NotificationKind::Received => "received",
             NotificationKind::OwnerSend => "owner_send",
+            NotificationKind::OwnerRecovery => "owner_recovery",
         }
     }
 }

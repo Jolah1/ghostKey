@@ -9,16 +9,15 @@
  *
  * Flow:
  *
- *   1. User types email + password.
+ *   1. User types their email.
  *   2. Browser computes `hashEmailForLookup(email)` — SHA-256 over the
  *      lowercased, NFKC-normalised value. We POST the *hash*, never
  *      the plaintext email, so the server's index never sees raw
- *      addresses (`/vaults/find`).
- *   3. Server returns 0–N matching vault summaries. 0 → "no vault
- *      with that email"; 1 → auto-proceed; N → show a chooser.
- *   4. For the chosen vault we GET `/vaults/:id/sealed-blobs` to fetch
- *      the password-wrapped ciphertexts. No auth required — the blobs
- *      are useless without the password the user just typed.
+ *      addresses (`/recovery/request`). The response is uniform.
+ *   3. If a password vault exists, the server emails a 15-minute,
+ *      single-use link to the encrypted owner contact.
+ *   4. Redeeming the link atomically returns matching summaries and
+ *      password-wrapped blobs; replay and expiry both fail closed.
  *   5. `unsealOwner()` runs Argon2id on the user's password with the
  *      stored salt + params; if the resulting KEK opens both the
  *      owner_xprv blob and the owner_token blob, we have full
@@ -32,17 +31,14 @@
  *   - Wrong password → `unsealOwner` throws on the auth-tag check.
  *     We catch and show "Wrong password" (not "decryption failed" —
  *     that's noise to a non-cryptographer).
- *   - Vault row was created before the password flow shipped → the
- *     server returns 422 from /sealed-blobs. We show a specific
- *     "this vault was created in the legacy flow; check in from the
- *     original device" message.
+ *   - Expired/already-used recovery link → request a fresh email.
  *   - The post-create owner-token re-seal call failed silently during
  *     setup, so the owner-token ciphertext on the server is still the
  *     placeholder. Unsealing the placeholder gives us the literal
  *     string `ghostkey-placeholder-owner-token-v1`; we detect this
  *     and tell the user to do one check-in from the original device.
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Button,
   Field,
@@ -52,6 +48,7 @@ import {
   ApiError,
   api,
   type FoundVault,
+  type OwnerRecoveryBundle,
   type SealedBlobsView,
 } from "./api";
 import { hashEmailForLookup, unsealOwner } from "./crypto/sealing";
@@ -70,15 +67,19 @@ function heirNameFromLabel(label: string | null): string {
 
 interface Props {
   onNavigate: (r: Route) => void;
+  recoveryToken?: string;
 }
 
 type Phase =
   | { kind: "idle" }
   | { kind: "looking" }
+  | { kind: "sent" }
+  | { kind: "exchanging" }
+  | { kind: "ready" }
   | { kind: "unsealing"; vaultId: string; progress: number }
   | { kind: "done" };
 
-export function SignInPortal({ onNavigate }: Props) {
+export function SignInPortal({ onNavigate, recoveryToken }: Props) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   // Mistyped passwords are the #1 sign-in failure, and the field hides
@@ -87,6 +88,32 @@ export function SignInPortal({ onNavigate }: Props) {
   const [showPassword, setShowPassword] = useState(false);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [error, setError] = useState<string | null>(null);
+  const [bundles, setBundles] = useState<OwnerRecoveryBundle[]>([]);
+  const [recoveredEmail, setRecoveredEmail] = useState("");
+  const exchangeStarted = useRef(false);
+
+  useEffect(() => {
+    if (!recoveryToken || exchangeStarted.current) return;
+    exchangeStarted.current = true;
+    setPhase({ kind: "exchanging" });
+    void api
+      .exchangeOwnerRecovery(recoveryToken)
+      .then((result) => {
+        setRecoveredEmail(result.owner_email);
+        setBundles(result.vaults);
+        setPhase({ kind: "ready" });
+      })
+      .catch((e) => {
+        setError(
+          e instanceof ApiError && e.status === 404
+            ? "This sign-in link has expired or was already used. Request a new one."
+            : e instanceof ApiError
+              ? e.message
+              : String(e),
+        );
+        setPhase({ kind: "idle" });
+      });
+  }, [recoveryToken]);
 
   function reset() {
     setError(null);
@@ -94,8 +121,8 @@ export function SignInPortal({ onNavigate }: Props) {
 
   async function lookUp() {
     reset();
-    if (!email.trim() || !password) {
-      setError("Enter your email and password.");
+    if (!email.trim()) {
+      setError("Enter your email.");
       return;
     }
     if (!/^.+@.+\..+$/.test(email.trim())) {
@@ -105,49 +132,31 @@ export function SignInPortal({ onNavigate }: Props) {
     setPhase({ kind: "looking" });
     try {
       const hash = hashEmailForLookup(email);
-      const vaults = await api.findVaultsByEmailHash(hash);
-      if (vaults.length === 0) {
-        setError(
-          "We don't recognise that email. Either there's no vault for it, " +
-            "or it was set up with a different address.",
-        );
-        setPhase({ kind: "idle" });
-        return;
-      }
-      if (vaults.length === 1) {
-        await openVault(vaults[0]);
-      } else {
-        // Multiple vaults under one email are this owner's heir group
-        // (the server only allows additional vaults for the *same* owner
-        // key). Recover them all and stamp a shared group id so this
-        // device renders them as one vault — same as the setup device.
-        await openGroup(vaults);
-      }
+      await api.requestOwnerRecovery(hash);
+      setPhase({ kind: "sent" });
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
       setPhase({ kind: "idle" });
     }
   }
 
-  async function openVault(v: FoundVault) {
-    setPhase({ kind: "unsealing", vaultId: v.id, progress: 0 });
-    setError(null);
-    let blobs: SealedBlobsView;
-    try {
-      blobs = await api.getSealedBlobs(v.id);
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 422) {
-        setError(
-          "This vault was set up before the password flow shipped. " +
-            "Check in from the device you used originally; cross-device " +
-            "sign-in isn't available for it.",
-        );
-      } else {
-        setError(e instanceof ApiError ? e.message : String(e));
-      }
-      setPhase({ kind: "idle" });
+  async function recover() {
+    if (!password) {
+      setError("Enter your password.");
       return;
     }
+    if (bundles.length === 1) {
+      await openVault(bundles[0].vault, bundles[0].sealed_blobs);
+    } else if (bundles.length > 1) {
+      await openGroup(bundles);
+    } else {
+      setError("No password-enabled vaults were found for this recovery link.");
+    }
+  }
+
+  async function openVault(v: FoundVault, blobs: SealedBlobsView) {
+    setPhase({ kind: "unsealing", vaultId: v.id, progress: 0 });
+    setError(null);
 
     try {
       const out = await unsealOwner({
@@ -196,7 +205,7 @@ export function SignInPortal({ onNavigate }: Props) {
       saveVaultMeta({
         id: v.id,
         label: v.label ?? "Your vault",
-        owner: { address: email.trim() },
+        owner: { address: recoveredEmail || email.trim() },
         heir: { name: heirNameFromLabel(v.label), email: "", address: "" },
         createdAt: v.created_at,
         ownerToken: out.ownerToken,
@@ -230,25 +239,14 @@ export function SignInPortal({ onNavigate }: Props) {
    * across the group so a multi-heir owner sees steady movement rather
    * than a bar that restarts N times.
    */
-  async function openGroup(vaults: FoundVault[]) {
+  async function openGroup(recoveryBundles: OwnerRecoveryBundle[]) {
     setError(null);
     const groupId = crypto.randomUUID();
     let firstId: string | null = null;
 
-    for (let i = 0; i < vaults.length; i++) {
-      const v = vaults[i];
+    for (let i = 0; i < recoveryBundles.length; i++) {
+      const { vault: v, sealed_blobs: blobs } = recoveryBundles[i];
       setPhase({ kind: "unsealing", vaultId: v.id, progress: 0 });
-      let blobs: SealedBlobsView;
-      try {
-        blobs = await api.getSealedBlobs(v.id);
-      } catch (e) {
-        // A legacy (non-password) row can't be recovered cross-device;
-        // skip it rather than failing the whole group.
-        if (e instanceof ApiError && e.status === 422) continue;
-        setError(e instanceof ApiError ? e.message : String(e));
-        setPhase({ kind: "idle" });
-        return;
-      }
 
       try {
         const out = await unsealOwner({
@@ -270,7 +268,7 @@ export function SignInPortal({ onNavigate }: Props) {
             setPhase({
               kind: "unsealing",
               vaultId: v.id,
-              progress: Math.round(((i + p) / vaults.length) * 100),
+              progress: Math.round(((i + p) / recoveryBundles.length) * 100),
             }),
         });
 
@@ -287,7 +285,7 @@ export function SignInPortal({ onNavigate }: Props) {
         saveVaultMeta({
           id: v.id,
           label: v.label ?? "Your vault",
-          owner: { address: email.trim() },
+          owner: { address: recoveredEmail || email.trim() },
           heir: { name: heirNameFromLabel(v.label), email: "", address: "" },
           createdAt: v.created_at,
           ownerToken,
@@ -325,36 +323,38 @@ export function SignInPortal({ onNavigate }: Props) {
             Open your vault on this device
           </h1>
           <p className="mx-auto mt-3 text-sm text-muted">
-            Use the email and password you picked when you set the vault up.
-            We unlock your vault right here on your device. Nothing leaves
-            the browser.
+            {recoveryToken
+              ? "Enter the password you chose at setup. Your encrypted vault opens here on this device."
+              : "Enter your email and we'll send a private, one-time sign-in link. We never reveal whether an address has a vault."}
           </p>
         </header>
 
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            void lookUp();
+            void (recoveryToken ? recover() : lookUp());
           }}
           className="mt-10"
         >
-          <Field label="Email">
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => {
-                setEmail(e.target.value);
-                reset();
-              }}
-              placeholder="you@example.com"
-              autoComplete="username"
-              inputMode="email"
-              className="input"
-              disabled={phase.kind === "looking" || phase.kind === "unsealing"}
-            />
-          </Field>
+          {!recoveryToken ? (
+            <Field label="Email">
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  reset();
+                }}
+                placeholder="you@example.com"
+                autoComplete="username"
+                inputMode="email"
+                className="input"
+                disabled={phase.kind === "looking" || phase.kind === "sent"}
+              />
+            </Field>
+          ) : null}
 
-          <Field label="Password">
+          {recoveryToken ? <Field label="Password">
             <div className="relative">
               <input
                 type={showPassword ? "text" : "password"}
@@ -365,7 +365,7 @@ export function SignInPortal({ onNavigate }: Props) {
                 }}
                 autoComplete="current-password"
                 className="input pr-16"
-                disabled={phase.kind === "looking" || phase.kind === "unsealing"}
+                disabled={phase.kind !== "ready" && phase.kind !== "idle"}
               />
               <button
                 type="button"
@@ -376,7 +376,20 @@ export function SignInPortal({ onNavigate }: Props) {
                 {showPassword ? "Hide" : "Show"}
               </button>
             </div>
-          </Field>
+          </Field> : null}
+
+          {phase.kind === "sent" ? (
+            <div className="mt-4">
+              <InlineAlert tone="ok">
+                If that address belongs to a password-enabled vault, a
+                15-minute sign-in link is on its way. Check spam too.
+              </InlineAlert>
+            </div>
+          ) : null}
+
+          {phase.kind === "exchanging" ? (
+            <p className="mt-4 text-sm text-muted">Checking your one-time link…</p>
+          ) : null}
 
           {phase.kind === "unsealing" ? (
             <div className="mt-4">
@@ -395,6 +408,15 @@ export function SignInPortal({ onNavigate }: Props) {
           {error ? (
             <div className="mt-4">
               <InlineAlert tone="alarm">{error}</InlineAlert>
+              {recoveryToken && bundles.length === 0 ? (
+                <button
+                  type="button"
+                  className="mt-3 text-xs underline text-muted hover:text-[var(--text)]"
+                  onClick={() => onNavigate("checkin")}
+                >
+                  Request a new sign-in link
+                </button>
+              ) : null}
             </div>
           ) : null}
 
@@ -402,12 +424,20 @@ export function SignInPortal({ onNavigate }: Props) {
             <Button
               type="submit"
               size="lg"
-              loading={phase.kind === "looking" || phase.kind === "unsealing"}
+              loading={
+                phase.kind === "looking" ||
+                phase.kind === "exchanging" ||
+                phase.kind === "unsealing"
+              }
               disabled={
-                phase.kind === "looking" || phase.kind === "unsealing"
+                phase.kind === "looking" ||
+                phase.kind === "sent" ||
+                phase.kind === "exchanging" ||
+                phase.kind === "unsealing" ||
+                (Boolean(recoveryToken) && bundles.length === 0)
               }
             >
-              Sign in
+              {recoveryToken ? "Unlock vault" : "Email me a sign-in link"}
             </Button>
           </div>
         </form>

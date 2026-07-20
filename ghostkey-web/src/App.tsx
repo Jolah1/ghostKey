@@ -254,6 +254,7 @@ const VALID: Route[] = [
 type Location =
   | { kind: "route"; route: Route }
   | { kind: "claim"; token: string }
+  | { kind: "owner-recovery"; token: string }
   | { kind: "one-tap-checkin"; vaultId: string; token: string }
   | { kind: "verify-email"; vaultId: string; token: string };
 
@@ -264,6 +265,10 @@ function locationFromHash(): Location {
   if (raw.startsWith("claim/")) {
     const token = raw.slice("claim/".length).trim();
     if (token) return { kind: "claim", token };
+  }
+  if (raw.startsWith("recover/")) {
+    const token = raw.slice("recover/".length).trim();
+    if (token) return { kind: "owner-recovery", token };
   }
   // checkin-link/<vaultId>/<token>
   // Emitted by the scheduler's pre-deadline reminder + alarm emails.
@@ -503,6 +508,9 @@ export default function App() {
       {location.kind === "route" && location.route === "recovery"  && <RecoveryKitPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "recovery-guide" && <RecoveryGuide onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "checkin"   && <SignInPortal onNavigate={setRoute} />}
+      {location.kind === "owner-recovery" && (
+        <SignInPortal onNavigate={setRoute} recoveryToken={location.token} />
+      )}
       {location.kind === "route" && location.route === "checkin-legacy" && (
         <CheckinPortal initialId={getActiveVaultId() ?? undefined} />
       )}

@@ -97,7 +97,10 @@ function triggerDownload(html: string, filename: string): void {
  * user-renderable message when the vault can't produce one (legacy
  * non-password vaults have no sealed xprv).
  */
-export async function downloadIndependenceProof(vault: VaultView): Promise<void> {
+export async function downloadIndependenceProof(
+  vault: VaultView,
+  ownerToken: string,
+): Promise<void> {
   if (!vault.descriptor_external || !vault.descriptor_internal) {
     throw new Error(
       "This vault's wallet details aren't available yet. Reload the page and try again.",
@@ -105,7 +108,7 @@ export async function downloadIndependenceProof(vault: VaultView): Promise<void>
   }
 
   // Sealed blobs: 400 on legacy (non-password) vaults.
-  const blobs = await api.getSealedBlobs(vault.id);
+  const blobs = await api.getSealedBlobs(vault.id, ownerToken);
 
   const data: KitData = {
     v: 1,

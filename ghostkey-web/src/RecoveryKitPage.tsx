@@ -43,10 +43,15 @@ export function RecoveryKitPage({ onNavigate }: Props) {
 
   async function onDownload() {
     if (!vault) return;
+    const ownerToken = getVaultOwnerToken(vault.id);
+    if (!ownerToken) {
+      setState({ kind: "error", message: "Sign in again before downloading your recovery file." });
+      return;
+    }
     setState({ kind: "busy" });
     try {
       const { downloadIndependenceProof } = await import("./independenceProof");
-      await downloadIndependenceProof(vault);
+      await downloadIndependenceProof(vault, ownerToken);
       setState({ kind: "done" });
     } catch (e) {
       setState({

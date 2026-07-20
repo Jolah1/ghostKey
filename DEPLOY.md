@@ -587,10 +587,31 @@ is disabled: `/health` reports no `push_public_key`, the web app
 never shows the opt-in card, and any queued `webpush` notifications
 stay pending until a keyed deployment comes up.
 
+### Email-recovery rollout
+
+The recovery security change replaces `POST /vaults/find` and public
+`GET /vaults/:id/sealed-blobs`. Deploy it without breaking stale frontend
+bundles in three steps:
+
+1. Deploy the server and migration with
+   `GHOSTKEY_LEGACY_PUBLIC_RECOVERY=1`. This enables both the new recovery
+   API and the two old public routes. The server emits a boot warning while
+   this temporary exposure is active.
+2. Deploy the Vercel frontend and verify request, email delivery, exchange,
+   password retry, and signed-in sealed-blob tools.
+3. Remove `GHOSTKEY_LEGACY_PUBLIC_RECOVERY` and restart the server. Confirm
+   unauthenticated sealed-blob reads return `401` and `POST /vaults/find`
+   returns `404` or `405`.
+
+Do not leave the flag enabled as a compatibility default: it deliberately
+restores the enumeration and offline-blob-harvesting surfaces this release
+closes. Monitor old-route traffic during the short rollout window; stale-chunk
+healing should move most clients to the new frontend automatically.
+
 ### Rate-limit budgets
 
 The unauthenticated endpoints (`/assist/chat`, `/vaults`,
-`/vaults/from-xpub`, `/vaults/find`, `/claim/:token/*`) are protected
+`/vaults/from-xpub`, `/recovery/request`, `/recovery/exchange`, `/claim/:token/*`) are protected
 by an in-process per-IP token-bucket limiter. Buckets refill
 continuously; on exhaustion the server returns `429 Too Many Requests`
 with a `Retry-After` header and a `tracing::info` line tagged
@@ -604,7 +625,7 @@ them, but every budget is overridable per-deploy via two env vars:
 |---|---|---|---|---|
 | `GHOSTKEY_RL_ASSIST_*` | `POST /assist/chat` | 3 | 0.2 | ~12/min |
 | `GHOSTKEY_RL_CREATE_*` | `POST /vaults`, `POST /vaults/from-xpub` | 3 | 0.05 | ~3/min |
-| `GHOSTKEY_RL_FIND_*` | `POST /vaults/find` | 30 | 0.5 | ~30/min |
+| `GHOSTKEY_RL_FIND_*` | Recovery request + exchange | 30 | 0.5 | ~30/min |
 | `GHOSTKEY_RL_CLAIM_*` | `GET/POST /claim/:token/*` | 20 | 0.333 | ~20/min |
 
 `BURST` is the worst-legitimate-burst size (a u32). `PER_SEC` is the

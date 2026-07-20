@@ -88,7 +88,8 @@ What works today:
   - **Manual PSBT flow** (legacy): server hands the heir an unsigned PSBT, accepts the signed string back.
 - "Heir has no Bitcoin wallet" support (Door A): the browser generates the heir's key and seals it under their one-time claim token, so the heir needs no wallet or prior setup. To deliver the future link, the server stores that token encrypted under its production master key. Consequently DB + master key can reconstruct the heir key now, while CSV prevents spending until maturity. Door B is the recommended strict non-custodial option when the heir already has a wallet: only their xpub reaches GhostKey. The older server-derivation path (`derive_heir_seed` over `(master_key, heir_email, vault_id)`) remains only for legacy claims.
 - In-app AI guide chat (`/assist/chat`) proxied to Claude; refuses to forward seed-shaped strings
-- Per-IP rate limiting on the unauthenticated endpoints (`/assist/chat`, `/vaults`, `/vaults/from-xpub`, `/vaults/find`, `/claim/:token/*`), with per-deploy `GHOSTKEY_RL_*` overrides (see DEPLOY.md)
+- Email-verified cross-device recovery: lookup responses are uniform, recovery links expire after 15 minutes and are single-use, and sealed owner blobs are no longer publicly retrievable
+- Per-IP rate limiting on unauthenticated endpoints (`/assist/chat`, vault creation, recovery request/exchange, and `/claim/:token/*`), with per-deploy `GHOSTKEY_RL_*` overrides (see DEPLOY.md)
 
 What's still being built:
 - Hardware wallet PSBT export (`--export-psbt` / `--sign-psbt` on the CLI)

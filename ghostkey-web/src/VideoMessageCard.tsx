@@ -121,7 +121,7 @@ export function VideoMessageCard({
     setBusy("unlocking");
     let ownerXprv: string;
     try {
-      const blobs = await api.getSealedBlobs(vaultId);
+      const blobs = await api.getSealedBlobs(vaultId, ownerToken);
       const unsealed = await unsealOwner({
         password,
         passwordSalt: blobs.password_salt_b64,
