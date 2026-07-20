@@ -23,8 +23,9 @@ after the timeout elapses.
 
 The product promise:
 
-- **The server never holds your keys** (with one narrow exception we
-  explain in the claim section).
+- **The owner key stays password-protected.** For heirs, Door B is
+  strictly non-custodial; the simpler no-wallet Door A is
+  server-assisted and is explained in the claim section.
 - **You cannot lose access if you stay alive and remember your
   password**: checking in is a button tap.
 - **Your heir cannot steal early**: a Bitcoin script enforces the

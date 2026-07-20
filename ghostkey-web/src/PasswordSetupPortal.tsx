@@ -1843,7 +1843,7 @@ function HeirCard({
         className={`mt-1 rounded-lg border border-app px-3 py-2${hideOwnKey ? " hidden" : ""}`}
       >
         <summary className="cursor-pointer text-xs text-muted">
-          Advanced: your heir holds their own key
+          Recommended if your heir has a Bitcoin wallet: heir-controlled key
         </summary>
         <div className="mt-3 space-y-3">
           <label className="flex items-start gap-2 text-xs text-muted">
@@ -1854,7 +1854,8 @@ function HeirCard({
               className="mt-0.5"
             />
             <span>
-              Use my heir's own wallet key instead. GhostKey never holds
+              Use my heir's own wallet key instead. This is the strongest
+              custody option: GhostKey never holds
               anything that can spend their Bitcoin, not even during a
               claim. The trade: your heir keeps their wallet's recovery
               words safe, and at claim time signs with a wallet that can

@@ -117,7 +117,7 @@ Auth: each vault has a random 32-byte `owner_token` issued at creation. SHA-256 
 
 Heir / owner / trusted contacts are encrypted at rest with XChaCha20-Poly1305. Per-vault key derived via HKDF-SHA256 from `GHOSTKEY_MASTER_KEY` (loaded at startup). Server refuses to boot without it.
 
-**Password-vault material** (added 20260525): when a user creates a vault through the in-browser password flow, the server stores three opaque ciphertexts the browser produced: the owner xprv (wrapped under an Argon2id-derived KEK), the owner token (same KEK), and the heir xprv (wrapped under HKDF(claim_token)). The server cannot open any of these blobs.
+**Password-vault material** (added 20260525): when a user creates a vault through the in-browser password flow, the server stores three ciphertexts the browser produced: the owner xprv (wrapped under an Argon2id-derived KEK), the owner token (same KEK), and, for Door A, the heir xprv (wrapped under HKDF(claim_token)). The owner blobs require the user's password. Door A also stores the claim token encrypted under `GHOSTKEY_MASTER_KEY` for scheduled delivery, so DB + master key can reconstruct the heir xprv immediately; CSV still blocks spending until maturity. Door B stores only the heir xpub and no heir ciphertext or setup-time claim token.
 
 | Route | Method | Purpose |
 |---|---|---|
@@ -148,7 +148,7 @@ Heir / owner / trusted contacts are encrypted at rest with XChaCha20-Poly1305. P
 | `/claim/:token/broadcast` | POST | Finalise + broadcast a signed claim PSBT (legacy heir flow) |
 | `/claim/:token/heir-claim` | POST | One-shot password-vault claim: server signs in-memory with heir xprv |
 
-Claim tokens: 32 random bytes, base64-url-no-pad for transport, SHA-256 hash in DB, consumed atomically on successful broadcast (not on first view). The `claim_token_used_at IS NULL` predicate is the CAS gate that makes the broadcast race-safe.
+Claim tokens: 32 random bytes, base64-url-no-pad for transport, with a SHA-256 verifier in DB, consumed atomically on successful broadcast (not on first view). Door A and browser-created guardian flows additionally keep the raw token reversibly encrypted under the server master key so the scheduler can deliver it. The `claim_token_used_at IS NULL` predicate is the CAS gate that makes the broadcast race-safe.
 
 Owner / one-tap tokens follow the same shape (random 32 bytes, hash-only at rest, constant-time compare).
 
@@ -156,7 +156,7 @@ Blocking Esplora calls (`full_scan`, `broadcast`) run in `tokio::task::spawn_blo
 
 ### ghostkey-web
 
-React + Vite + TypeScript + Tailwind. Read/write only against the server REST API. No key access.
+React + Vite + TypeScript + Tailwind. The setup and claim flows generate, seal, unseal, and briefly hold keys in browser memory; the dashboard otherwise uses the server REST API.
 
 Owner dashboard: vault cards with live countdown, status pill, check-in button, event log drawer. Polls `/api/vaults` every 5 seconds.
 
@@ -170,9 +170,9 @@ Heir claim page (`/claim/:token`): five states: loading, not found, already used
 
 | Compromised | Can do | Cannot do |
 |---|---|---|
-| GhostKey server (steady state) | Record false check-ins, suppress alarms, learn sealed contacts only after master-key compromise | Spend funds: no plaintext keys held; sealed blobs are encrypted to the owner password / heir claim token |
+| GhostKey server + production master key | Record false check-ins, suppress alarms, decrypt contacts, and reconstruct current Door A / browser-created guardian claim keys now | Spend through a timelocked branch before CSV maturity; reconstruct a Door B heir key |
 | GhostKey server (during a password-vault heir claim) | Briefly hold the heir xprv in process memory for the duration of one `POST /claim/:token/heir-claim` call | Persist the xprv: never touches disk or logs; dropped at end of scope. See [Server-side signing exception](#server-side-signing-exception). |
-| GhostKey master key (`GHOSTKEY_MASTER_KEY`) leaks | Decrypt every sealed contact; recompute the heir mnemonic for every F2 server-derived heir vault | Touch funds before the on-chain timelock matures. See [F2 server-derived heirs](#f2-server-derived-heirs). |
+| GhostKey master key (`GHOSTKEY_MASTER_KEY`) + DB leak | Decrypt every sealed contact; recover stored Door A / guardian claim tokens and their sealed keys; recompute legacy F2 heir keys | Touch funds through those branches before the on-chain timelock matures; derive a Door B heir key |
 | Web dashboard XSS | Send heartbeat requests; read the owner token from localStorage | Sign transactions client-side, decrypt sealed material without the user's password |
 | Heir's key (timelock active) | Nothing useful | Spend: mempool rejects as non-BIP68-final |
 | Heir's key (timelock expired, owner gone) | Claim, as intended | — |
@@ -209,8 +209,10 @@ The new trust surface is guardian collusion, covered in the threat model (asset 
 The original spec was "server never signs." The password-vault flow
 relaxes that in exactly one place: `POST /claim/:token/heir-claim`. When
 an heir who never owned Bitcoin opens their claim link, their browser
-unwraps the heir xprv from the sealed blob using the claim-token KEK
-(server cannot reproduce this: it only stores the hash), then ships the
+unwraps the heir xprv from the sealed blob using the claim-token KEK.
+Door A stores that token reversibly under the server master key so it
+can deliver the link; DB + master key can therefore perform the same
+unwrap before the claim. The browser then ships the
 xprv over TLS to the server, which:
 
 1. Reconstructs the heir-side BDK wallet from the stored descriptor.

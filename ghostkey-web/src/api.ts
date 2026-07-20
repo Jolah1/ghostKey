@@ -478,8 +478,9 @@ export interface HeirDerivationParamsView {
  * Returned by `GET /claim/:token/sealed-heir` for password-vault
  * claims. The browser unwraps `heir_xprv_ct_b64` locally using a KEK
  * derived from the raw claim token (HKDF-SHA256, same path the setup
- * browser used to seal it). The server cannot open this blob — only
- * the holder of the claim token can.
+ * browser used to seal it). Door A stores that claim token reversibly
+ * under the production master key for future delivery, so DB + master
+ * key can also open it.
  *
  * Backed by
  * `crates/ghostkey-server/src/psbt_routes.rs::SealedHeirView`.

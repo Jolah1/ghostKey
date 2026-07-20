@@ -307,9 +307,11 @@ export function PrivacyPage() {
             from us until your schedule actually triggers.
           </li>
           <li>
-            <strong>Sealed key backups</strong>: encrypted blobs that
-            only your password (or, after a trigger, your heir's one-time
-            claim link) can open. We cannot open them.
+            <strong>Sealed key backups</strong>: owner-key blobs need your
+            password. In the simple no-wallet heir setup, the heir-key blob
+            uses a claim token that we retain encrypted so we can deliver it
+            later; our database plus production master key can recover it.
+            The heir-controlled-key option sends us no heir private key.
           </li>
           <li>
             <strong>Activity records</strong>: check-ins, reminders sent,

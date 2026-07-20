@@ -6,23 +6,25 @@
  *   1. Owner key sealing — at setup time the browser derives a KEK
  *      from the user's chosen password (Argon2id, ~64MiB) and seals
  *      the owner's xprv + the server-issued owner_token with it.
- *      The ciphertext goes to the server. The server cannot open it
- *      without the password the user typed.
+ *      The owner ciphertext goes to the server. The server cannot open
+ *      that owner blob without the password the user typed.
  *
  *   2. Heir key sealing — at setup time the browser derives a second
  *      KEK from the *raw claim token* (HKDF-SHA256), seals the heir's
  *      xprv with it, and ships that ciphertext to the server too.
- *      The server only holds a SHA-256 hash of the claim token, so it
- *      cannot reproduce the KEK or open the blob. The raw token only
- *      ever lives in the heir's notification URL fragment.
+ *      Door A also stores the claim token encrypted under the server's
+ *      production master key so the scheduler can later deliver it.
+ *      A DB-only leak cannot open this blob, but DB + master key can
+ *      recover the token and therefore the heir xprv immediately.
+ *      The CSV timelock still prevents spending until it matures.
  *
  *      When the heir clicks the link, their browser reads the token
- *      from the URL fragment (which the browser never sends to the
- *      server), GETs the sealed blob, unwraps the heir xprv locally,
- *      and POSTs both the destination address and the xprv to the
- *      claim/broadcast endpoint. The server uses the xprv only in
- *      memory to sign the BDK-built PSBT, broadcasts, and discards
- *      it. The xprv is never written to disk or logs.
+ *      from the URL fragment, then uses it in token-authenticated API
+ *      paths to fetch the sealed blob. It unwraps the heir xprv locally
+ *      and POSTs both the destination address and xprv to the claim
+ *      endpoint. The server uses the xprv only in memory to sign the
+ *      BDK-built PSBT, broadcasts, and discards it. The xprv is never
+ *      written to disk or application logs.
  *
  *      Why does the heir's xprv touch the server at all? Two reasons:
  *      (a) the server already has the Esplora connection, the BDK
@@ -93,8 +95,9 @@ export interface SealedVaultSecrets {
    *  owner recover their bearer credential on any device from
    *  email+password. */
   owner_token: SealedBlob;
-  /** Heir's account xprv, sealed under HKDF(claim_token). The server
-   *  cannot open this — only the holder of the raw claim token can. */
+  /** Heir's account xprv, sealed under HKDF(claim_token). Door A stores
+   *  that token reversibly under the server master key for later delivery;
+   *  Door B sends no heir xprv or setup-time claim token to the server. */
   heir_xprv: SealedBlob;
 }
 

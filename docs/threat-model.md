@@ -58,10 +58,14 @@ two storage shapes today:
 Same shape as A1, owned by the heir.
 
 - **CLI flow**: heir's own machine.
-- **Password-vault flow**: sealed in the server's `vaults` row
-  under HKDF-SHA256(claim token). The server cannot reproduce the
-  KEK; it only stores the claim-token *hash*. Browser unwraps at
-  claim time. Source:
+- **Password-vault Door A flow**: sealed in the server's `vaults` row
+  under HKDF-SHA256(claim token). The server stores both a token hash
+  for verification and the token reversibly encrypted under
+  `GHOSTKEY_MASTER_KEY` for scheduled delivery. DB + master key can
+  therefore recover the token and heir xprv now; the CSV timelock
+  prevents spending until maturity. Browser unwraps at claim time.
+  **Door B** sends only an heir xpub and stores neither an heir-key
+  ciphertext nor a setup-time claim token. Source:
   [`crypto/sealing.ts`](../ghostkey-web/src/crypto/sealing.ts) →
   `unsealHeirXprv`, [`psbt_routes.rs`](../crates/ghostkey-server/src/psbt_routes.rs)
   → `get_sealed_heir_xprv`.
@@ -80,10 +84,14 @@ Same shape as A1, owned by the heir.
 
 In a **guardian vault** (for an underage heir) the policy is
 `heir AND (g1 OR g2) AND older(N)`, optionally gated by an absolute
-`after(H)` unlock height. The two guardians each hold their own key;
-GhostKey never holds it. A claim needs the heir's signature plus
-exactly one of the two guardian signatures, so no guardian can act
-alone and the loss of one guardian key does not strand the heir.
+`after(H)` unlock height. A claim needs the heir's signature plus
+one guardian signature, so no guardian can act alone and loss of one
+guardian key does not strand the heir. In the current browser-assisted
+enrollment, however, GhostKey stores each sealed claim key and retains
+the corresponding claim tokens reversibly under its master key. DB +
+master key can reconstruct the claim keys now, although neither branch
+is spendable before its timelocks. Independent guardian custody is a
+future enrollment improvement, not a current security property.
 Source:
 [`crates/ghostkey-core/src/descriptor.rs`](../crates/ghostkey-core/src/descriptor.rs)
 → `build_guardian_descriptor_pair`,
@@ -110,13 +118,16 @@ Two distinct uses with different blast radii:
    already existed. Their heir keys are recoverable from one secret,
    which is why that path was removed.
 
-The master key is **never** part of the script-path spend, so a
-leak does not directly let an attacker spend funds. It does, for F2
-vaults, give an attacker everything they need to *be* the heir;
-only the on-chain timelock then stands between them and the funds.
+The master key is **never** part of the script itself. Combined with
+the DB, however, it can decrypt stored Door A and browser-created
+guardian claim tokens, which then decrypt their sealed private keys.
+It can also derive legacy F2 heir keys. Reconstruction is immediate;
+only the relevant on-chain timelocks then stand between those keys and
+the funds. Door B remains outside this capability.
 
 ### A4. The SQLite database (`ghostkey.sqlite`)
 Sealed contacts, sealed password-vault blobs, claim-token hashes,
+reversibly encrypted Door A / guardian claim tokens,
 one-tap-token hashes, owner-token hashes, the descriptor pair per
 vault, the deadline + status + event log per vault, the
 notification queue, the Lightning-invoice records. Tables listed in
@@ -124,13 +135,17 @@ notification queue, the Lightning-invoice records. Tables listed in
 
 A full DB exfiltration *without* the master key reveals which
 addresses are vaults, what their script structure is, and the
-notification metadata. It does not reveal contact plaintext, owner
-xprvs, or heir xprvs (all encrypted to keys the server does not
-hold once the master key is rotated out of memory).
+notification metadata. Without the master key it does not reveal
+contact plaintext or unwrap the stored private-key blobs. Combined
+with the production master key it can recover Door A / guardian claim
+tokens and therefore those claim keys. Owner xprvs still require the
+owner password; Door B heir private keys are never stored.
 
 ### A5. Bearer credentials
-Three flavours, all 32 random bytes, stored hash-only with a
-constant-time compare path (`auth.rs`):
+Three flavours, all 32 random bytes, with hash verifiers and a
+constant-time compare path (`auth.rs`). Door A and browser-created
+guardian claim tokens are also retained reversibly encrypted for
+scheduled delivery:
 
 - **Owner token**: returned exactly once at vault creation. Required
   on owner-mutation endpoints. Persisted on the owner's device
@@ -230,33 +245,30 @@ Bounded under [R10](#r10-guardian-collusion-is-bounded-not-eliminated).
 What the design actually stops, with a pointer into the code that
 does the stopping.
 
-### D1. Att-2 / Att-3 can't move funds in the steady state
-The server never holds the owner's xprv or the heir's xprv in
-plaintext (outside the one narrow exception below, D2). All script-
-path spend paths require a Schnorr signature from a key the server
-does not have. Even with full root on the host, a malicious
-operator cannot construct a valid `or_d → and_v → pk(HEIR) +
-older(N)` witness without either the owner's xprv or the heir's
-xprv.
+### D1. Timelocks block spending, not key reconstruction
+For current Door A and browser-created guardian vaults, DB + production
+master key can reconstruct the relevant claim private keys immediately.
+It still cannot use their script branches before CSV (and optional
+CLTV) maturity. Door B is stricter: the server has only the heir xpub,
+so DB + every production secret remains insufficient to derive the
+heir spending key.
 
-Two caveats, so this isn't read as stronger than it is. On a **legacy
-F2 vault** the operator can *derive* the heir's xprv from the master
-key (A3.2), so for those vaults this section does not hold: only the
-on-chain timelock stands in the way. New vaults are not F2. And the
-owner's xprv is sealed under an Argon2id KEK from their password, so
-an operator with the DB and the master key still needs to break that
-password to spend as the owner.
+Legacy F2 has the same reconstruct-now/spend-after-timelock exposure
+through deterministic derivation. The owner's xprv is separately
+sealed under an Argon2id KEK from their password, so DB + master key
+still needs that password to spend through the owner branch.
 
 - Lives at:
   [`crates/ghostkey-core/src/descriptor.rs`](../crates/ghostkey-core/src/descriptor.rs)
   (script), [`crates/ghostkey-core/src/psbt.rs`](../crates/ghostkey-core/src/psbt.rs)
   (signing paths), [`crates/ghostkey-cli/`](../crates/ghostkey-cli/)
-  (the only place keys are held).
-- Verified: [ ] `cargo test -p ghostkey-core` runs the full PSBT
-  build and verify path; the server crate has no `Sign` import.
+  (offline/manual key tooling).
+- Verified: `cargo test -p ghostkey-core` exercises the PSBT paths;
+  server and web tests separately lock in the Door A reconstructability
+  and Door B no-secret-storage invariants.
 
-### D2. The password-vault server-signing exception is bounded
-The one exception to "server never signs" is
+### D2. Password-vault signing and custody exposure
+The server-signing path is
 `POST /claim/:token/heir-claim`: the browser unwraps the heir xprv
 from the URL-fragment-derived KEK, ships it over TLS, the server
 holds it in process memory for the duration of one call, signs and
@@ -264,8 +276,11 @@ broadcasts, then drops it. The xprv is never written to disk or
 tracing output; it lives in the function-scope variable and goes out
 of scope when the handler returns.
 
-Exposure is bounded to the seconds the call takes. The trade-off,
-fully visible here so it can be argued with:
+The plaintext submitted during a legitimate call is bounded to that
+call. The broader Door A custody exposure is not: DB + master key can
+recover the stored token and sealed heir xprv before the call. CSV
+controls when that reconstructed key can spend, not when it can be
+reconstructed. The trade-off:
 
 - A *compromised* server during that call could redirect the
   matured-timelock UTXO to an attacker-controlled address. The
@@ -297,14 +312,14 @@ brute-force on the 256-bit XChaCha20 key, which is infeasible.
 - Verified: [ ] the migrations show every PII column is `BLOB`
   ciphertext, never a TEXT column.
 
-### D4. Att-4 / Att-8 with a stolen claim link cannot redirect funds
-The claim link is a bearer credential against the GhostKey server,
-but the on-chain spend still requires a Schnorr signature from the
-heir's key. In the CLI / legacy flow, the attacker who steals the
-link does not have the heir's xprv. In the password-vault flow,
-unwrapping the sealed heir xprv requires the URL *fragment* (after
-`#`), which traditional intermediaries (proxies, server logs,
-referer headers) typically do not see.
+### D4. A Door A claim link is recovery authority
+The fragment keeps the credential out of the initial browser HTTP
+request, but the web client subsequently uses that token in GhostKey
+API paths. Anyone who obtains a valid Door A link can fetch and unwrap
+the sealed heir xprv once the server-side claim gates allow it, then
+spend after the Bitcoin timelock matures. Door B is different: its link
+authenticates the claim workflow but does not provide the heir private
+key, which remains in the heir's wallet.
 
 - Lives at:
   [`crates/ghostkey-server/src/psbt_routes.rs`](../crates/ghostkey-server/src/psbt_routes.rs)
@@ -312,10 +327,9 @@ referer headers) typically do not see.
   match);
   [`ghostkey-web/src/crypto/sealing.ts`](../ghostkey-web/src/crypto/sealing.ts)
   → `unsealHeirXprv`.
-- Verified: [ ] the URL-fragment-only secret is never logged or
-  forwarded by the server (`tracing` config in
-  [`routes.rs`](../crates/ghostkey-server/src/routes.rs) redacts the
-  path component for `/claim/`).
+- Verified: application tracing redacts the claim path in
+  [`routes.rs`](../crates/ghostkey-server/src/routes.rs). Upstream proxy
+  log behavior still requires deployment verification.
 
 ### D5. Att-5 (compromised owner) can spend, but cannot retroactively bypass the timelock
 A compromised owner is the owner. They can sweep funds via the

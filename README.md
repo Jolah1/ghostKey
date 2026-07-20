@@ -80,13 +80,13 @@ What works today:
 - Owner check-in via tap-button, one-tap email link, or Lightning (requires the optional Breez SDK Liquid sidecar; see DESIGN.md "Lightning check-ins")
 - Configurable check-in cadence (weekly / 2-weekly / monthly / quarterly) and grace period (3 days / 1 week / 2 weeks / 1 month)
 - Scheduler with pre-deadline reminders, daily alarm escalation, panic-stop freeze, and per-cycle one-tap tokens
-- Encrypted heir / owner / trusted-contact storage; sealed password-vault blobs the server cannot open
+- Encrypted heir / owner / trusted-contact storage. Owner-key blobs require the owner's password; the simple Door A heir-key blob is server-assisted as described below.
 - Email notifications (SMTP via `lettre` + STARTTLS); SMS + WhatsApp via Twilio (optional, off by default)
 - Owners can change how an heir is reached after setup (contact + channel), so a vault set up on an undeliverable channel can be fixed without re-doing setup. The address must match the channel, and easy-setup (F2) heirs stay locked to their email since their key is derived from it.
 - One-time claim link and two heir-claim flows:
   - **Password-vault flow** (default): heir pastes a receive address, server signs in-memory with the just-unwrapped heir xprv, broadcasts in one call.
   - **Manual PSBT flow** (legacy): server hands the heir an unsigned PSBT, accepts the signed string back.
-- "Heir has no Bitcoin wallet" support: the browser generates the heir's key and seals it under their one-time claim token, so the heir needs no wallet and no account. The server cannot open that blob. New vaults never ask the server to derive an heir key from its master key: that would make every such heir key recoverable from one secret. The older server-derivation path (`derive_heir_seed` over `(master_key, heir_email, vault_id)`) is kept reachable only so vaults created before that change can still be claimed.
+- "Heir has no Bitcoin wallet" support (Door A): the browser generates the heir's key and seals it under their one-time claim token, so the heir needs no wallet or prior setup. To deliver the future link, the server stores that token encrypted under its production master key. Consequently DB + master key can reconstruct the heir key now, while CSV prevents spending until maturity. Door B is the recommended strict non-custodial option when the heir already has a wallet: only their xpub reaches GhostKey. The older server-derivation path (`derive_heir_seed` over `(master_key, heir_email, vault_id)`) remains only for legacy claims.
 - In-app AI guide chat (`/assist/chat`) proxied to Claude; refuses to forward seed-shaped strings
 - Per-IP rate limiting on the unauthenticated endpoints (`/assist/chat`, `/vaults`, `/vaults/from-xpub`, `/vaults/find`, `/claim/:token/*`), with per-deploy `GHOSTKEY_RL_*` overrides (see DEPLOY.md)
 

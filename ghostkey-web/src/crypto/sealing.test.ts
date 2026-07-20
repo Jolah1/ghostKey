@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { b64decode, b64encode } from "./sealing";
+import {
+  b64decode,
+  b64encode,
+  deriveClaimKek,
+  sealWithKey,
+  unsealHeirXprv,
+} from "./sealing";
 
 describe("b64decode", () => {
   it("round-trips standard base64 (our own seals)", () => {
@@ -23,5 +29,18 @@ describe("b64decode", () => {
       .replace(/\//g, "_")
       .replace(/=+$/, "");
     expect(b64decode(urlNoPad)).toEqual(bytes);
+  });
+});
+
+describe("Door A custody invariant", () => {
+  it("the raw claim token can recover the sealed heir xprv", () => {
+    const token = new Uint8Array(32).map((_, i) => i + 1);
+    const xprv = "test-only-heir-xprv";
+    const sealed = sealWithKey(
+      deriveClaimKek(token),
+      new TextEncoder().encode(xprv),
+    );
+
+    expect(unsealHeirXprv(token, sealed)).toBe(xprv);
   });
 });

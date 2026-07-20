@@ -1,16 +1,18 @@
-//! GhostKey watch-only notifier server.
+//! GhostKey inheritance coordination server.
 //!
 //! Responsibilities (v1):
-//! - Accept vault registrations (descriptors only — never keys).
+//! - Accept vault registrations and encrypted recovery material.
 //! - Track check-in deadlines.
 //! - Send notifications when an owner misses a check-in and again when
 //!   the on-chain timelock would expire.
 //! - Expose status to heirs so they know when they can claim.
 //!
-//! Explicit non-responsibilities:
-//! - Holding keys.
-//! - Co-signing.
-//! - Moving funds.
+//! Door B is strictly non-custodial: only an heir xpub reaches this
+//! server. The simpler Door A is server-assisted: it stores an heir xprv
+//! encrypted by a claim token and stores that token reversibly under the
+//! production master key for scheduled delivery. It can therefore
+//! reconstruct that heir key, although CSV prevents spending before
+//! maturity. See `docs/threat-model.md`.
 
 use anyhow::Result;
 use clap::Parser;

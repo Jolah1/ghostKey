@@ -487,7 +487,7 @@ mod tests {
     }
 
     #[test]
-    fn at_rest_token_round_trips_and_is_not_plaintext() {
+    fn door_a_master_key_recovers_at_rest_claim_token() {
         ensure_test_master_key();
         let token = "raw-bearer-token-the-heir-sees-0xCAFE";
         let sealed = seal_claim_token_at_rest("vault-pw", token).expect("seal token");

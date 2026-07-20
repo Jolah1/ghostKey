@@ -15,6 +15,7 @@ use ghostkey_core::keys::{descriptor_key_fragment, parse_xpub, vault_account_pat
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 use tracing::Span;
 use uuid::Uuid;
@@ -299,27 +300,39 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(claim_routes)
         .merge(video_routes)
         .merge(analytics_routes)
+        // API responses can contain sealed key material or bearer-gated
+        // state. A blanket no-store is safer than relying on every current
+        // and future sensitive handler to remember the header.
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
+        ))
         .layer(TraceLayer::new_for_http().make_span_with(make_request_span))
         .layer(cors)
         .with_state(state)
 }
 
-/// Build a tracing span for an incoming request with the URI redacted
-/// when it carries a bearer token in the path. A claim URL looks like
-/// `GET /claim/<token>`; without this layer the raw token would appear
-/// verbatim in every access log line, which defeats the point of only
-/// storing the SHA-256 hash server-side. The redaction is conservative:
-/// any path starting with `/claim/` is rewritten to `/claim/[REDACTED]`
-/// before the URI ever reaches the span.
+/// Build a tracing span without copying path-borne bearer credentials
+/// into application logs.
 fn make_request_span(request: &axum::http::Request<axum::body::Body>) -> Span {
     let method = request.method();
     let raw_path = request.uri().path();
-    let safe_path: &str = if raw_path.starts_with("/claim/") {
+    let safe_path = redact_credential_path(raw_path);
+    tracing::info_span!("http", method = %method, path = %safe_path)
+}
+
+fn redact_credential_path(raw_path: &str) -> &str {
+    if raw_path.starts_with("/claim/") {
         "/claim/[REDACTED]"
+    } else if raw_path.contains("/checkin-from-link/") {
+        "/vaults/[ID]/checkin-from-link/[REDACTED]"
+    } else if raw_path.contains("/checkin-link/") {
+        "/vaults/[ID]/checkin-link/[REDACTED]"
+    } else if raw_path.contains("/verify-contact/") {
+        "/vaults/[ID]/verify-contact/[REDACTED]"
     } else {
         raw_path
-    };
-    tracing::info_span!("http", method = %method, path = %safe_path)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -983,10 +996,10 @@ pub struct HeirDerivation {
 /// Sealed material the browser ships during the password-vault flow.
 ///
 /// See `migrations/20260525000002_password_vault.sql` for the threat
-/// model these blobs participate in. Briefly: the server cannot open
-/// any of these blobs during the owner's lifetime, but it does hold
-/// `claim_token_at_rest` once issued (so it can put the token in the
-/// heir's notification when the trigger fires).
+/// model these blobs participate in. The owner blobs require the
+/// owner's password. Door A's heir blob uses a claim token retained
+/// reversibly under the server master key for scheduled delivery, so
+/// DB + master key can open it before the timelock matures.
 #[derive(Debug, Deserialize)]
 pub struct SealedSetup {
     pub password_salt_b64: String,
@@ -5299,6 +5312,31 @@ mod tests {
             "Door B must store no claim-token hash"
         );
         assert_eq!(derived, 0, "Door B is not a server-derived heir");
+    }
+
+    #[test]
+    fn request_log_paths_redact_every_path_borne_credential() {
+        let cases = [
+            ("/claim/secret/build-psbt", "/claim/[REDACTED]"),
+            (
+                "/vaults/id/checkin-from-link/secret",
+                "/vaults/[ID]/checkin-from-link/[REDACTED]",
+            ),
+            (
+                "/vaults/id/checkin-link/secret/lightning-status/hash",
+                "/vaults/[ID]/checkin-link/[REDACTED]",
+            ),
+            (
+                "/vaults/id/verify-contact/secret",
+                "/vaults/[ID]/verify-contact/[REDACTED]",
+            ),
+        ];
+        for (raw, expected) in cases {
+            let redacted = redact_credential_path(raw);
+            assert_eq!(redacted, expected);
+            assert!(!redacted.contains("secret"));
+        }
+        assert_eq!(redact_credential_path("/health"), "/health");
     }
 
     /// The one-tap-link Lightning route must verify the link token (a bad

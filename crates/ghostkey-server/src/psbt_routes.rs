@@ -560,7 +560,9 @@ async fn release_claim_token(state: &AppState, vault_id: &str) {
  *        Returns the heir's xprv ciphertext + nonce + the vault              *
  *        network and timelock. The browser unwraps the ciphertext            *
  *        locally using HKDF(claim_token) — the same KEK the setup            *
- *        browser used to seal it. The server cannot open this blob.          *
+ *        browser used to seal it. Door A stores that token reversibly       *
+ *        under the server master key for scheduled delivery, so DB +        *
+ *        master key can also open it.                                       *
  *                                                                            *
  *    POST /claim/:token/heir-claim                                           *
  *        Body: { destination, fee_rate_sat_per_vb?, heir_xprv }              *
