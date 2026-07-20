@@ -294,8 +294,9 @@ const SEALED_TOKEN_PREFIX: &str = "gk1.";
 ///
 /// The nonce and ciphertext are packed into the single existing column
 /// as `gk1.<nonce_b64>.<ciphertext_b64>` so no schema migration is
-/// needed; [`open_claim_token_at_rest`] reverses it and transparently
-/// passes through legacy plaintext rows.
+/// needed; [`open_claim_token_at_rest`] reverses it. Legacy plaintext
+/// rows are sealed by the mandatory startup data migration before any
+/// route or background worker can read them.
 pub fn seal_claim_token_at_rest(vault_id: &str, token: &str) -> Result<String, CryptoError> {
     let sealed = seal_for_vault(vault_id, token.as_bytes())?;
     Ok(format!(
@@ -304,15 +305,20 @@ pub fn seal_claim_token_at_rest(vault_id: &str, token: &str) -> Result<String, C
     ))
 }
 
-/// Reverse of [`seal_claim_token_at_rest`], with backward compatibility.
+pub(crate) fn claim_token_at_rest_is_sealed(stored: &str) -> bool {
+    stored.starts_with(SEALED_TOKEN_PREFIX)
+}
+
+/// Reverse of [`seal_claim_token_at_rest`].
 ///
-/// Rows written before this change hold the raw token verbatim (no
-/// prefix); we return those unchanged. Rows with the `gk1.` prefix are
-/// AEAD-sealed and get decrypted with the per-vault key.
+/// Unprefixed values are rejected. Startup migrates historical plaintext
+/// rows transactionally before the server starts; accepting plaintext here
+/// would silently reintroduce the compatibility path GK-07 removes.
 pub fn open_claim_token_at_rest(vault_id: &str, stored: &str) -> Result<String, CryptoError> {
     let Some(rest) = stored.strip_prefix(SEALED_TOKEN_PREFIX) else {
-        // Legacy plaintext token, stored before at-rest sealing landed.
-        return Ok(stored.to_string());
+        return Err(CryptoError::Malformed(
+            "at-rest claim token is not sealed".into(),
+        ));
     };
     let (nonce_b64, ciphertext_b64) = rest
         .split_once('.')
@@ -504,13 +510,12 @@ mod tests {
     }
 
     #[test]
-    fn at_rest_token_passes_through_legacy_plaintext_rows() {
+    fn at_rest_token_rejects_legacy_plaintext_rows() {
         ensure_test_master_key();
-        // Rows written before sealing landed hold the raw token verbatim
-        // (base64url, no `gk1.` prefix). They must round-trip unchanged.
         let legacy = "OldRawToken_with-url-safe-chars1234567890AbC";
-        let opened = open_claim_token_at_rest("vault-legacy", legacy).expect("legacy open");
-        assert_eq!(opened, legacy);
+        let error = open_claim_token_at_rest("vault-legacy", legacy)
+            .expect_err("plaintext compatibility must stay removed");
+        assert!(matches!(error, CryptoError::Malformed(_)));
     }
 
     #[test]

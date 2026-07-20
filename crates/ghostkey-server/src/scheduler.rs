@@ -2382,9 +2382,12 @@ mod tests {
             Some("2026-04-08T00:00:00Z"),
         )
         .await;
-        // Simulate the create-time write: both hash + raw token on disk.
-        let stored_hash = "deadbeef".repeat(8); // 64 hex chars
+        // Simulate the post-startup representation: the lookup hash is
+        // unchanged, while the raw token is sealed under the master key.
         let stored_raw = "raw-token-shipped-by-browser-at-setup";
+        let stored_hash = crate::crypto::hash_claim_token(stored_raw);
+        let stored_at_rest =
+            crate::crypto::seal_claim_token_at_rest("vault-pw", stored_raw).unwrap();
         sqlx::query(
             r#"UPDATE vaults
                   SET claim_token_hash       = ?,
@@ -2392,7 +2395,7 @@ mod tests {
                 WHERE id = ?"#,
         )
         .bind(&stored_hash)
-        .bind(stored_raw)
+        .bind(stored_at_rest)
         .bind("vault-pw")
         .execute(&pool)
         .await

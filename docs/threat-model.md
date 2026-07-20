@@ -588,6 +588,21 @@ or poisoned build dependency can exfiltrate them at that moment.
   trust. A signed native/offline owner application or hardware-wallet-
   first flow would reduce it further.
 
+### R14. Historical backups may retain pre-sealing claim tokens
+Current startup seals any legacy plaintext Door A or guardian claim token
+before serving traffic, and the runtime reader rejects unsealed values. A
+backup made by an older release can still contain the raw token. Because the
+same token wraps the corresponding heir/guardian key, changing only its hash
+or database value would strand recovery.
+
+- Mitigation: encrypt backups, restrict and audit access, test restores under
+  the current binary, and expire obsolete pre-migration copies according to a
+  documented retention policy.
+- Accepted residual risk: a stolen historical plaintext backup can contain a
+  still-valid claim credential. Full invalidation requires coordinated
+  rewrapping of token-encrypted material or an owner-authorized move to a new
+  vault descriptor; that higher-risk migration remains future work.
+
 ---
 
 ## 5. Open questions

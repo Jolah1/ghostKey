@@ -173,6 +173,47 @@ sudo systemctl start ghostkey-server
 
 Database migrations are baked into the binary (`sqlx::migrate!`), so they apply automatically at startup.
 
+#### Legacy claim-token sealing upgrade
+
+The GK-07 upgrade performs a second, key-aware data migration after SQL
+migrations and before the scheduler, notifier or HTTP listener starts. It finds
+historical plaintext claim tokens in both the vault and guardian tables and
+encrypts them under `GHOSTKEY_MASTER_KEY`. Token values, token hashes, wrapped
+heir/guardian keys, descriptors and claim links do not change.
+
+Before deploying, stop the old server and take a protected SQLite backup. Treat
+that backup as a live bearer-secret archive; encrypt it and restrict access.
+Inventory counts without selecting token values:
+
+```sql
+SELECT 'vaults' AS source, COUNT(*) AS plaintext_tokens
+  FROM vaults
+ WHERE claim_token_at_rest_b64 IS NOT NULL
+   AND claim_token_at_rest_b64 NOT LIKE 'gk1.%'
+UNION ALL
+SELECT 'guardians', COUNT(*)
+  FROM vault_guardian_keys
+ WHERE claim_token_at_rest_b64 IS NOT NULL
+   AND claim_token_at_rest_b64 NOT LIKE 'gk1.%';
+```
+
+Start the new server and require the log message
+`legacy claim-token sealing migration complete`. It reports counts only, never
+tokens. Re-run the query above; both counts must be zero. Any empty token or
+present-but-mismatched hash aborts the entire transaction and prevents startup,
+so investigate the affected vault record rather than bypassing the check.
+
+The migration is idempotent and already-sealed rows are untouched. Restoring an
+older backup under the new binary runs the migration again before serving. An
+older binary can still read the newly sealed format, so application rollback is
+possible, but do not restore the pre-migration database merely to roll back code.
+
+Historical backups created before this upgrade may still contain directly usable
+claim tokens. Keep only the backups required by the retention/recovery policy,
+encrypt them, audit access and securely expire obsolete copies. This phase does
+not rotate claim tokens because those tokens also wrap heir/guardian key material;
+rotation without coordinated rewrapping would break recovery.
+
 Before deploying the verified-owner-binding migration, inventory historical
 email hashes that were marked verified under more than one owner key:
 

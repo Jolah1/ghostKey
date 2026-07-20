@@ -368,6 +368,10 @@ not reserve or block the address.
 
 ### GK-07 — Medium — Legacy plaintext claim-token compatibility retains bearer secrets
 
+**Status: live-database migration and plaintext-reader removal implemented on
+`security/legacy-token-sealing`; historical backup exposure and coordinated token
+rotation remain open.**
+
 Affected:
 
 - `crates/ghostkey-server/src/crypto.rs:307-315`
@@ -384,6 +388,16 @@ Remediation:
 - Rotate affected claim tokens and invalidate their hashes.
 - Apply backup retention/deletion policy to historical plaintext copies.
 - Remove plaintext fallback after a documented migration deadline.
+
+Implemented controls run an idempotent, transactional startup migration across
+both vault and guardian token columns before any worker or listener starts. Present
+hashes are verified, migrated ciphertext is reopened and compared byte-for-byte,
+already-sealed rows are untouched, and any failure rolls back the whole batch and
+aborts startup. The runtime reader now rejects unprefixed values. This removes
+plaintext from a successfully started live database without changing credentials or
+token-wrapped heir material. Historical backups remain sensitive because their raw
+tokens are still valid; invalidating those copies requires coordinated token/key
+rewrapping or owner-authorized re-vaulting, not a database-only hash rotation.
 
 ### GK-08 — Low — HSTS is absent from the frontend response policy
 
