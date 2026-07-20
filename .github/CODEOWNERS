@@ -1,0 +1,15 @@
+# Require an explicit maintainer review for code that can change what
+# secrets the browser handles or what production CI executes. Branch
+# protection must enable "Require review from Code Owners" for this file
+# to become an enforcement control rather than documentation.
+/.github/CODEOWNERS @Jolah1
+/.github/workflows/ @Jolah1
+/vercel.json @Jolah1
+/ghostkey-web/package-lock.json @Jolah1
+/ghostkey-web/vite*.config.ts @Jolah1
+/ghostkey-web/src/crypto/ @Jolah1
+/ghostkey-web/src/kit/ @Jolah1
+/ghostkey-web/scripts/ @Jolah1
+/crates/ghostkey-server/src/crypto.rs @Jolah1
+/crates/ghostkey-server/src/auth.rs @Jolah1
+/crates/ghostkey-server/src/psbt_routes.rs @Jolah1

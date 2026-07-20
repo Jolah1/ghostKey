@@ -5,7 +5,11 @@ Two parts to put online:
 1. **`ghostkey-server`**: Rust binary, listens on a TCP port, persists to a SQLite file. Needs a small Linux host.
 2. **`ghostkey-web`**: static SPA. Drop it on any CDN.
 
-There's no CLI to deploy: the CLI lives on each user's own machine, alongside their seed phrase. The website never sees keys.
+The CLI lives on each user's own machine, alongside their seed phrase. The
+password-vault website, however, generates and unlocks keys in browser memory.
+Its static host, deployment account and build pipeline are therefore trusted
+components: malicious same-origin JavaScript could capture those keys or the
+password while the user interacts with it.
 
 This guide picks the **smallest, cheapest viable stack**: a $5/mo VPS for the server + a free static host for the web. Total cost: ≤ $5/month.
 
@@ -242,6 +246,37 @@ Similar story:
 - Build command: `npm run build`
 - Output directory: `dist`
 - Env: `VITE_API_BASE=https://api.example.com`
+
+### Verified web release artifacts
+
+The `web` GitHub Actions workflow packages the exact `dist/` output as a
+deterministic tarball and uploads it with a CycloneDX SBOM and `SHA256SUMS`.
+On `main`, a separate least-privilege job adds GitHub build-provenance
+attestations. Download the `ghostkey-web-<commit>` artifact from the successful
+workflow run, then verify it before promotion:
+
+```sh
+cd release
+sha256sum -c SHA256SUMS
+gh attestation verify "ghostkey-web-<commit>.tar.gz" --repo Jolah1/ghostKey
+```
+
+Deploy that verified archive directly where the host supports prebuilt static
+uploads. A Vercel/Pages Git integration that rebuilds from source is a separate
+artifact and is not proven identical by this attestation.
+
+In repository settings, protect `main`, require the web check and approving
+reviews (including CODEOWNERS), disallow force-pushes, and configure a
+protected `production` environment with required reviewers. Dependabot is
+configured to propose reviewed updates to immutable Action pins. Provenance
+proves what CI built; these controls decide who may cause that build to reach
+users.
+
+Do not enable **Require review from Code Owners** while the repository has
+only one maintainer: GitHub does not allow an author to approve their own PR,
+so CODEOWNERS-protected changes would become unmergeable. Keep the file as
+ownership documentation until a second trusted reviewer is available, then
+enable enforcement and test it with a non-production PR.
 
 #### Option c: nginx on your own server
 

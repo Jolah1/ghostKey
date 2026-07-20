@@ -184,7 +184,7 @@ Heir claim page (`/claim/:token`): five states: loading, not found, already used
 | GhostKey server + production master key | Record false check-ins, suppress alarms, decrypt contacts, and reconstruct current Door A / browser-created guardian claim keys now | Spend through a timelocked branch before CSV maturity; reconstruct a Door B heir key |
 | GhostKey server (during a password-vault heir claim) | Briefly hold the heir xprv in process memory for the duration of one `POST /claim/:token/heir-claim` call | Persist the xprv: never touches disk or logs; dropped at end of scope. See [Server-side signing exception](#server-side-signing-exception). |
 | GhostKey master key (`GHOSTKEY_MASTER_KEY`) + DB leak | Decrypt every sealed contact; recover stored Door A / guardian claim tokens and their sealed keys; recompute legacy F2 heir keys | Touch funds through those branches before the on-chain timelock matures; derive a Door B heir key |
-| Web dashboard XSS | Send heartbeat requests; read the owner token from localStorage | Sign transactions client-side, decrypt sealed material without the user's password |
+| Hosted frontend, deployment account, or same-origin script compromised | Capture passwords and keys while the user creates/unlocks them; alter destinations and transactions shown in the UI | Recover secrets from a user who does not load or interact with the compromised bundle; bypass Bitcoin signature/timelock rules |
 | Heir's key (timelock active) | Nothing useful | Spend: mempool rejects as non-BIP68-final |
 | Heir's key (timelock expired, owner gone) | Claim, as intended | — |
 | Owner's key | Spend or move funds, as the owner always could | — |

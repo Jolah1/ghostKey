@@ -26,6 +26,9 @@
 
 name: signet-nightly
 
+permissions:
+  contents: read
+
 on:
   schedule:
     # 06:00 UTC daily. Far enough from midnight that staging deploys
@@ -47,7 +50,7 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # jq is preinstalled on ubuntu-latest; this is belt-and-braces in
       # case the image image changes underneath us.

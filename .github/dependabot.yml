@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # Immutable action SHAs prevent a mutable tag from changing underneath
+  # a trusted workflow. Dependabot keeps those pins reviewably current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

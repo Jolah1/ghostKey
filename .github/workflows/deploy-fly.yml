@@ -44,6 +44,9 @@
 
 name: deploy
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -67,13 +70,13 @@ jobs:
     name: fly deploy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # Pin to a known-good flyctl. `@master` worked for the early
       # deploys but in 2026 any breaking-change release to the
       # action's master branch would silently take CI down with it.
       # Bump this when you've manually verified a newer version
       # against `fly deploy --remote-only` locally.
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master, pinned 2026-07-20
         with:
           version: 0.4.55
       # Surface auth failures with a real error message BEFORE the
