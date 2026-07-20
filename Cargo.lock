@@ -1148,6 +1148,7 @@ dependencies = [
  "ghostkey-core",
  "hex",
  "hkdf",
+ "ipnet",
  "lettre",
  "miniscript",
  "p256",

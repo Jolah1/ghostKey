@@ -20,12 +20,10 @@
 //!   "Capacity" is the burst size; "refill_per_sec" is the steady-
 //!   state allowance. Buckets refill continuously based on wall
 //!   time, not on a tick.
-//! - Client key is `Fly-Client-IP` → first `X-Forwarded-For` hop →
-//!   the connection peer IP. On Fly the peer is the edge proxy, so
-//!   without the header check every user would share one bucket and
-//!   one abusive client would lock everyone out. The header is
-//!   trusted because it's set by our own proxy; if you deploy
-//!   elsewhere, audit your load balancer's header semantics.
+//! - Forwarding headers are accepted only when the immediate TCP peer
+//!   matches `GHOSTKEY_TRUSTED_PROXY_CIDRS`. `Fly-Client-IP` must parse
+//!   as an IP. XFF is walked right-to-left, stripping trusted proxy
+//!   hops. Otherwise the TCP peer IP is the key.
 //! - On overflow we return `429 Too Many Requests` with a
 //!   `Retry-After` header (rounded up to the next whole second) so
 //!   well-behaved clients back off without us having to set
@@ -49,13 +47,14 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use axum::extract::ConnectInfo;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use ipnet::IpNet;
 use tokio::sync::Mutex;
 
 /// Per-route limiter handle. Cheap to clone (one `Arc`); pass into the
@@ -77,7 +76,63 @@ struct LimiterInner {
     /// etc.). Keeps the production logs interpretable without having
     /// to grep route paths.
     name: &'static str,
+    trusted_proxies: TrustedProxies,
     buckets: Mutex<HashMap<String, Bucket>>,
+}
+
+#[derive(Clone, Default)]
+struct TrustedProxies {
+    networks: Arc<Vec<IpNet>>,
+}
+
+static TRUSTED_PROXIES: OnceLock<TrustedProxies> = OnceLock::new();
+
+impl TrustedProxies {
+    fn from_env() -> Self {
+        let Ok(raw) = std::env::var("GHOSTKEY_TRUSTED_PROXY_CIDRS") else {
+            tracing::warn!(
+                "GHOSTKEY_TRUSTED_PROXY_CIDRS is unset; forwarding headers will be ignored"
+            );
+            return Self::default();
+        };
+        if raw.trim().is_empty() {
+            tracing::warn!(
+                "GHOSTKEY_TRUSTED_PROXY_CIDRS is empty; forwarding headers will be ignored"
+            );
+            return Self::default();
+        }
+        let mut networks = Vec::new();
+        for item in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            match item.parse::<IpNet>() {
+                Ok(network) => networks.push(network),
+                Err(error) => {
+                    tracing::error!(
+                        value = item,
+                        %error,
+                        "invalid GHOSTKEY_TRUSTED_PROXY_CIDRS entry; ignoring all forwarding headers"
+                    );
+                    return Self::default();
+                }
+            }
+        }
+        tracing::info!(
+            count = networks.len(),
+            "trusted proxy CIDRs loaded for client-IP resolution"
+        );
+        Self {
+            networks: Arc::new(networks),
+        }
+    }
+
+    fn contains(&self, ip: IpAddr) -> bool {
+        self.networks.iter().any(|network| network.contains(&ip))
+    }
+}
+
+fn trusted_proxies_from_env() -> TrustedProxies {
+    TRUSTED_PROXIES
+        .get_or_init(TrustedProxies::from_env)
+        .clone()
 }
 
 #[derive(Clone, Copy)]
@@ -109,6 +164,7 @@ impl Limiter {
                 capacity: capacity as f64,
                 refill_per_sec,
                 name,
+                trusted_proxies: trusted_proxies_from_env(),
                 buckets: Mutex::new(HashMap::new()),
             }),
         }
@@ -229,36 +285,45 @@ where
 /// Best-effort extraction of the remote client's IP for rate-limiting
 /// purposes.
 ///
-/// Order of preference:
-///   1. `Fly-Client-IP`. Set by Fly's edge proxy after TLS termination
-///      and before forwarding; we trust it because nobody else can
-///      reach us at this layer.
-///   2. The first hop of `X-Forwarded-For`. Standard reverse-proxy
-///      header. We split on `,` and take the leftmost entry, which
-///      by convention is the original client.
-///   3. The TCP peer address. Last resort — in production this is
-///      the edge proxy, so without (1) or (2) the limiter collapses
-///      to one global bucket. Better than nothing, worse than the
-///      header path; we log a warning to make the misconfiguration
-///      visible.
+/// Forwarding headers are considered only when the immediate TCP peer
+/// belongs to `GHOSTKEY_TRUSTED_PROXY_CIDRS`. For a trusted peer,
+/// `Fly-Client-IP` is preferred when it is a valid IP; otherwise XFF
+/// is walked right-to-left and trusted proxy hops are removed. For an
+/// untrusted peer, or when no usable header remains, the TCP peer is
+/// the key.
 ///
 /// Returns a string key so callers can use it directly in the
 /// bucket map. We don't normalise IPv4-mapped IPv6 addresses
 /// (`::ffff:a.b.c.d`) because the same client over the same proxy
 /// will always render identically; clients behind different
 /// stacks will key separately, which is fine.
-fn client_key(headers: &HeaderMap, peer: Option<&SocketAddr>) -> String {
-    if let Some(v) = headers.get("fly-client-ip").and_then(|h| h.to_str().ok()) {
-        let trimmed = v.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
+fn client_key(
+    headers: &HeaderMap,
+    peer: Option<&SocketAddr>,
+    trusted_proxies: &TrustedProxies,
+) -> String {
+    let peer_ip = peer.map(|addr| addr.ip());
+    if peer_ip.is_some_and(|ip| trusted_proxies.contains(ip)) {
+        if let Some(ip) = headers
+            .get("fly-client-ip")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|value| value.trim().parse::<IpAddr>().ok())
+        {
+            return ip.to_string();
         }
-    }
-    if let Some(v) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
-        if let Some(first) = v.split(',').next() {
-            let trimmed = first.trim();
-            if !trimmed.is_empty() {
-                return trimmed.to_string();
+        if let Some(value) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
+            // Walk from the trusted edge back toward the client. Trusted
+            // proxy hops are stripped; the first untrusted address is the
+            // effective client. This resists a client prepending spoofed
+            // leftmost values when a proxy appends the real address.
+            for ip in value
+                .split(',')
+                .rev()
+                .filter_map(|part| part.trim().parse::<IpAddr>().ok())
+            {
+                if !trusted_proxies.contains(ip) {
+                    return ip.to_string();
+                }
             }
         }
     }
@@ -279,7 +344,11 @@ pub async fn enforce(
     req: axum::extract::Request,
     next: Next,
 ) -> Response {
-    let key = client_key(req.headers(), connect_info.as_ref().map(|c| &c.0));
+    let key = client_key(
+        req.headers(),
+        connect_info.as_ref().map(|c| &c.0),
+        &limiter.inner.trusted_proxies,
+    );
     match limiter.try_acquire(&key).await {
         Ok(()) => next.run(req).await,
         Err(retry_after) => {
@@ -340,29 +409,70 @@ mod tests {
         assert!(l.try_acquire("a").await.is_ok());
     }
 
-    #[test]
-    fn client_key_prefers_fly_header() {
-        let mut h = HeaderMap::new();
-        h.insert("fly-client-ip", "1.2.3.4".parse().unwrap());
-        h.insert("x-forwarded-for", "5.6.7.8".parse().unwrap());
-        assert_eq!(client_key(&h, None), "1.2.3.4");
+    fn trusted(cidr: &str) -> TrustedProxies {
+        TrustedProxies {
+            networks: Arc::new(vec![cidr.parse().unwrap()]),
+        }
     }
 
     #[test]
-    fn client_key_falls_back_to_xff_first_hop() {
+    fn trusted_peer_prefers_valid_fly_header() {
+        let mut h = HeaderMap::new();
+        h.insert("fly-client-ip", "1.2.3.4".parse().unwrap());
+        h.insert("x-forwarded-for", "5.6.7.8".parse().unwrap());
+        let peer: SocketAddr = "10.1.2.3:443".parse().unwrap();
+        assert_eq!(
+            client_key(&h, Some(&peer), &trusted("10.0.0.0/8")),
+            "1.2.3.4"
+        );
+    }
+
+    #[test]
+    fn xff_walks_from_right_and_ignores_spoofed_leftmost_value() {
         let mut h = HeaderMap::new();
         h.insert(
             "x-forwarded-for",
-            "10.0.0.1, 192.168.1.1, 8.8.8.8".parse().unwrap(),
+            "6.6.6.6, 203.0.113.9, 10.2.3.4".parse().unwrap(),
         );
-        assert_eq!(client_key(&h, None), "10.0.0.1");
+        let peer: SocketAddr = "10.1.2.3:443".parse().unwrap();
+        assert_eq!(
+            client_key(&h, Some(&peer), &trusted("10.0.0.0/8")),
+            "203.0.113.9"
+        );
+    }
+
+    #[test]
+    fn untrusted_peer_cannot_spoof_forwarding_headers() {
+        let mut h = HeaderMap::new();
+        h.insert("fly-client-ip", "1.2.3.4".parse().unwrap());
+        h.insert("x-forwarded-for", "5.6.7.8".parse().unwrap());
+        let peer: SocketAddr = "198.51.100.7:51234".parse().unwrap();
+        assert_eq!(
+            client_key(&h, Some(&peer), &trusted("10.0.0.0/8")),
+            "198.51.100.7"
+        );
+    }
+
+    #[test]
+    fn malformed_forwarding_headers_fall_back_to_peer() {
+        let mut h = HeaderMap::new();
+        h.insert("fly-client-ip", "not-an-ip".parse().unwrap());
+        h.insert("x-forwarded-for", "also-bad".parse().unwrap());
+        let peer: SocketAddr = "10.1.2.3:443".parse().unwrap();
+        assert_eq!(
+            client_key(&h, Some(&peer), &trusted("10.0.0.0/8")),
+            "10.1.2.3"
+        );
     }
 
     #[test]
     fn client_key_falls_back_to_peer_when_no_headers() {
         let peer: SocketAddr = "203.0.113.5:51234".parse().unwrap();
         let h = HeaderMap::new();
-        assert_eq!(client_key(&h, Some(&peer)), "203.0.113.5");
+        assert_eq!(
+            client_key(&h, Some(&peer), &TrustedProxies::default()),
+            "203.0.113.5"
+        );
     }
 
     // These tests touch `std::env`, which is process-global. We use

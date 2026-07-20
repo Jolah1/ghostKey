@@ -170,8 +170,12 @@ notification).
 Money. The route proxies the Anthropic Messages API on our account.
 Each accepted request costs real dollars; a sustained abuse loop
 without bounds could rack up a meaningful bill before being noticed.
-Per-IP rate limit + per-deploy env-var caps live in
-[`rate_limit.rs`](../crates/ghostkey-server/src/rate_limit.rs).
+Per-IP rate limits, trusted-proxy client identity and per-process
+provider concurrency ceilings live in
+[`rate_limit.rs`](../crates/ghostkey-server/src/rate_limit.rs) and
+[`concurrency.rs`](../crates/ghostkey-server/src/concurrency.rs).
+They bound one replica; distributed limits remain an upstream
+operational responsibility.
 
 ---
 
