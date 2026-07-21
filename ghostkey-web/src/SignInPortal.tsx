@@ -82,6 +82,14 @@ function heirNameFromLabel(label: string | null): string {
   return m ? m[1] : "Heir";
 }
 
+/** "jo•••@gmail.com" — enough for the owner to recognise themselves
+ *  without printing the full address on a lock screen. */
+function maskEmail(address: string): string {
+  const at = address.indexOf("@");
+  if (at <= 0) return address;
+  return `${address.slice(0, Math.min(2, at))}•••${address.slice(at)}`;
+}
+
 interface Props {
   onNavigate: (r: Route) => void;
   recoveryToken?: string;
@@ -120,18 +128,26 @@ export function SignInPortal({
   const [bundles, setBundles] = useState<OwnerRecoveryBundle[]>([]);
   const [recoveredEmail, setRecoveredEmail] = useState("");
   const exchangeStarted = useRef(false);
+  // Escape hatch from the local password form to the email-link flow,
+  // for a different email or a different vault. The link is another way
+  // to sign in, never a password reset — the password does the actual
+  // unlocking in both flows and cannot be recovered by anyone.
+  const [useEmailLink, setUseEmailLink] = useState(false);
   const localVaultId = localUnlock ? getActiveVaultId() : null;
-  const localLock = localVaultId
-    ? getVaultMeta(localVaultId)?.ownerTokenLock
-    : null;
+  const localMeta = localVaultId ? getVaultMeta(localVaultId) : null;
+  const localLock = localMeta?.ownerTokenLock ?? null;
   // A vault set up before the trusted-device lock shipped has no encrypted
   // blob yet, only a live owner token in local storage. We can still unlock it
   // locally by fetching its sealed bundle with that token (see the seeding
   // step in unlockTrustedDevice), so offer the password path for it too.
   const localOwnerToken = localVaultId ? getVaultOwnerToken(localVaultId) : null;
   const trustedUnlock = Boolean(
-    localUnlock && localVaultId && (localLock || localOwnerToken),
+    localUnlock && localVaultId && (localLock || localOwnerToken) && !useEmailLink,
   );
+  // The owner email is already stored in plain text with the vault meta
+  // on this device, so asking the user to retype it adds no protection.
+  // Show it and ask only for the password.
+  const storedEmail = trustedUnlock ? (localMeta?.owner.address ?? "") : "";
 
   useEffect(() => {
     if (!recoveryToken || exchangeStarted.current) return;
@@ -196,15 +212,11 @@ export function SignInPortal({
   }
 
   async function unlockTrustedDevice() {
-    if (!email.trim() || !password) {
-      setError("Enter your email and password.");
+    if (!password) {
+      setError("Enter your password.");
       return;
     }
-    if (!/^.+@.+\..+$/.test(email.trim())) {
-      setError("That email looks off. Double-check it.");
-      return;
-    }
-    if (!localVaultId) {
+    if (!localVaultId || !storedEmail) {
       setError("This browser no longer has its trusted-device credential.");
       return;
     }
@@ -212,7 +224,7 @@ export function SignInPortal({
     setError(null);
     setPhase({ kind: "unsealing", vaultId: localVaultId, progress: 0 });
     try {
-      const emailHash = hashEmailForLookup(email);
+      const emailHash = hashEmailForLookup(storedEmail);
       const activeMeta = getVaultMeta(localVaultId);
       const inScope = (meta: VaultMeta) =>
         meta.id === localVaultId ||
@@ -221,9 +233,9 @@ export function SignInPortal({
       // Vaults created before the trusted-device lock shipped hold a usable
       // owner token but no encrypted blob. Seed one from the server bundle so
       // the same password opens them, and so the live token can move off disk
-      // on the next lock. Only a vault whose stored owner email matches what
-      // was typed is seeded; the password itself is still proven below by
-      // opening the blob.
+      // on the next lock. Only a vault whose stored owner email matches the
+      // active vault's is seeded; the password itself is still proven below
+      // by opening the blob.
       for (const meta of getAllVaultMetas()) {
         if (meta.ownerTokenLock || !inScope(meta)) continue;
         const ownerToken = getVaultOwnerToken(meta.id);
@@ -320,12 +332,17 @@ export function SignInPortal({
       onUnlock?.();
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      const wrongPassword = /poly1305|tag|invalid|decryp|wrong-email/i.test(message);
-      setError(
-        wrongPassword
-          ? "Wrong email or password. Try again."
-          : message,
-      );
+      // The email is the stored one, so a mismatch means the saved
+      // credential itself is off, not a typo. Point at the email link.
+      if (message === "wrong-email") {
+        setError(
+          "The saved sign-in on this device doesn't match this vault. " +
+            "Use the email link below instead.",
+        );
+      } else {
+        const wrongPassword = /poly1305|tag|invalid|decryp/i.test(message);
+        setError(wrongPassword ? "Wrong password. Try again." : message);
+      }
       setPhase({ kind: "idle" });
     }
   }
@@ -524,13 +541,15 @@ export function SignInPortal({
         <header className="text-center">
           <p className="eyebrow">Sign in</p>
           <h1 className="mt-6 font-serif text-3xl md:text-4xl">
-            {trustedUnlock && timedOut
-              ? "Session timed out"
+            {trustedUnlock
+              ? timedOut
+                ? "Session timed out"
+                : "Welcome back"
               : "Open your vault on this device"}
           </h1>
           <p className="mx-auto mt-3 text-sm text-muted">
             {trustedUnlock
-              ? "Use the email and password you chose at setup. No sign-in link will be sent."
+              ? `Enter the password for ${maskEmail(storedEmail)}.`
               : recoveryToken
               ? "Enter the password you chose at setup. Your encrypted vault opens here on this device."
               : "Enter your email and we'll send a private, one-time sign-in link. We never reveal whether an address has a vault."}
@@ -548,7 +567,7 @@ export function SignInPortal({
           }}
           className="mt-10"
         >
-          {!recoveryToken ? (
+          {!recoveryToken && !trustedUnlock ? (
             <Field label="Email">
               <input
                 type="email"
@@ -617,6 +636,12 @@ export function SignInPortal({
             </div>
           ) : null}
 
+          {phase.kind === "done" ? (
+            <p className="mt-4 text-sm text-muted" role="status" aria-live="polite">
+              Opening your vault…
+            </p>
+          ) : null}
+
           {error ? (
             <div className="mt-4">
               <InlineAlert tone="alarm">{error}</InlineAlert>
@@ -639,13 +664,15 @@ export function SignInPortal({
               loading={
                 phase.kind === "looking" ||
                 phase.kind === "exchanging" ||
-                phase.kind === "unsealing"
+                phase.kind === "unsealing" ||
+                phase.kind === "done"
               }
               disabled={
                 phase.kind === "looking" ||
                 phase.kind === "sent" ||
                 phase.kind === "exchanging" ||
                 phase.kind === "unsealing" ||
+                phase.kind === "done" ||
                 (Boolean(recoveryToken) && bundles.length === 0)
               }
             >
@@ -656,18 +683,51 @@ export function SignInPortal({
           </div>
         </form>
 
-        {!trustedUnlock ? (
+        {trustedUnlock ? (
           <div className="mt-10 border-t border-app pt-6 text-center text-xs text-muted">
-            New here?{" "}
+            Different email or vault?{" "}
             <button
               type="button"
               className="underline hover:text-[var(--text)]"
-              onClick={() => onNavigate("setup")}
+              onClick={() => {
+                setUseEmailLink(true);
+                setError(null);
+                setPassword("");
+              }}
             >
-              Set up a vault
+              Email me a sign-in link
             </button>
           </div>
-        ) : null}
+        ) : (
+          <div className="mt-10 border-t border-app pt-6 text-center text-xs text-muted">
+            {useEmailLink ? (
+              <>
+                Have your password?{" "}
+                <button
+                  type="button"
+                  className="underline hover:text-[var(--text)]"
+                  onClick={() => {
+                    setUseEmailLink(false);
+                    setError(null);
+                  }}
+                >
+                  Unlock with it here
+                </button>
+              </>
+            ) : (
+              <>
+                New here?{" "}
+                <button
+                  type="button"
+                  className="underline hover:text-[var(--text)]"
+                  onClick={() => onNavigate("setup")}
+                >
+                  Set up a vault
+                </button>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </main>
   );
