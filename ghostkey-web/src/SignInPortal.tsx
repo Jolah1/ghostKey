@@ -68,7 +68,6 @@ import {
   saveVaultCredentialLock,
   setActiveVaultId,
   unlockVaultCredentials,
-  type VaultMeta,
 } from "./vaultStore";
 import type { Route } from "./App";
 
@@ -225,10 +224,6 @@ export function SignInPortal({
     setPhase({ kind: "unsealing", vaultId: localVaultId, progress: 0 });
     try {
       const emailHash = hashEmailForLookup(storedEmail);
-      const activeMeta = getVaultMeta(localVaultId);
-      const inScope = (meta: VaultMeta) =>
-        meta.id === localVaultId ||
-        Boolean(activeMeta?.groupId && meta.groupId === activeMeta.groupId);
 
       // Vaults created before the trusted-device lock shipped hold a usable
       // owner token but no encrypted blob. Seed one from the server bundle so
@@ -237,7 +232,7 @@ export function SignInPortal({
       // active vault's is seeded; the password itself is still proven below
       // by opening the blob.
       for (const meta of getAllVaultMetas()) {
-        if (meta.ownerTokenLock || !inScope(meta)) continue;
+        if (meta.ownerTokenLock) continue;
         const ownerToken = getVaultOwnerToken(meta.id);
         if (
           !ownerToken ||
@@ -268,30 +263,53 @@ export function SignInPortal({
       if (!activeLock || activeLock.ownerEmailHash !== emailHash) {
         throw new Error("wrong-email");
       }
-      const matching = getAllVaultMetas().filter(
-        (meta) =>
-          meta.ownerTokenLock?.ownerEmailHash === emailHash && inScope(meta),
-      );
+      // Locking covers every password vault on this device (see App's
+      // lockIfPasswordVault), so unlocking must match: one password
+      // opens everything sealed under this owner email, not just the
+      // active vault's group. Otherwise switching to another heir or
+      // vault right after signing in asks for the password again.
+      // The active vault goes first so a wrong password fails fast.
+      const matching = getAllVaultMetas()
+        .filter((meta) => meta.ownerTokenLock?.ownerEmailHash === emailHash)
+        .sort((a, b) =>
+          a.id === localVaultId ? -1 : b.id === localVaultId ? 1 : 0,
+        );
       const tokens: Record<string, string> = {};
       for (let index = 0; index < matching.length; index++) {
         const meta = matching[index];
         const lock = meta.ownerTokenLock!;
-        const decryptedToken = await unsealOwnerToken({
-          password,
-          passwordSalt: lock.passwordSalt,
-          memKiB: lock.memKiB,
-          iters: lock.iters,
-          ownerTokenBlob: lock.ownerTokenBlob,
-          onProgress: (progress) =>
-            setPhase({
-              kind: "unsealing",
-              vaultId: localVaultId,
-              progress: Math.round(
-                ((index + progress) / matching.length) * 100,
-              ),
-            }),
-        });
+        let decryptedToken: string;
+        try {
+          decryptedToken = await unsealOwnerToken({
+            password,
+            passwordSalt: lock.passwordSalt,
+            memKiB: lock.memKiB,
+            iters: lock.iters,
+            ownerTokenBlob: lock.ownerTokenBlob,
+            onProgress: (progress) =>
+              setPhase({
+                kind: "unsealing",
+                vaultId: localVaultId,
+                progress: Math.round(
+                  ((index + progress) / matching.length) * 100,
+                ),
+              }),
+          });
+        } catch (e) {
+          // Only the active vault's blob proves the typed password. A
+          // sibling sealed under a different password stays locked and
+          // can be opened later with its own password.
+          if (meta.id === localVaultId) throw e;
+          continue;
+        }
         const liveToken = getVaultOwnerToken(meta.id);
+        if (decryptedToken === PLACEHOLDER_OWNER_TOKEN && !liveToken) {
+          // The setup-time re-seal never landed for this vault and its
+          // live token is already gone, so this blob holds nothing
+          // usable. Leave the vault locked rather than storing a
+          // placeholder that guarantees 401s on every call.
+          continue;
+        }
         if (liveToken && decryptedToken !== liveToken) {
           // Some early setups left the server's valid password ciphertext
           // wrapping a placeholder token. The password has been proven by

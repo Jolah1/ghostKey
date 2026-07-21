@@ -126,23 +126,30 @@ function lazyRoute<T extends ComponentType<any>>(
 // flows (setup with its crypto stack, the dashboard, the claim page)
 // download when — and only when — they're navigated to. AssistChat is
 // shared by two lazy routes, so Vite hoists it into its own chunk.
+// The three most likely "next clicks" keep their import thunks named
+// so the idle-prefetch effect in App can warm them before the user
+// navigates. Everything else loads on demand.
+const importPasswordSetupPortal = () => import("./PasswordSetupPortal");
+const importSignInPortal = () => import("./SignInPortal");
+const importDashboard = () => import("./Dashboard");
+
 const SetupPortal = lazyRoute(() =>
   import("./SetupPortal").then((m) => ({ default: m.SetupPortal })),
 );
 const PasswordSetupPortal = lazyRoute(() =>
-  import("./PasswordSetupPortal").then((m) => ({ default: m.PasswordSetupPortal })),
+  importPasswordSetupPortal().then((m) => ({ default: m.PasswordSetupPortal })),
 );
 const CheckinPortal = lazyRoute(() =>
   import("./CheckinPortal").then((m) => ({ default: m.CheckinPortal })),
 );
 const SignInPortal = lazyRoute(() =>
-  import("./SignInPortal").then((m) => ({ default: m.SignInPortal })),
+  importSignInPortal().then((m) => ({ default: m.SignInPortal })),
 );
 const InheritPortal = lazyRoute(() =>
   import("./InheritPortal").then((m) => ({ default: m.InheritPortal })),
 );
 const Dashboard = lazyRoute(() =>
-  import("./Dashboard").then((m) => ({ default: m.Dashboard })),
+  importDashboard().then((m) => ({ default: m.Dashboard })),
 );
 const ActivityPage = lazyRoute(() =>
   import("./ActivityPage").then((m) => ({ default: m.ActivityPage })),
@@ -375,6 +382,29 @@ export default function App() {
   // the next visit to the dashboard asking for a password doesn't feel
   // like a bug. Dismissable; clears on unlock.
   const [expiredNotice, setExpiredNotice] = useState(false);
+
+  // Warm the chunks the user is most likely to open next while the
+  // browser is idle, so clicking "Sign in" or landing on the dashboard
+  // paints immediately instead of showing the route placeholder. A
+  // device holding a vault heads for sign-in/dashboard; a new visitor's
+  // primary path is setup. Fire-and-forget: a failed prefetch simply
+  // falls back to the normal lazy load on navigation.
+  useEffect(() => {
+    const warm = () => {
+      if (getActiveVaultId()) {
+        void importSignInPortal().catch(() => {});
+        void importDashboard().catch(() => {});
+      } else {
+        void importPasswordSetupPortal().catch(() => {});
+      }
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      const id = window.requestIdleCallback(warm, { timeout: 3000 });
+      return () => window.cancelIdleCallback(id);
+    }
+    const id = window.setTimeout(warm, 1500);
+    return () => window.clearTimeout(id);
+  }, []);
 
   // Sync the URL hash with the current location. Only writes back for
   // simple routes; the claim page's token-bearing URL is owned by the
@@ -684,18 +714,25 @@ export default function App() {
   );
 }
 
-/** Minimal centered placeholder while a lazy route chunk downloads.
- *  Kept text-only: the chunks are tens of KB on a CDN, so this is
- *  visible for a blink on most connections — a spinner would flash. */
+/** Centered placeholder while a lazy route chunk downloads. The
+ *  150ms animation delay keeps it invisible on fast loads (no flash),
+ *  but on a slow connection the spinner makes the wait unmistakable —
+ *  a quiet line of text reads as a blank page and invites a second
+ *  click. */
 function RouteLoading() {
   return (
     <main className="bg-app">
       <div
-        className="mx-auto max-w-xl px-5 py-24 text-center text-sm text-muted"
+        className="mx-auto max-w-xl px-5 py-24 text-center"
         role="status"
         aria-live="polite"
+        style={{ animation: "gk-fade-in 0.3s ease 0.15s backwards" }}
       >
-        Getting things ready…
+        <span
+          aria-hidden="true"
+          className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-[var(--accent)] border-r-transparent"
+        />
+        <p className="mt-3 text-sm text-muted">Getting things ready…</p>
       </div>
     </main>
   );
