@@ -34,6 +34,9 @@ dist/
 # Logs
 *.log
 ghostkey-web/public/independence-proof.html
+# Side-product of the kit build: the sealing module references the KDF
+# worker, so vite emits its chunk next to the inlined kit page.
+ghostkey-web/public/argonWorker-*.js
 
 # Lighthouse CI output (web perf/a11y gate, #225)
 lighthouse-reports/
