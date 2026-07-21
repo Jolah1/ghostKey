@@ -175,6 +175,66 @@ const PASSWORD_INFO = "ghostkey:owner-kek:v1";
  * Pass `onProgress` to drive a progress indicator — Argon2id is
  * partition-friendly so @noble/hashes can yield checkpoints.
  */
+/**
+ * Singleton KDF worker + pending-request registry. One in-flight
+ * derivation at a time is the norm (sign-in, send, setup are all
+ * modal), but ids keep interleaved calls safe anyway.
+ */
+let kdfWorker: Worker | null = null;
+let kdfRequestSeq = 0;
+const kdfPending = new Map<
+  number,
+  {
+    resolve: (raw: Uint8Array) => void;
+    reject: (err: Error) => void;
+    onProgress?: (pct: number) => void;
+  }
+>();
+
+function getKdfWorker(): Worker | null {
+  if (typeof Worker === "undefined") return null;
+  if (!kdfWorker) {
+    try {
+      kdfWorker = new Worker(new URL("./argonWorker.ts", import.meta.url), {
+        type: "module",
+      });
+      kdfWorker.onmessage = (
+        event: MessageEvent<{
+          id: number;
+          progress?: number;
+          raw?: Uint8Array;
+          error?: string;
+        }>,
+      ) => {
+        const pending = kdfPending.get(event.data.id);
+        if (!pending) return;
+        if (event.data.progress !== undefined) {
+          pending.onProgress?.(event.data.progress);
+        } else if (event.data.raw) {
+          kdfPending.delete(event.data.id);
+          pending.resolve(event.data.raw);
+        } else {
+          kdfPending.delete(event.data.id);
+          pending.reject(new Error(event.data.error ?? "KDF worker failed"));
+        }
+      };
+      kdfWorker.onerror = () => {
+        // Worker died (e.g. failed chunk load right after a deploy).
+        // Fail pending calls; the next derivation falls back inline.
+        for (const pending of kdfPending.values()) {
+          pending.reject(new Error("KDF worker crashed"));
+        }
+        kdfPending.clear();
+        kdfWorker?.terminate();
+        kdfWorker = null;
+      };
+    } catch {
+      kdfWorker = null;
+    }
+  }
+  return kdfWorker;
+}
+
 export async function deriveOwnerKek(
   password: string,
   salt: Uint8Array,
@@ -184,18 +244,41 @@ export async function deriveOwnerKek(
   const iters = opts.iters ?? ARGON_ITERS;
   const pwBytes = new TextEncoder().encode(password.normalize("NFKC"));
 
-  // argon2idAsync yields between mixing rounds via setTimeout, so the
-  // calling component can render a spinner / progress bar while the
-  // KDF runs. Synchronous argon2id would block the main thread for
-  // the full 1-3s.
-
-  const raw = await argon2idAsync(pwBytes, salt, {
-    t: iters,
-    m: memKiB,
-    p: ARGON_PARALLELISM,
-    dkLen: KEK_LEN,
-    onProgress: opts.onProgress,
-  });
+  // Argon2 at 64 MiB pegs whichever thread runs it for seconds. On the
+  // main thread that freezes the page (argon2idAsync only yields
+  // between passes), so prefer a Web Worker and keep the UI painting;
+  // the inline path remains as the fallback for environments without
+  // workers (tests) or a worker that failed to boot.
+  const worker = getKdfWorker();
+  let raw: Uint8Array;
+  if (worker) {
+    const id = ++kdfRequestSeq;
+    raw = await new Promise<Uint8Array>((resolve, reject) => {
+      kdfPending.set(id, { resolve, reject, onProgress: opts.onProgress });
+      // Transfer the password buffer: it moves to the worker rather
+      // than being copied, and the worker zeroes it after use.
+      worker.postMessage(
+        {
+          id,
+          pw: pwBytes,
+          salt,
+          t: iters,
+          m: memKiB,
+          p: ARGON_PARALLELISM,
+          dkLen: KEK_LEN,
+        },
+        [pwBytes.buffer as ArrayBuffer],
+      );
+    });
+  } else {
+    raw = await argon2idAsync(pwBytes, salt, {
+      t: iters,
+      m: memKiB,
+      p: ARGON_PARALLELISM,
+      dkLen: KEK_LEN,
+      onProgress: opts.onProgress,
+    });
+  }
 
   // Domain-separate one more time so the same Argon2 output can't be
   // re-purposed as a key elsewhere by accident.
