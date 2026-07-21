@@ -372,7 +372,9 @@ export function Dashboard({ onNavigate }: Props) {
             ) : null}
 
             <div>
-              {isClosed ? (
+              {!vault && !error ? (
+                <VaultLoadingCard />
+              ) : isClosed ? (
                 <VaultClosedCard
                   meta={meta}
                   multiHeir={groupVaults.length > 1}
@@ -1436,6 +1438,30 @@ function Greeting({
       <h1 className="font-serif text-3xl md:text-4xl">{headline}</h1>
       <p className="mt-1 text-sm text-muted">{sub}</p>
     </div>
+  );
+}
+
+/* ------------------------- Vault loading card ----------------------------- */
+
+/**
+ * Shown in the main card slot from mount until the first `/vaults/:id`
+ * response lands. Without it the dashboard painted a greeting over a
+ * mostly empty page — no cards, no signal — for however long the fetch
+ * took, which read as broken on anything slower than a warm server.
+ */
+function VaultLoadingCard() {
+  return (
+    <section
+      className="card-flat p-5 py-10 text-center"
+      role="status"
+      aria-live="polite"
+    >
+      <span
+        aria-hidden="true"
+        className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-[var(--accent)] border-r-transparent"
+      />
+      <p className="mt-3 text-sm text-muted">Opening your vault…</p>
+    </section>
   );
 }
 
