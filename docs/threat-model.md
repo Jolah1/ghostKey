@@ -603,6 +603,36 @@ or database value would strand recovery.
   rewrapping of token-encrypted material or an owner-authorized move to a new
   vault descriptor; that higher-risk migration remains future work.
 
+### R15. A trusted browser profile retains a password-locked owner credential
+The browser retains enough password-encrypted material to restore its owner
+bearer token locally, so an ordinary return visit does not depend on an email
+provider. Email recovery is reserved for new browsers, cleared site data, or
+otherwise lost local credentials.
+
+- Mitigation: the token is scoped to owner operations for its vault, CORS and
+  frontend supply-chain controls reduce exposure to foreign scripts, and the
+  independent recovery kit remains the deeper recovery path.
+- Accepted residual risk: someone who can use or extract the same unlocked
+  browser profile can act with that stored owner credential. Owners should use
+  device login and disk encryption and avoid treating a shared browser as a
+  trusted device. Password-enabled vaults apply a non-destructive local lock
+  after ten minutes of inactivity: after a one-time password validation proves
+  the server's encrypted token matches the live credential, later locks replace
+  the usable bearer token with that password-encrypted token blob. The
+  normalized hash of the email typed at unlock is compared locally and the
+  password opens that blob locally. The form values are not persisted and no
+  email message, recovery endpoint, or link is involved. Browser-profile
+  extraction exposes only the password-encrypted token after lock; extraction
+  while the session is active can still expose the live bearer token. A future
+  device passkey could strengthen that boundary further.
+- Migration safety: an existing browser's first timeout caches the encrypted
+  token but preserves the live token behind the UI until the owner enters the
+  password and the two values match. This avoids stranding vaults whose old
+  post-setup token re-seal never completed. If the old blob validly opens to
+  the historical placeholder, the proven password re-seals the still-live
+  token and updates the authenticated server copy before local removal.
+  Subsequent timeouts remove the validated live token from storage.
+
 ---
 
 ## 5. Open questions

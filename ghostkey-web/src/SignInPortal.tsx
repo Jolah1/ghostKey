@@ -51,8 +51,24 @@ import {
   type OwnerRecoveryBundle,
   type SealedBlobsView,
 } from "./api";
-import { hashEmailForLookup, unsealOwner } from "./crypto/sealing";
-import { saveVaultMeta, setActiveVaultId } from "./vaultStore";
+import {
+  b64decode,
+  deriveOwnerKek,
+  hashEmailForLookup,
+  sealWithKey,
+  unsealOwner,
+  unsealOwnerToken,
+} from "./crypto/sealing";
+import {
+  getAllVaultMetas,
+  getActiveVaultId,
+  getVaultMeta,
+  getVaultOwnerToken,
+  saveVaultMeta,
+  saveVaultCredentialLock,
+  setActiveVaultId,
+  unlockVaultCredentials,
+} from "./vaultStore";
 import type { Route } from "./App";
 
 const PLACEHOLDER_OWNER_TOKEN = "ghostkey-placeholder-owner-token-v1";
@@ -68,6 +84,9 @@ function heirNameFromLabel(label: string | null): string {
 interface Props {
   onNavigate: (r: Route) => void;
   recoveryToken?: string;
+  /** Unlock an existing trusted-device credential without sending email. */
+  localUnlock?: boolean;
+  onUnlock?: () => void;
 }
 
 type Phase =
@@ -79,7 +98,12 @@ type Phase =
   | { kind: "unsealing"; vaultId: string; progress: number }
   | { kind: "done" };
 
-export function SignInPortal({ onNavigate, recoveryToken }: Props) {
+export function SignInPortal({
+  onNavigate,
+  recoveryToken,
+  localUnlock = false,
+  onUnlock,
+}: Props) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   // Mistyped passwords are the #1 sign-in failure, and the field hides
@@ -91,6 +115,11 @@ export function SignInPortal({ onNavigate, recoveryToken }: Props) {
   const [bundles, setBundles] = useState<OwnerRecoveryBundle[]>([]);
   const [recoveredEmail, setRecoveredEmail] = useState("");
   const exchangeStarted = useRef(false);
+  const localVaultId = localUnlock ? getActiveVaultId() : null;
+  const localLock = localVaultId
+    ? getVaultMeta(localVaultId)?.ownerTokenLock
+    : null;
+  const trustedUnlock = Boolean(localUnlock && localVaultId && localLock);
 
   useEffect(() => {
     if (!recoveryToken || exchangeStarted.current) return;
@@ -154,6 +183,104 @@ export function SignInPortal({ onNavigate, recoveryToken }: Props) {
     }
   }
 
+  async function unlockTrustedDevice() {
+    if (!email.trim() || !password) {
+      setError("Enter your email and password.");
+      return;
+    }
+    if (!/^.+@.+\..+$/.test(email.trim())) {
+      setError("That email looks off. Double-check it.");
+      return;
+    }
+    if (!localVaultId || !localLock) {
+      setError("This browser no longer has its trusted-device credential.");
+      return;
+    }
+
+    setError(null);
+    setPhase({ kind: "unsealing", vaultId: localVaultId, progress: 0 });
+    try {
+      const emailHash = hashEmailForLookup(email);
+      if (localLock.ownerEmailHash !== emailHash) {
+        throw new Error("wrong-email");
+      }
+      const activeMeta = getVaultMeta(localVaultId);
+      const matching = getAllVaultMetas().filter(
+        (meta) =>
+          meta.ownerTokenLock?.ownerEmailHash === emailHash &&
+          (meta.id === localVaultId ||
+            Boolean(activeMeta?.groupId && meta.groupId === activeMeta.groupId)),
+      );
+      const tokens: Record<string, string> = {};
+      for (let index = 0; index < matching.length; index++) {
+        const meta = matching[index];
+        const lock = meta.ownerTokenLock!;
+        const decryptedToken = await unsealOwnerToken({
+          password,
+          passwordSalt: lock.passwordSalt,
+          memKiB: lock.memKiB,
+          iters: lock.iters,
+          ownerTokenBlob: lock.ownerTokenBlob,
+          onProgress: (progress) =>
+            setPhase({
+              kind: "unsealing",
+              vaultId: localVaultId,
+              progress: Math.round(
+                ((index + progress) / matching.length) * 100,
+              ),
+            }),
+        });
+        const liveToken = getVaultOwnerToken(meta.id);
+        if (liveToken && decryptedToken !== liveToken) {
+          // Some early setups left the server's valid password ciphertext
+          // wrapping a placeholder token. The password has been proven by
+          // opening it, so repair that ciphertext with the still-live token
+          // before removing the only usable copy from local storage.
+          const kek = await deriveOwnerKek(
+            password,
+            b64decode(lock.passwordSalt),
+            { memKiB: lock.memKiB, iters: lock.iters },
+          );
+          let repaired: { v: 1; ct: string; nonce: string };
+          try {
+            repaired = sealWithKey(
+              kek,
+              new TextEncoder().encode(liveToken),
+            );
+          } finally {
+            kek.fill(0);
+          }
+          await api.sealOwnerToken(meta.id, liveToken, {
+            owner_token_ct_b64: repaired.ct,
+            owner_token_nonce_b64: repaired.nonce,
+          });
+          saveVaultCredentialLock(meta.id, {
+            ...lock,
+            ownerTokenBlob: repaired,
+            validated: true,
+          });
+          tokens[meta.id] = liveToken;
+          continue;
+        }
+        tokens[meta.id] = decryptedToken;
+      }
+      if (!tokens[localVaultId] || !unlockVaultCredentials(tokens)) {
+        throw new Error("The saved credential could not be restored.");
+      }
+      setPhase({ kind: "done" });
+      onUnlock?.();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      const wrongPassword = /poly1305|tag|invalid|decryp|wrong-email/i.test(message);
+      setError(
+        wrongPassword
+          ? "Wrong email or password. Try again."
+          : message,
+      );
+      setPhase({ kind: "idle" });
+    }
+  }
+
   async function openVault(v: FoundVault, blobs: SealedBlobsView) {
     setPhase({ kind: "unsealing", vaultId: v.id, progress: 0 });
     setError(null);
@@ -209,9 +336,22 @@ export function SignInPortal({ onNavigate, recoveryToken }: Props) {
         heir: { name: heirNameFromLabel(v.label), email: "", address: "" },
         createdAt: v.created_at,
         ownerToken: out.ownerToken,
+        ownerTokenLock: {
+          passwordSalt: blobs.password_salt_b64,
+          memKiB: blobs.password_kdf_mem_kib,
+          iters: blobs.password_kdf_iters,
+          ownerTokenBlob: {
+            v: 1,
+            ct: blobs.owner_token_ct_b64,
+            nonce: blobs.owner_token_nonce_b64,
+          },
+          ownerEmailHash: hashEmailForLookup(recoveredEmail || email),
+          validated: true,
+        },
       });
       setActiveVaultId(v.id);
       setPhase({ kind: "done" });
+      onUnlock?.();
       onNavigate("dashboard");
     } catch (e) {
       // @noble/ciphers throws a generic Error on a bad auth tag.
@@ -289,6 +429,20 @@ export function SignInPortal({ onNavigate, recoveryToken }: Props) {
           heir: { name: heirNameFromLabel(v.label), email: "", address: "" },
           createdAt: v.created_at,
           ownerToken,
+          ownerTokenLock: ownerToken
+            ? {
+                passwordSalt: blobs.password_salt_b64,
+                memKiB: blobs.password_kdf_mem_kib,
+                iters: blobs.password_kdf_iters,
+                ownerTokenBlob: {
+                  v: 1,
+                  ct: blobs.owner_token_ct_b64,
+                  nonce: blobs.owner_token_nonce_b64,
+                },
+                ownerEmailHash: hashEmailForLookup(recoveredEmail || email),
+                validated: true,
+              }
+            : undefined,
           groupId,
         });
         if (!firstId) firstId = v.id;
@@ -311,6 +465,7 @@ export function SignInPortal({ onNavigate, recoveryToken }: Props) {
     }
     setActiveVaultId(firstId);
     setPhase({ kind: "done" });
+    onUnlock?.();
     onNavigate("dashboard");
   }
 
@@ -320,10 +475,12 @@ export function SignInPortal({ onNavigate, recoveryToken }: Props) {
         <header className="text-center">
           <p className="eyebrow">Sign in</p>
           <h1 className="mt-6 font-serif text-3xl md:text-4xl">
-            Open your vault on this device
+            {trustedUnlock ? "Session timed out" : "Open your vault on this device"}
           </h1>
           <p className="mx-auto mt-3 text-sm text-muted">
-            {recoveryToken
+            {trustedUnlock
+              ? "Use the email and password you chose at setup. No sign-in link will be sent."
+              : recoveryToken
               ? "Enter the password you chose at setup. Your encrypted vault opens here on this device."
               : "Enter your email and we'll send a private, one-time sign-in link. We never reveal whether an address has a vault."}
           </p>
@@ -332,7 +489,11 @@ export function SignInPortal({ onNavigate, recoveryToken }: Props) {
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            void (recoveryToken ? recover() : lookUp());
+            void (trustedUnlock
+              ? unlockTrustedDevice()
+              : recoveryToken
+                ? recover()
+                : lookUp());
           }}
           className="mt-10"
         >
@@ -354,7 +515,7 @@ export function SignInPortal({ onNavigate, recoveryToken }: Props) {
             </Field>
           ) : null}
 
-          {recoveryToken ? <Field label="Password">
+          {recoveryToken || trustedUnlock ? <Field label="Password">
             <div className="relative">
               <input
                 type={showPassword ? "text" : "password"}
@@ -437,12 +598,14 @@ export function SignInPortal({ onNavigate, recoveryToken }: Props) {
                 (Boolean(recoveryToken) && bundles.length === 0)
               }
             >
-              {recoveryToken ? "Unlock vault" : "Email me a sign-in link"}
+              {recoveryToken || trustedUnlock
+                ? "Unlock vault"
+                : "Email me a sign-in link"}
             </Button>
           </div>
         </form>
 
-        <div className="mt-10 border-t border-app pt-6 text-center text-xs text-muted">
+        {!trustedUnlock ? <div className="mt-10 border-t border-app pt-6 text-center text-xs text-muted">
           New here?{" "}
           <button
             type="button"
@@ -451,7 +614,7 @@ export function SignInPortal({ onNavigate, recoveryToken }: Props) {
           >
             Set up a vault
           </button>
-        </div>
+        </div> : null}
       </div>
     </main>
   );

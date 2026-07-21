@@ -213,6 +213,7 @@ export function AddHeirPortal({
 
       // (3) Re-seal the REAL owner token under the same password KEK so
       // cross-device sign-in to this new vault works. Best-effort.
+      let realOwnerTokenBlob: { v: 1; ct: string; nonce: string } | undefined;
       if (ownerKek) {
         try {
           const realSealed = sealWithKey(
@@ -223,6 +224,7 @@ export function AddHeirPortal({
             owner_token_ct_b64: realSealed.ct,
             owner_token_nonce_b64: realSealed.nonce,
           });
+          realOwnerTokenBlob = realSealed;
         } catch (e) {
           console.warn("owner-token re-seal failed for new heir", resp.id, e);
         }
@@ -263,6 +265,16 @@ export function AddHeirPortal({
         },
         createdAt: new Date().toISOString(),
         ownerToken: resp.owner_token,
+        ownerTokenLock: realOwnerTokenBlob
+          ? {
+              passwordSalt: sealed.password_salt,
+              memKiB: sealed.password_kdf_mem_kib,
+              iters: sealed.password_kdf_iters,
+              ownerTokenBlob: realOwnerTokenBlob,
+              ownerEmailHash: hashEmailForLookup(ownerEmail),
+              validated: true,
+            }
+          : undefined,
         groupId: gid,
       });
       // Land on the new heir after the reload. If the sibling we added

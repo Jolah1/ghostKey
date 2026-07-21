@@ -76,7 +76,8 @@ export function Dashboard({ onNavigate }: Props) {
     () => (activeId ? getVaultMeta(activeId) : null),
     [activeId],
   );
-  // Owner token persists in localStorage from setup. If it's missing
+  // Owner token is available only while this trusted-device session is
+  // unlocked. If it's missing
   // (e.g. the user cleared their site data, or the vault was created
   // before per-vault auth shipped), the server will reject mutations
   // with 401. We surface that as an inline error rather than a silent

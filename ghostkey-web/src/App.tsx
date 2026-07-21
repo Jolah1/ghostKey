@@ -35,9 +35,15 @@ import { Landing } from "./Landing";
 import { ServerOfflineBanner } from "./ServerOfflineBanner";
 import { Button } from "./ui";
 import { api } from "./api";
+import { hashEmailForLookup } from "./crypto/sealing";
 import {
-  clearSession,
+  getAllVaultMetas,
   getActiveVaultId,
+  getVaultOwnerToken,
+  hasLockedVaultCredential,
+  hasVaultCredentialLock,
+  lockVaultCredential,
+  saveVaultCredentialLock,
   sessionExpired,
   touchSession,
 } from "./vaultStore";
@@ -323,13 +329,23 @@ export default function App() {
   // demo server sees "signet" instead of the historical "testnet"
   // literal. See `crates/ghostkey-server/src/config.rs`.
   const [network, setNetwork] = useState<"bitcoin" | "testnet" | "signet" | "regtest">("testnet");
-  // Whether this device holds a vault session. Drives the nav (no
-  // "Sign in" while signed in) and flips off when the inactivity
-  // guard below expires the session.
-  const [signedIn, setSignedIn] = useState(() => Boolean(getActiveVaultId()));
-  // One-shot notice shown after an inactivity sign-out so the owner
-  // knows why their dashboard asked for the password again.
-  const [expiredNotice, setExpiredNotice] = useState(false);
+  // Whether this device holds a vault credential. Drives the nav (no
+  // "Sign in" while signed in). Trusted-device credentials persist
+  // across visits; email recovery is only for a browser that has no
+  // local credential.
+  const [locked, setLocked] = useState(() => {
+    const activeId = getActiveVaultId();
+    return (
+      hasLockedVaultCredential(activeId) ||
+      (sessionExpired() && hasVaultCredentialLock(activeId))
+    );
+  });
+  const [signedIn, setSignedIn] = useState(
+    () =>
+      Boolean(getActiveVaultId()) &&
+      !hasLockedVaultCredential(getActiveVaultId()) &&
+      !(sessionExpired() && hasVaultCredentialLock(getActiveVaultId())),
+  );
 
   // Sync the URL hash with the current location. Only writes back for
   // simple routes; the claim page's token-bearing URL is owned by the
@@ -350,61 +366,112 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  // Inactivity auto sign-out. Interactions refresh a throttled
-  // activity stamp; a periodic check (plus one on tab re-focus)
-  // expires the session after SESSION_TIMEOUT_MS without any. Expiry
-  // wipes the device's vault metas + tokens — email + password
-  // sign-in restores them, so a walked-away laptop holds nothing.
+  // Re-sync after sign-in or setup completion stores the credential.
   useEffect(() => {
-    let lastTouch = 0;
-    const onActivity = () => {
-      const t = Date.now();
-      if (t - lastTouch > 30_000) {
-        lastTouch = t;
-        if (getActiveVaultId()) touchSession();
-      }
-    };
-    const check = () => {
-      if (sessionExpired()) {
-        clearSession();
+    setSignedIn(Boolean(getActiveVaultId()) && !locked);
+  }, [location, locked]);
+
+  // localStorage is shared by tabs. When one tab marks the credential locked,
+  // every other open tab must unmount its owner UI as well.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (
+        event.key === "gk:vaults" &&
+        hasLockedVaultCredential(getActiveVaultId())
+      ) {
+        setLocked(true);
         setSignedIn(false);
-        setExpiredNotice(true);
-        setLocation((loc) =>
-          loc.kind === "route" && loc.route === "dashboard"
-            ? { kind: "route", route: "checkin" }
-            : loc,
-        );
-      } else {
-        setSignedIn(Boolean(getActiveVaultId()));
       }
     };
-    const events = ["pointerdown", "keydown", "scroll"] as const;
-    events.forEach((e) =>
-      window.addEventListener(e, onActivity, { passive: true }),
-    );
-    const id = window.setInterval(check, 30_000);
-    const onVis = () => {
-      if (!document.hidden) check();
-    };
-    document.addEventListener("visibilitychange", onVis);
-    check();
-    return () => {
-      events.forEach((e) => window.removeEventListener(e, onActivity));
-      window.clearInterval(id);
-      document.removeEventListener("visibilitychange", onVis);
-    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  // Route changes both count as activity and re-sync the signed-in
-  // flag (sign-in / setup completion lands here via navigation).
+  // Before showing the timeout screen, replace each validated password-vault
+  // bearer token with its encrypted blob. Existing sessions first cache the
+  // blob without deleting the live token; password unlock validates the pair,
+  // so later timeouts can remove the live token safely. Legacy wallet vaults
+  // have no such blob and are deliberately left alone.
   useEffect(() => {
-    const active = Boolean(getActiveVaultId());
-    setSignedIn(active);
-    if (active) {
-      touchSession();
-      setExpiredNotice(false);
-    }
-  }, [location]);
+    let lastTouch = 0;
+    let checking = false;
+    const lockIfPasswordVault = async () => {
+      if (locked || checking || !sessionExpired()) return;
+      const activeId = getActiveVaultId();
+      if (!activeId) return;
+      checking = true;
+      let lockedActive = false;
+      try {
+        for (const meta of getAllVaultMetas()) {
+          const ownerToken = getVaultOwnerToken(meta.id);
+          if (!ownerToken || !/^.+@.+\..+$/.test(meta.owner.address.trim())) {
+            continue;
+          }
+          if (meta.ownerTokenLock) {
+            lockVaultCredential(meta.id, meta.ownerTokenLock);
+            continue;
+          }
+          try {
+            const blobs = await api.getSealedBlobs(meta.id, ownerToken);
+            saveVaultCredentialLock(meta.id, {
+              passwordSalt: blobs.password_salt_b64,
+              memKiB: blobs.password_kdf_mem_kib,
+              iters: blobs.password_kdf_iters,
+              ownerTokenBlob: {
+                v: 1,
+                ct: blobs.owner_token_ct_b64,
+                nonce: blobs.owner_token_nonce_b64,
+              },
+              ownerEmailHash: hashEmailForLookup(meta.owner.address),
+            });
+          } catch {
+            // A legacy/non-password vault cannot be locked this way. Its
+            // irreplaceable local token must not be deleted.
+          }
+        }
+        if (hasVaultCredentialLock(activeId)) {
+          lockedActive = true;
+          setLocked(true);
+          setSignedIn(false);
+        }
+      } finally {
+        // Defer another migration attempt for legacy/offline rows instead of
+        // retrying on every click.
+        if (!lockedActive) touchSession();
+        checking = false;
+      }
+    };
+    const onActivity = () => {
+      if (locked || !getActiveVaultId()) return;
+      // Do not let the first click after a long absence renew an already
+      // expired session before the periodic/visibility check sees it.
+      if (sessionExpired()) {
+        void lockIfPasswordVault();
+        return;
+      }
+      const now = Date.now();
+      if (now - lastTouch >= 30_000) {
+        lastTouch = now;
+        touchSession();
+      }
+    };
+    const check = () => void lockIfPasswordVault();
+    const events = ["pointerdown", "keydown", "scroll"] as const;
+    events.forEach((event) =>
+      window.addEventListener(event, onActivity, { passive: true }),
+    );
+    const interval = window.setInterval(check, 30_000);
+    const onVisible = () => {
+      if (!document.hidden) check();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    check();
+    return () => {
+      events.forEach((event) => window.removeEventListener(event, onActivity));
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [locked]);
 
   // Health probe — also captures the demo_mode flag so we can render
   // the sticky banner. Polls every 20s; if the operator toggles the
@@ -469,14 +536,23 @@ export default function App() {
           signedIn={signedIn}
         />
       )}
-      {expiredNotice && !isClaim && !isOneTap && (
-        <SessionExpiredNotice onDismiss={() => setExpiredNotice(false)} />
-      )}
-
       {/* Routes render their own <main>; this anchor is the skip-link
           target so keyboard users can jump past the nav/banners. */}
       <div id="main">
       <Suspense fallback={<RouteLoading />}>
+      {locked && location.kind === "route" ? (
+        <SignInPortal
+          localUnlock
+          onNavigate={setRoute}
+          onUnlock={() => {
+            touchSession();
+            setLocked(false);
+            setSignedIn(true);
+            setRoute("dashboard");
+          }}
+        />
+      ) : (
+      <>
       {location.kind === "route" && location.route === "landing"   && <Landing  onNavigate={setRoute} />}
       {location.kind === "route" && (location.route === "setup" || location.route === "setup-password") && (
         <PasswordSetupPortal
@@ -509,7 +585,15 @@ export default function App() {
       {location.kind === "route" && location.route === "recovery-guide" && <RecoveryGuide onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "checkin"   && <SignInPortal onNavigate={setRoute} />}
       {location.kind === "owner-recovery" && (
-        <SignInPortal onNavigate={setRoute} recoveryToken={location.token} />
+        <SignInPortal
+          onNavigate={setRoute}
+          recoveryToken={location.token}
+          onUnlock={() => {
+            touchSession();
+            setLocked(false);
+            setSignedIn(true);
+          }}
+        />
       )}
       {location.kind === "route" && location.route === "checkin-legacy" && (
         <CheckinPortal initialId={getActiveVaultId() ?? undefined} />
@@ -533,6 +617,8 @@ export default function App() {
           onNavigate={setRoute}
         />
       )}
+      </>
+      )}
       </Suspense>
       </div>
     </div>
@@ -553,32 +639,6 @@ function RouteLoading() {
         Getting things ready…
       </div>
     </main>
-  );
-}
-
-/* -------------------------- SessionExpiredNotice -------------------------- */
-
-/**
- * Shown once after the inactivity guard signs the user out, so the
- * password prompt doesn't feel like a bug. Dismissable; also clears
- * itself on the next successful sign-in.
- */
-function SessionExpiredNotice({ onDismiss }: { onDismiss: () => void }) {
-  return (
-    <div role="status" className="border-b border-app bg-surface-2">
-      <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-5 py-2 md:px-8">
-        <p className="text-xs text-muted">
-          Session timed out. Sign in to continue.
-        </p>
-        <button
-          type="button"
-          onClick={onDismiss}
-          className="text-xs text-dim underline hover:text-[var(--text)]"
-        >
-          Dismiss
-        </button>
-      </div>
-    </div>
   );
 }
 

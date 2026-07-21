@@ -20,9 +20,8 @@ interface NavItem {
  * Signed out: the visitor's jobs are set up / sign in / inherit —
  * the dashboard would only bounce them to the password prompt.
  * Signed in: "Sign in" disappears (they already did) and the
- * dashboard takes its place. Sessions end automatically after a
- * period of inactivity (see App's guard), so there's no sign-out
- * button to clutter the bar.
+ * dashboard takes its place. The trusted-device credential persists
+ * across visits; email recovery is reserved for browsers without it.
  */
 const SIGNED_OUT_ITEMS: NavItem[] = [
   { key: "setup",     label: "Set up" },

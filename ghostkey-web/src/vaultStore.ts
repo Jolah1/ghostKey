@@ -8,20 +8,15 @@
  * never leaves the device; the server already has the cryptographic
  * proof of who can claim.
  *
- * Per-vault `ownerToken` (the bearer credential issued at vault
- * creation) also lives here. The server returns it exactly once in
- * the `CreatedVault` response; if it's lost from this browser, the
- * owner can no longer check in or list events for that vault from
- * this device. The on-chain inheritance is still safe — the owner
- * could create a new vault and re-register their funds — but the
- * existing vault's notifier becomes unreachable.
+ * Password-vault owner tokens live only in memory while unlocked;
+ * localStorage retains their password-encrypted blob. Legacy wallet
+ * vaults have no password blob, so their irreplaceable token remains
+ * local until that older flow gains another safe unlock mechanism.
  *
  * Why localStorage and not sessionStorage?
- *   The check-in flow expects the dashboard to "remember" your vault
- *   across visits. sessionStorage clears on tab close, which would
- *   make the dashboard amnesiac. The trade-off is that any script
- *   running on the same origin can read the token; we mitigate by
- *   keeping CORS strict and the dashboard's surface small.
+ *   The dashboard must remember which encrypted vault belongs to the
+ *   device across visits. A password vault locks on browser restart
+ *   because the live token is intentionally memory-only.
  */
 
 export interface HeirInfo {
@@ -39,6 +34,16 @@ export interface OwnerInfo {
   address: string;
 }
 
+export interface LockedOwnerToken {
+  passwordSalt: string;
+  memKiB: number;
+  iters: number;
+  ownerTokenBlob: { v: 1; ct: string; nonce: string };
+  ownerEmailHash: string;
+  /** True only after password decryption reproduced the live bearer token. */
+  validated?: boolean;
+}
+
 export interface VaultMeta {
   id: string;
   label: string;
@@ -51,6 +56,8 @@ export interface VaultMeta {
    * New vaults always populate this.
    */
   ownerToken?: string;
+  /** Password-encrypted replacement retained after inactivity locking. */
+  ownerTokenLock?: LockedOwnerToken;
   /**
    * Client-side grouping for multi-heir vaults (variant 4 from the
    * design discussion: N parallel vaults that share the same owner
@@ -72,6 +79,8 @@ export interface VaultMeta {
 
 const STORE_KEY = "gk:vaults";
 const ACTIVE_KEY = "gk:activeVaultId";
+/** Live bearer tokens exist only in this JavaScript realm after local unlock. */
+const unlockedOwnerTokens = new Map<string, string>();
 
 function readAll(): Record<string, VaultMeta> {
   if (typeof window === "undefined") return {};
@@ -89,7 +98,12 @@ function writeAll(map: Record<string, VaultMeta>) {
 
 export function saveVaultMeta(meta: VaultMeta) {
   const map = readAll();
-  map[meta.id] = meta;
+  if (meta.ownerToken && meta.ownerTokenLock?.validated) {
+    unlockedOwnerTokens.set(meta.id, meta.ownerToken);
+    map[meta.id] = { ...meta, ownerToken: undefined };
+  } else {
+    map[meta.id] = meta;
+  }
   writeAll(map);
   setActiveVaultId(meta.id);
 }
@@ -100,7 +114,61 @@ export function getVaultMeta(id: string): VaultMeta | null {
 
 /** Returns the stored owner token for a vault, or null. */
 export function getVaultOwnerToken(id: string): string | null {
-  return readAll()[id]?.ownerToken ?? null;
+  return unlockedOwnerTokens.get(id) ?? readAll()[id]?.ownerToken ?? null;
+}
+
+export function getAllVaultMetas(): VaultMeta[] {
+  return Object.values(readAll());
+}
+
+export function hasLockedVaultCredential(id: string | null): boolean {
+  if (!id) return false;
+  const meta = readAll()[id];
+  return Boolean(meta?.ownerTokenLock && !getVaultOwnerToken(id));
+}
+
+export function hasVaultCredentialLock(id: string | null): boolean {
+  if (!id) return false;
+  return Boolean(readAll()[id]?.ownerTokenLock);
+}
+
+/** Cache a candidate encrypted token without deleting the live credential. */
+export function saveVaultCredentialLock(id: string, lock: LockedOwnerToken): boolean {
+  const map = readAll();
+  const meta = map[id];
+  if (!meta?.ownerToken) return false;
+  map[id] = { ...meta, ownerTokenLock: lock };
+  writeAll(map);
+  return true;
+}
+
+/** Replace one usable bearer token with its password-encrypted form. */
+export function lockVaultCredential(id: string, lock: LockedOwnerToken): boolean {
+  const map = readAll();
+  const meta = map[id];
+  if (!getVaultOwnerToken(id) || !lock.validated) return false;
+  unlockedOwnerTokens.delete(id);
+  map[id] = { ...meta, ownerToken: undefined, ownerTokenLock: lock };
+  writeAll(map);
+  return true;
+}
+
+/** Restore a group of locally decrypted tokens in one storage write. */
+export function unlockVaultCredentials(tokens: Record<string, string>): boolean {
+  const map = readAll();
+  for (const [id, token] of Object.entries(tokens)) {
+    if (!map[id]?.ownerTokenLock || !token) return false;
+  }
+  for (const [id, token] of Object.entries(tokens)) {
+    unlockedOwnerTokens.set(id, token);
+    map[id] = {
+      ...map[id],
+      ownerToken: undefined,
+      ownerTokenLock: { ...map[id].ownerTokenLock!, validated: true },
+    };
+  }
+  writeAll(map);
+  return true;
 }
 
 export function setActiveVaultId(id: string | null) {
@@ -118,35 +186,25 @@ export function getActiveVaultId(): string | null {
   }
 }
 
-/* ----------------------- inactivity auto sign-out ------------------------- *
- *
- * The dashboard session expires after SESSION_TIMEOUT_MS without user
- * activity. Expiry wipes everything this module stores — vault metas,
- * owner tokens, the active pointer — so a shared or stolen device
- * holds nothing once the owner walks away. Password sign-in restores
- * all of it on any device; that's the recovery path by design.
- *
- * `gk:lastActivityAt` is written (throttled) by the App shell on user
- * interaction. A missing stamp counts as fresh: it's set on first
- * touch, and treating "no stamp" as expired would sign out users who
- * upgraded mid-session.
- */
+/* ----------------------- trusted-device inactivity lock ------------------ */
 
 const ACTIVITY_KEY = "gk:lastActivityAt";
 
-/** How long a session survives without any user activity. */
-export const SESSION_TIMEOUT_MS = 15 * 60_000;
+/** Lock the trusted-device UI after ten minutes without interaction. */
+export const SESSION_TIMEOUT_MS = 10 * 60_000;
 
-/** Record activity now. Cheap enough to call on every interaction. */
 export function touchSession() {
   try {
     localStorage.setItem(ACTIVITY_KEY, String(Date.now()));
   } catch {
-    /* ignore */
+    /* Browser storage unavailable: the app cannot maintain a local lock. */
   }
 }
 
-/** True when a session exists AND its activity stamp is too old. */
+/**
+ * Return whether the trusted-device UI should lock. Locking replaces usable
+ * password-vault tokens with their existing password-encrypted ciphertext.
+ */
 export function sessionExpired(): boolean {
   if (!getActiveVaultId()) return false;
   try {
@@ -156,25 +214,13 @@ export function sessionExpired(): boolean {
       return false;
     }
     const last = Number(raw);
-    if (!Number.isFinite(last)) return false;
-    return Date.now() - last > SESSION_TIMEOUT_MS;
+    if (!Number.isFinite(last)) {
+      touchSession();
+      return false;
+    }
+    return Date.now() - last >= SESSION_TIMEOUT_MS;
   } catch {
     return false;
-  }
-}
-
-/**
- * Sign out: remove every vault meta, owner token, the active-vault
- * pointer, and the activity stamp from this device. Everything is
- * restorable via email + password sign-in.
- */
-export function clearSession() {
-  try {
-    localStorage.removeItem(STORE_KEY);
-    localStorage.removeItem(ACTIVE_KEY);
-    localStorage.removeItem(ACTIVITY_KEY);
-  } catch {
-    /* ignore */
   }
 }
 
@@ -188,6 +234,7 @@ export function removeVaultMeta(id: string): boolean {
   const map = readAll();
   if (!(id in map)) return false;
   delete map[id];
+  unlockedOwnerTokens.delete(id);
   writeAll(map);
   if (getActiveVaultId() === id) setActiveVaultId(null);
   return true;

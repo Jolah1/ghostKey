@@ -3,8 +3,10 @@ import {
   b64decode,
   b64encode,
   deriveClaimKek,
+  deriveOwnerKek,
   sealWithKey,
   unsealHeirXprv,
+  unsealOwnerToken,
 } from "./sealing";
 
 describe("b64decode", () => {
@@ -29,6 +31,35 @@ describe("b64decode", () => {
       .replace(/\//g, "_")
       .replace(/=+$/, "");
     expect(b64decode(urlNoPad)).toEqual(bytes);
+  });
+});
+
+describe("trusted-device owner token lock", () => {
+  it("restores the bearer token only with the password-derived key", async () => {
+    const password = "test-only-correct-horse-battery-staple";
+    const salt = new Uint8Array(16).fill(7);
+    const kek = await deriveOwnerKek(password, salt, { memKiB: 32, iters: 1 });
+    const blob = sealWithKey(kek, new TextEncoder().encode("owner-token"));
+    kek.fill(0);
+
+    await expect(
+      unsealOwnerToken({
+        password,
+        passwordSalt: b64encode(salt),
+        memKiB: 32,
+        iters: 1,
+        ownerTokenBlob: blob,
+      }),
+    ).resolves.toBe("owner-token");
+    await expect(
+      unsealOwnerToken({
+        password: "wrong password",
+        passwordSalt: b64encode(salt),
+        memKiB: 32,
+        iters: 1,
+        ownerTokenBlob: blob,
+      }),
+    ).rejects.toThrow();
   });
 });
 

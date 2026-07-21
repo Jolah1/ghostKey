@@ -696,6 +696,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
 
         // Re-seal the REAL owner_token under the password KEK (the server
         // only issues it in the response). Non-fatal on failure.
+        let realOwnerTokenBlob: { v: 1; ct: string; nonce: string } | undefined;
         if (ownerKek) {
           try {
             const realSealed = sealWithKey(
@@ -706,6 +707,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
               owner_token_ct_b64: realSealed.ct,
               owner_token_nonce_b64: realSealed.nonce,
             });
+            realOwnerTokenBlob = realSealed;
           } catch (e) {
             console.warn("owner-token re-seal failed for guardian vault", e);
           }
@@ -739,6 +741,16 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           },
           createdAt: new Date().toISOString(),
           ownerToken: resp.owner_token,
+          ownerTokenLock: realOwnerTokenBlob
+            ? {
+                passwordSalt: sealed.password_salt,
+                memKiB: sealed.password_kdf_mem_kib,
+                iters: sealed.password_kdf_iters,
+                ownerTokenBlob: realOwnerTokenBlob,
+                ownerEmailHash: hashEmailForLookup(draft.ownerEmail),
+                validated: true,
+              }
+            : undefined,
           groupId,
         });
 
@@ -944,6 +956,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
         // (g) Re-seal the REAL owner_token under the same password
         // KEK. Same chicken-and-egg dance as the single-heir flow;
         // see the SealedSetup comments. Non-fatal on failure.
+        let realOwnerTokenBlob: { v: 1; ct: string; nonce: string } | undefined;
         if (ownerKek) {
           try {
             const realSealed = sealWithKey(
@@ -954,6 +967,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
               owner_token_ct_b64: realSealed.ct,
               owner_token_nonce_b64: realSealed.nonce,
             });
+            realOwnerTokenBlob = realSealed;
           } catch (e) {
             console.warn(
               "owner-token re-seal failed for vault",
@@ -1005,6 +1019,16 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           },
           createdAt: new Date().toISOString(),
           ownerToken: resp.owner_token,
+          ownerTokenLock: realOwnerTokenBlob
+            ? {
+                passwordSalt: sealed.password_salt,
+                memKiB: sealed.password_kdf_mem_kib,
+                iters: sealed.password_kdf_iters,
+                ownerTokenBlob: realOwnerTokenBlob,
+                ownerEmailHash: hashEmailForLookup(draft.ownerEmail),
+                validated: true,
+              }
+            : undefined,
           groupId,
         });
 
