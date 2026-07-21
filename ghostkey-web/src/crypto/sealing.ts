@@ -193,6 +193,12 @@ const kdfPending = new Map<
 
 function getKdfWorker(): Worker | null {
   if (typeof Worker === "undefined") return null;
+  // The independence-proof kit runs this same module from file://,
+  // where browsers refuse to start workers. Its single-file build
+  // can't ship the worker chunk anyway; derive inline there.
+  if (typeof location !== "undefined" && !location.protocol.startsWith("http")) {
+    return null;
+  }
   if (!kdfWorker) {
     try {
       kdfWorker = new Worker(new URL("./argonWorker.ts", import.meta.url), {
