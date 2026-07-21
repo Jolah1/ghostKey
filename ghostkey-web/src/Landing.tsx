@@ -629,7 +629,7 @@ const FOOTER_COLS: FooterCol[] = [
   {
     title: "Community",
     links: [
-      { label: "X", href: "https://x.com/ghostkeyappbtc", external: true },
+      { label: "X", href: "https://x.com/ghostKeybtc", external: true },
     ],
   },
   {
