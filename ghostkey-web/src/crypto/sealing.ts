@@ -350,6 +350,28 @@ export async function unsealOwner(input: UnsealOwnerInput): Promise<UnsealedOwne
   }
 }
 
+/** Unlock only the owner bearer token cached for a trusted-device session. */
+export async function unsealOwnerToken(input: {
+  password: string;
+  passwordSalt: string;
+  memKiB: number;
+  iters: number;
+  ownerTokenBlob: SealedBlob;
+  onProgress?: (pct: number) => void;
+}): Promise<string> {
+  const salt = b64decode(input.passwordSalt);
+  const kek = await deriveOwnerKek(input.password, salt, {
+    memKiB: input.memKiB,
+    iters: input.iters,
+    onProgress: input.onProgress,
+  });
+  try {
+    return new TextDecoder().decode(openWithKey(kek, input.ownerTokenBlob));
+  } finally {
+    kek.fill(0);
+  }
+}
+
 /**
  * Unseal the heir's xprv from the raw claim token + the sealed blob
  * the server hands the heir's browser at claim time.

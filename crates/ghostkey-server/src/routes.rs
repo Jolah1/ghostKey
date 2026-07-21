@@ -303,12 +303,10 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
     let open_routes = if legacy_public_recovery {
         open_routes
     } else {
-        open_routes
-            .route(
-                "/vaults/:id/sealed-blobs",
-                get(get_sealed_blobs_authenticated),
-            )
-            .route("/vaults/:id/trusted-unlock", post(trusted_device_unlock))
+        open_routes.route(
+            "/vaults/:id/sealed-blobs",
+            get(get_sealed_blobs_authenticated),
+        )
     };
 
     Router::new()
@@ -700,8 +698,6 @@ pub struct CreatedVault {
 pub enum ApiError {
     #[error("not found")]
     NotFound,
-    #[error("unauthorized")]
-    Unauthorized,
     #[error("validation: {0}")]
     Validation(String),
     #[error("db: {0}")]
@@ -716,7 +712,6 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         let (code, msg) = match &self {
             ApiError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
-            ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, self.to_string()),
             ApiError::Validation(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             ApiError::Conflict(_) => (StatusCode::CONFLICT, self.to_string()),
             ApiError::Db(_) => {
@@ -4321,39 +4316,6 @@ async fn get_sealed_blobs_authenticated(
     Ok(Json(load_sealed_blobs(&state.db, &auth.vault_id).await?))
 }
 
-#[derive(Debug, Deserialize)]
-struct TrustedDeviceUnlockRequest {
-    owner_email_hash: String,
-}
-
-/// Return the password-sealed bundle to a browser that already holds this
-/// vault's owner token, after confirming the email typed for this unlock.
-/// The plaintext email and password never reach or persist on the server.
-async fn trusted_device_unlock(
-    auth: OwnerAuth,
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<TrustedDeviceUnlockRequest>,
-) -> Result<Json<SealedBlobsView>, ApiError> {
-    let supplied_hash = req.owner_email_hash.trim().to_lowercase();
-    if supplied_hash.len() != 64 || !supplied_hash.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(ApiError::Validation(
-            "owner_email_hash must be 64 hex characters".into(),
-        ));
-    }
-
-    let stored_hash: Option<String> =
-        sqlx::query_scalar("SELECT owner_email_hash FROM vaults WHERE id = ?")
-            .bind(&auth.vault_id)
-            .fetch_optional(&state.db)
-            .await?
-            .flatten();
-    if stored_hash.as_deref() != Some(supplied_hash.as_str()) {
-        return Err(ApiError::Unauthorized);
-    }
-
-    Ok(Json(load_sealed_blobs(&state.db, &auth.vault_id).await?))
-}
-
 /// Temporary companion to [`find_vaults_by_email_legacy`]. This route
 /// exists only when the rollout flag is explicitly enabled.
 async fn get_sealed_blobs_legacy(
@@ -5670,41 +5632,6 @@ mod tests {
         .await
         .expect("stale count");
         assert_eq!(stale, 0);
-    }
-
-    #[tokio::test]
-    async fn trusted_device_unlock_requires_the_typed_email_hash() {
-        ensure_test_master_key();
-        let state = fresh_state().await;
-        let id = "v-trusted-unlock";
-        let expected_hash = "a".repeat(64);
-        insert_password_recovery_vault(&state, id, "owner@example.com", &expected_hash).await;
-
-        let wrong = trusted_device_unlock(
-            OwnerAuth {
-                vault_id: id.into(),
-            },
-            State(state.clone()),
-            Json(TrustedDeviceUnlockRequest {
-                owner_email_hash: "b".repeat(64),
-            }),
-        )
-        .await
-        .expect_err("a different email hash must not unlock");
-        assert!(matches!(wrong, ApiError::Unauthorized));
-
-        let Json(bundle) = trusted_device_unlock(
-            OwnerAuth {
-                vault_id: id.into(),
-            },
-            State(state),
-            Json(TrustedDeviceUnlockRequest {
-                owner_email_hash: expected_hash,
-            }),
-        )
-        .await
-        .expect("matching email hash unlocks the sealed bundle");
-        assert_eq!(bundle.vault_id, id);
     }
 
     #[tokio::test]

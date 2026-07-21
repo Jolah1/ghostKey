@@ -35,9 +35,15 @@ import { Landing } from "./Landing";
 import { ServerOfflineBanner } from "./ServerOfflineBanner";
 import { Button } from "./ui";
 import { api } from "./api";
+import { hashEmailForLookup } from "./crypto/sealing";
 import {
+  getAllVaultMetas,
   getActiveVaultId,
   getVaultOwnerToken,
+  hasLockedVaultCredential,
+  hasVaultCredentialLock,
+  lockVaultCredential,
+  saveVaultCredentialLock,
   sessionExpired,
   touchSession,
 } from "./vaultStore";
@@ -327,8 +333,19 @@ export default function App() {
   // "Sign in" while signed in). Trusted-device credentials persist
   // across visits; email recovery is only for a browser that has no
   // local credential.
-  const [locked, setLocked] = useState(false);
-  const [signedIn, setSignedIn] = useState(() => Boolean(getActiveVaultId()));
+  const [locked, setLocked] = useState(() => {
+    const activeId = getActiveVaultId();
+    return (
+      hasLockedVaultCredential(activeId) ||
+      (sessionExpired() && hasVaultCredentialLock(activeId))
+    );
+  });
+  const [signedIn, setSignedIn] = useState(
+    () =>
+      Boolean(getActiveVaultId()) &&
+      !hasLockedVaultCredential(getActiveVaultId()) &&
+      !(sessionExpired() && hasVaultCredentialLock(getActiveVaultId())),
+  );
 
   // Sync the URL hash with the current location. Only writes back for
   // simple routes; the claim page's token-bearing URL is owned by the
@@ -354,32 +371,73 @@ export default function App() {
     setSignedIn(Boolean(getActiveVaultId()) && !locked);
   }, [location, locked]);
 
-  // A timeout locks only the UI. It deliberately keeps the owner token and
-  // vault metadata on this trusted device so password unlock never needs an
-  // email round-trip. Activity while unlocked refreshes the ten-minute timer.
+  // localStorage is shared by tabs. When one tab marks the credential locked,
+  // every other open tab must unmount its owner UI as well.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (
+        event.key === "gk:vaults" &&
+        hasLockedVaultCredential(getActiveVaultId())
+      ) {
+        setLocked(true);
+        setSignedIn(false);
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  // Before showing the timeout screen, replace each validated password-vault
+  // bearer token with its encrypted blob. Existing sessions first cache the
+  // blob without deleting the live token; password unlock validates the pair,
+  // so later timeouts can remove the live token safely. Legacy wallet vaults
+  // have no such blob and are deliberately left alone.
   useEffect(() => {
     let lastTouch = 0;
     let checking = false;
     const lockIfPasswordVault = async () => {
       if (locked || checking || !sessionExpired()) return;
-      const vaultId = getActiveVaultId();
-      const ownerToken = vaultId ? getVaultOwnerToken(vaultId) : null;
-      if (!vaultId || !ownerToken) return;
+      const activeId = getActiveVaultId();
+      if (!activeId) return;
       checking = true;
+      let lockedActive = false;
       try {
-        // Only password-enabled vaults have a safe local password check.
-        // Legacy wallet vaults stay available through their original flow.
-        await api.getSealedBlobs(vaultId, ownerToken);
-        if (sessionExpired()) {
+        for (const meta of getAllVaultMetas()) {
+          const ownerToken = getVaultOwnerToken(meta.id);
+          if (!ownerToken || !/^.+@.+\..+$/.test(meta.owner.address.trim())) {
+            continue;
+          }
+          if (meta.ownerTokenLock) {
+            lockVaultCredential(meta.id, meta.ownerTokenLock);
+            continue;
+          }
+          try {
+            const blobs = await api.getSealedBlobs(meta.id, ownerToken);
+            saveVaultCredentialLock(meta.id, {
+              passwordSalt: blobs.password_salt_b64,
+              memKiB: blobs.password_kdf_mem_kib,
+              iters: blobs.password_kdf_iters,
+              ownerTokenBlob: {
+                v: 1,
+                ct: blobs.owner_token_ct_b64,
+                nonce: blobs.owner_token_nonce_b64,
+              },
+              ownerEmailHash: hashEmailForLookup(meta.owner.address),
+            });
+          } catch {
+            // A legacy/non-password vault cannot be locked this way. Its
+            // irreplaceable local token must not be deleted.
+          }
+        }
+        if (hasVaultCredentialLock(activeId)) {
+          lockedActive = true;
           setLocked(true);
           setSignedIn(false);
         }
-      } catch {
-        // Do not create a new availability failure when the server is offline
-        // or the older vault has no password-sealed bundle. Defer the next
-        // eligibility check instead of retrying on every click.
-        touchSession();
       } finally {
+        // Defer another migration attempt for legacy/offline rows instead of
+        // retrying on every click.
+        if (!lockedActive) touchSession();
         checking = false;
       }
     };

@@ -51,12 +51,23 @@ import {
   type OwnerRecoveryBundle,
   type SealedBlobsView,
 } from "./api";
-import { hashEmailForLookup, unsealOwner } from "./crypto/sealing";
 import {
+  b64decode,
+  deriveOwnerKek,
+  hashEmailForLookup,
+  sealWithKey,
+  unsealOwner,
+  unsealOwnerToken,
+} from "./crypto/sealing";
+import {
+  getAllVaultMetas,
   getActiveVaultId,
+  getVaultMeta,
   getVaultOwnerToken,
   saveVaultMeta,
+  saveVaultCredentialLock,
   setActiveVaultId,
+  unlockVaultCredentials,
 } from "./vaultStore";
 import type { Route } from "./App";
 
@@ -105,14 +116,10 @@ export function SignInPortal({
   const [recoveredEmail, setRecoveredEmail] = useState("");
   const exchangeStarted = useRef(false);
   const localVaultId = localUnlock ? getActiveVaultId() : null;
-  const localOwnerToken = localVaultId
-    ? getVaultOwnerToken(localVaultId)
+  const localLock = localVaultId
+    ? getVaultMeta(localVaultId)?.ownerTokenLock
     : null;
-  const trustedUnlock = Boolean(
-    localUnlock &&
-      localVaultId &&
-      localOwnerToken,
-  );
+  const trustedUnlock = Boolean(localUnlock && localVaultId && localLock);
 
   useEffect(() => {
     if (!recoveryToken || exchangeStarted.current) return;
@@ -185,7 +192,7 @@ export function SignInPortal({
       setError("That email looks off. Double-check it.");
       return;
     }
-    if (!localVaultId || !localOwnerToken) {
+    if (!localVaultId || !localLock) {
       setError("This browser no longer has its trusted-device credential.");
       return;
     }
@@ -193,47 +200,82 @@ export function SignInPortal({
     setError(null);
     setPhase({ kind: "unsealing", vaultId: localVaultId, progress: 0 });
     try {
-      const blobs = await api.trustedDeviceUnlock(
-        localVaultId,
-        localOwnerToken,
-        hashEmailForLookup(email),
+      const emailHash = hashEmailForLookup(email);
+      if (localLock.ownerEmailHash !== emailHash) {
+        throw new Error("wrong-email");
+      }
+      const activeMeta = getVaultMeta(localVaultId);
+      const matching = getAllVaultMetas().filter(
+        (meta) =>
+          meta.ownerTokenLock?.ownerEmailHash === emailHash &&
+          (meta.id === localVaultId ||
+            Boolean(activeMeta?.groupId && meta.groupId === activeMeta.groupId)),
       );
-      const out = await unsealOwner({
-        password,
-        passwordSalt: blobs.password_salt_b64,
-        memKiB: blobs.password_kdf_mem_kib,
-        iters: blobs.password_kdf_iters,
-        ownerXprvBlob: {
-          v: 1,
-          ct: blobs.owner_xprv_ct_b64,
-          nonce: blobs.owner_xprv_nonce_b64,
-        },
-        ownerTokenBlob: {
-          v: 1,
-          ct: blobs.owner_token_ct_b64,
-          nonce: blobs.owner_token_nonce_b64,
-        },
-        onProgress: (progress) =>
-          setPhase({
-            kind: "unsealing",
-            vaultId: localVaultId,
-            progress: Math.round(progress * 100),
-          }),
-      });
-      if (out.ownerToken !== localOwnerToken) {
-        throw new Error("The saved credential does not match this vault.");
+      const tokens: Record<string, string> = {};
+      for (let index = 0; index < matching.length; index++) {
+        const meta = matching[index];
+        const lock = meta.ownerTokenLock!;
+        const decryptedToken = await unsealOwnerToken({
+          password,
+          passwordSalt: lock.passwordSalt,
+          memKiB: lock.memKiB,
+          iters: lock.iters,
+          ownerTokenBlob: lock.ownerTokenBlob,
+          onProgress: (progress) =>
+            setPhase({
+              kind: "unsealing",
+              vaultId: localVaultId,
+              progress: Math.round(
+                ((index + progress) / matching.length) * 100,
+              ),
+            }),
+        });
+        const liveToken = getVaultOwnerToken(meta.id);
+        if (liveToken && decryptedToken !== liveToken) {
+          // Some early setups left the server's valid password ciphertext
+          // wrapping a placeholder token. The password has been proven by
+          // opening it, so repair that ciphertext with the still-live token
+          // before removing the only usable copy from local storage.
+          const kek = await deriveOwnerKek(
+            password,
+            b64decode(lock.passwordSalt),
+            { memKiB: lock.memKiB, iters: lock.iters },
+          );
+          let repaired: { v: 1; ct: string; nonce: string };
+          try {
+            repaired = sealWithKey(
+              kek,
+              new TextEncoder().encode(liveToken),
+            );
+          } finally {
+            kek.fill(0);
+          }
+          await api.sealOwnerToken(meta.id, liveToken, {
+            owner_token_ct_b64: repaired.ct,
+            owner_token_nonce_b64: repaired.nonce,
+          });
+          saveVaultCredentialLock(meta.id, {
+            ...lock,
+            ownerTokenBlob: repaired,
+            validated: true,
+          });
+          tokens[meta.id] = liveToken;
+          continue;
+        }
+        tokens[meta.id] = decryptedToken;
+      }
+      if (!tokens[localVaultId] || !unlockVaultCredentials(tokens)) {
+        throw new Error("The saved credential could not be restored.");
       }
       setPhase({ kind: "done" });
       onUnlock?.();
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      const wrongPassword = /poly1305|tag|invalid|decryp/i.test(message);
+      const wrongPassword = /poly1305|tag|invalid|decryp|wrong-email/i.test(message);
       setError(
-        wrongPassword || (e instanceof ApiError && e.status === 401)
+        wrongPassword
           ? "Wrong email or password. Try again."
-          : e instanceof ApiError && e.status === 409
-            ? "This older vault has no password lock. Open it from its original wallet flow."
-            : message,
+          : message,
       );
       setPhase({ kind: "idle" });
     }
@@ -294,6 +336,18 @@ export function SignInPortal({
         heir: { name: heirNameFromLabel(v.label), email: "", address: "" },
         createdAt: v.created_at,
         ownerToken: out.ownerToken,
+        ownerTokenLock: {
+          passwordSalt: blobs.password_salt_b64,
+          memKiB: blobs.password_kdf_mem_kib,
+          iters: blobs.password_kdf_iters,
+          ownerTokenBlob: {
+            v: 1,
+            ct: blobs.owner_token_ct_b64,
+            nonce: blobs.owner_token_nonce_b64,
+          },
+          ownerEmailHash: hashEmailForLookup(recoveredEmail || email),
+          validated: true,
+        },
       });
       setActiveVaultId(v.id);
       setPhase({ kind: "done" });
@@ -375,6 +429,20 @@ export function SignInPortal({
           heir: { name: heirNameFromLabel(v.label), email: "", address: "" },
           createdAt: v.created_at,
           ownerToken,
+          ownerTokenLock: ownerToken
+            ? {
+                passwordSalt: blobs.password_salt_b64,
+                memKiB: blobs.password_kdf_mem_kib,
+                iters: blobs.password_kdf_iters,
+                ownerTokenBlob: {
+                  v: 1,
+                  ct: blobs.owner_token_ct_b64,
+                  nonce: blobs.owner_token_nonce_b64,
+                },
+                ownerEmailHash: hashEmailForLookup(recoveredEmail || email),
+                validated: true,
+              }
+            : undefined,
           groupId,
         });
         if (!firstId) firstId = v.id;
