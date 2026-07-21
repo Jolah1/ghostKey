@@ -132,6 +132,22 @@ export function hasVaultCredentialLock(id: string | null): boolean {
   return Boolean(readAll()[id]?.ownerTokenLock);
 }
 
+/**
+ * True when this browser can attempt a local password unlock for the vault:
+ * it holds either a password-encrypted blob or a still-live owner token. A
+ * pre-lock vault has only the token; the sign-in flow seeds the blob from the
+ * server bundle on first unlock.
+ */
+export function canLocalUnlock(id: string | null): boolean {
+  if (!id) return false;
+  const meta = readAll()[id];
+  if (!meta) return false;
+  return (
+    Boolean(meta.ownerTokenLock) ||
+    (getVaultOwnerToken(id) != null && /^.+@.+\..+$/.test(meta.owner.address.trim()))
+  );
+}
+
 /** Cache a candidate encrypted token without deleting the live credential. */
 export function saveVaultCredentialLock(id: string, lock: LockedOwnerToken): boolean {
   const map = readAll();
