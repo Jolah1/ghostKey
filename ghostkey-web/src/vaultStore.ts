@@ -8,15 +8,17 @@
  * never leaves the device; the server already has the cryptographic
  * proof of who can claim.
  *
- * Password-vault owner tokens live only in memory while unlocked;
- * localStorage retains their password-encrypted blob. Legacy wallet
- * vaults have no password blob, so their irreplaceable token remains
- * local until that older flow gains another safe unlock mechanism.
+ * Password-vault owner tokens live only in sessionStorage while
+ * unlocked; localStorage retains their password-encrypted blob. Legacy
+ * wallet vaults have no password blob, so their irreplaceable token
+ * remains local until that older flow gains another safe unlock
+ * mechanism.
  *
  * Why localStorage and not sessionStorage?
  *   The dashboard must remember which encrypted vault belongs to the
  *   device across visits. A password vault locks on browser restart
- *   because the live token is intentionally memory-only.
+ *   because the live token intentionally lives only in sessionStorage,
+ *   which the browser drops when the tab closes.
  */
 
 export interface HeirInfo {
@@ -79,8 +81,51 @@ export interface VaultMeta {
 
 const STORE_KEY = "gk:vaults";
 const ACTIVE_KEY = "gk:activeVaultId";
-/** Live bearer tokens exist only in this JavaScript realm after local unlock. */
-const unlockedOwnerTokens = new Map<string, string>();
+/**
+ * Live bearer tokens for unlocked vaults, keyed by vault id.
+ *
+ * sessionStorage, deliberately: the dashboard's heir switcher (and the
+ * user's own F5) reloads the page, and a plain in-memory map made every
+ * reload a fresh password prompt. sessionStorage survives same-tab
+ * reloads but is dropped when the tab or browser closes, and the
+ * inactivity lock sweeps it explicitly — so the at-rest guarantee
+ * stays: localStorage only ever holds the password-encrypted blob.
+ */
+const LIVE_KEY = "gk:liveOwnerTokens";
+
+function readLiveTokens(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = sessionStorage.getItem(LIVE_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeLiveTokens(map: Record<string, string>) {
+  try {
+    if (Object.keys(map).length === 0) sessionStorage.removeItem(LIVE_KEY);
+    else sessionStorage.setItem(LIVE_KEY, JSON.stringify(map));
+  } catch {
+    // Storage unavailable (private mode): unlocks then last until the
+    // next reload instead of the next restart. Nothing breaks.
+  }
+}
+
+function setLiveToken(id: string, token: string) {
+  const map = readLiveTokens();
+  map[id] = token;
+  writeLiveTokens(map);
+}
+
+function deleteLiveToken(id: string) {
+  const map = readLiveTokens();
+  if (id in map) {
+    delete map[id];
+    writeLiveTokens(map);
+  }
+}
 
 function readAll(): Record<string, VaultMeta> {
   if (typeof window === "undefined") return {};
@@ -99,7 +144,7 @@ function writeAll(map: Record<string, VaultMeta>) {
 export function saveVaultMeta(meta: VaultMeta) {
   const map = readAll();
   if (meta.ownerToken && meta.ownerTokenLock?.validated) {
-    unlockedOwnerTokens.set(meta.id, meta.ownerToken);
+    setLiveToken(meta.id, meta.ownerToken);
     map[meta.id] = { ...meta, ownerToken: undefined };
   } else {
     map[meta.id] = meta;
@@ -114,7 +159,7 @@ export function getVaultMeta(id: string): VaultMeta | null {
 
 /** Returns the stored owner token for a vault, or null. */
 export function getVaultOwnerToken(id: string): string | null {
-  return unlockedOwnerTokens.get(id) ?? readAll()[id]?.ownerToken ?? null;
+  return readLiveTokens()[id] ?? readAll()[id]?.ownerToken ?? null;
 }
 
 export function getAllVaultMetas(): VaultMeta[] {
@@ -163,7 +208,7 @@ export function lockVaultCredential(id: string, lock: LockedOwnerToken): boolean
   const map = readAll();
   const meta = map[id];
   if (!getVaultOwnerToken(id) || !lock.validated) return false;
-  unlockedOwnerTokens.delete(id);
+  deleteLiveToken(id);
   map[id] = { ...meta, ownerToken: undefined, ownerTokenLock: lock };
   writeAll(map);
   return true;
@@ -175,14 +220,16 @@ export function unlockVaultCredentials(tokens: Record<string, string>): boolean 
   for (const [id, token] of Object.entries(tokens)) {
     if (!map[id]?.ownerTokenLock || !token) return false;
   }
+  const live = readLiveTokens();
   for (const [id, token] of Object.entries(tokens)) {
-    unlockedOwnerTokens.set(id, token);
+    live[id] = token;
     map[id] = {
       ...map[id],
       ownerToken: undefined,
       ownerTokenLock: { ...map[id].ownerTokenLock!, validated: true },
     };
   }
+  writeLiveTokens(live);
   writeAll(map);
   return true;
 }
@@ -250,7 +297,7 @@ export function removeVaultMeta(id: string): boolean {
   const map = readAll();
   if (!(id in map)) return false;
   delete map[id];
-  unlockedOwnerTokens.delete(id);
+  deleteLiveToken(id);
   writeAll(map);
   if (getActiveVaultId() === id) setActiveVaultId(null);
   return true;

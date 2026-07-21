@@ -55,9 +55,9 @@ import {
   b64decode,
   deriveOwnerKek,
   hashEmailForLookup,
+  openWithKey,
   sealWithKey,
   unsealOwner,
-  unsealOwnerToken,
 } from "./crypto/sealing";
 import {
   getAllVaultMetas,
@@ -68,6 +68,7 @@ import {
   saveVaultCredentialLock,
   setActiveVaultId,
   unlockVaultCredentials,
+  type LockedOwnerToken,
 } from "./vaultStore";
 import type { Route } from "./App";
 
@@ -275,17 +276,21 @@ export function SignInPortal({
           a.id === localVaultId ? -1 : b.id === localVaultId ? 1 : 0,
         );
       const tokens: Record<string, string> = {};
-      for (let index = 0; index < matching.length; index++) {
-        const meta = matching[index];
-        const lock = meta.ownerTokenLock!;
-        let decryptedToken: string;
-        try {
-          decryptedToken = await unsealOwnerToken({
-            password,
-            passwordSalt: lock.passwordSalt,
+      // Sibling vaults sealed in one setup run share one salt and KDF
+      // params, so one Argon2 derivation opens all of them. Cache the
+      // derived key per (salt, params): a multi-heir group costs one
+      // slow derivation instead of one per heir.
+      const keks = new Map<string, Uint8Array>();
+      const kekFor = async (lock: LockedOwnerToken, index: number) => {
+        const cacheKey = `${lock.passwordSalt}:${lock.memKiB}:${lock.iters}`;
+        const cached = keks.get(cacheKey);
+        if (cached) return cached;
+        const kek = await deriveOwnerKek(
+          password,
+          b64decode(lock.passwordSalt),
+          {
             memKiB: lock.memKiB,
             iters: lock.iters,
-            ownerTokenBlob: lock.ownerTokenBlob,
             onProgress: (progress) =>
               setPhase({
                 kind: "unsealing",
@@ -294,54 +299,60 @@ export function SignInPortal({
                   ((index + progress) / matching.length) * 100,
                 ),
               }),
-          });
-        } catch (e) {
-          // Only the active vault's blob proves the typed password. A
-          // sibling sealed under a different password stays locked and
-          // can be opened later with its own password.
-          if (meta.id === localVaultId) throw e;
-          continue;
-        }
-        const liveToken = getVaultOwnerToken(meta.id);
-        if (decryptedToken === PLACEHOLDER_OWNER_TOKEN && !liveToken) {
-          // The setup-time re-seal never landed for this vault and its
-          // live token is already gone, so this blob holds nothing
-          // usable. Leave the vault locked rather than storing a
-          // placeholder that guarantees 401s on every call.
-          continue;
-        }
-        if (liveToken && decryptedToken !== liveToken) {
-          // Some early setups left the server's valid password ciphertext
-          // wrapping a placeholder token. The password has been proven by
-          // opening it, so repair that ciphertext with the still-live token
-          // before removing the only usable copy from local storage.
-          const kek = await deriveOwnerKek(
-            password,
-            b64decode(lock.passwordSalt),
-            { memKiB: lock.memKiB, iters: lock.iters },
-          );
-          let repaired: { v: 1; ct: string; nonce: string };
+          },
+        );
+        keks.set(cacheKey, kek);
+        return kek;
+      };
+      try {
+        for (let index = 0; index < matching.length; index++) {
+          const meta = matching[index];
+          const lock = meta.ownerTokenLock!;
+          let decryptedToken: string;
           try {
-            repaired = sealWithKey(
-              kek,
+            decryptedToken = new TextDecoder().decode(
+              openWithKey(await kekFor(lock, index), lock.ownerTokenBlob),
+            );
+          } catch (e) {
+            // Only the active vault's blob proves the typed password. A
+            // sibling sealed under a different password stays locked and
+            // can be opened later with its own password.
+            if (meta.id === localVaultId) throw e;
+            continue;
+          }
+          const liveToken = getVaultOwnerToken(meta.id);
+          if (decryptedToken === PLACEHOLDER_OWNER_TOKEN && !liveToken) {
+            // The setup-time re-seal never landed for this vault and its
+            // live token is already gone, so this blob holds nothing
+            // usable. Leave the vault locked rather than storing a
+            // placeholder that guarantees 401s on every call.
+            continue;
+          }
+          if (liveToken && decryptedToken !== liveToken) {
+            // Some early setups left the server's valid password ciphertext
+            // wrapping a placeholder token. The password has been proven by
+            // opening it, so repair that ciphertext with the still-live token
+            // before removing the only usable copy from local storage.
+            const repaired = sealWithKey(
+              await kekFor(lock, index),
               new TextEncoder().encode(liveToken),
             );
-          } finally {
-            kek.fill(0);
+            await api.sealOwnerToken(meta.id, liveToken, {
+              owner_token_ct_b64: repaired.ct,
+              owner_token_nonce_b64: repaired.nonce,
+            });
+            saveVaultCredentialLock(meta.id, {
+              ...lock,
+              ownerTokenBlob: repaired,
+              validated: true,
+            });
+            tokens[meta.id] = liveToken;
+            continue;
           }
-          await api.sealOwnerToken(meta.id, liveToken, {
-            owner_token_ct_b64: repaired.ct,
-            owner_token_nonce_b64: repaired.nonce,
-          });
-          saveVaultCredentialLock(meta.id, {
-            ...lock,
-            ownerTokenBlob: repaired,
-            validated: true,
-          });
-          tokens[meta.id] = liveToken;
-          continue;
+          tokens[meta.id] = decryptedToken;
         }
-        tokens[meta.id] = decryptedToken;
+      } finally {
+        for (const kek of keks.values()) kek.fill(0);
       }
       if (!tokens[localVaultId] || !unlockVaultCredentials(tokens)) {
         throw new Error("The saved credential could not be restored.");
