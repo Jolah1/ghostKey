@@ -41,6 +41,10 @@ describe("trusted-device inactivity lock", () => {
       configurable: true,
       value: storage,
     });
+    Object.defineProperty(globalThis, "sessionStorage", {
+      configurable: true,
+      value: memoryStorage(),
+    });
   });
 
   afterEach(() => {
@@ -81,7 +85,13 @@ describe("trusted-device inactivity lock", () => {
     );
     expect(unlockVaultCredentials({ "vault-1": "owner-token" })).toBe(true);
     expect(getVaultOwnerToken("vault-1")).toBe("owner-token");
+    // The live token must survive a same-tab reload (the heir switcher
+    // reloads the page), so it lives in sessionStorage — never in the
+    // at-rest localStorage store.
     expect(localStorage.getItem("gk:vaults")).not.toContain("owner-token");
+    expect(sessionStorage.getItem("gk:liveOwnerTokens")).toContain(
+      "owner-token",
+    );
   });
 
   it("offers a local unlock for a pre-lock vault holding only a live token", () => {
