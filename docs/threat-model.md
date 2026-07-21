@@ -617,9 +617,11 @@ for new browsers, cleared site data, or otherwise lost local credentials.
   device login and disk encryption and avoid treating a shared browser as a
   trusted device. Password-enabled vaults apply a non-destructive local lock
   after ten minutes of inactivity: the retained owner token authenticates the
-  sealed-bundle fetch and the password opens that bundle locally, without an
-  email. This deters casual walk-up access but does not protect against browser
-  profile extraction; a future device passkey could strengthen that boundary.
+  request, the server compares only the normalized hash of the email typed for
+  that unlock, and the password opens the returned bundle locally. The form
+  values are not persisted and no email message or link is sent. This deters
+  casual walk-up access but does not protect against browser profile
+  extraction; a future device passkey could strengthen that boundary.
 
 ---
 

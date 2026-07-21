@@ -809,6 +809,21 @@ export const api = {
       undefined,
       ownerToken,
     ),
+  /** Password unlock on an existing trusted device. The owner token proves
+   *  device possession; the typed email is sent only as its normalized hash. */
+  trustedDeviceUnlock: (
+    id: string,
+    ownerToken: string,
+    owner_email_hash: string,
+  ) =>
+    request<SealedBlobsView>(
+      `/vaults/${id}/trusted-unlock`,
+      {
+        method: "POST",
+        body: JSON.stringify({ owner_email_hash }),
+      },
+      ownerToken,
+    ),
   /** Next external (receive) address from the vault descriptor.
    *  Public; used to fund a freshly-created vault. */
   getVaultAddress: (id: string) =>

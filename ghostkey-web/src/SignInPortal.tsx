@@ -54,7 +54,6 @@ import {
 import { hashEmailForLookup, unsealOwner } from "./crypto/sealing";
 import {
   getActiveVaultId,
-  getVaultMeta,
   getVaultOwnerToken,
   saveVaultMeta,
   setActiveVaultId,
@@ -104,19 +103,15 @@ export function SignInPortal({
   const [error, setError] = useState<string | null>(null);
   const [bundles, setBundles] = useState<OwnerRecoveryBundle[]>([]);
   const [recoveredEmail, setRecoveredEmail] = useState("");
-  const [useEmailRecovery, setUseEmailRecovery] = useState(false);
   const exchangeStarted = useRef(false);
   const localVaultId = localUnlock ? getActiveVaultId() : null;
   const localOwnerToken = localVaultId
     ? getVaultOwnerToken(localVaultId)
     : null;
-  const localMeta = localVaultId ? getVaultMeta(localVaultId) : null;
   const trustedUnlock = Boolean(
     localUnlock &&
-      !useEmailRecovery &&
       localVaultId &&
-      localOwnerToken &&
-      localMeta,
+      localOwnerToken,
   );
 
   useEffect(() => {
@@ -182,8 +177,12 @@ export function SignInPortal({
   }
 
   async function unlockTrustedDevice() {
-    if (!password) {
-      setError("Enter your password.");
+    if (!email.trim() || !password) {
+      setError("Enter your email and password.");
+      return;
+    }
+    if (!/^.+@.+\..+$/.test(email.trim())) {
+      setError("That email looks off. Double-check it.");
       return;
     }
     if (!localVaultId || !localOwnerToken) {
@@ -194,7 +193,11 @@ export function SignInPortal({
     setError(null);
     setPhase({ kind: "unsealing", vaultId: localVaultId, progress: 0 });
     try {
-      const blobs = await api.getSealedBlobs(localVaultId, localOwnerToken);
+      const blobs = await api.trustedDeviceUnlock(
+        localVaultId,
+        localOwnerToken,
+        hashEmailForLookup(email),
+      );
       const out = await unsealOwner({
         password,
         passwordSalt: blobs.password_salt_b64,
@@ -226,10 +229,10 @@ export function SignInPortal({
       const message = e instanceof Error ? e.message : String(e);
       const wrongPassword = /poly1305|tag|invalid|decryp/i.test(message);
       setError(
-        wrongPassword
-          ? "Wrong password. Try again."
+        wrongPassword || (e instanceof ApiError && e.status === 401)
+          ? "Wrong email or password. Try again."
           : e instanceof ApiError && e.status === 409
-            ? "This older vault has no local password lock. Use email recovery or open it from its original wallet flow."
+            ? "This older vault has no password lock. Open it from its original wallet flow."
             : message,
       );
       setPhase({ kind: "idle" });
@@ -408,7 +411,7 @@ export function SignInPortal({
           </h1>
           <p className="mx-auto mt-3 text-sm text-muted">
             {trustedUnlock
-              ? `Enter your password to continue${localMeta?.label ? ` to ${localMeta.label}` : ""}. No email is needed.`
+              ? "Use the email and password you chose at setup. No sign-in link will be sent."
               : recoveryToken
               ? "Enter the password you chose at setup. Your encrypted vault opens here on this device."
               : "Enter your email and we'll send a private, one-time sign-in link. We never reveal whether an address has a vault."}
@@ -426,7 +429,7 @@ export function SignInPortal({
           }}
           className="mt-10"
         >
-          {!recoveryToken && !trustedUnlock ? (
+          {!recoveryToken ? (
             <Field label="Email">
               <input
                 type="email"
@@ -533,22 +536,6 @@ export function SignInPortal({
             </Button>
           </div>
         </form>
-
-        {trustedUnlock ? (
-          <div className="mt-6 text-center">
-            <button
-              type="button"
-              className="text-xs text-muted underline hover:text-[var(--text)]"
-              onClick={() => {
-                setError(null);
-                setPassword("");
-                setUseEmailRecovery(true);
-              }}
-            >
-              Use email recovery instead
-            </button>
-          </div>
-        ) : null}
 
         {!trustedUnlock ? <div className="mt-10 border-t border-app pt-6 text-center text-xs text-muted">
           New here?{" "}
