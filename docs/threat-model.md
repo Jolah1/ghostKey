@@ -603,6 +603,24 @@ or database value would strand recovery.
   rewrapping of token-encrypted material or an owner-authorized move to a new
   vault descriptor; that higher-risk migration remains future work.
 
+### R15. A trusted browser profile retains its owner credential
+The owner bearer token persists in that browser's `localStorage` so an
+ordinary return visit does not depend on an email provider. GhostKey does not
+delete it merely because the owner was inactive; email recovery is reserved
+for new browsers, cleared site data, or otherwise lost local credentials.
+
+- Mitigation: the token is scoped to owner operations for its vault, CORS and
+  frontend supply-chain controls reduce exposure to foreign scripts, and the
+  independent recovery kit remains the deeper recovery path.
+- Accepted residual risk: someone who can use or extract the same unlocked
+  browser profile can act with that stored owner credential. Owners should use
+  device login and disk encryption and avoid treating a shared browser as a
+  trusted device. Password-enabled vaults apply a non-destructive local lock
+  after ten minutes of inactivity: the retained owner token authenticates the
+  sealed-bundle fetch and the password opens that bundle locally, without an
+  email. This deters casual walk-up access but does not protect against browser
+  profile extraction; a future device passkey could strengthen that boundary.
+
 ---
 
 ## 5. Open questions

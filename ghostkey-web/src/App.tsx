@@ -36,8 +36,8 @@ import { ServerOfflineBanner } from "./ServerOfflineBanner";
 import { Button } from "./ui";
 import { api } from "./api";
 import {
-  clearSession,
   getActiveVaultId,
+  getVaultOwnerToken,
   sessionExpired,
   touchSession,
 } from "./vaultStore";
@@ -323,13 +323,12 @@ export default function App() {
   // demo server sees "signet" instead of the historical "testnet"
   // literal. See `crates/ghostkey-server/src/config.rs`.
   const [network, setNetwork] = useState<"bitcoin" | "testnet" | "signet" | "regtest">("testnet");
-  // Whether this device holds a vault session. Drives the nav (no
-  // "Sign in" while signed in) and flips off when the inactivity
-  // guard below expires the session.
+  // Whether this device holds a vault credential. Drives the nav (no
+  // "Sign in" while signed in). Trusted-device credentials persist
+  // across visits; email recovery is only for a browser that has no
+  // local credential.
+  const [locked, setLocked] = useState(false);
   const [signedIn, setSignedIn] = useState(() => Boolean(getActiveVaultId()));
-  // One-shot notice shown after an inactivity sign-out so the owner
-  // knows why their dashboard asked for the password again.
-  const [expiredNotice, setExpiredNotice] = useState(false);
 
   // Sync the URL hash with the current location. Only writes back for
   // simple routes; the claim page's token-bearing URL is owned by the
@@ -350,61 +349,71 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  // Inactivity auto sign-out. Interactions refresh a throttled
-  // activity stamp; a periodic check (plus one on tab re-focus)
-  // expires the session after SESSION_TIMEOUT_MS without any. Expiry
-  // wipes the device's vault metas + tokens — email + password
-  // sign-in restores them, so a walked-away laptop holds nothing.
+  // Re-sync after sign-in or setup completion stores the credential.
+  useEffect(() => {
+    setSignedIn(Boolean(getActiveVaultId()) && !locked);
+  }, [location, locked]);
+
+  // A timeout locks only the UI. It deliberately keeps the owner token and
+  // vault metadata on this trusted device so password unlock never needs an
+  // email round-trip. Activity while unlocked refreshes the ten-minute timer.
   useEffect(() => {
     let lastTouch = 0;
+    let checking = false;
+    const lockIfPasswordVault = async () => {
+      if (locked || checking || !sessionExpired()) return;
+      const vaultId = getActiveVaultId();
+      const ownerToken = vaultId ? getVaultOwnerToken(vaultId) : null;
+      if (!vaultId || !ownerToken) return;
+      checking = true;
+      try {
+        // Only password-enabled vaults have a safe local password check.
+        // Legacy wallet vaults stay available through their original flow.
+        await api.getSealedBlobs(vaultId, ownerToken);
+        if (sessionExpired()) {
+          setLocked(true);
+          setSignedIn(false);
+        }
+      } catch {
+        // Do not create a new availability failure when the server is offline
+        // or the older vault has no password-sealed bundle. Defer the next
+        // eligibility check instead of retrying on every click.
+        touchSession();
+      } finally {
+        checking = false;
+      }
+    };
     const onActivity = () => {
-      const t = Date.now();
-      if (t - lastTouch > 30_000) {
-        lastTouch = t;
-        if (getActiveVaultId()) touchSession();
-      }
-    };
-    const check = () => {
+      if (locked || !getActiveVaultId()) return;
+      // Do not let the first click after a long absence renew an already
+      // expired session before the periodic/visibility check sees it.
       if (sessionExpired()) {
-        clearSession();
-        setSignedIn(false);
-        setExpiredNotice(true);
-        setLocation((loc) =>
-          loc.kind === "route" && loc.route === "dashboard"
-            ? { kind: "route", route: "checkin" }
-            : loc,
-        );
-      } else {
-        setSignedIn(Boolean(getActiveVaultId()));
+        void lockIfPasswordVault();
+        return;
+      }
+      const now = Date.now();
+      if (now - lastTouch >= 30_000) {
+        lastTouch = now;
+        touchSession();
       }
     };
+    const check = () => void lockIfPasswordVault();
     const events = ["pointerdown", "keydown", "scroll"] as const;
-    events.forEach((e) =>
-      window.addEventListener(e, onActivity, { passive: true }),
+    events.forEach((event) =>
+      window.addEventListener(event, onActivity, { passive: true }),
     );
-    const id = window.setInterval(check, 30_000);
-    const onVis = () => {
+    const interval = window.setInterval(check, 30_000);
+    const onVisible = () => {
       if (!document.hidden) check();
     };
-    document.addEventListener("visibilitychange", onVis);
+    document.addEventListener("visibilitychange", onVisible);
     check();
     return () => {
-      events.forEach((e) => window.removeEventListener(e, onActivity));
-      window.clearInterval(id);
-      document.removeEventListener("visibilitychange", onVis);
+      events.forEach((event) => window.removeEventListener(event, onActivity));
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
     };
-  }, []);
-
-  // Route changes both count as activity and re-sync the signed-in
-  // flag (sign-in / setup completion lands here via navigation).
-  useEffect(() => {
-    const active = Boolean(getActiveVaultId());
-    setSignedIn(active);
-    if (active) {
-      touchSession();
-      setExpiredNotice(false);
-    }
-  }, [location]);
+  }, [locked]);
 
   // Health probe — also captures the demo_mode flag so we can render
   // the sticky banner. Polls every 20s; if the operator toggles the
@@ -469,14 +478,23 @@ export default function App() {
           signedIn={signedIn}
         />
       )}
-      {expiredNotice && !isClaim && !isOneTap && (
-        <SessionExpiredNotice onDismiss={() => setExpiredNotice(false)} />
-      )}
-
       {/* Routes render their own <main>; this anchor is the skip-link
           target so keyboard users can jump past the nav/banners. */}
       <div id="main">
       <Suspense fallback={<RouteLoading />}>
+      {locked && location.kind === "route" ? (
+        <SignInPortal
+          localUnlock
+          onNavigate={setRoute}
+          onUnlock={() => {
+            touchSession();
+            setLocked(false);
+            setSignedIn(true);
+            setRoute("dashboard");
+          }}
+        />
+      ) : (
+      <>
       {location.kind === "route" && location.route === "landing"   && <Landing  onNavigate={setRoute} />}
       {location.kind === "route" && (location.route === "setup" || location.route === "setup-password") && (
         <PasswordSetupPortal
@@ -509,7 +527,15 @@ export default function App() {
       {location.kind === "route" && location.route === "recovery-guide" && <RecoveryGuide onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "checkin"   && <SignInPortal onNavigate={setRoute} />}
       {location.kind === "owner-recovery" && (
-        <SignInPortal onNavigate={setRoute} recoveryToken={location.token} />
+        <SignInPortal
+          onNavigate={setRoute}
+          recoveryToken={location.token}
+          onUnlock={() => {
+            touchSession();
+            setLocked(false);
+            setSignedIn(true);
+          }}
+        />
       )}
       {location.kind === "route" && location.route === "checkin-legacy" && (
         <CheckinPortal initialId={getActiveVaultId() ?? undefined} />
@@ -533,6 +559,8 @@ export default function App() {
           onNavigate={setRoute}
         />
       )}
+      </>
+      )}
       </Suspense>
       </div>
     </div>
@@ -553,32 +581,6 @@ function RouteLoading() {
         Getting things ready…
       </div>
     </main>
-  );
-}
-
-/* -------------------------- SessionExpiredNotice -------------------------- */
-
-/**
- * Shown once after the inactivity guard signs the user out, so the
- * password prompt doesn't feel like a bug. Dismissable; also clears
- * itself on the next successful sign-in.
- */
-function SessionExpiredNotice({ onDismiss }: { onDismiss: () => void }) {
-  return (
-    <div role="status" className="border-b border-app bg-surface-2">
-      <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-5 py-2 md:px-8">
-        <p className="text-xs text-muted">
-          Session timed out. Sign in to continue.
-        </p>
-        <button
-          type="button"
-          onClick={onDismiss}
-          className="text-xs text-dim underline hover:text-[var(--text)]"
-        >
-          Dismiss
-        </button>
-      </div>
-    </div>
   );
 }
 
