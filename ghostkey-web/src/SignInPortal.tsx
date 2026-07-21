@@ -68,6 +68,7 @@ import {
   saveVaultCredentialLock,
   setActiveVaultId,
   unlockVaultCredentials,
+  type VaultMeta,
 } from "./vaultStore";
 import type { Route } from "./App";
 
@@ -86,6 +87,9 @@ interface Props {
   recoveryToken?: string;
   /** Unlock an existing trusted-device credential without sending email. */
   localUnlock?: boolean;
+  /** True only when the app auto-locked after inactivity (changes the
+   *  heading). The explicit "Sign in" route leaves this false. */
+  timedOut?: boolean;
   onUnlock?: () => void;
 }
 
@@ -102,6 +106,7 @@ export function SignInPortal({
   onNavigate,
   recoveryToken,
   localUnlock = false,
+  timedOut = false,
   onUnlock,
 }: Props) {
   const [email, setEmail] = useState("");
@@ -119,7 +124,14 @@ export function SignInPortal({
   const localLock = localVaultId
     ? getVaultMeta(localVaultId)?.ownerTokenLock
     : null;
-  const trustedUnlock = Boolean(localUnlock && localVaultId && localLock);
+  // A vault set up before the trusted-device lock shipped has no encrypted
+  // blob yet, only a live owner token in local storage. We can still unlock it
+  // locally by fetching its sealed bundle with that token (see the seeding
+  // step in unlockTrustedDevice), so offer the password path for it too.
+  const localOwnerToken = localVaultId ? getVaultOwnerToken(localVaultId) : null;
+  const trustedUnlock = Boolean(
+    localUnlock && localVaultId && (localLock || localOwnerToken),
+  );
 
   useEffect(() => {
     if (!recoveryToken || exchangeStarted.current) return;
@@ -192,7 +204,7 @@ export function SignInPortal({
       setError("That email looks off. Double-check it.");
       return;
     }
-    if (!localVaultId || !localLock) {
+    if (!localVaultId) {
       setError("This browser no longer has its trusted-device credential.");
       return;
     }
@@ -201,15 +213,52 @@ export function SignInPortal({
     setPhase({ kind: "unsealing", vaultId: localVaultId, progress: 0 });
     try {
       const emailHash = hashEmailForLookup(email);
-      if (localLock.ownerEmailHash !== emailHash) {
+      const activeMeta = getVaultMeta(localVaultId);
+      const inScope = (meta: VaultMeta) =>
+        meta.id === localVaultId ||
+        Boolean(activeMeta?.groupId && meta.groupId === activeMeta.groupId);
+
+      // Vaults created before the trusted-device lock shipped hold a usable
+      // owner token but no encrypted blob. Seed one from the server bundle so
+      // the same password opens them, and so the live token can move off disk
+      // on the next lock. Only a vault whose stored owner email matches what
+      // was typed is seeded; the password itself is still proven below by
+      // opening the blob.
+      for (const meta of getAllVaultMetas()) {
+        if (meta.ownerTokenLock || !inScope(meta)) continue;
+        const ownerToken = getVaultOwnerToken(meta.id);
+        if (
+          !ownerToken ||
+          hashEmailForLookup(meta.owner.address) !== emailHash
+        ) {
+          continue;
+        }
+        try {
+          const blobs = await api.getSealedBlobs(meta.id, ownerToken);
+          saveVaultCredentialLock(meta.id, {
+            passwordSalt: blobs.password_salt_b64,
+            memKiB: blobs.password_kdf_mem_kib,
+            iters: blobs.password_kdf_iters,
+            ownerTokenBlob: {
+              v: 1,
+              ct: blobs.owner_token_ct_b64,
+              nonce: blobs.owner_token_nonce_b64,
+            },
+            ownerEmailHash: emailHash,
+          });
+        } catch {
+          // A legacy/non-password vault or an offline server. Leave it as-is;
+          // the check below surfaces a clear error.
+        }
+      }
+
+      const activeLock = getVaultMeta(localVaultId)?.ownerTokenLock;
+      if (!activeLock || activeLock.ownerEmailHash !== emailHash) {
         throw new Error("wrong-email");
       }
-      const activeMeta = getVaultMeta(localVaultId);
       const matching = getAllVaultMetas().filter(
         (meta) =>
-          meta.ownerTokenLock?.ownerEmailHash === emailHash &&
-          (meta.id === localVaultId ||
-            Boolean(activeMeta?.groupId && meta.groupId === activeMeta.groupId)),
+          meta.ownerTokenLock?.ownerEmailHash === emailHash && inScope(meta),
       );
       const tokens: Record<string, string> = {};
       for (let index = 0; index < matching.length; index++) {
@@ -475,7 +524,9 @@ export function SignInPortal({
         <header className="text-center">
           <p className="eyebrow">Sign in</p>
           <h1 className="mt-6 font-serif text-3xl md:text-4xl">
-            {trustedUnlock ? "Session timed out" : "Open your vault on this device"}
+            {trustedUnlock && timedOut
+              ? "Session timed out"
+              : "Open your vault on this device"}
           </h1>
           <p className="mx-auto mt-3 text-sm text-muted">
             {trustedUnlock
@@ -605,16 +656,18 @@ export function SignInPortal({
           </div>
         </form>
 
-        {!trustedUnlock ? <div className="mt-10 border-t border-app pt-6 text-center text-xs text-muted">
-          New here?{" "}
-          <button
-            type="button"
-            className="underline hover:text-[var(--text)]"
-            onClick={() => onNavigate("setup")}
-          >
-            Set up a vault
-          </button>
-        </div> : null}
+        {!trustedUnlock ? (
+          <div className="mt-10 border-t border-app pt-6 text-center text-xs text-muted">
+            New here?{" "}
+            <button
+              type="button"
+              className="underline hover:text-[var(--text)]"
+              onClick={() => onNavigate("setup")}
+            >
+              Set up a vault
+            </button>
+          </div>
+        ) : null}
       </div>
     </main>
   );

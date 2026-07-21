@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  canLocalUnlock,
   getActiveVaultId,
   getVaultMeta,
   getVaultOwnerToken,
@@ -81,6 +82,44 @@ describe("trusted-device inactivity lock", () => {
     expect(unlockVaultCredentials({ "vault-1": "owner-token" })).toBe(true);
     expect(getVaultOwnerToken("vault-1")).toBe("owner-token");
     expect(localStorage.getItem("gk:vaults")).not.toContain("owner-token");
+  });
+
+  it("offers a local unlock for a pre-lock vault holding only a live token", () => {
+    expect(canLocalUnlock("vault-none")).toBe(false);
+    saveVaultMeta({
+      id: "vault-token-only",
+      label: "Existing vault",
+      owner: { address: "owner@example.com" },
+      heir: { name: "Ada", email: "", address: "" },
+      createdAt: "2026-07-21T00:00:00Z",
+      ownerToken: "live-token",
+    });
+    // No encrypted blob yet, only the live token: still unlockable locally
+    // because sign-in seeds the blob from the server bundle.
+    expect(canLocalUnlock("vault-token-only")).toBe(true);
+
+    saveVaultMeta({
+      id: "vault-wallet",
+      label: "Wallet vault",
+      owner: { address: "xpub661MyMwAqRbcFexample" },
+      heir: { name: "Ada", email: "", address: "" },
+      createdAt: "2026-07-21T00:00:00Z",
+      ownerToken: "wallet-owner-token",
+    });
+    expect(canLocalUnlock("vault-wallet")).toBe(false);
+
+    // Once locked (token replaced by its ciphertext) it stays unlockable.
+    lockVaultCredential("vault-token-only", {
+      passwordSalt: "salt",
+      memKiB: 64,
+      iters: 3,
+      ownerTokenBlob: { v: 1, ct: "ciphertext", nonce: "nonce" },
+      ownerEmailHash: "hash",
+      validated: true,
+    });
+    expect(getVaultOwnerToken("vault-token-only")).toBeNull();
+    expect(canLocalUnlock("vault-token-only")).toBe(true);
+    expect(canLocalUnlock(null)).toBe(false);
   });
 
   it("starts a fresh ten-minute window after password unlock", () => {
