@@ -700,6 +700,8 @@ pub struct CreatedVault {
 pub enum ApiError {
     #[error("not found")]
     NotFound,
+    #[error("unauthorized")]
+    Unauthorized,
     #[error("validation: {0}")]
     Validation(String),
     #[error("db: {0}")]
@@ -714,6 +716,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         let (code, msg) = match &self {
             ApiError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
+            ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, self.to_string()),
             ApiError::Validation(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             ApiError::Conflict(_) => (StatusCode::CONFLICT, self.to_string()),
             ApiError::Db(_) => {
