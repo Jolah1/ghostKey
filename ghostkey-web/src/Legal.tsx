@@ -147,14 +147,12 @@ export function TermsPage() {
       <Section n={3} title="What you are responsible for">
         <p>
           Because our backend does not hold your readable owner key, some
-          things are only yours to do. The hosted website is still trusted
-          code: it handles your key and password briefly in your browser.
+          things are only yours to do:
         </p>
         <ul role="list" className="list-disc space-y-1.5 pl-5">
           <li>
             <strong>Your password.</strong> Our backend does not receive or
-            store it and cannot reset it. The website code handles it in
-            your browser while locking or unlocking your key. Your recovery file opens with this same password, so
+            store it and cannot reset it. Your recovery file opens with this same password, so
             it cannot rescue a forgotten one. If you forget your password,
             the funds remain reachable only through the inheritance path:
             your heir's claim, or your own copy of your heir's file once
@@ -332,8 +330,7 @@ export function PrivacyPage() {
         <p>
           Our backend database does not store your readable password,
           unencrypted private keys, tracking cookies, or browsing profiles.
-          Passwords and keys do exist briefly in browser memory when the
-          website creates or unlocks them. Our site analytics are anonymous daily counters
+          Our site analytics are anonymous daily counters
           ("how many people visited the setup page today") with no IP
           address, no cookie, and no fingerprint attached.
         </p>

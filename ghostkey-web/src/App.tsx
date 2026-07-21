@@ -253,6 +253,25 @@ const VALID: Route[] = [
 ];
 
 /**
+ * Routes that operate the vault and need the owner credential. Only
+ * these are replaced by the lock screen while the device is locked;
+ * everything else (landing, FAQ, guides, inherit, legal) stays
+ * browsable so a locked device is never a wall — an heir on the
+ * owner's computer must still be able to reach the inherit page.
+ */
+const OWNER_ROUTES: Route[] = [
+  "dashboard",
+  "activity",
+  "heir-message",
+  "heir-contact",
+  "practice",
+  "emergency",
+  "reminders",
+  "tools",
+  "recovery",
+];
+
+/**
  * Resolved hash → either a navigable Route, or a parameterised location
  * (today: `claim` with a token, and `checkin-link` with a vault id +
  * token). Kept as a discriminated union so the renderer can
@@ -347,6 +366,15 @@ export default function App() {
       !hasLockedVaultCredential(getActiveVaultId()) &&
       !(sessionExpired() && hasVaultCredentialLock(getActiveVaultId())),
   );
+  // True only when the lock fired during this visit (inactivity, or
+  // another tab locking). A browser that simply reopens with a locked
+  // credential is a normal return, not a timeout — the lock screen
+  // greets it with "Welcome back" instead.
+  const [timedOut, setTimedOut] = useState(false);
+  // One-shot banner shown on public pages after an inactivity lock so
+  // the next visit to the dashboard asking for a password doesn't feel
+  // like a bug. Dismissable; clears on unlock.
+  const [expiredNotice, setExpiredNotice] = useState(false);
 
   // Sync the URL hash with the current location. Only writes back for
   // simple routes; the claim page's token-bearing URL is owned by the
@@ -382,6 +410,8 @@ export default function App() {
       ) {
         setLocked(true);
         setSignedIn(false);
+        setTimedOut(true);
+        setExpiredNotice(true);
       }
     };
     window.addEventListener("storage", onStorage);
@@ -434,6 +464,8 @@ export default function App() {
           lockedActive = true;
           setLocked(true);
           setSignedIn(false);
+          setTimedOut(true);
+          setExpiredNotice(true);
         }
       } finally {
         // Defer another migration attempt for legacy/offline rows instead of
@@ -510,6 +542,12 @@ export default function App() {
   // page.
   const isOneTap =
     location.kind === "one-tap-checkin" || location.kind === "verify-email";
+  // The lock screen only replaces owner pages. Public pages render
+  // normally while locked, with the slim timeout notice instead.
+  const lockScreen =
+    locked &&
+    location.kind === "route" &&
+    OWNER_ROUTES.includes(location.route);
 
   return (
     <div className="min-h-screen bg-app">
@@ -537,20 +575,24 @@ export default function App() {
           signedIn={signedIn}
         />
       )}
+      {expiredNotice && !isClaim && !isOneTap && !lockScreen && (
+        <SessionExpiredNotice onDismiss={() => setExpiredNotice(false)} />
+      )}
       {/* Routes render their own <main>; this anchor is the skip-link
           target so keyboard users can jump past the nav/banners. */}
       <div id="main">
       <Suspense fallback={<RouteLoading />}>
-      {locked && location.kind === "route" ? (
+      {lockScreen ? (
         <SignInPortal
           localUnlock
-          timedOut
+          timedOut={timedOut}
           onNavigate={setRoute}
           onUnlock={() => {
             touchSession();
             setLocked(false);
             setSignedIn(true);
-            setRoute("dashboard");
+            setTimedOut(false);
+            setExpiredNotice(false);
           }}
         />
       ) : (
@@ -593,6 +635,8 @@ export default function App() {
             touchSession();
             setLocked(false);
             setSignedIn(true);
+            setTimedOut(false);
+            setExpiredNotice(false);
             setRoute("dashboard");
           }}
         />
@@ -605,6 +649,8 @@ export default function App() {
             touchSession();
             setLocked(false);
             setSignedIn(true);
+            setTimedOut(false);
+            setExpiredNotice(false);
           }}
         />
       )}
@@ -652,6 +698,32 @@ function RouteLoading() {
         Getting things ready…
       </div>
     </main>
+  );
+}
+
+/* -------------------------- SessionExpiredNotice -------------------------- */
+
+/**
+ * Shown once after the inactivity lock fires, so the password prompt
+ * on the next dashboard visit doesn't feel like a bug. Dismissable;
+ * also clears itself on the next successful unlock.
+ */
+function SessionExpiredNotice({ onDismiss }: { onDismiss: () => void }) {
+  return (
+    <div role="status" className="border-b border-app bg-surface-2">
+      <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-5 py-2 md:px-8">
+        <p className="text-xs text-muted">
+          Session timed out. Sign in to continue.
+        </p>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="text-xs text-dim underline hover:text-[var(--text)]"
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
   );
 }
 
