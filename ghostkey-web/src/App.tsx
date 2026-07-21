@@ -583,7 +583,18 @@ export default function App() {
       {location.kind === "route" && location.route === "tools"     && <ToolsPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "recovery"  && <RecoveryKitPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "recovery-guide" && <RecoveryGuide onNavigate={setRoute} />}
-      {location.kind === "route" && location.route === "checkin"   && <SignInPortal onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "checkin" && (
+        <SignInPortal
+          localUnlock={hasVaultCredentialLock(getActiveVaultId())}
+          onNavigate={setRoute}
+          onUnlock={() => {
+            touchSession();
+            setLocked(false);
+            setSignedIn(true);
+            setRoute("dashboard");
+          }}
+        />
+      )}
       {location.kind === "owner-recovery" && (
         <SignInPortal
           onNavigate={setRoute}
