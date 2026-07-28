@@ -49,7 +49,19 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
         .collect();
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
-        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        // Must list every method the router actually serves. A method
+        // missing here fails the browser's preflight, so `fetch` rejects
+        // before the request is sent and the UI can only report a
+        // generic network error — the route looks broken with nothing in
+        // the server log. `PUT /vaults/:id/heir` shipped that way; the
+        // test below pins the two lists together.
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
 
     // ---- Per-route rate-limit budgets ----
@@ -5632,6 +5644,58 @@ mod tests {
         .await
         .expect("stale count");
         assert_eq!(stale, 0);
+    }
+
+    /// `PUT /vaults/:id/heir` is the only PUT the API serves, and the CORS
+    /// allowlist left PUT out, so every browser preflight for it failed.
+    /// The owner saw "Couldn't save that. Check your connection" and the
+    /// server logged nothing, because the request was never sent.
+    #[tokio::test]
+    async fn cors_preflight_allows_every_method_the_router_serves() {
+        use tower::ServiceExt;
+
+        let origin = "http://localhost:5173";
+        let state = fresh_state().await;
+        // The router reads the origin allowlist once, at construction, so
+        // the lock only has to cover the env var and the build. Release it
+        // before awaiting the request.
+        let app = {
+            let _g = crate::auth::ORIGINS_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            // SAFETY: the lock keeps this the only test touching the var.
+            unsafe { std::env::remove_var("GHOSTKEY_ALLOWED_ORIGINS") };
+            router(state)
+        };
+
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/vaults/v-cors/heir")
+                    .header(header::ORIGIN, origin)
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "PUT")
+                    .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "authorization")
+                    .body(axum::body::Body::empty())
+                    .expect("preflight request"),
+            )
+            .await
+            .expect("preflight response");
+
+        let allowed = resp
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        // Every method the router hangs off a route must appear, or the
+        // browser refuses to send the real request.
+        for method in ["GET", "POST", "PUT", "DELETE"] {
+            assert!(
+                allowed.contains(method),
+                "preflight must allow {method}; got {allowed:?}",
+            );
+        }
     }
 
     #[tokio::test]
