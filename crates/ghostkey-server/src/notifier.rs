@@ -282,8 +282,7 @@ impl SmtpConfig {
 
 /// Twilio configuration for SMS and WhatsApp delivery.
 ///
-/// We accept four env vars, all required when SMS or WhatsApp is to
-/// be enabled:
+/// We accept four env vars:
 ///
 ///   - `TWILIO_ACCOUNT_SID`: `ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
 ///   - `TWILIO_AUTH_TOKEN`: the API secret; treat like a password
@@ -293,11 +292,21 @@ impl SmtpConfig {
 ///     number `+14155238886` works during dev. We prefix `whatsapp:`
 ///     ourselves on the wire so set this as plain E.164.
 ///
-/// All four must be set to enable delivery on either channel. Setting
-/// only some (e.g. SID + auth but no `TWILIO_SMS_FROM`) returns `None`
-/// at load time: a partial config is almost always an operator
-/// mistake and we'd rather refuse to enable than send half the
-/// messages with a NULL `From`.
+/// The SID and auth token are both required. The two senders are
+/// validated and enabled **independently**: a deployment with a real
+/// SMS number and no approved WhatsApp sender gets working SMS and an
+/// honestly-disabled WhatsApp channel, rather than all-or-nothing.
+/// If neither sender survives validation we return `None` — Twilio
+/// credentials with no usable `From` can't deliver anything.
+///
+/// Senders are checked for E.164 shape and for the reserved NANP
+/// ranges (see `is_reserved_nanp`). This matters more than it looks:
+/// Twilio accepts a WhatsApp send from an unknown `From` at the API
+/// layer with `201 queued` and only fails it asynchronously with
+/// error `63007`, so a placeholder sender is invisible to us. That is
+/// exactly how `+15559190459` sat in production as
+/// `TWILIO_WHATSAPP_FROM` while `/health` reported
+/// `whatsapp_enabled: true` and every message was marked `sent`.
 ///
 /// This crate uses Twilio's Programmable Messaging REST API
 /// (https://www.twilio.com/docs/messaging/api/message-resource).
@@ -310,8 +319,12 @@ impl SmtpConfig {
 pub struct TwilioConfig {
     pub account_sid: String,
     pub auth_token: String,
-    pub sms_from: String,
-    pub whatsapp_from: String,
+    /// Validated SMS sender, or `None` when this deployment has no
+    /// usable one. `None` disables the SMS channel only.
+    pub sms_from: Option<String>,
+    /// Validated WhatsApp sender, or `None` when this deployment has
+    /// no usable one. `None` disables the WhatsApp channel only.
+    pub whatsapp_from: Option<String>,
     /// API base URL. Defaults to `https://api.twilio.com` in prod;
     /// tests override via `TWILIO_API_BASE_URL` to point at an
     /// in-process mock server. Real deployments should never set
@@ -320,64 +333,147 @@ pub struct TwilioConfig {
     pub api_base_url: String,
 }
 
-impl TwilioConfig {
-    /// Load from env. Returns `None` when ANY of the four required
-    /// vars is unset/empty, with a single warning enumerating what's
-    /// missing so the operator can fix the config in one pass.
-    pub fn from_env() -> Option<Self> {
-        let sid = std::env::var("TWILIO_ACCOUNT_SID")
-            .ok()
-            .filter(|s| !s.is_empty());
-        let tok = std::env::var("TWILIO_AUTH_TOKEN")
-            .ok()
-            .filter(|s| !s.is_empty());
-        let sms = std::env::var("TWILIO_SMS_FROM")
-            .ok()
-            .filter(|s| !s.is_empty());
-        let wa = std::env::var("TWILIO_WHATSAPP_FROM")
-            .ok()
-            .filter(|s| !s.is_empty());
+/// Read an env var, treating empty-string as unset. A var set to ""
+/// is what a botched `fly secrets set` leaves behind, and it should
+/// never read as "configured".
+fn env_nonempty(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|s| !s.is_empty())
+}
 
-        match (sid, tok, sms, wa) {
-            (Some(sid), Some(tok), Some(sms), Some(wa)) => Some(TwilioConfig {
-                account_sid: sid,
-                auth_token: tok,
-                sms_from: sms,
-                whatsapp_from: wa,
-                api_base_url: std::env::var("TWILIO_API_BASE_URL")
-                    .unwrap_or_else(|_| "https://api.twilio.com".to_string()),
-            }),
-            (sid, tok, sms, wa) => {
-                // If ALL four are unset we stay silent (this is the
-                // normal "Twilio not configured" path). If SOME are
-                // set, that's a partial config -- warn loudly because
-                // it's almost certainly a deployment mistake.
-                let any_set = sid.is_some() || tok.is_some() || sms.is_some() || wa.is_some();
-                if any_set {
-                    let mut missing: Vec<&str> = Vec::new();
-                    if sid.is_none() {
-                        missing.push("TWILIO_ACCOUNT_SID");
-                    }
-                    if tok.is_none() {
-                        missing.push("TWILIO_AUTH_TOKEN");
-                    }
-                    if sms.is_none() {
-                        missing.push("TWILIO_SMS_FROM");
-                    }
-                    if wa.is_none() {
-                        missing.push("TWILIO_WHATSAPP_FROM");
-                    }
-                    tracing::warn!(
-                        missing = ?missing,
-                        "TWILIO_* env vars are partially set; SMS/WhatsApp \
-                         delivery is DISABLED until all four are supplied. \
-                         Set the missing vars or unset every TWILIO_* var to \
-                         silence this warning."
-                    );
-                }
-                None
-            }
+/// True for numbers the North American Numbering Plan will never
+/// route: `555` as an area code (never assigned), and the `555-01xx`
+/// line range reserved for fiction.
+///
+/// `digits` is the E.164 number without its leading `+`.
+///
+/// We check this because a fictional number is syntactically perfect
+/// and semantically dead — Twilio's API accepts it and the failure
+/// surfaces later, asynchronously, where nothing in this codebase is
+/// listening (see #311). The test fixtures in this very file used
+/// `+15550000001` / `+15550000002`, which is the most likely origin
+/// of the placeholder that reached production.
+fn is_reserved_nanp(digits: &str) -> bool {
+    let Some(national) = digits.strip_prefix('1') else {
+        return false;
+    };
+    if national.len() != 10 {
+        return false;
+    }
+    let (area, rest) = national.split_at(3);
+    let (exchange, line) = rest.split_at(3);
+    area == "555" || (exchange == "555" && line.starts_with("01"))
+}
+
+/// Validate one `TWILIO_*_FROM` value.
+///
+/// Returns the number unchanged when it is plausibly routable. On
+/// failure, logs an error naming the variable and the reason, and
+/// returns `None` so the channel reports itself undeliverable instead
+/// of silently swallowing every message sent through it.
+///
+/// This is a shape check, not proof the sender exists on the account.
+/// Verifying that needs a Twilio API round-trip at boot (#314).
+fn validated_sender(var: &str, raw: Option<String>) -> Option<String> {
+    let raw = raw?;
+    let Some(digits) = raw.strip_prefix('+') else {
+        tracing::error!(var, "not E.164 (must start with '+'); channel DISABLED");
+        return None;
+    };
+    if !(7..=15).contains(&digits.len()) || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        tracing::error!(
+            var,
+            "not E.164 (want '+' then 7-15 digits); channel DISABLED"
+        );
+        return None;
+    }
+    if digits.starts_with('0') {
+        tracing::error!(var, "country code cannot start with 0; channel DISABLED");
+        return None;
+    }
+    if is_reserved_nanp(digits) {
+        tracing::error!(
+            var,
+            "reserved/fictional 555 number. Twilio accepts sends from an \
+             unknown From at the API layer and fails them asynchronously \
+             (63007), so this would look like it worked. Channel DISABLED \
+             until a real provisioned sender is set."
+        );
+        return None;
+    }
+    Some(raw)
+}
+
+impl TwilioConfig {
+    /// The `From` number for a channel, if this deployment has a
+    /// usable one. `None` means the channel can't deliver even though
+    /// Twilio itself is configured.
+    pub fn sender_for(&self, channel: Channel) -> Option<&str> {
+        match channel {
+            Channel::Sms => self.sms_from.as_deref(),
+            Channel::Whatsapp => self.whatsapp_from.as_deref(),
+            Channel::Email | Channel::WebPush => None,
         }
+    }
+
+    /// Load from env. Returns `None` when Twilio can't deliver on any
+    /// channel: no vars set at all (the silent, normal case), missing
+    /// credentials, or credentials with no usable sender.
+    pub fn from_env() -> Option<Self> {
+        let sid = env_nonempty("TWILIO_ACCOUNT_SID");
+        let tok = env_nonempty("TWILIO_AUTH_TOKEN");
+        let sms = env_nonempty("TWILIO_SMS_FROM");
+        let wa = env_nonempty("TWILIO_WHATSAPP_FROM");
+
+        // All four unset is the normal "Twilio not configured" path.
+        // Stay silent; the worker logs the disabled state once at boot.
+        if sid.is_none() && tok.is_none() && sms.is_none() && wa.is_none() {
+            return None;
+        }
+
+        // Credentials are all-or-nothing: without both we can't
+        // authenticate, so neither channel can work.
+        let (sid, tok) = match (sid, tok) {
+            (Some(sid), Some(tok)) => (sid, tok),
+            (sid, tok) => {
+                let mut missing: Vec<&str> = Vec::new();
+                if sid.is_none() {
+                    missing.push("TWILIO_ACCOUNT_SID");
+                }
+                if tok.is_none() {
+                    missing.push("TWILIO_AUTH_TOKEN");
+                }
+                tracing::warn!(
+                    missing = ?missing,
+                    "TWILIO_* env vars are partially set; SMS/WhatsApp \
+                     delivery is DISABLED until the credentials are \
+                     supplied. Set the missing vars or unset every \
+                     TWILIO_* var to silence this warning."
+                );
+                return None;
+            }
+        };
+
+        // Senders are per-channel: one bad number disables its own
+        // channel and leaves the other alone.
+        let sms_from = validated_sender("TWILIO_SMS_FROM", sms);
+        let whatsapp_from = validated_sender("TWILIO_WHATSAPP_FROM", wa);
+        if sms_from.is_none() && whatsapp_from.is_none() {
+            tracing::warn!(
+                "Twilio credentials are set but neither TWILIO_SMS_FROM nor \
+                 TWILIO_WHATSAPP_FROM is a usable sender; SMS and WhatsApp \
+                 delivery are DISABLED."
+            );
+            return None;
+        }
+
+        Some(TwilioConfig {
+            account_sid: sid,
+            auth_token: tok,
+            sms_from,
+            whatsapp_from,
+            api_base_url: std::env::var("TWILIO_API_BASE_URL")
+                .unwrap_or_else(|_| "https://api.twilio.com".to_string()),
+        })
     }
 }
 
@@ -485,7 +581,13 @@ enum WorkerOutcome {
 pub fn channel_deliverable(channel: Channel) -> bool {
     match channel {
         Channel::Email => SmtpConfig::from_env().is_some(),
-        Channel::Sms | Channel::Whatsapp => TwilioConfig::from_env().is_some(),
+        // Per-channel, not just "Twilio is configured": a deployment
+        // can have a working SMS sender and an unusable WhatsApp one.
+        // `/health` gates the setup UI's channel pickers on this, so
+        // it must mean "a message sent now would actually leave".
+        Channel::Sms | Channel::Whatsapp => {
+            TwilioConfig::from_env().is_some_and(|c| c.sender_for(channel).is_some())
+        }
         Channel::WebPush => crate::push::VapidConfig::from_env().is_some(),
     }
 }
@@ -495,8 +597,8 @@ pub fn channel_deliverable(channel: Channel) -> bool {
 fn undeliverable_reason(channel: Channel) -> &'static str {
     match channel {
         Channel::Email => "SMTP not configured; email undeliverable",
-        Channel::Sms => "Twilio not configured; sms undeliverable",
-        Channel::Whatsapp => "Twilio not configured; whatsapp undeliverable",
+        Channel::Sms => "no usable Twilio SMS sender; sms undeliverable",
+        Channel::Whatsapp => "no usable Twilio WhatsApp sender; whatsapp undeliverable",
         Channel::WebPush => "VAPID keys not configured; web push undeliverable",
     }
 }
@@ -544,8 +646,8 @@ pub async fn run(pool: SqlitePool, tick: Duration) {
         ),
         Some(cfg) => tracing::info!(
             sid_prefix = %cfg.account_sid.chars().take(6).collect::<String>(),
-            sms_from = %cfg.sms_from,
-            wa_from = %cfg.whatsapp_from,
+            sms_from = %cfg.sms_from.as_deref().unwrap_or("<disabled>"),
+            wa_from = %cfg.whatsapp_from.as_deref().unwrap_or("<disabled>"),
             "notification worker: Twilio configured"
         ),
     }
@@ -746,6 +848,11 @@ async fn dispatch_send(
         }
         Channel::Sms | Channel::Whatsapp => {
             let cfg = backends.twilio.as_ref()?;
+            // Bail before the HTTP call when this channel has no
+            // usable sender: `None` makes the worker fail the row
+            // once with the channel's reason, instead of burning six
+            // retries against a From that can never work.
+            cfg.sender_for(channel)?;
             Some(send_twilio(cfg, channel, draft).await)
         }
         Channel::WebPush => {
@@ -1016,12 +1123,10 @@ async fn send_twilio(
 ) -> Result<(), SendError> {
     // Build the per-channel From/To shapes. WhatsApp on Twilio needs
     // the `whatsapp:` URI scheme on both sides; SMS uses bare E.164.
-    let (from, to) = match channel {
-        Channel::Sms => (cfg.sms_from.clone(), draft.recipient.clone()),
-        Channel::Whatsapp => (
-            format!("whatsapp:{}", cfg.whatsapp_from),
-            format!("whatsapp:{}", draft.recipient),
-        ),
+    let sender = match channel {
+        Channel::Sms | Channel::Whatsapp => cfg
+            .sender_for(channel)
+            .ok_or_else(|| SendError::Twilio(format!("no usable Twilio sender for {channel:?}")))?,
         Channel::Email | Channel::WebPush => {
             // Defensive: send_twilio should only ever be called for
             // sms/whatsapp. If a caller routes Email or WebPush here
@@ -1032,6 +1137,14 @@ async fn send_twilio(
                 "send_twilio called with {channel:?}; this is a bug"
             )));
         }
+    };
+    let (from, to) = match channel {
+        Channel::Whatsapp => (
+            format!("whatsapp:{sender}"),
+            format!("whatsapp:{}", draft.recipient),
+        ),
+        // SMS; Email/WebPush already returned above.
+        _ => (sender.to_string(), draft.recipient.clone()),
     };
 
     let url = format!(
@@ -1328,16 +1441,99 @@ mod tests {
         unsafe {
             std::env::set_var("TWILIO_ACCOUNT_SID", "ACtestsid");
             std::env::set_var("TWILIO_AUTH_TOKEN", "secrettoken");
-            std::env::set_var("TWILIO_SMS_FROM", "+15550000001");
-            std::env::set_var("TWILIO_WHATSAPP_FROM", "+15550000002");
+            std::env::set_var("TWILIO_SMS_FROM", "+15005550006");
+            std::env::set_var("TWILIO_WHATSAPP_FROM", "+14155238886");
         }
         let cfg = TwilioConfig::from_env().expect("with all four set");
         assert_eq!(cfg.account_sid, "ACtestsid");
         assert_eq!(cfg.auth_token, "secrettoken");
-        assert_eq!(cfg.sms_from, "+15550000001");
-        assert_eq!(cfg.whatsapp_from, "+15550000002");
+        assert_eq!(cfg.sms_from.as_deref(), Some("+15005550006"));
+        assert_eq!(cfg.whatsapp_from.as_deref(), Some("+14155238886"));
         assert_eq!(cfg.api_base_url, "https://api.twilio.com");
         clear_twilio_env();
+    }
+
+    /// The regression this whole change exists for: a reserved 555
+    /// number is syntactically perfect and completely dead. It must
+    /// disable ONLY its own channel — SMS keeps working — and it must
+    /// not load as a usable WhatsApp sender.
+    ///
+    /// `+15559190459` is the literal value that sat in the production
+    /// `TWILIO_WHATSAPP_FROM` while `/health` reported
+    /// `whatsapp_enabled: true`.
+    #[test]
+    fn twilio_config_rejects_reserved_555_sender_per_channel() {
+        let _g = TWILIO_ENV_LOCK.lock().unwrap();
+        clear_twilio_env();
+        unsafe {
+            std::env::set_var("TWILIO_ACCOUNT_SID", "ACtestsid");
+            std::env::set_var("TWILIO_AUTH_TOKEN", "secrettoken");
+            std::env::set_var("TWILIO_SMS_FROM", "+18603747045");
+            std::env::set_var("TWILIO_WHATSAPP_FROM", "+15559190459");
+        }
+        let cfg = TwilioConfig::from_env().expect("SMS sender is fine, so Twilio loads");
+        assert_eq!(
+            cfg.sms_from.as_deref(),
+            Some("+18603747045"),
+            "a good SMS sender must survive a bad WhatsApp one"
+        );
+        assert_eq!(
+            cfg.whatsapp_from, None,
+            "reserved 555 area code must not load as a sender"
+        );
+        assert!(cfg.sender_for(Channel::Whatsapp).is_none());
+        assert!(cfg.sender_for(Channel::Sms).is_some());
+        assert!(
+            !channel_deliverable(Channel::Whatsapp),
+            "/health must report whatsapp as undeliverable"
+        );
+        assert!(channel_deliverable(Channel::Sms));
+        clear_twilio_env();
+    }
+
+    /// Credentials with no usable sender at all can't deliver
+    /// anything, so the whole backend stays off.
+    #[test]
+    fn twilio_config_none_when_no_sender_is_usable() {
+        let _g = TWILIO_ENV_LOCK.lock().unwrap();
+        clear_twilio_env();
+        unsafe {
+            std::env::set_var("TWILIO_ACCOUNT_SID", "ACtestsid");
+            std::env::set_var("TWILIO_AUTH_TOKEN", "secrettoken");
+            std::env::set_var("TWILIO_SMS_FROM", "+15550000001");
+            std::env::set_var("TWILIO_WHATSAPP_FROM", "08012345678");
+        }
+        assert!(TwilioConfig::from_env().is_none());
+        clear_twilio_env();
+    }
+
+    /// Shape rules, pinned individually so a future edit to
+    /// `validated_sender` can't quietly widen what we accept.
+    #[test]
+    fn sender_shape_rules() {
+        // Reserved NANP.
+        assert!(is_reserved_nanp("15559190459"), "555 area code");
+        assert!(
+            is_reserved_nanp("15550000001"),
+            "555 area code, old fixture"
+        );
+        assert!(is_reserved_nanp("14155550142"), "555-01xx fiction range");
+        // Routable.
+        assert!(!is_reserved_nanp("14155238886"), "Twilio WhatsApp sandbox");
+        assert!(!is_reserved_nanp("18603747045"), "real US long code");
+        assert!(!is_reserved_nanp("15005550006"), "Twilio magic test number");
+        assert!(!is_reserved_nanp("2348012345678"), "Nigerian number");
+
+        // Accepted / rejected shapes.
+        let ok = |s: &str| validated_sender("TEST_VAR", Some(s.into()));
+        assert_eq!(ok("+2348012345678").as_deref(), Some("+2348012345678"));
+        assert_eq!(ok("08012345678"), None, "no leading +");
+        assert_eq!(ok("+234801234567890123"), None, "too long for E.164");
+        assert_eq!(ok("+123"), None, "too short");
+        assert_eq!(ok("+1 860 374 7045"), None, "spaces are not digits");
+        assert_eq!(ok("+0123456789"), None, "country code starts with 0");
+        assert_eq!(ok(""), None, "empty");
+        assert_eq!(validated_sender("TEST_VAR", None), None, "unset");
     }
 
     /// Partial config is an operator mistake. We refuse to load
@@ -1369,8 +1565,8 @@ mod tests {
         unsafe {
             std::env::set_var("TWILIO_ACCOUNT_SID", "ACtestsid");
             std::env::set_var("TWILIO_AUTH_TOKEN", "secrettoken");
-            std::env::set_var("TWILIO_SMS_FROM", "+15550000001");
-            std::env::set_var("TWILIO_WHATSAPP_FROM", "+15550000002");
+            std::env::set_var("TWILIO_SMS_FROM", "+15005550006");
+            std::env::set_var("TWILIO_WHATSAPP_FROM", "+14155238886");
             std::env::set_var("TWILIO_API_BASE_URL", "http://127.0.0.1:1");
         }
         let cfg = TwilioConfig::from_env().expect("config loads");
@@ -1456,8 +1652,8 @@ mod tests {
         TwilioConfig {
             account_sid: "ACtestsid".into(),
             auth_token: "secrettoken".into(),
-            sms_from: "+15550000001".into(),
-            whatsapp_from: "+15550000002".into(),
+            sms_from: Some("+15005550006".into()),
+            whatsapp_from: Some("+14155238886".into()),
             api_base_url: api_base,
         }
     }
@@ -1484,7 +1680,7 @@ mod tests {
         assert_eq!(calls.len(), 1);
         let c = &calls[0];
         assert_eq!(c.sid_in_path, "ACtestsid");
-        assert_eq!(c.form["From"], "+15550000001");
+        assert_eq!(c.form["From"], "+15005550006");
         assert_eq!(c.form["To"], "+15558675309");
         assert_eq!(c.form["Body"], "Hi from GhostKey tests.");
         let expected_basic = format!(
@@ -1508,7 +1704,7 @@ mod tests {
             .expect("send");
 
         let c = mock.calls.lock().unwrap().pop().unwrap();
-        assert_eq!(c.form["From"], "whatsapp:+15550000002");
+        assert_eq!(c.form["From"], "whatsapp:+14155238886");
         assert_eq!(c.form["To"], "whatsapp:+15558675309");
         assert_eq!(c.form["Body"], "Hi from GhostKey tests.");
     }
