@@ -47,12 +47,24 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      # Accessibility gate (#225): axe scans landing, setup, dashboard
-      # and claim against the built bundle with a mocked API, and fails
-      # on any serious/critical violation. Uses the runner's system
-      # Chrome (channel: "chrome" in playwright.config.ts), so no
-      # Playwright browser download is needed.
-      - run: npm run a11y
+      # Browser gates, both Playwright, both on the runner's system
+      # Chrome (channel: "chrome" in playwright.config.ts) so there is no
+      # ~150MB browser download:
+      #
+      #   - Accessibility (#225): axe scans landing, setup, dashboard and
+      #     claim against the built bundle with a mocked API, and fails on
+      #     any serious/critical violation.
+      #   - The recovery kit's spend path: unlock, find coins, sign in
+      #     wasm, broadcast, driving the real single-file kit HTML.
+      #
+      # `npm run e2e` runs every spec in e2e/, which is the whole point.
+      # It used to be `npm run a11y`, so the kit spec ran nowhere: it sat
+      # broken on main and the failure it hid was the page telling someone
+      # their correct password was wrong. The kit is the only way to reach
+      # the money without GhostKey, so its one browser-level test has to
+      # be enforced, not merely present. Hermetic — the test mocks Esplora
+      # itself, so no bitcoind and no network.
+      - run: npm run e2e
       # Performance + accessibility budgets (#225): Lighthouse in mobile
       # emulation against the static build. Budgets live in
       # lighthouserc.json (perf >= 0.90 on landing and claim, a11y >=
