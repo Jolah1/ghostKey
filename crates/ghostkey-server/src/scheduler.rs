@@ -394,6 +394,22 @@ async fn send_alarm_escalations(state: &AppState, now_iso: &str) -> anyhow::Resu
 /// Email body for a single escalation tick. Tone escalates with
 /// `count_so_far` (0 = first reminder, 1 = second, …) so the owner
 /// notices a difference between day 2 and day 12 of the alarmed window.
+/// Whether the notifier can actually carry an owner notification on
+/// this channel.
+///
+/// The owner-facing paths used to accept `Channel::Email` and silently
+/// return on anything else, so an owner who picked SMS or WhatsApp at
+/// setup got no reminder and no escalation — total silence, then their
+/// heir got a claim link (#312). The heir path (`enqueue_claim_link`)
+/// already handled all three.
+///
+/// Web push is deliberately excluded: it's a per-browser subscription
+/// fan-out with its own enqueue path, not an address we can seal into a
+/// contact row.
+fn owner_channel_is_deliverable(channel: Channel) -> bool {
+    matches!(channel, Channel::Email | Channel::Sms | Channel::Whatsapp)
+}
+
 async fn enqueue_alarm_escalation(
     state: &AppState,
     vault_id: &str,
@@ -412,7 +428,12 @@ async fn enqueue_alarm_escalation(
     else {
         return Ok(());
     };
-    if !matches!(contact.channel, Channel::Email) {
+    if !owner_channel_is_deliverable(contact.channel) {
+        tracing::warn!(
+            vault_id = %vault_id,
+            channel = ?contact.channel,
+            "owner channel not deliverable; escalation not enqueued"
+        );
         return Ok(());
     }
 
@@ -478,7 +499,7 @@ async fn enqueue_alarm_escalation(
         &state.db,
         vault_id,
         NotificationKind::AlarmEscalation,
-        Channel::Email,
+        contact.channel,
         &contact.address,
         &subject,
         &body,
@@ -714,13 +735,13 @@ async fn enqueue_pre_deadline_reminder(
     // in. Resolve both up front; if neither is deliverable, leave the
     // marker unset so a future code change that adds the owner's
     // channel can still ship the reminder.
-    let email_contact = parse_owner_contact(
+    let owner_contact = parse_owner_contact(
         vault_id,
         owner.ciphertext_b64,
         owner.nonce_b64,
         owner.channel,
     )?
-    .filter(|c| matches!(c.channel, Channel::Email));
+    .filter(|c| owner_channel_is_deliverable(c.channel));
 
     let has_push =
         sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM push_subscriptions WHERE vault_id = ?")
@@ -730,7 +751,7 @@ async fn enqueue_pre_deadline_reminder(
             .0
             > 0;
 
-    if email_contact.is_none() && !has_push {
+    if owner_contact.is_none() && !has_push {
         return Ok(());
     }
 
@@ -753,7 +774,7 @@ async fn enqueue_pre_deadline_reminder(
     let display_label = label.unwrap_or("your GhostKey vault");
     let amount_sat = crate::lightning::heartbeat_amount_sat();
 
-    if let Some(contact) = &email_contact {
+    if let Some(contact) = &owner_contact {
         let subject = format!("Reminder: {display_label} check-in due {deadline_friendly}");
         let body = format!(
             "Hello,\n\n\
@@ -777,7 +798,7 @@ async fn enqueue_pre_deadline_reminder(
             &state.db,
             vault_id,
             NotificationKind::PreDeadlineReminder,
-            Channel::Email,
+            contact.channel,
             &contact.address,
             &subject,
             &body,
@@ -1024,9 +1045,9 @@ async fn transition_ok_to_alarmed(state: &AppState, now_iso: &str) -> anyhow::Re
         // Owner notification. Skips are silent and not errors:
         //   - vault has no sealed owner contact (legacy row, or owner
         //     declined to provide one at setup) → Ok(None)
-        //   - owner alarm delivers over email or web push only; the
-        //     owner contact channel is email in the UI, so a non-email
-        //     channel here is skipped → Ok(None)
+        //   - owner alarm delivers over the owner's own channel (email,
+        //     SMS or WhatsApp) and/or web push; anything else is
+        //     skipped with a warning → Ok(None)
         //   - decryption failed (corrupt row, master key rotated)
         //     → tracing::warn and continue
         if let Err(e) = enqueue_alarm_owner(
@@ -1065,13 +1086,13 @@ async fn enqueue_alarm_owner(
     // Same two-channel fan-out as the pre-deadline reminder: sealed
     // owner email and/or web push subscriptions, independently
     // optional.
-    let email_contact = parse_owner_contact(
+    let owner_contact = parse_owner_contact(
         vault_id,
         owner.ciphertext_b64,
         owner.nonce_b64,
         owner.channel,
     )?
-    .filter(|c| matches!(c.channel, Channel::Email));
+    .filter(|c| owner_channel_is_deliverable(c.channel));
 
     let has_push =
         sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM push_subscriptions WHERE vault_id = ?")
@@ -1081,7 +1102,7 @@ async fn enqueue_alarm_owner(
             .0
             > 0;
 
-    if email_contact.is_none() && !has_push {
+    if owner_contact.is_none() && !has_push {
         tracing::info!(
             vault_id = %vault_id,
             "no deliverable owner contact (email or push); skipping owner alarm notification"
@@ -1115,7 +1136,7 @@ async fn enqueue_alarm_owner(
         .await?
         .map(|token| format!("{base}/#/checkin-link/{vault_id}/{token}"));
 
-    if let Some(contact) = &email_contact {
+    if let Some(contact) = &owner_contact {
         let amount_sat = crate::lightning::heartbeat_amount_sat();
         let one_tap_block = match &one_tap_url {
             Some(url) => format!(
@@ -1148,7 +1169,7 @@ async fn enqueue_alarm_owner(
             &state.db,
             vault_id,
             NotificationKind::AlarmOwner,
-            Channel::Email,
+            contact.channel,
             &contact.address,
             &subject,
             &body,
@@ -2772,7 +2793,30 @@ mod tests {
         claim_eligible_at: &str,
         owner_email_pt: &str,
     ) {
-        let sealed = crate::crypto::seal_for_vault(id, owner_email_pt.as_bytes())
+        insert_vault_with_sealed_owner_on_channel(
+            pool,
+            id,
+            status,
+            next_deadline_at,
+            claim_eligible_at,
+            owner_email_pt,
+            "email",
+        )
+        .await
+    }
+
+    /// Same, but for an owner who chose something other than email.
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_vault_with_sealed_owner_on_channel(
+        pool: &SqlitePool,
+        id: &str,
+        status: &str,
+        next_deadline_at: &str,
+        claim_eligible_at: &str,
+        owner_contact_pt: &str,
+        owner_channel: &str,
+    ) {
+        let sealed = crate::crypto::seal_for_vault(id, owner_contact_pt.as_bytes())
             .expect("seal owner contact");
         sqlx::query(
             r#"INSERT INTO vaults (
@@ -2785,7 +2829,7 @@ mod tests {
                 owner_contact_ciphertext, owner_contact_nonce, owner_contact_channel
             ) VALUES (?, 'regtest', ?, ?, 144, 86400, 3600,
                       '2026-01-01T00:00:00Z', ?, ?, ?,
-                      ?, ?, 'email')"#,
+                      ?, ?, ?)"#,
         )
         .bind(id)
         .bind(format!("tr(fake/{id}/0/*)"))
@@ -2795,6 +2839,7 @@ mod tests {
         .bind(claim_eligible_at)
         .bind(&sealed.ciphertext_b64)
         .bind(&sealed.nonce_b64)
+        .bind(owner_channel)
         .execute(pool)
         .await
         .expect("insert vault with sealed owner contact");
@@ -3611,5 +3656,139 @@ mod tests {
         .await
         .expect("alert count 2");
         assert_eq!(n2, 0, "no trusted contact -> no alert");
+    }
+
+    /* ---------------------------------------------------------------- *
+     *  #312: the owner's own channel                                   *
+     *                                                                  *
+     *  The whole product rests on the owner being told they missed a   *
+     *  check-in before the heir is contacted. An owner who picked      *
+     *  WhatsApp or SMS at setup used to get total silence, and then    *
+     *  their heir got a claim link.                                    *
+     * ---------------------------------------------------------------- */
+
+    #[test]
+    fn owner_channels_the_notifier_can_carry() {
+        assert!(owner_channel_is_deliverable(Channel::Email));
+        assert!(owner_channel_is_deliverable(Channel::Sms));
+        assert!(owner_channel_is_deliverable(Channel::Whatsapp));
+        // Web push is a per-browser subscription fan-out with its own
+        // enqueue path, not a sealed contact address.
+        assert!(!owner_channel_is_deliverable(Channel::WebPush));
+    }
+
+    /// The missed-check-in alarm must reach an owner on WhatsApp.
+    #[tokio::test]
+    async fn alarm_owner_reaches_an_owner_on_whatsapp() {
+        ensure_test_master_key();
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        insert_vault_with_sealed_owner_on_channel(
+            &pool,
+            "vault-ow-wa",
+            "ok",
+            "2026-04-01T00:00:00Z", // deadline in the past
+            "2030-01-01T00:00:00Z",
+            "+15005550123",
+            "whatsapp",
+        )
+        .await;
+
+        tick_once(&state).await.expect("tick");
+
+        let (channel, ct, nn): (String, String, String) = sqlx::query_as(
+            "SELECT channel, recipient_ciphertext, recipient_nonce \
+               FROM notifications \
+              WHERE vault_id = 'vault-ow-wa' AND kind = 'alarm_owner'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("an owner on whatsapp must still be alarmed");
+        assert_eq!(channel, "whatsapp", "must use the owner's own channel");
+
+        let recipient = String::from_utf8(
+            crate::crypto::open_for_vault(
+                "vault-ow-wa",
+                &crate::crypto::SealedContact {
+                    ciphertext_b64: ct,
+                    nonce_b64: nn,
+                },
+            )
+            .expect("open recipient"),
+        )
+        .expect("utf8");
+        assert_eq!(recipient, "+15005550123");
+    }
+
+    /// And so must the daily escalations that follow it — these are the
+    /// last warnings before the heir is contacted.
+    #[tokio::test]
+    async fn alarm_escalation_reaches_an_owner_on_sms() {
+        ensure_test_master_key();
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        // Already alarmed, still inside the grace window, never
+        // escalated: exactly what the escalation query selects.
+        insert_vault_with_sealed_owner_on_channel(
+            &pool,
+            "vault-esc-sms",
+            "alarmed",
+            "2026-04-01T00:00:00Z",
+            "2030-01-01T00:00:00Z",
+            "+15005550124",
+            "sms",
+        )
+        .await;
+
+        tick_once(&state).await.expect("tick");
+
+        let channel: String = sqlx::query_scalar(
+            "SELECT channel FROM notifications \
+              WHERE vault_id = 'vault-esc-sms' AND kind = 'alarm_escalation'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("escalation must be enqueued for an SMS owner");
+        assert_eq!(channel, "sms");
+    }
+
+    /// The pre-deadline reminder is the friendly one, 24h out. Same rule.
+    #[tokio::test]
+    async fn pre_deadline_reminder_reaches_an_owner_on_sms() {
+        ensure_test_master_key();
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        // Deadline inside the reminder window but not yet passed.
+        let soon = (Utc::now() + chrono::Duration::hours(12)).to_rfc3339();
+        insert_vault_with_sealed_owner_on_channel(
+            &pool,
+            "vault-pre-sms",
+            "ok",
+            &soon,
+            "2030-01-01T00:00:00Z",
+            "+15005550125",
+            "sms",
+        )
+        .await;
+
+        tick_once(&state).await.expect("tick");
+
+        let channel: String = sqlx::query_scalar(
+            "SELECT channel FROM notifications \
+              WHERE vault_id = 'vault-pre-sms' AND kind = 'pre_deadline_reminder'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("reminder must be enqueued for an SMS owner");
+        assert_eq!(channel, "sms");
     }
 }
