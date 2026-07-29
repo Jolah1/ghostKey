@@ -150,6 +150,26 @@ test.beforeAll(async () => {
       res.end(kitHtml);
       return;
     }
+
+    // Sibling build assets, which is how the Argon2 worker chunk gets
+    // served. Over http the KDF prefers a worker; when that chunk 404s
+    // the worker dies and `deriveOwnerKek` rejects, which the page
+    // reports as "That password didn't work" — so this test failed with
+    // a wrong-password message and a perfectly correct password. Only
+    // the file:// build derives inline, which is why the kit itself is
+    // unaffected and why the breakage sat here unnoticed.
+    if (req.method === "GET" && /^\/[\w.-]+\.js$/.test(p)) {
+      try {
+        const asset = readFileSync(resolve(repoWeb, "public", p.slice(1)));
+        res.writeHead(200, { "content-type": "text/javascript" });
+        res.end(asset);
+      } catch {
+        res.writeHead(404);
+        res.end("no such asset");
+      }
+      return;
+    }
+
     res.writeHead(404);
     res.end("not found");
   });
