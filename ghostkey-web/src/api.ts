@@ -733,6 +733,17 @@ export const api = {
    *  channel). The heir's name is preserved server-side. Returns the
    *  updated profile. On `heir_derived` vaults the server refuses an
    *  address change (400) because the heir's key is tied to their email. */
+  /** Advisory address check (#327). Stores nothing, needs no auth, and
+   *  never blocks a save — it exists so a typo like `gmial.com` gets
+   *  questioned in front of the owner, who is the only person who knows
+   *  the right answer. The domain list lives on the server so there is
+   *  only ever one of it. */
+  checkContact: (address: string) =>
+    request<{ ok: boolean; message: string; suggestion: string | null }>(
+      "/contact/check",
+      { method: "POST", body: JSON.stringify({ address }) },
+    ),
+
   updateVaultHeir: (
     id: string,
     ownerToken: string | null,

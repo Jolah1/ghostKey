@@ -264,6 +264,11 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
         // Unset RESEND_WEBHOOK_SECRET means 404, never an unsigned
         // fallback.
         .route("/webhooks/resend", post(crate::resend::resend_webhook))
+        // Advisory address check for the setup wizard and the heir
+        // contact editor. Stores nothing, reveals nothing about any
+        // vault, and exists so a typo is caught in front of the person
+        // who knows the right answer (#327).
+        .route("/contact/check", post(crate::deliverability::check_address))
         .route("/vaults", get(list_vaults))
         // Operator-only read endpoints (AdminAuth-gated; closed unless
         // GHOSTKEY_ADMIN_TOKEN_HASH is set). See admin.rs.
@@ -1276,6 +1281,25 @@ async fn create_vault_from_xpub(
                 .map(|hd| hd.email.trim().to_string())
                 .filter(|s| !s.is_empty())
         });
+    // Both contacts get the shape check the heir-update path already
+    // had and creation never did, so a malformed address is refused at
+    // the only moment it is cheap to retype.
+    //
+    // Deliberately NOT a DNS check. `deliverability::check_domain` is
+    // stronger but needs the network, and a resolver having a slow
+    // moment would either stall vault creation or (worse) return
+    // "unknown", pass, and leave a check that looks present and isn't.
+    // The domain check is advisory instead, on POST /contact/check,
+    // where the UI can surface it while the owner is still typing, and
+    // a bad address that gets through is now caught by a real bounce
+    // (#322).
+    if let Some(pt) = effective_heir_contact.as_deref().filter(|s| !s.is_empty()) {
+        validate_contact_shape(req.heir_contact_channel.as_deref().unwrap_or("email"), pt)?;
+    }
+    if let Some(pt) = req.owner_contact.as_deref().filter(|s| !s.is_empty()) {
+        validate_contact_shape(req.owner_contact_channel.as_deref().unwrap_or("email"), pt)?;
+    }
+
     let sealed: Option<SealedContact> = match effective_heir_contact.as_deref() {
         Some(pt) if !pt.is_empty() => Some(seal_for_vault(&id, pt.as_bytes())?),
         _ => None,
@@ -6078,6 +6102,78 @@ mod tests {
             trusted_contact_channel: None,
             from_name: None,
             heir_note: None,
+        }
+    }
+
+    /// Vault creation refuses a malformed contact, for the heir and for
+    /// the owner (#327).
+    ///
+    /// Creation never checked either. Only the heir-UPDATE path did, so
+    /// the address a vault was born with went entirely unvalidated —
+    /// which is how seven of sixteen mainnet vaults reached 2026-07-29
+    /// with an owner email that had never been confirmed, one of them
+    /// rejected outright by the relay as invalid.
+    #[tokio::test]
+    async fn creation_refuses_a_malformed_contact() {
+        ensure_test_master_key();
+        let hash = "e".repeat(64);
+
+        // Sanity: the good request this varies from must succeed, or the
+        // rejections below would prove nothing.
+        let state = fresh_state().await;
+        let (_, _created) = create_vault_from_xpub(
+            State(state.clone()),
+            Json(from_xpub_with_owner_email(0x21, &hash)),
+        )
+        .await
+        .expect("the unmodified request must create a vault");
+
+        for (label, mangle) in [
+            (
+                "heir address with no @",
+                Box::new(|r: &mut CreateVaultFromXpubRequest| {
+                    r.heir_contact = Some("heir-at-gmail.com".into());
+                }) as Box<dyn Fn(&mut CreateVaultFromXpubRequest)>,
+            ),
+            (
+                "heir address with no dot in the domain",
+                Box::new(|r: &mut CreateVaultFromXpubRequest| {
+                    r.heir_contact = Some("heir@localhost".into());
+                }),
+            ),
+            (
+                "owner address with no @",
+                Box::new(|r: &mut CreateVaultFromXpubRequest| {
+                    r.owner_contact = Some("owner-at-gmail.com".into());
+                }),
+            ),
+            (
+                "phone number sent on the email channel",
+                Box::new(|r: &mut CreateVaultFromXpubRequest| {
+                    r.heir_contact = Some("+2348000000000".into());
+                }),
+            ),
+            (
+                "email sent on the sms channel",
+                Box::new(|r: &mut CreateVaultFromXpubRequest| {
+                    r.heir_contact = Some("heir@gmail.com".into());
+                    r.heir_contact_channel = Some("sms".into());
+                }),
+            ),
+        ] {
+            let state = fresh_state().await;
+            let mut req = from_xpub_with_owner_email(0x22, &hash);
+            mangle(&mut req);
+            let result = create_vault_from_xpub(State(state.clone()), Json(req)).await;
+            assert!(
+                matches!(result, Err(ApiError::Validation(_))),
+                "{label} must be refused at creation"
+            );
+            let vaults: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vaults")
+                .fetch_one(&state.db)
+                .await
+                .expect("count");
+            assert_eq!(vaults, 0, "{label} must not leave a vault behind");
         }
     }
 
