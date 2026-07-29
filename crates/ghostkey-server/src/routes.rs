@@ -457,6 +457,8 @@ struct Health {
     /// non-zero value needs a human: it means a heir or owner was not
     /// reached.
     notifications_undelivered: i64,
+    /// Vaults with no proof the heir's address is reachable (#327).
+    vaults_heir_unverified: i64,
     /// False when the oldest due notification has been waiting past the
     /// stuck threshold (15 min). Alert on this alongside
     /// `scheduler_healthy`: a stalled notifier silently stops contacting
@@ -535,6 +537,19 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         .unwrap_or((0, None, 0));
     // Handed off, then refused. Counted separately because the row's
     // own `status` still says `sent`.
+    // Vaults whose heir has never been confirmed reachable (#327). Not
+    // an error count — a vault whose owner has not run a practice drill
+    // legitimately reads here — but it is the number that would have
+    // shown, months earlier, that nobody had ever checked.
+    let vaults_heir_unverified: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM vaults
+          WHERE heir_contact_verified_at IS NULL
+            AND status NOT IN ('claimed', 'cancelled')",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
     let notifications_undelivered: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM notifications
           WHERE delivery_status IN ('undelivered', 'failed', 'bounced', 'complained')",
@@ -570,6 +585,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         notifications_oldest_due_secs,
         notifications_failed,
         notifications_undelivered,
+        vaults_heir_unverified,
         notifier_healthy,
         chain_scan_healthy,
         chain_scan_consecutive_failures: scan.consecutive_failures as i64,
@@ -2525,6 +2541,11 @@ pub struct HeirProfileView {
     pub contact: Option<String>,
     pub channel: Option<String>,
     pub note: Option<String>,
+    /// When a provider last confirmed it delivered something to this
+    /// address (#327). `None` means we have no proof, which is NOT the
+    /// same as a bad address — most vaults will read `None` until their
+    /// owner runs a practice drill.
+    pub contact_verified_at: Option<String>,
 }
 
 /// Read + decrypt a vault's heir profile (name, contact, channel, and
@@ -2537,10 +2558,11 @@ async fn read_heir_profile(db: &sqlx::SqlitePool, id: &str) -> Result<HeirProfil
         Option<String>, // heir_contact_channel
         Option<String>, // heir_intro_ciphertext
         Option<String>, // heir_intro_nonce
+        Option<String>, // heir_contact_verified_at
     );
     let row: Row = sqlx::query_as(
         r#"SELECT heir_contact_ciphertext, heir_contact_nonce, heir_contact_channel,
-                  heir_intro_ciphertext, heir_intro_nonce
+                  heir_intro_ciphertext, heir_intro_nonce, heir_contact_verified_at
              FROM vaults WHERE id = ?"#,
     )
     .bind(id)
@@ -2548,7 +2570,7 @@ async fn read_heir_profile(db: &sqlx::SqlitePool, id: &str) -> Result<HeirProfil
     .await?
     .ok_or(ApiError::NotFound)?;
 
-    let (contact_ct, contact_nn, channel, intro_ct, intro_nn) = row;
+    let (contact_ct, contact_nn, channel, intro_ct, intro_nn, contact_verified_at) = row;
 
     // Heir contact is a sealed JSON blob {name, contact, channel}.
     let (mut name, mut contact) = (None, None);
@@ -2599,6 +2621,7 @@ async fn read_heir_profile(db: &sqlx::SqlitePool, id: &str) -> Result<HeirProfil
         contact,
         channel,
         note,
+        contact_verified_at,
     })
 }
 
@@ -2711,16 +2734,28 @@ async fn update_vault_heir(
     .to_string();
     let sealed = seal_for_vault(&id, blob.as_bytes())?;
 
+    // Proof of reachability attaches to an ADDRESS, not to a vault
+    // (#327). If the owner points us somewhere new, whatever we knew
+    // about the old address is no longer a claim we can make. Leaving a
+    // stale flag here would turn a reassurance into a lie, which is
+    // worse than never having shown one.
+    //
+    // A no-op re-save of the same address keeps the flag: the owner
+    // shouldn't lose confirmed status for pressing Save twice.
+    let contact_changed = existing_contact.as_deref() != Some(contact.as_str());
     sqlx::query(
         r#"UPDATE vaults
               SET heir_contact_ciphertext = ?,
                   heir_contact_nonce = ?,
-                  heir_contact_channel = ?
+                  heir_contact_channel = ?,
+                  heir_contact_verified_at = CASE WHEN ?
+                      THEN NULL ELSE heir_contact_verified_at END
             WHERE id = ?"#,
     )
     .bind(&sealed.ciphertext_b64)
     .bind(&sealed.nonce_b64)
     .bind(&req.channel)
+    .bind(contact_changed)
     .bind(&id)
     .execute(&state.db)
     .await?;
@@ -7238,6 +7273,80 @@ mod tests {
         .await
         .expect_err("unknown vault");
         assert!(matches!(nf, ApiError::NotFound), "got {nf:?}");
+    }
+
+    /// Proof of reachability belongs to an ADDRESS, not to a vault
+    /// (#327). Point us somewhere new and the old proof is void.
+    ///
+    /// Getting this wrong is the nastier half of the feature: a stale
+    /// "confirmed reachable" badge is worse than no badge, because it
+    /// tells an owner to stop worrying about the exact thing that is now
+    /// broken.
+    #[tokio::test]
+    async fn changing_the_heir_address_voids_the_reachability_proof() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let id = "verified-heir-vault";
+        let contact = seal_for_vault(
+            id,
+            br#"{"name":"Ara","contact":"ara@example.com","channel":"email"}"#,
+        )
+        .expect("seal contact");
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status,
+                heir_contact_ciphertext, heir_contact_nonce, heir_contact_channel,
+                heir_contact_verified_at
+            ) VALUES (?, 'regtest', 'tr(a)', 'tr(b)', 144, 86400, 3600,
+                      '2026-01-01T00:00:00Z', '2026-04-01T00:00:00Z', 'ok',
+                      ?, ?, 'email', '2026-07-01T00:00:00Z')"#,
+        )
+        .bind(id)
+        .bind(&contact.ciphertext_b64)
+        .bind(&contact.nonce_b64)
+        .execute(&state.db)
+        .await
+        .expect("insert vault");
+
+        let put = |address: &str| {
+            let state = state.clone();
+            let address = address.to_string();
+            async move {
+                update_vault_heir(
+                    OwnerAuth {
+                        vault_id: id.to_string(),
+                    },
+                    State(state),
+                    Json(UpdateHeirRequest {
+                        contact: address,
+                        channel: "email".to_string(),
+                    }),
+                )
+                .await
+                .expect("update heir")
+                .0
+            }
+        };
+
+        // Re-saving the SAME address keeps the proof. Pressing Save twice
+        // must not cost an owner their confirmed status, and whitespace
+        // is not a change.
+        let view = put("  ara@example.com  ").await;
+        assert_eq!(
+            view.contact_verified_at.as_deref(),
+            Some("2026-07-01T00:00:00Z"),
+            "an unchanged address is still the address we had proof for"
+        );
+
+        // A DIFFERENT address voids it: we have never delivered anything
+        // to this one.
+        let view = put("ara.new@example.com").await;
+        assert_eq!(
+            view.contact_verified_at, None,
+            "proof does not follow the owner to a new address"
+        );
     }
 
     /// `PUT /vaults/:id/heir` switches an undeliverable channel (the

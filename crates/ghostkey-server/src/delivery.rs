@@ -344,9 +344,84 @@ pub(crate) async fn record_delivery(
             status,
             "delivery status recorded"
         );
+        record_heir_reachable(db, &vault_id, &kind, status, &now).await?;
     }
 
     Ok(Recorded::Applied)
+}
+
+/// Notification kinds that go to the heir's own address.
+///
+/// Only these can prove anything about the heir's contact. An owner
+/// alarm being delivered says nothing about whether the heir is
+/// reachable, and conflating the two would be worse than having no flag
+/// at all.
+fn is_heir_directed(kind: &str) -> bool {
+    matches!(kind, "claim_link" | "claim_ready" | "drill_invite")
+}
+
+/// Statuses that prove a mailbox exists.
+///
+/// `delivered` is the provider saying it handed the message to the
+/// receiving server. `read` is WhatsApp's stronger version. `sent` is
+/// NOT here: that is handoff to the provider, which is the exact thing
+/// this whole module exists because we mistook for delivery.
+fn proves_delivery(status: &str) -> bool {
+    matches!(status, "delivered" | "read")
+}
+
+/// Tier 2 of #327: the heir's address is confirmed reachable.
+///
+/// The owner's address is confirmed by a link they click. The heir's
+/// could never work that way, because the heir usually should not learn
+/// the vault exists until the owner decides to tell them. But we do not
+/// need the heir to *act* — we need to know the mailbox exists, and a
+/// delivery verdict says precisely that. So a practice-drill invite
+/// that the provider confirms delivered IS verification, using a message
+/// the owner already chose to send.
+///
+/// Only ever moves NULL -> a timestamp. A later delivery does not
+/// refresh it, because "we had proof on this date" is the honest claim
+/// and re-stamping it would imply we keep rechecking.
+async fn record_heir_reachable(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+    kind: &str,
+    status: &str,
+    now: &str,
+) -> Result<(), sqlx::Error> {
+    if !is_heir_directed(kind) || !proves_delivery(status) {
+        return Ok(());
+    }
+    let updated = sqlx::query(
+        "UPDATE vaults
+            SET heir_contact_verified_at = ?
+          WHERE id = ? AND heir_contact_verified_at IS NULL",
+    )
+    .bind(now)
+    .bind(vault_id)
+    .execute(db)
+    .await?
+    .rows_affected();
+
+    if updated > 0 {
+        tracing::info!(
+            vault_id,
+            kind,
+            status,
+            "heir contact confirmed reachable by a delivery verdict"
+        );
+        // Worth an activity-feed entry: this is good news the owner has
+        // been waiting for, and the whole point is that they can see it.
+        crate::routes::record_event(
+            db,
+            vault_id,
+            "heir_contact_verified",
+            Some(serde_json::json!({ "via": kind })),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -739,6 +814,157 @@ mod tests {
                 "{status} must reach the owner's activity feed"
             );
         }
+    }
+
+    /* ---------------- heir reachability (#327 tier 2) ---------------- */
+
+    /// Only messages that went to the HEIR's address can say anything
+    /// about the heir's address. An owner alarm being delivered proves
+    /// nothing about the heir, and conflating them would make the flag a
+    /// lie.
+    #[test]
+    fn only_heir_directed_kinds_can_prove_heir_reachability() {
+        for k in ["claim_link", "claim_ready", "drill_invite"] {
+            assert!(is_heir_directed(k), "{k} goes to the heir");
+        }
+        for k in [
+            "alarm_owner",
+            "alarm_escalation",
+            "pre_deadline_reminder",
+            "contact_verification",
+            "drill_completed",
+            "welcome",
+            "panic_alert",
+            "claim_opened",
+        ] {
+            assert!(!is_heir_directed(k), "{k} does not go to the heir");
+        }
+    }
+
+    /// `sent` must never count. That is handoff to the provider, which
+    /// is the precise thing this module exists because we mistook it for
+    /// delivery.
+    #[test]
+    fn only_a_real_delivery_verdict_is_proof() {
+        assert!(proves_delivery("delivered"));
+        assert!(proves_delivery("read"));
+        for s in [
+            "sent",
+            "queued",
+            "sending",
+            "delayed",
+            "undelivered",
+            "failed",
+            "bounced",
+        ] {
+            assert!(!proves_delivery(s), "{s} is not proof of delivery");
+        }
+    }
+
+    async fn heir_verified_at(pool: &sqlx::SqlitePool) -> Option<String> {
+        sqlx::query_scalar("SELECT heir_contact_verified_at FROM vaults WHERE id='v-del'")
+            .fetch_one(pool)
+            .await
+            .expect("vault")
+    }
+
+    /// The feature: a delivered practice-drill invite confirms the heir's
+    /// mailbox exists, with the heir doing nothing and learning nothing
+    /// they weren't already told.
+    #[tokio::test]
+    async fn a_delivered_drill_invite_confirms_the_heir_is_reachable() {
+        let (pool, id) = db_with_sent_notification("SM-drill").await;
+        sqlx::query("UPDATE notifications SET kind='drill_invite' WHERE id=?")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .expect("kind");
+        assert_eq!(heir_verified_at(&pool).await, None, "nothing known yet");
+
+        record_delivery(&pool, &twilio_event("SM-drill", "delivered", None))
+            .await
+            .expect("record");
+
+        assert!(
+            heir_verified_at(&pool).await.is_some(),
+            "a delivered drill invite is proof the address exists"
+        );
+        // Good news the owner has been waiting for, so it belongs in the
+        // feed they actually read.
+        let events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind='heir_contact_verified'")
+                .fetch_one(&pool)
+                .await
+                .expect("count");
+        assert_eq!(events, 1);
+    }
+
+    /// Handoff is not delivery, here as everywhere else.
+    #[tokio::test]
+    async fn a_merely_sent_drill_invite_proves_nothing() {
+        let (pool, id) = db_with_sent_notification("SM-sent-only").await;
+        sqlx::query("UPDATE notifications SET kind='drill_invite' WHERE id=?")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .expect("kind");
+
+        record_delivery(&pool, &twilio_event("SM-sent-only", "sent", None))
+            .await
+            .expect("record");
+
+        assert_eq!(heir_verified_at(&pool).await, None);
+    }
+
+    /// An owner-directed message being delivered says nothing about the
+    /// heir.
+    #[tokio::test]
+    async fn a_delivered_owner_alarm_does_not_confirm_the_heir() {
+        let (pool, id) = db_with_sent_notification("SM-owner").await;
+        sqlx::query("UPDATE notifications SET kind='alarm_owner' WHERE id=?")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .expect("kind");
+
+        record_delivery(&pool, &twilio_event("SM-owner", "delivered", None))
+            .await
+            .expect("record");
+
+        assert_eq!(
+            heir_verified_at(&pool).await,
+            None,
+            "reaching the owner is not reaching the heir"
+        );
+    }
+
+    /// The timestamp records when we HAD proof, and is not refreshed by
+    /// later deliveries. Re-stamping would imply we keep rechecking,
+    /// which we do not.
+    #[tokio::test]
+    async fn proof_records_the_first_time_and_is_not_refreshed() {
+        let (pool, id) = db_with_sent_notification("SM-first").await;
+        sqlx::query("UPDATE notifications SET kind='drill_invite' WHERE id=?")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .expect("kind");
+        sqlx::query(
+            "UPDATE vaults SET heir_contact_verified_at='2020-01-01T00:00:00Z' WHERE id='v-del'",
+        )
+        .execute(&pool)
+        .await
+        .expect("preset");
+
+        record_delivery(&pool, &twilio_event("SM-first", "delivered", None))
+            .await
+            .expect("record");
+
+        assert_eq!(
+            heir_verified_at(&pool).await.as_deref(),
+            Some("2020-01-01T00:00:00Z"),
+            "the original proof date stands"
+        );
     }
 
     #[test]

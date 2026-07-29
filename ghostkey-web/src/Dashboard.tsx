@@ -2355,7 +2355,11 @@ function MoreLinks({
   if (showPractice)
     items.push({
       label: "Practice a claim",
-      desc: "Let your heir rehearse safely",
+      // A practice run is now the only thing that confirms the heir's
+      // address actually works (#327): the provider tells us it was
+      // delivered. Say that, because "let them rehearse" sounds
+      // optional and this isn't.
+      desc: "Check your heir can be reached, and let them rehearse",
       route: "practice",
     });
   if (showReminders)

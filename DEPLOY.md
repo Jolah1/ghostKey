@@ -729,6 +729,24 @@ to check the complaint path.
 `suppressed@resend.dev` also exists but does not support `+label`
 addressing, so use a separate vault for it.
 
+##### Heir reachability
+
+`vaults_heir_unverified` on `/health` counts vaults where no provider has
+ever confirmed a delivery to the heir's address.
+
+This is **not** an error count. A vault whose owner has never run a
+practice run legitimately sits here, and on a young deployment that is
+most of them. What it does tell you is how many vaults would fail
+silently if their address were wrong, because nothing has ever tested it.
+
+The number only falls when an owner starts a practice run and the
+provider reports the invite **delivered**. That requires the delivery
+callbacks above to be configured, so if this figure never moves, check
+those first.
+
+The flag is cleared whenever an owner changes the heir's address, since
+proof belongs to an address and not to a vault.
+
 #### Web push (browser reminders)
 
 Check-in reminders can also arrive as browser notifications: no

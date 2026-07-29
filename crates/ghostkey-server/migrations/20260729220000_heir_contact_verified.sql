@@ -1,0 +1,23 @@
+-- When we last had proof that the heir's address actually receives mail.
+--
+-- The owner's address has had `owner_contact_verified_at` since
+-- 20260610000002, set by a confirmation email the owner clicks. The
+-- heir's had nothing, and could not have the same treatment: the heir
+-- usually should not learn a vault exists until the owner chooses to
+-- tell them, so "click here to confirm" is a disclosure we are not
+-- entitled to make.
+--
+-- The way out is that we do not need the heir to *act*. We need to know
+-- the mailbox exists. A delivery verdict says exactly that, and since
+-- #325 we receive them. So this column is set by the provider
+-- confirming it delivered a message we already had a reason to send:
+-- normally the practice-drill invite, which the owner starts and which
+-- has always emailed the heir.
+--
+-- NULL means "no proof", not "bad address". Most rows will be NULL for a
+-- while, including every vault whose owner has never run a drill.
+--
+-- Cleared whenever the heir's contact changes, because proof attaches to
+-- an address and not to a vault. Forgetting that is how a stale flag
+-- becomes a lie.
+ALTER TABLE vaults ADD COLUMN heir_contact_verified_at TEXT;
