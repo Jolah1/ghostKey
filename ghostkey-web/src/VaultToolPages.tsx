@@ -423,6 +423,7 @@ function HeirContactCard({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [verifiedAt, setVerifiedAt] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -430,6 +431,7 @@ function HeirContactCard({
       .getVaultHeir(vaultId, ownerToken)
       .then((h) => {
         if (!alive) return;
+        setVerifiedAt(h.contact_verified_at ?? null);
         if (h.channel === "sms" || h.channel === "whatsapp" || h.channel === "email") {
           setChannel(h.channel);
         }
@@ -476,6 +478,9 @@ function HeirContactCard({
         setChannel(saved.channel);
       }
       if (saved.contact) setContact(saved.contact);
+      // The server voids the proof when the address changes, so mirror
+      // whatever it just told us rather than assuming.
+      setVerifiedAt(saved.contact_verified_at ?? null);
       setSaved(true);
     } catch (e) {
       // The server refuses an address change on easy-setup vaults, where
@@ -560,6 +565,27 @@ function HeirContactCard({
           className="input"
         />
       </Field>
+
+      {/* Whether we have ever actually reached this address (#327).
+          Deliberately not phrased as a warning when unconfirmed: most
+          vaults are unconfirmed simply because the owner hasn't run a
+          practice yet, and crying wolf here would train them to ignore
+          the badge that matters. */}
+      {loaded ? (
+        <p className="mb-4 text-sm text-muted">
+          {verifiedAt ? (
+            <>
+              Confirmed: something we sent was delivered to this address on{" "}
+              {new Date(verifiedAt).toLocaleDateString()}.
+            </>
+          ) : (
+            <>
+              We haven't reached this address yet, so we can't promise a typo
+              would show up. A practice run confirms it.
+            </>
+          )}
+        </p>
+      ) : null}
 
       {/* A typo in an heir's address stays invisible until the claim
           link fires, which is the one moment nobody can fix it. Every

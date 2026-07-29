@@ -31,6 +31,11 @@ export interface HeirProfileView {
   contact: string | null;
   channel: string | null;
   note: string | null;
+  /** When a provider last confirmed it delivered something to this
+   *  address (#327). `null` means we have no proof, which is NOT the
+   *  same as a bad address — it reads null until the owner runs a
+   *  practice, because that is the first message the heir is sent. */
+  contact_verified_at: string | null;
 }
 
 export interface VaultView {
