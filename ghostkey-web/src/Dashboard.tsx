@@ -435,6 +435,7 @@ export function Dashboard({ onNavigate }: Props) {
                   ownerToken={ownerToken}
                   canManage={!isClosed && !isClaiming}
                   heirLabel={groupVaults.length > 1 ? meta.heir.name : null}
+                  onNavigate={onNavigate}
                 />
               </div>
             ) : null}
@@ -614,6 +615,7 @@ function MoneyCard({
   ownerToken,
   canManage,
   heirLabel,
+  onNavigate,
 }: {
   vaultId: string;
   network: string;
@@ -622,6 +624,7 @@ function MoneyCard({
   /** Whose share this card is for. Shown only for multi-heir accounts,
    *  so the deposit address reads as belonging to a specific heir. */
   heirLabel: string | null;
+  onNavigate: (r: Route) => void;
 }) {
   const canSend = canManage && Boolean(ownerToken);
   const canSeeHeir = Boolean(ownerToken);
@@ -662,7 +665,11 @@ function MoneyCard({
       <div className="mt-4">
         {tab === "balance" ? <BalanceCard vaultId={vaultId} embedded /> : null}
         {tab === "heir" && ownerToken ? (
-          <HeirDetailsCard vaultId={vaultId} ownerToken={ownerToken} />
+          <HeirDetailsCard
+            vaultId={vaultId}
+            ownerToken={ownerToken}
+            onEdit={canManage ? () => onNavigate("heir-contact") : undefined}
+          />
         ) : null}
         {tab === "add" ? <ReceiveCard vaultId={vaultId} embedded /> : null}
         {tab === "send" && ownerToken ? (
@@ -864,9 +871,13 @@ function BalanceCard({
 function HeirDetailsCard({
   vaultId,
   ownerToken,
+  onEdit,
 }: {
   vaultId: string;
   ownerToken: string;
+  /** Opens the contact editor. Omitted when the vault is closed or a
+   *  claim is underway, where the editor would refuse anyway. */
+  onEdit?: () => void;
 }) {
   const [heir, setHeir] = useState<HeirProfileView | null>(null);
   const [loading, setLoading] = useState(true);
@@ -936,6 +947,20 @@ function HeirDetailsCard({
         Only you can see this. Your heir's details are stored encrypted and
         shown here to the signed-in owner.
       </p>
+      {/* The owner is looking at the exact field they want to change.
+          Before this, the only way there was nav → Tools, which owners
+          did not find (#315). */}
+      {onEdit ? (
+        <div>
+          <button
+            type="button"
+            onClick={onEdit}
+            className="text-sm text-[var(--accent)] underline hover:text-[var(--text)]"
+          >
+            Change how they're reached
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
