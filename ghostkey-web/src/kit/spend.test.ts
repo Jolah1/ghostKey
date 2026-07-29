@@ -8,10 +8,17 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  EXPLORER_DISCLOSURE,
   RECIPIENT_HINT,
   RECIPIENT_LABEL,
+  classifyStatus,
+  explorerCandidates,
+  explorerFailureMessage,
   feedbackLines,
+  pickExplorer,
+  scanFailureMessage,
   type KitFeedback,
+  type ProbeResult,
 } from "./spend";
 
 describe("the destination field label", () => {
@@ -73,5 +80,161 @@ describe("feedbackLines", () => {
       expect(f.status).toBe("working on it");
       expect(f.error).toBeNull();
     }
+  });
+});
+
+describe("choosing a block explorer", () => {
+  it("tries several mainnet mirrors, not one", () => {
+    // The owner who reported this could not reach mempool.space "most
+    // times", and one unreachable host stood between them and a vault.
+    const list = explorerCandidates("bitcoin", "https://mempool.space/api");
+    expect(list.length).toBeGreaterThan(1);
+    expect(list[0]).toBe("https://mempool.space/api");
+    expect(new Set(list).size).toBe(list.length);
+    for (const url of list) expect(url.startsWith("https://")).toBe(true);
+  });
+
+  it("uses a typed-in explorer ALONE and never falls back to public ones", () => {
+    // Someone who points the kit at their own node has deliberately kept
+    // these addresses off public infrastructure. Falling back would undo
+    // that silently, at the moment they are least likely to notice.
+    expect(explorerCandidates("bitcoin", "https://my-own-node.local/api")).toEqual([
+      "https://my-own-node.local/api",
+    ]);
+  });
+
+  it("ignores a trailing slash rather than treating it as a new host", () => {
+    expect(explorerCandidates("bitcoin", "https://mempool.space/api/")).toEqual(
+      explorerCandidates("bitcoin", "https://mempool.space/api"),
+    );
+  });
+
+  it("has nothing to offer on regtest, so the reader is asked", () => {
+    expect(explorerCandidates("regtest", "")).toEqual([]);
+  });
+
+  it("keeps signet on one host, because a mirror would answer wrongly", () => {
+    // A GhostKey signet vault may be on Mutinynet. An ordinary signet
+    // mirror would report "no coins" instead of failing, and a confident
+    // wrong answer sends the reader away believing the vault is empty.
+    expect(explorerCandidates("signet", "")).toHaveLength(1);
+  });
+});
+
+describe("classifyStatus", () => {
+  it("moves past hosts that are overloaded or broken", () => {
+    for (const s of [429, 500, 502, 503]) expect(classifyStatus(s)).toBe("try-another");
+  });
+
+  it("treats a 4xx as a real answer, since the next mirror would agree", () => {
+    for (const s of [400, 404]) expect(classifyStatus(s)).toBe("answered");
+  });
+
+  it("accepts any 2xx", () => {
+    for (const s of [200, 204]) expect(classifyStatus(s)).toBe("usable");
+  });
+});
+
+describe("pickExplorer", () => {
+  const probeReturning = (byUrl: Record<string, ProbeResult>) => {
+    const asked: string[] = [];
+    const probe = async (base: string): Promise<ProbeResult> => {
+      asked.push(base);
+      return byUrl[base] ?? { unreachable: "Failed to fetch" };
+    };
+    return { probe, asked };
+  };
+
+  it("steps past an unreachable host and uses the next one", async () => {
+    const { probe, asked } = probeReturning({
+      "https://down.example/api": { unreachable: "Failed to fetch" },
+      "https://up.example/api": { status: 200 },
+    });
+    const got = await pickExplorer(["https://down.example/api", "https://up.example/api"], probe);
+    expect(got).toEqual({ base: "https://up.example/api" });
+    expect(asked).toHaveLength(2);
+  });
+
+  it("stops at the first host that works, contacting no others", async () => {
+    // Each host tried learns the vault's addresses, so trying more than
+    // necessary is a disclosure, not just wasted time.
+    const { probe, asked } = probeReturning({
+      "https://up.example/api": { status: 200 },
+      "https://other.example/api": { status: 200 },
+    });
+    await pickExplorer(["https://up.example/api", "https://other.example/api"], probe);
+    expect(asked).toEqual(["https://up.example/api"]);
+  });
+
+  it("reports every failure when nothing works, keeping reachability", async () => {
+    const { probe } = probeReturning({
+      "https://a.example/api": { unreachable: "Failed to fetch" },
+      "https://b.example/api": { status: 503 },
+    });
+    const got = await pickExplorer(["https://a.example/api", "https://b.example/api"], probe);
+    expect("failures" in got).toBe(true);
+    if (!("failures" in got)) return;
+    expect(got.failures.map((f) => f.reachable)).toEqual([false, true]);
+  });
+});
+
+describe("explorerFailureMessage", () => {
+  it("blames the connection only when nothing got out", () => {
+    const msg = explorerFailureMessage([
+      { url: "https://a.example/api", reason: "Failed to fetch", reachable: false },
+      { url: "https://b.example/api", reason: "Failed to fetch", reachable: false },
+    ]);
+    expect(msg.toLowerCase()).toContain("internet");
+    expect(msg).toContain("never left this device");
+    // It must not imply the vault or its addresses are at fault.
+    expect(msg.toLowerCase()).not.toContain("your vault is");
+  });
+
+  it("does NOT blame the connection when a host answered", () => {
+    // The old copy said "Check the address and your internet" for every
+    // failure, sending people to inspect a working connection while the
+    // real answer was sitting in the HTTP status.
+    const msg = explorerFailureMessage([
+      { url: "https://a.example/api", reason: "error 400", reachable: true },
+    ]);
+    expect(msg).toContain("answered");
+    expect(msg).toContain("400");
+    expect(msg).toContain("Your connection is fine");
+  });
+
+  it("says something useful even with nothing to report", () => {
+    expect(explorerFailureMessage([])).not.toBe("");
+  });
+});
+
+describe("scanFailureMessage", () => {
+  it("separates a host's error from the wire going dead", () => {
+    const answered = scanFailureMessage("explorer returned 429 for https://x/api/address/bc1q/utxo");
+    expect(answered).toContain("Your connection is fine");
+
+    const dead = scanFailureMessage("Failed to fetch");
+    expect(dead.toLowerCase()).toContain("connection");
+    expect(dead).not.toContain("Your connection is fine");
+  });
+
+  it("keeps the raw message, which is what made the original diagnosable", () => {
+    expect(scanFailureMessage("Failed to fetch")).toContain("Failed to fetch");
+  });
+
+  it("reassures that a failed lookup spent nothing", () => {
+    // The reader is mid-recovery holding the only key. "It broke" without
+    // "nothing was spent" invites a panicked second attempt.
+    expect(scanFailureMessage("Failed to fetch")).toContain("Nothing was spent");
+  });
+});
+
+describe("the explorer disclosure", () => {
+  it("says plainly what an explorer learns", () => {
+    // The server refuses to use a public indexer on mainnet for exactly
+    // this reason. The kit does it anyway so an heir is not stranded, and
+    // that trade is only defensible if it is stated.
+    const d = EXPLORER_DISCLOSURE.toLowerCase();
+    expect(d).toContain("addresses");
+    expect(d).toContain("your own");
   });
 });

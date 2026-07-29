@@ -29,18 +29,138 @@ interface SpendParams {
   accountXprv: string;
 }
 
-/** Default public explorer per network. Regtest has none — user supplies. */
+/** Public Esplora mirrors per network, in the order we try them.
+ *
+ *  There is more than one because a single host is a single point of
+ *  failure standing between someone and an inheritance. The owner who
+ *  reported this could not reach mempool.space "most times", and the kit
+ *  gave up on the first refusal. Every entry below was checked to answer
+ *  `/blocks/tip/height` and to send `Access-Control-Allow-Origin: *`,
+ *  which is what lets a page opened from `file://` read the reply at all.
+ *
+ *  Regtest has no public indexer, so the owner must supply one.
+ *
+ *  Signet keeps a single entry on purpose. A GhostKey signet vault may
+ *  live on Mutinynet, which is a *different* signet chain: a mirror of
+ *  the ordinary one would answer "no coins here" rather than fail, and a
+ *  confident wrong answer is worse than a visible error. Whoever adds to
+ *  this line has to solve that first.
+ */
+const EXPLORER_MIRRORS: Record<Network, readonly string[]> = {
+  bitcoin: [
+    "https://mempool.space/api",
+    "https://blockstream.info/api",
+    "https://mempool.emzy.de/api",
+    "https://mempool.bitaroo.net/api",
+  ],
+  testnet: ["https://blockstream.info/testnet/api", "https://mempool.space/testnet/api"],
+  signet: ["https://mempool.space/signet/api"],
+  regtest: [],
+};
+
+/** What the reader is owed before they use any of the above.
+ *
+ *  The server refuses to do this: `default_esplora_urls` returns nothing
+ *  for mainnet because a public indexer "sees every script pubkey we ask
+ *  about". The kit asks anyway, because the alternative is an heir who
+ *  cannot reach their money at all. That is a defensible trade, but only
+ *  if it is stated rather than hidden. */
+export const EXPLORER_DISCLOSURE =
+  "Whoever runs the explorer will see this vault's addresses and balance. If you run your own, put its address here instead.";
+
+/** The prefilled value: the first mirror we would try anyway. */
 function defaultExplorer(network: Network): string {
-  switch (network) {
-    case "bitcoin":
-      return "https://mempool.space/api";
-    case "testnet":
-      return "https://blockstream.info/testnet/api";
-    case "signet":
-      return "https://mempool.space/signet/api";
-    default:
-      return "";
+  return EXPLORER_MIRRORS[network][0] ?? "";
+}
+
+/** Which explorers to try, given what is in the box.
+ *
+ *  A value the owner typed is used ALONE. Falling back from a private
+ *  Esplora to a public mirror would hand four strangers the addresses
+ *  that person went out of their way to keep off public infrastructure,
+ *  and it would do it silently, at the one moment they are not watching.
+ *  Only an untouched prefill earns the whole list. */
+export function explorerCandidates(network: Network, typed: string): string[] {
+  const cleaned = typed.trim().replace(/\/+$/, "");
+  const mirrors = EXPLORER_MIRRORS[network];
+  if (cleaned && cleaned !== mirrors[0]) return [cleaned];
+  return [...mirrors];
+}
+
+/** Whether a reply means "use this host", "try the next one", or "this
+ *  host answered and the answer was no". */
+export type ExplorerVerdict = "usable" | "try-another" | "answered";
+
+export function classifyStatus(status: number): ExplorerVerdict {
+  if (status >= 200 && status < 300) return "usable";
+  // Overloaded or broken hosts are worth stepping past. A 4xx is a real
+  // answer about the request, so the next mirror would say the same.
+  if (status === 429 || status >= 500) return "try-another";
+  return "answered";
+}
+
+/** One explorer that didn't work out. `reachable` is the distinction the
+ *  old message threw away: whether the request got out of the building. */
+export type ExplorerFailure = { url: string; reason: string; reachable: boolean };
+
+/** What to tell the reader when no explorer worked.
+ *
+ *  The old text said "Check the address and your internet" for every
+ *  failure, so a host that answered with a plain HTTP error sent people
+ *  to inspect a working WiFi connection. Naming the wrong cause during a
+ *  recovery costs hours that the reader may not have. */
+export function explorerFailureMessage(failures: ExplorerFailure[]): string {
+  if (failures.length === 0) return "No block explorer to try. Enter one above.";
+  const answered = failures.filter((f) => f.reachable);
+  if (answered.length === 0) {
+    const tried = failures.length === 1 ? "the block explorer" : `all ${failures.length} block explorers`;
+    return `Couldn't reach ${tried}. The request never left this device, so this is the connection here, not your vault. Check your internet, or put a different explorer in the box above and try again.`;
   }
+  const first = answered[0];
+  return `The block explorer answered, but refused the request (${first.reason}). Your connection is fine. Check the explorer address above is right for this vault's network.`;
+}
+
+/** Marker text in the errors this module throws for itself, used to tell
+ *  "the host answered and said no" apart from "the wire went dead". */
+const ANSWERED_MARKERS = ["explorer returned", "could not fetch transaction"];
+
+/** What to say when the scan dies after a host had already answered once.
+ *
+ *  By this point a working explorer has been found, so "check the
+ *  address" is no longer sensible advice. The raw message is kept: the
+ *  bug that started all of this was diagnosed from a reader quoting
+ *  "Failed to fetch" verbatim. */
+export function scanFailureMessage(message: string): string {
+  if (ANSWERED_MARKERS.some((m) => message.includes(m))) {
+    return `The block explorer answered with an error (${message}). Your connection is fine. Try again, or put a different explorer in the box above.`;
+  }
+  return `Lost contact with the block explorer partway through (${message}). Nothing was spent, so it is safe to try again once your connection is back.`;
+}
+
+/** Result of probing one host: it answered with a status, or the request
+ *  never got out. */
+export type ProbeResult = { status: number } | { unreachable: string };
+
+/** Walk the candidates in order and return the first usable one.
+ *
+ *  `probe` is injected so the choosing logic is testable without a
+ *  network: the whole point of this function is what it does when hosts
+ *  are down, which is the case a live test cannot stage on demand. */
+export async function pickExplorer(
+  candidates: string[],
+  probe: (base: string) => Promise<ProbeResult>,
+): Promise<{ base: string } | { failures: ExplorerFailure[] }> {
+  const failures: ExplorerFailure[] = [];
+  for (const base of candidates) {
+    const result = await probe(base);
+    if ("unreachable" in result) {
+      failures.push({ url: base, reason: result.unreachable, reachable: false });
+      continue;
+    }
+    if (classifyStatus(result.status) === "usable") return { base };
+    failures.push({ url: base, reason: `error ${result.status}`, reachable: true });
+  }
+  return { failures };
 }
 
 /** How many addresses per keychain to scan, and how many consecutive
@@ -132,6 +252,7 @@ export function buildSpendSection(params: SpendParams): HTMLElement {
                           border:1px solid #3a332a;background:#14110e;color:#ece5da" />
           </label>
         </div>
+        <p class="muted" style="margin-top:8px;font-size:13px">${EXPLORER_DISCLOSURE}</p>
         <div style="margin-top:12px">
           <button data-find type="button">Find my coins</button>
         </div>
@@ -194,18 +315,41 @@ export function buildSpendSection(params: SpendParams): HTMLElement {
     return (await r.json()) as T;
   }
 
+  /** Ask one host for the chain tip. Any thrown error means the request
+   *  never left the device, which is a different problem from a host that
+   *  answered badly, and the reader is told which. */
+  async function probeExplorer(base: string): Promise<ProbeResult> {
+    try {
+      const r = await fetch(`${base}/blocks/tip/height`);
+      return { status: r.status };
+    } catch (e) {
+      return { unreachable: (e as Error).message };
+    }
+  }
+
   async function onFind() {
     setFeedback({ kind: "idle" });
     out.textContent = "";
     signWrap.hidden = true;
-    const base = explorerBase();
-    if (!base) {
+    const candidates = explorerCandidates(params.network, explorerInput.value);
+    if (candidates.length === 0) {
       showError("Enter the API address of a block explorer first.");
       return;
     }
     findBtn.disabled = true;
-    setFeedback({ kind: "busy", status: "Looking up your addresses…" });
+    setFeedback({ kind: "busy", status: "Looking for a block explorer that answers…" });
     try {
+      const picked = await pickExplorer(candidates, probeExplorer);
+      if ("failures" in picked) {
+        showError(explorerFailureMessage(picked.failures));
+        return;
+      }
+      // Show which one answered: the reader is entitled to know who saw
+      // their addresses, and the broadcast step reuses this value.
+      const base = picked.base;
+      explorerInput.value = base;
+
+      setFeedback({ kind: "busy", status: "Looking up your addresses…" });
       const { external, internal } = await deriveAddresses(
         params.descriptorExternal,
         params.descriptorInternal,
@@ -256,7 +400,7 @@ export function buildSpendSection(params: SpendParams): HTMLElement {
       });
       signWrap.hidden = false;
     } catch (e) {
-      showError(`Couldn't reach the explorer. Check the address and your internet. (${(e as Error).message})`);
+      showError(scanFailureMessage((e as Error).message));
     } finally {
       // `busy` is owned by setFeedback now, and every exit path above
       // has called it. Only the button is re-enabled here.
