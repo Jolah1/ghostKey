@@ -330,6 +330,43 @@ export function RemindersPage({ onNavigate }: PageProps) {
   );
 }
 
+/**
+ * Title for the heir-contact editor.
+ *
+ * The page edits whichever vault is active, and an owner with several
+ * heirs has no other way to tell which one they're about to rewrite —
+ * the address typed here is where a real claim link goes (#315). Name
+ * the heir whenever we know it.
+ */
+export function heirContactTitle(heirName?: string | null): string {
+  const name = heirName?.trim();
+  return name ? `How ${name} is reached` : "How your heir is reached";
+}
+
+/**
+ * Why the editor is refusing, in the owner's words.
+ *
+ * Every blocked case used to read "This isn't available once a claim is
+ * underway", including the common one where the browser simply holds no
+ * owner credential — which sent an owner hunting for a claim that wasn't
+ * happening (#315).
+ */
+export function heirContactBlockedReason({
+  hasOwnerToken,
+  status,
+}: {
+  hasOwnerToken: boolean;
+  status?: string | null;
+}): string {
+  if (!hasOwnerToken) {
+    return "This browser isn't signed in as the owner of this vault, so it can't change how the heir is reached. Sign in on the device you set the vault up on.";
+  }
+  if (status === "claimed") {
+    return "This vault is closed, so there's nobody left to reach.";
+  }
+  return "This isn't available once a claim is underway.";
+}
+
 export function HeirContactPage({ onNavigate }: PageProps) {
   const { meta, ownerToken, vault, loading } = useActiveVault();
   const isClaiming =
@@ -339,8 +376,8 @@ export function HeirContactPage({ onNavigate }: PageProps) {
   );
   return (
     <ToolPage
-      title="How your heir is reached"
-      intro="Change your heir's contact or the way we reach them. They're only ever contacted if you stop checking in."
+      title={heirContactTitle(meta?.heir.name)}
+      intro="Change their contact or the way we reach them. They're only ever contacted if you stop checking in."
       onNavigate={onNavigate}
     >
       {ready && meta && ownerToken ? (
@@ -349,7 +386,10 @@ export function HeirContactPage({ onNavigate }: PageProps) {
         <Fallback
           loading={loading}
           hasVault={Boolean(meta)}
-          emptyText="This isn't available once a claim is underway."
+          emptyText={heirContactBlockedReason({
+            hasOwnerToken: Boolean(ownerToken),
+            status: vault?.status,
+          })}
           onNavigate={onNavigate}
         />
       )}
@@ -503,8 +543,12 @@ function HeirContactCard({
         </div>
       ) : null}
 
-      <Button onClick={save} disabled={saving}>
-        {saving ? "Saving…" : "Save"}
+      {/* Once saved, there is nothing left to save until the owner edits
+          something — both inputs clear `saved` on change. Leaving a live
+          Save button next to a "Saved" banner reads as though the save
+          didn't take, and re-pressing it re-seals the same blob. */}
+      <Button onClick={save} disabled={saving || saved}>
+        {saving ? "Saving…" : saved ? "Saved" : "Save"}
       </Button>
     </div>
   );
