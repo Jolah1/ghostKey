@@ -216,6 +216,12 @@ impl FromRequestParts<Arc<AppState>> for AdminAuth {
 /// Parse the CORS allowlist from the environment, returning a list of
 /// exact-match origins. An empty / unset env defaults to the local
 /// dev frontends.
+/// Serialises the tests that mutate `GHOSTKEY_ALLOWED_ORIGINS`. Env vars
+/// are process-global and the test binary is threaded, so a router built
+/// in one test would otherwise see another test's origin list.
+#[cfg(test)]
+pub(crate) static ORIGINS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn cors_allowed_origins() -> Vec<String> {
     let raw = std::env::var("GHOSTKEY_ALLOWED_ORIGINS").unwrap_or_default();
     let trimmed = raw.trim();
@@ -279,6 +285,7 @@ mod tests {
 
     #[test]
     fn cors_allowed_origins_default_is_localhost() {
+        let _g = ORIGINS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // SAFETY: tests run in a single process; clear+restore is fine.
         unsafe { std::env::remove_var("GHOSTKEY_ALLOWED_ORIGINS") };
         let v = cors_allowed_origins();
@@ -288,6 +295,7 @@ mod tests {
 
     #[test]
     fn cors_allowed_origins_parses_csv() {
+        let _g = ORIGINS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::set_var(
                 "GHOSTKEY_ALLOWED_ORIGINS",
