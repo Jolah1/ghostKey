@@ -4,7 +4,8 @@
  * Lets the owner move their Bitcoin straight from the unlocked kit, with
  * no Bitcoin Core and no GhostKey. The signing happens locally in wasm
  * (the secret key never leaves the page); only two clearly-marked steps
- * touch the network, and only against an explorer the user chooses:
+ * touch the network, against a lookup service the kit picks from a short
+ * list, or one the reader names:
  *
  *   1. "Find my coins" — derive the vault's addresses and ask the explorer
  *      which have unspent coins, fetching the funding transactions.
@@ -48,8 +49,12 @@ interface SpendParams {
  */
 const EXPLORER_MIRRORS: Record<Network, readonly string[]> = {
   bitcoin: [
-    "https://mempool.space/api",
+    // blockstream.info leads on evidence, not preference. The owner who
+    // reported this could not reach mempool.space "most times" and moved
+    // real money only after replacing it by hand. Order costs nothing
+    // when a host is up, and is the whole game when one is not.
     "https://blockstream.info/api",
+    "https://mempool.space/api",
     "https://mempool.emzy.de/api",
     "https://mempool.bitaroo.net/api",
   ],
@@ -66,25 +71,69 @@ const EXPLORER_MIRRORS: Record<Network, readonly string[]> = {
  *  cannot reach their money at all. That is a defensible trade, but only
  *  if it is stated rather than hidden. */
 export const EXPLORER_DISCLOSURE =
-  "Whoever runs the explorer will see this vault's addresses and balance. If you run your own, put its address here instead.";
+  "Finding your coins uses an outside service, which will see this vault's addresses and balance. Nothing else on this page uses the internet.";
+
+/** The collapsed section holding the two technical fields.
+ *
+ *  Named once and used in both the summary and the failure messages that
+ *  send people to it. Two copies of a label drift apart, and a message
+ *  pointing at a heading that no longer exists is worse than no message.
+ *
+ *  The wording is an invitation to skip. A reader recovering an
+ *  inheritance should not have to learn what an explorer API is to move
+ *  their own money, and since the kit now walks a list of hosts by
+ *  itself, they no longer have to. */
+export const ADVANCED_LABEL = "Settings most people don't need";
+
+/** Shown inside the collapsed section, next to the explorer field. */
+export const EXPLORER_OWN_NODE_HINT =
+  "If you run your own Bitcoin node, put its address here instead. Left alone, the kit tries public services until one answers.";
 
 /** The prefilled value: the first mirror we would try anyway. */
 function defaultExplorer(network: Network): string {
   return EXPLORER_MIRRORS[network][0] ?? "";
 }
 
+/** A page a person can actually open, for a transaction we just sent.
+ *
+ *  The kit used to print a bare 64-character transaction id and stop.
+ *  That is a fine answer for someone who knows it goes in an explorer's
+ *  search box, and no answer at all for the reader this file is written
+ *  for: they have just sent their inheritance somewhere and have nothing
+ *  to click to see that it arrived.
+ *
+ *  Esplora deployments serve the human pages at the root and the API
+ *  under `/api`, so dropping that one segment is the whole conversion,
+ *  and it works for the self-hosted case too. Anything not shaped that
+ *  way returns `null`, and the caller shows the plain id rather than
+ *  inventing a link that 404s. */
+export function explorerTxUrl(apiBase: string, txid: string): string | null {
+  const base = apiBase.trim().replace(/\/+$/, "");
+  if (!/^https?:\/\//i.test(base)) return null;
+  if (!/^[0-9a-f]{64}$/i.test(txid.trim())) return null;
+  const web = base.replace(/\/api$/, "");
+  if (web === base) return null;
+  return `${web}/tx/${txid.trim().toLowerCase()}`;
+}
+
 /** Which explorers to try, given what is in the box.
  *
- *  A value the owner typed is used ALONE. Falling back from a private
- *  Esplora to a public mirror would hand four strangers the addresses
+ *  A host we do not already publish is used ALONE. Falling back from a
+ *  private Esplora to a public mirror would hand strangers the addresses
  *  that person went out of their way to keep off public infrastructure,
- *  and it would do it silently, at the one moment they are not watching.
- *  Only an untouched prefill earns the whole list. */
+ *  silently, at the one moment they are not watching.
+ *
+ *  A host that IS on our list keeps its fallback, and goes first. Those
+ *  hosts are ones this kit would have contacted anyway, so trying the
+ *  others discloses nothing new — and the reader who typed one did so
+ *  because the default was failing them, which is precisely when giving
+ *  up after one host is the wrong answer. */
 export function explorerCandidates(network: Network, typed: string): string[] {
   const cleaned = typed.trim().replace(/\/+$/, "");
   const mirrors = EXPLORER_MIRRORS[network];
-  if (cleaned && cleaned !== mirrors[0]) return [cleaned];
-  return [...mirrors];
+  if (!cleaned) return [...mirrors];
+  if (!mirrors.includes(cleaned)) return [cleaned];
+  return [cleaned, ...mirrors.filter((m) => m !== cleaned)];
 }
 
 /** Whether a reply means "use this host", "try the next one", or "this
@@ -110,14 +159,15 @@ export type ExplorerFailure = { url: string; reason: string; reachable: boolean 
  *  to inspect a working WiFi connection. Naming the wrong cause during a
  *  recovery costs hours that the reader may not have. */
 export function explorerFailureMessage(failures: ExplorerFailure[]): string {
-  if (failures.length === 0) return "No block explorer to try. Enter one above.";
+  if (failures.length === 0)
+    return `No lookup service to try. Open "${ADVANCED_LABEL}" and enter one.`;
   const answered = failures.filter((f) => f.reachable);
   if (answered.length === 0) {
-    const tried = failures.length === 1 ? "the block explorer" : `all ${failures.length} block explorers`;
-    return `Couldn't reach ${tried}. The request never left this device, so this is the connection here, not your vault. Check your internet, or put a different explorer in the box above and try again.`;
+    const tried = failures.length === 1 ? "the lookup service" : `all ${failures.length} lookup services`;
+    return `Couldn't reach ${tried}. The request never left this device, so this is the connection here, not your vault. Check your internet and try again. If it keeps failing, open "${ADVANCED_LABEL}" and put a different address in the box.`;
   }
   const first = answered[0];
-  return `The block explorer answered, but refused the request (${first.reason}). Your connection is fine. Check the explorer address above is right for this vault's network.`;
+  return `The lookup service answered, but refused the request (${first.reason}). Your connection is fine. Open "${ADVANCED_LABEL}" and check the address there is right for this vault's network.`;
 }
 
 /** Marker text in the errors this module throws for itself, used to tell
@@ -240,19 +290,23 @@ export function buildSpendSection(params: SpendParams): HTMLElement {
         <input data-to type="text" placeholder="bc1..." aria-label="Recipient address"
                style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;
                       border:1px solid #3a332a;background:#14110e;color:#ece5da;font-size:15px" />
-        <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
-          <label class="muted" style="flex:1;min-width:120px">Fee (sat/vByte)
-            <input data-fee type="number" min="1" value="5" aria-label="Fee rate"
-                   style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;
-                          border:1px solid #3a332a;background:#14110e;color:#ece5da" />
-          </label>
-          <label class="muted" style="flex:3;min-width:200px">Block explorer (its API address)
-            <input data-explorer type="text" aria-label="Explorer API base"
-                   style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;
-                          border:1px solid #3a332a;background:#14110e;color:#ece5da" />
-          </label>
-        </div>
-        <p class="muted" style="margin-top:8px;font-size:13px">${EXPLORER_DISCLOSURE}</p>
+        <details data-advanced style="margin-top:10px">
+          <summary class="muted">${ADVANCED_LABEL}</summary>
+          <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
+            <label class="muted" style="flex:1;min-width:120px">Fee (sat/vByte)
+              <input data-fee type="number" min="1" value="5" aria-label="Fee rate"
+                     style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;
+                            border:1px solid #3a332a;background:#14110e;color:#ece5da" />
+            </label>
+            <label class="muted" style="flex:3;min-width:200px">Where to look up your coins
+              <input data-explorer type="text" aria-label="Explorer API base"
+                     style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;
+                            border:1px solid #3a332a;background:#14110e;color:#ece5da" />
+            </label>
+          </div>
+          <p class="muted" style="margin-top:8px;font-size:13px">${EXPLORER_OWN_NODE_HINT}</p>
+        </details>
+        <p class="muted" style="margin-top:10px;font-size:13px">${EXPLORER_DISCLOSURE}</p>
         <div style="margin-top:12px">
           <button data-find type="button">Find my coins</button>
         </div>
@@ -270,6 +324,7 @@ export function buildSpendSection(params: SpendParams): HTMLElement {
   const toInput = section.querySelector("[data-to]") as HTMLInputElement;
   const feeInput = section.querySelector("[data-fee]") as HTMLInputElement;
   const explorerInput = section.querySelector("[data-explorer]") as HTMLInputElement;
+  const advanced = section.querySelector("[data-advanced]") as HTMLDetailsElement;
   const findBtn = section.querySelector("[data-find]") as HTMLButtonElement;
   const busy = section.querySelector("[data-busy]") as HTMLProgressElement;
   const errLine = section.querySelector("[data-err]") as HTMLElement;
@@ -333,7 +388,11 @@ export function buildSpendSection(params: SpendParams): HTMLElement {
     signWrap.hidden = true;
     const candidates = explorerCandidates(params.network, explorerInput.value);
     if (candidates.length === 0) {
-      showError("Enter the API address of a block explorer first.");
+      // Same treatment as a total failure: open the section and use the
+      // wording that names it. This branch had its own jargon message and
+      // left the section shut, so the advice pointed at a hidden field.
+      advanced.open = true;
+      showError(explorerFailureMessage([]));
       return;
     }
     findBtn.disabled = true;
@@ -341,6 +400,10 @@ export function buildSpendSection(params: SpendParams): HTMLElement {
     try {
       const picked = await pickExplorer(candidates, probeExplorer);
       if ("failures" in picked) {
+        // The message tells them to open this; opening it for them saves
+        // a reader who has just been told their money is unreachable from
+        // hunting for a heading they have never seen.
+        advanced.open = true;
         showError(explorerFailureMessage(picked.failures));
         return;
       }
@@ -466,7 +529,14 @@ export function buildSpendSection(params: SpendParams): HTMLElement {
           const body = (await r.text()).trim();
           if (!r.ok) throw new Error(body || `explorer returned ${r.status}`);
           bcOut.className = "ok";
-          bcOut.innerHTML = `Sent. Transaction id: <span class="mono">${esc(body || txid)}</span>`;
+          // A link, not just an id. The reader has this second just sent
+          // their money somewhere and needs to see that it arrived.
+          const sentTxid = body || txid;
+          const link = explorerTxUrl(explorerBase(), sentTxid);
+          bcOut.innerHTML = link
+            ? `Sent. <a href="${esc(link)}" target="_blank" rel="noopener noreferrer">Check it here</a>:
+               <span class="mono">${esc(link)}</span>`
+            : `Sent. Transaction id: <span class="mono">${esc(sentTxid)}</span>`;
         } catch (e) {
           bcOut.className = "err";
           bcOut.textContent = `Broadcast failed: ${(e as Error).message}. You can still copy the transaction above and broadcast it elsewhere.`;
