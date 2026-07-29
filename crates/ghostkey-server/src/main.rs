@@ -38,6 +38,7 @@ mod price;
 mod psbt_routes;
 mod push;
 mod rate_limit;
+mod resend;
 mod routes;
 mod scheduler;
 mod video_routes;

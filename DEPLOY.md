@@ -675,6 +675,60 @@ provider **accepted and then refused** — those rows still read
 they are the worse failure because the owner was told the message went
 out. Any non-zero value means somebody was not reached.
 
+##### Email delivery callbacks (Resend)
+
+Unlike the Twilio one, this is **not zero-config**. Email is sent over
+SMTP, so Resend has nothing to call back unless you tell it where.
+
+Without it, a hard bounce is invisible: the row reads `sent` forever.
+Worse, Resend then adds the address to an **account-level suppression
+list**, and every later send to that address is dropped silently. An
+owner or an heir can go permanently unreachable while the dashboard
+reports success. Configure this.
+
+1. In the Resend dashboard, add a webhook endpoint pointing at
+   `$GHOSTKEY_PUBLIC_BASE_URL/webhooks/resend`.
+2. Subscribe it to at least `email.bounced`, `email.complained`,
+   `email.failed` and `email.suppressed`. `email.sent` and
+   `email.delivered` are optional and useful.
+3. Copy the signing secret (it starts with `whsec_`) and set it:
+
+```bash
+fly secrets set -a ghostkey RESEND_WEBHOOK_SECRET="whsec_xxxxxxxx"
+```
+
+With the secret unset the route returns **404**. There is no unsigned
+fallback: an open endpoint here writes "did not arrive" into an
+owner's activity feed, which is a way to make a healthy vault look
+broken from the outside.
+
+Requests are authenticated with Svix's HMAC-SHA256 signature over the
+raw body, and rejected if the signed timestamp is more than 5 minutes
+from ours, so a captured callback cannot be replayed later.
+
+###### Verifying it works (the canary)
+
+Correlation depends on Resend echoing back the `Message-ID` we set
+ourselves (`<gk-…@yourdomain>`). That is what the webhook is matched
+on. **Confirm it on a real send before trusting the numbers**, using
+Resend's own test recipients so no real address is involved:
+
+1. Set up a throwaway vault whose heir email is
+   `bounced@resend.dev`, and trigger any notification to it.
+2. Watch the logs for `email handed to the relay` and note the
+   `message_id`.
+3. Within a minute or so, `notifications_undelivered` on `/health`
+   should go to 1, and the vault's activity feed should show
+   `notification_undelivered`.
+
+If the counter stays at 0, Resend is reporting a different id than the
+one we set. The logs will show `delivery status for an unknown
+message` with the id it did send. Repeat with `complained@resend.dev`
+to check the complaint path.
+
+`suppressed@resend.dev` also exists but does not support `+label`
+addressing, so use a separate vault for it.
+
 #### Web push (browser reminders)
 
 Check-in reminders can also arrive as browser notifications: no

@@ -41,7 +41,7 @@ use crate::AppState;
 /// module because the alarm has to fire on the shared path — a status
 /// this function doesn't recognise is recorded silently, which is the
 /// exact failure mode #311 exists to close.
-fn is_negative_verdict(status: &str) -> bool {
+pub(crate) fn is_negative_verdict(status: &str) -> bool {
     matches!(
         status,
         "undelivered" | "failed" | "bounced" | "complained" | "suppressed"
@@ -110,7 +110,7 @@ pub(crate) enum Recorded {
 ///
 /// `subtle` is already a dependency for the crypto module; use it so a
 /// signature check can't be turned into a timing oracle.
-fn signatures_match(a: &str, b: &str) -> bool {
+pub(crate) fn signatures_match(a: &str, b: &str) -> bool {
     use subtle::ConstantTimeEq;
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
