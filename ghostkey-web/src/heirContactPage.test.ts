@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
   heirContactTitle,
   heirContactBlockedReason,
+  swapDomain,
 } from "./VaultToolPages";
 
 describe("heirContactTitle", () => {
@@ -60,5 +61,29 @@ describe("heirContactBlockedReason", () => {
     expect(
       heirContactBlockedReason({ hasOwnerToken: false, status: "claiming" }),
     ).toContain("isn't signed in as the owner");
+  });
+});
+
+/* ---------------- typo suggestions (#327) ---------------- */
+
+describe("swapDomain", () => {
+  it("keeps the local part exactly as typed", () => {
+    expect(swapDomain("heir@gmial.com", "gmail.com")).toBe("heir@gmail.com");
+    // Dots, plus-addressing and case in the local part must survive: the
+    // owner already typed it correctly and we are only fixing the domain.
+    expect(swapDomain("First.Last+vault@gmial.com", "gmail.com")).toBe(
+      "First.Last+vault@gmail.com",
+    );
+    expect(swapDomain("  heir@gmial.com  ", "gmail.com")).toBe("heir@gmail.com");
+  });
+
+  it("uses the last @, so an odd local part isn't split wrongly", () => {
+    expect(swapDomain("a@b@gmial.com", "gmail.com")).toBe("a@b@gmail.com");
+  });
+
+  it("leaves anything without a usable local part alone", () => {
+    expect(swapDomain("nonsense", "gmail.com")).toBe("nonsense");
+    expect(swapDomain("@gmial.com", "gmail.com")).toBe("@gmial.com");
+    expect(swapDomain("", "gmail.com")).toBe("");
   });
 });

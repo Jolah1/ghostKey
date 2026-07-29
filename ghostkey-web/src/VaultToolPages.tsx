@@ -338,6 +338,16 @@ export function RemindersPage({ onNavigate }: PageProps) {
  * the address typed here is where a real claim link goes (#315). Name
  * the heir whenever we know it.
  */
+/** Swap the domain of an address, keeping the local part exactly as
+ *  typed. Used to accept a "did you mean" suggestion in one tap — the
+ *  alternative is asking someone to retype an address they already got
+ *  wrong once. */
+export function swapDomain(address: string, domain: string): string {
+  const at = address.trim().lastIndexOf("@");
+  if (at <= 0) return address;
+  return `${address.trim().slice(0, at)}@${domain}`;
+}
+
 export function heirContactTitle(heirName?: string | null): string {
   const name = heirName?.trim();
   return name ? `How ${name} is reached` : "How your heir is reached";
@@ -406,6 +416,7 @@ function HeirContactCard({
 }) {
   const [channel, setChannel] = useState<HeirContactChannel>("email");
   const [contact, setContact] = useState("");
+  const [suggestion, setSuggestion] = useState<string | null>(null);
   // Prefill state: until the current profile loads we don't want the
   // owner typing into a field that's about to be overwritten.
   const [loaded, setLoaded] = useState(false);
@@ -529,6 +540,19 @@ function HeirContactCard({
             setContact(e.target.value);
             setSaved(false);
             setError(null);
+            setSuggestion(null);
+          }}
+          onBlur={async () => {
+            // Advisory only, and deliberately never blocking: if the
+            // check fails or the server is old, the owner saves exactly
+            // as before.
+            if (channel !== "email" || !contact.includes("@")) return;
+            try {
+              const r = await api.checkContact(contact);
+              setSuggestion(r.suggestion);
+            } catch {
+              setSuggestion(null);
+            }
           }}
           placeholder={meta.placeholder}
           autoComplete="off"
@@ -536,6 +560,31 @@ function HeirContactCard({
           className="input"
         />
       </Field>
+
+      {/* A typo in an heir's address stays invisible until the claim
+          link fires, which is the one moment nobody can fix it. Every
+          address on our bounce list has been a misspelling. Ask now.
+          Never blocks the save: it is a question, not a verdict, and
+          gmial.com is a real domain that accepts mail. */}
+      {suggestion ? (
+        <div className="mb-4">
+          <InlineAlert tone="warning">
+            Did you mean{" "}
+            <button
+              type="button"
+              className="underline font-medium"
+              onClick={() => {
+                setContact(swapDomain(contact, suggestion));
+                setSuggestion(null);
+                setSaved(false);
+              }}
+            >
+              {swapDomain(contact, suggestion)}
+            </button>
+            ? If not, carry on and save.
+          </InlineAlert>
+        </div>
+      ) : null}
 
       {saved ? (
         <div className="mb-4">
