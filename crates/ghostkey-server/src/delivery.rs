@@ -28,17 +28,82 @@ use std::sync::Arc;
 
 use crate::AppState;
 
-/// Twilio's `MessageStatus` values, reduced to the ones that mean
-/// something to us.
+/// Provider statuses, reduced to the ones that mean something to us.
 ///
 /// `queued` / `sending` / `sent` are progress updates, not verdicts —
 /// worth recording so an operator can see how far a message got, but
 /// they are not evidence of arrival. `delivered` is arrival. `read` is
-/// WhatsApp-only and stronger than delivered. `undelivered` and
-/// `failed` are the ones that matter: the message is not coming, and
-/// somebody needs to know.
+/// WhatsApp-only and stronger than delivered. The negative ones are
+/// what matter: the message is not coming, and somebody needs to know.
+///
+/// `bounced`, `complained` and `suppressed` are the email side of the
+/// same idea. They are listed here rather than only in the email
+/// module because the alarm has to fire on the shared path — a status
+/// this function doesn't recognise is recorded silently, which is the
+/// exact failure mode #311 exists to close.
 fn is_negative_verdict(status: &str) -> bool {
-    matches!(status, "undelivered" | "failed")
+    matches!(
+        status,
+        "undelivered" | "failed" | "bounced" | "complained" | "suppressed"
+    )
+}
+
+/// How far along a status is, for deciding whether a late callback may
+/// overwrite what we already recorded.
+///
+/// Callbacks are not ordered. Twilio can deliver `sent` after
+/// `delivered`, and Resend's Svix retries can land an `email.sent` from
+/// three minutes ago on top of a bounce that arrived first. Without a
+/// rule, the last writer wins and a bounce quietly turns back into a
+/// success.
+///
+/// The rule: a verdict may only move forward. Negative outranks
+/// positive at the same terminality, because "did not arrive" is the
+/// answer an owner has to act on and a stale success must never bury
+/// it.
+fn delivery_rank(status: &str) -> u8 {
+    match status {
+        "queued" | "accepted" | "scheduled" => 1,
+        "sending" | "sent" | "delayed" | "delivery_delayed" => 2,
+        "delivered" => 3,
+        "read" => 4,
+        // Terminal negatives. All equal: whichever arrives first is the
+        // reason recorded, and no later callback may soften it.
+        s if is_negative_verdict(s) => 5,
+        // Something new from the provider. Rank it as progress so it is
+        // recorded when nothing better is known, but can never
+        // overwrite a real verdict.
+        _ => 1,
+    }
+}
+
+/// One delivery callback, normalised across providers.
+pub(crate) struct DeliveryEvent<'a> {
+    /// `"twilio"` or `"resend"`. Namespaces `event_id`, since the two
+    /// providers mint ids in completely different shapes.
+    pub provider: &'a str,
+    /// Stable across the provider's own retries, distinct between real
+    /// events. This is the replay guard; see the migration.
+    pub event_id: String,
+    /// What we stored at handoff, and what this callback is about.
+    pub provider_message_id: &'a str,
+    /// Normalised status, one of the values `delivery_rank` knows.
+    pub status: &'a str,
+    /// Provider's reason for a negative verdict, verbatim.
+    pub detail: Option<&'a str>,
+}
+
+/// What `record_delivery` did, so the caller can log honestly.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Recorded {
+    /// First time we've seen this event, and it moved the verdict on.
+    Applied,
+    /// Seen before. Nothing was touched.
+    Duplicate,
+    /// New event, but it would have moved the verdict backwards.
+    Stale,
+    /// New event for a message we never sent.
+    UnknownMessage,
 }
 
 /// Constant-time-ish comparison of two base64 signatures.
@@ -136,8 +201,18 @@ pub(crate) async fn twilio_status_webhook(
         .unwrap_or("unknown");
     let error_code = params.get("ErrorCode").map(String::as_str);
 
-    match record_delivery(&state.db, sid, status, error_code).await {
-        Ok(()) => StatusCode::NO_CONTENT,
+    // Twilio sends no per-callback id, so the replay key is the pair it
+    // does repeat verbatim on a retry: which message, which transition.
+    let ev = DeliveryEvent {
+        provider: "twilio",
+        event_id: format!("{sid}:{status}"),
+        provider_message_id: sid,
+        status,
+        detail: error_code,
+    };
+
+    match record_delivery(&state.db, &ev).await {
+        Ok(_) => StatusCode::NO_CONTENT,
         Err(e) => {
             tracing::error!(error = ?e, "failed to record twilio delivery status");
             // Twilio will retry, and a DB blip is worth retrying into.
@@ -150,42 +225,93 @@ pub(crate) async fn twilio_status_webhook(
 ///
 /// Kept separate from the HTTP handler so the interesting behaviour is
 /// testable without a signature or a socket.
+///
+/// Two things this guards, both of which bit the version shipped in
+/// #311:
+///
+///   - **Replay.** The event id goes in first, under a primary key. If
+///     the insert is not new, the callback is a retry and we stop. That
+///     is what stops one failed message writing two `notification_undelivered`
+///     entries into the owner's activity feed.
+///   - **Ordering.** A verdict only moves forward (`delivery_rank`), so
+///     a late `sent` cannot overwrite a `bounced`.
 pub(crate) async fn record_delivery(
     db: &sqlx::SqlitePool,
-    provider_message_id: &str,
-    status: &str,
-    detail: Option<&str>,
-) -> Result<(), sqlx::Error> {
+    ev: &DeliveryEvent<'_>,
+) -> Result<Recorded, sqlx::Error> {
     let now = chrono::Utc::now().to_rfc3339();
 
-    let row: Option<(i64, String, String)> = sqlx::query_as(
-        "SELECT id, vault_id, kind FROM notifications WHERE provider_message_id = ?",
+    let row: Option<(i64, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, vault_id, kind, delivery_status
+           FROM notifications WHERE provider_message_id = ?",
     )
-    .bind(provider_message_id)
+    .bind(ev.provider_message_id)
     .fetch_optional(db)
     .await?;
 
-    let Some((id, vault_id, kind)) = row else {
+    // Claim the event id BEFORE acting on it. `INSERT OR IGNORE` on the
+    // primary key is the whole replay guard: zero rows affected means
+    // another copy of this callback already did the work.
+    let claimed = sqlx::query(
+        "INSERT OR IGNORE INTO notification_delivery_events
+             (provider, event_id, notification_id, status, received_at)
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(ev.provider)
+    .bind(&ev.event_id)
+    .bind(row.as_ref().map(|(id, _, _, _)| *id))
+    .bind(ev.status)
+    .bind(&now)
+    .execute(db)
+    .await?
+    .rows_affected();
+
+    if claimed == 0 {
+        tracing::debug!(
+            provider = ev.provider,
+            event_id = %ev.event_id,
+            status = ev.status,
+            "duplicate delivery callback; already recorded"
+        );
+        return Ok(Recorded::Duplicate);
+    }
+
+    let Some((id, vault_id, kind, previous)) = row else {
         tracing::info!(
-            provider_message_id,
-            status,
+            provider_message_id = ev.provider_message_id,
+            status = ev.status,
             "delivery status for an unknown message; ignoring"
         );
-        return Ok(());
+        return Ok(Recorded::UnknownMessage);
     };
+
+    // Out-of-order arrival: record nothing rather than walk the verdict
+    // backwards. The event row above still remembers we saw it.
+    let previous_rank = previous.as_deref().map(delivery_rank).unwrap_or(0);
+    if delivery_rank(ev.status) <= previous_rank {
+        tracing::info!(
+            notif_id = id,
+            status = ev.status,
+            previous = previous.as_deref().unwrap_or("-"),
+            "delivery callback arrived out of order; keeping the stronger verdict"
+        );
+        return Ok(Recorded::Stale);
+    }
 
     sqlx::query(
         "UPDATE notifications
             SET delivery_status = ?, delivery_detail = ?, delivery_updated_at = ?
           WHERE id = ?",
     )
-    .bind(status)
-    .bind(detail)
+    .bind(ev.status)
+    .bind(ev.detail)
     .bind(&now)
     .bind(id)
     .execute(db)
     .await?;
 
+    let status = ev.status;
+    let detail = ev.detail;
     if is_negative_verdict(status) {
         // This is the whole point of the exercise: a claim link or an
         // alarm that did not arrive must not be a log-only signal. The
@@ -220,7 +346,7 @@ pub(crate) async fn record_delivery(
         );
     }
 
-    Ok(())
+    Ok(Recorded::Applied)
 }
 
 #[cfg(test)]
@@ -354,6 +480,37 @@ mod tests {
         (pool, id)
     }
 
+    /// A Twilio-shaped callback, with the same replay key the handler
+    /// builds.
+    fn twilio_event<'a>(
+        sid: &'a str,
+        status: &'a str,
+        detail: Option<&'a str>,
+    ) -> DeliveryEvent<'a> {
+        DeliveryEvent {
+            provider: "twilio",
+            event_id: format!("{sid}:{status}"),
+            provider_message_id: sid,
+            status,
+            detail,
+        }
+    }
+
+    async fn undelivered_events(pool: &sqlx::SqlitePool) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind='notification_undelivered'")
+            .fetch_one(pool)
+            .await
+            .expect("count")
+    }
+
+    async fn delivery_status(pool: &sqlx::SqlitePool, id: i64) -> Option<String> {
+        sqlx::query_scalar("SELECT delivery_status FROM notifications WHERE id=?")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .expect("row")
+    }
+
     /// The failure this whole module exists for: Twilio accepted a
     /// claim link, then reported 63016. The row must stop claiming
     /// success, and the owner must be able to SEE it — a log line is
@@ -362,9 +519,12 @@ mod tests {
     async fn undelivered_claim_link_is_recorded_and_surfaced() {
         let (pool, id) = db_with_sent_notification("SM-undelivered").await;
 
-        record_delivery(&pool, "SM-undelivered", "undelivered", Some("63016"))
-            .await
-            .expect("record");
+        record_delivery(
+            &pool,
+            &twilio_event("SM-undelivered", "undelivered", Some("63016")),
+        )
+        .await
+        .expect("record");
 
         let (status, detail): (Option<String>, Option<String>) =
             sqlx::query_as("SELECT delivery_status, delivery_detail FROM notifications WHERE id=?")
@@ -392,24 +552,19 @@ mod tests {
     async fn delivered_is_recorded_without_an_event() {
         let (pool, id) = db_with_sent_notification("SM-ok").await;
 
-        record_delivery(&pool, "SM-ok", "delivered", None)
+        record_delivery(&pool, &twilio_event("SM-ok", "delivered", None))
             .await
             .expect("record");
 
-        let status: Option<String> =
-            sqlx::query_scalar("SELECT delivery_status FROM notifications WHERE id=?")
-                .bind(id)
-                .fetch_one(&pool)
-                .await
-                .expect("row");
-        assert_eq!(status.as_deref(), Some("delivered"));
-
-        let events: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind='notification_undelivered'")
-                .fetch_one(&pool)
-                .await
-                .expect("count");
-        assert_eq!(events, 0, "a delivered message is not an incident");
+        assert_eq!(
+            delivery_status(&pool, id).await.as_deref(),
+            Some("delivered")
+        );
+        assert_eq!(
+            undelivered_events(&pool).await,
+            0,
+            "a delivered message is not an incident"
+        );
     }
 
     /// A callback for a SID we never sent is ignored, not an error. The
@@ -418,9 +573,13 @@ mod tests {
     #[tokio::test]
     async fn unknown_message_id_is_ignored() {
         let (pool, _) = db_with_sent_notification("SM-known").await;
-        record_delivery(&pool, "SM-never-seen", "failed", Some("30008"))
-            .await
-            .expect("must not error");
+        let got = record_delivery(
+            &pool,
+            &twilio_event("SM-never-seen", "failed", Some("30008")),
+        )
+        .await
+        .expect("must not error");
+        assert_eq!(got, Recorded::UnknownMessage);
         let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
             .fetch_one(&pool)
             .await
@@ -428,14 +587,202 @@ mod tests {
         assert_eq!(events, 0);
     }
 
+    /// Delivery callbacks are at-least-once. Twilio retries any
+    /// callback it didn't get a clean 2xx for, and Svix does the same
+    /// for Resend. The first version of this module acted on every
+    /// copy, so one failed claim link wrote the owner's activity feed
+    /// twice.
+    #[tokio::test]
+    async fn a_replayed_callback_does_not_alarm_twice() {
+        let (pool, id) = db_with_sent_notification("SM-replay").await;
+        let ev = twilio_event("SM-replay", "undelivered", Some("63016"));
+
+        assert_eq!(
+            record_delivery(&pool, &ev).await.expect("first"),
+            Recorded::Applied
+        );
+        assert_eq!(
+            record_delivery(&pool, &ev).await.expect("replay"),
+            Recorded::Duplicate,
+        );
+        assert_eq!(
+            record_delivery(&pool, &ev).await.expect("replay again"),
+            Recorded::Duplicate,
+        );
+
+        assert_eq!(
+            undelivered_events(&pool).await,
+            1,
+            "one failed message is one incident, however many times the provider tells us"
+        );
+        assert_eq!(
+            delivery_status(&pool, id).await.as_deref(),
+            Some("undelivered")
+        );
+    }
+
+    /// A replay of an UNKNOWN message must also be deduplicated. The
+    /// event row is claimed before the lookup precisely so this path
+    /// can't be used to hammer the DB with repeated work.
+    #[tokio::test]
+    async fn a_replayed_callback_for_an_unknown_message_is_also_deduplicated() {
+        let (pool, _) = db_with_sent_notification("SM-known").await;
+        let ev = twilio_event("SM-stranger", "failed", None);
+        assert_eq!(
+            record_delivery(&pool, &ev).await.expect("first"),
+            Recorded::UnknownMessage
+        );
+        assert_eq!(
+            record_delivery(&pool, &ev).await.expect("second"),
+            Recorded::Duplicate
+        );
+    }
+
+    /// The one that actually costs money: a bounce arrives, then a
+    /// stale `sent` from the provider's retry queue lands on top. If
+    /// the later write wins, the owner's dashboard says the message
+    /// went out and the heir is quietly unreachable again.
+    #[tokio::test]
+    async fn a_late_positive_callback_cannot_bury_a_negative_verdict() {
+        let (pool, id) = db_with_sent_notification("SM-order").await;
+
+        record_delivery(
+            &pool,
+            &twilio_event("SM-order", "undelivered", Some("63016")),
+        )
+        .await
+        .expect("bounce");
+        let got = record_delivery(&pool, &twilio_event("SM-order", "delivered", None))
+            .await
+            .expect("late delivered");
+
+        assert_eq!(got, Recorded::Stale);
+        assert_eq!(
+            delivery_status(&pool, id).await.as_deref(),
+            Some("undelivered"),
+            "a late success must not overwrite a recorded failure"
+        );
+        let detail: Option<String> =
+            sqlx::query_scalar("SELECT delivery_detail FROM notifications WHERE id=?")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .expect("row");
+        assert_eq!(detail.as_deref(), Some("63016"), "the reason survives too");
+    }
+
+    /// Progress updates arriving after arrival are equally stale.
+    #[tokio::test]
+    async fn progress_after_delivery_is_ignored() {
+        let (pool, id) = db_with_sent_notification("SM-prog").await;
+        record_delivery(&pool, &twilio_event("SM-prog", "delivered", None))
+            .await
+            .expect("delivered");
+        for late in ["queued", "sending", "sent"] {
+            assert_eq!(
+                record_delivery(&pool, &twilio_event("SM-prog", late, None))
+                    .await
+                    .expect("late"),
+                Recorded::Stale,
+                "{late} arrived after delivery"
+            );
+        }
+        assert_eq!(
+            delivery_status(&pool, id).await.as_deref(),
+            Some("delivered")
+        );
+    }
+
+    /// Forward progress still works: the normal queued -> sent ->
+    /// delivered sequence must each be recorded.
+    #[tokio::test]
+    async fn a_verdict_still_moves_forward_in_order() {
+        let (pool, id) = db_with_sent_notification("SM-fwd").await;
+        for s in ["queued", "sent", "delivered"] {
+            assert_eq!(
+                record_delivery(&pool, &twilio_event("SM-fwd", s, None))
+                    .await
+                    .expect("record"),
+                Recorded::Applied,
+                "{s} should advance the verdict"
+            );
+            assert_eq!(delivery_status(&pool, id).await.as_deref(), Some(s));
+        }
+        assert_eq!(undelivered_events(&pool).await, 0);
+    }
+
+    /// The email verdicts. Recorded through the same shared path, and
+    /// they must alarm — a hard bounce means the address is dead, and
+    /// Resend then suppresses it account-wide so every later send is
+    /// silently dropped.
+    #[tokio::test]
+    async fn email_verdicts_alarm_the_owner_too() {
+        for status in ["bounced", "complained", "suppressed"] {
+            let (pool, id) = db_with_sent_notification("MSG-email").await;
+            record_delivery(
+                &pool,
+                &DeliveryEvent {
+                    provider: "resend",
+                    event_id: format!("evt-{status}"),
+                    provider_message_id: "MSG-email",
+                    status,
+                    detail: Some("mailbox does not exist"),
+                },
+            )
+            .await
+            .expect("record");
+
+            assert_eq!(delivery_status(&pool, id).await.as_deref(), Some(status));
+            assert_eq!(
+                undelivered_events(&pool).await,
+                1,
+                "{status} must reach the owner's activity feed"
+            );
+        }
+    }
+
     #[test]
-    fn only_undelivered_and_failed_are_verdicts() {
-        assert!(is_negative_verdict("undelivered"));
-        assert!(is_negative_verdict("failed"));
+    fn negative_verdicts_cover_both_providers() {
+        for s in [
+            "undelivered",
+            "failed",
+            "bounced",
+            "complained",
+            "suppressed",
+        ] {
+            assert!(is_negative_verdict(s), "{s} is a negative verdict");
+        }
         // Progress, not arrival — and crucially not a reason to alarm
         // the owner.
-        for s in ["queued", "sending", "sent", "delivered", "read", "unknown"] {
+        for s in [
+            "queued",
+            "sending",
+            "sent",
+            "delivered",
+            "read",
+            "delayed",
+            "unknown",
+        ] {
             assert!(!is_negative_verdict(s), "{s} is not a negative verdict");
         }
+    }
+
+    /// The precedence rule in one place, so changing a rank has to be
+    /// deliberate.
+    #[test]
+    fn negative_verdicts_outrank_everything_else() {
+        for bad in ["undelivered", "failed", "bounced", "complained"] {
+            for ok in ["queued", "sending", "sent", "delivered", "read", "unknown"] {
+                assert!(
+                    delivery_rank(bad) > delivery_rank(ok),
+                    "{bad} must outrank {ok}"
+                );
+            }
+        }
+        assert!(delivery_rank("delivered") > delivery_rank("sent"));
+        assert!(delivery_rank("sent") > delivery_rank("queued"));
+        // An unrecognised status ranks as bare progress: recorded when
+        // nothing is known, never able to overwrite a verdict.
+        assert!(delivery_rank("something-new") < delivery_rank("delivered"));
     }
 }
