@@ -250,6 +250,14 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
     let open_routes: Router<Arc<AppState>> = Router::new()
         .route("/health", get(health))
         .route("/health/lightning", get(health_lightning))
+        // Twilio's per-message delivery callback (#311). Open by URL
+        // because Twilio has no credential to present; the request's
+        // HMAC-SHA1 signature over the auth token IS the authentication,
+        // and it is checked before the body is read.
+        .route(
+            "/webhooks/twilio/status",
+            post(crate::delivery::twilio_status_webhook),
+        )
         .route("/vaults", get(list_vaults))
         // Operator-only read endpoints (AdminAuth-gated; closed unless
         // GHOSTKEY_ADMIN_TOKEN_HASH is set). See admin.rs.
@@ -431,6 +439,13 @@ struct Health {
     /// Notifications that exhausted their retries and will never send.
     /// Non-zero warrants an operator look (bad address, dead SMTP creds).
     notifications_failed: i64,
+    /// Notifications the provider ACCEPTED and then told us it could not
+    /// deliver (#311). These read `status = 'sent'`, so they are
+    /// invisible to `notifications_failed` — and they are the worse
+    /// failure, because the owner was told the message went out. Any
+    /// non-zero value needs a human: it means a heir or owner was not
+    /// reached.
+    notifications_undelivered: i64,
     /// False when the oldest due notification has been waiting past the
     /// stuck threshold (15 min). Alert on this alongside
     /// `scheduler_healthy`: a stalled notifier silently stops contacting
@@ -507,6 +522,15 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         .fetch_one(&state.db)
         .await
         .unwrap_or((0, None, 0));
+    // Handed off, then refused. Counted separately because the row's
+    // own `status` still says `sent`.
+    let notifications_undelivered: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM notifications
+          WHERE delivery_status IN ('undelivered', 'failed', 'bounced', 'complained')",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
     let notifications_oldest_due_secs = oldest_due_iso
         .as_deref()
         .map(|s| (Utc::now() - crate::config::parse_rfc(s)).num_seconds());
@@ -534,6 +558,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         notifications_due,
         notifications_oldest_due_secs,
         notifications_failed,
+        notifications_undelivered,
         notifier_healthy,
         chain_scan_healthy,
         chain_scan_consecutive_failures: scan.consecutive_failures as i64,
