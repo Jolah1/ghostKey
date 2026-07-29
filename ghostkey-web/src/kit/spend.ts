@@ -55,6 +55,47 @@ type EsploraUtxo = {
   status: { confirmed: boolean; block_height?: number };
 };
 
+/** Label for the destination field.
+ *
+ *  It used to read "Send to this Bitcoin address", which describes a
+ *  DEPOSIT. The field is the opposite: it is where the vault's coins are
+ *  sent OUT to. A reader who acts on the old wording sends money to an
+ *  address instead of away from one, and in a recovery kit the reader is
+ *  usually grieving, non-technical, and alone. */
+export const RECIPIENT_LABEL = "Where should the money go?";
+
+export const RECIPIENT_HINT =
+  "Paste an address from your own wallet. The Bitcoin in the vault will be sent there.";
+
+/** What the panel is currently telling the reader.
+ *
+ *  A union rather than two independent lines, so "it failed" and "it is
+ *  still working" cannot be on screen together. */
+export type KitFeedback =
+  | { kind: "idle" }
+  | { kind: "busy"; status: string }
+  | { kind: "info"; status: string }
+  | { kind: "error"; error: string };
+
+export function feedbackLines(f: KitFeedback): {
+  error: string | null;
+  status: string | null;
+  busy: boolean;
+} {
+  switch (f.kind) {
+    case "idle":
+      return { error: null, status: null, busy: false };
+    case "busy":
+      return { error: null, status: f.status, busy: true };
+    case "info":
+      return { error: null, status: f.status, busy: false };
+    case "error":
+      // The point of the whole exercise: an error clears the status and
+      // stops the progress bar.
+      return { error: f.error, status: null, busy: false };
+  }
+}
+
 export function buildSpendSection(params: SpendParams): HTMLElement {
   const isHeir = params.role === "heir";
   const section = el(`
@@ -74,7 +115,8 @@ export function buildSpendSection(params: SpendParams): HTMLElement {
       Bitcoin Core instead.`
       }</p>
       <div class="box">
-        <p class="muted" style="margin-top:0">Send to this Bitcoin address</p>
+        <p class="muted" style="margin-top:0">${RECIPIENT_LABEL}</p>
+        <p class="muted" style="margin-top:0;font-size:13px">${RECIPIENT_HINT}</p>
         <input data-to type="text" placeholder="bc1..." aria-label="Recipient address"
                style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;
                       border:1px solid #3a332a;background:#14110e;color:#ece5da;font-size:15px" />
@@ -122,10 +164,29 @@ export function buildSpendSection(params: SpendParams): HTMLElement {
 
   const explorerBase = () => explorerInput.value.trim().replace(/\/+$/, "");
 
-  function showError(msg: string) {
-    errLine.textContent = msg;
-    errLine.hidden = false;
+  /** The only way this panel talks to the reader.
+   *
+   *  It exists because the two lines used to be set independently, and
+   *  `showError` didn't touch the status line — so a failed lookup
+   *  rendered "Couldn't reach the explorer" directly above "Looking up
+   *  your addresses…", telling someone their money was both unreachable
+   *  and still being counted. For a page whose only reader is a person
+   *  trying to recover an inheritance, that is the worst possible
+   *  moment to be ambiguous.
+   *
+   *  Taking `KitFeedback` makes it unrepresentable: one call sets both
+   *  lines, and the type has no state carrying an error and a status at
+   *  once. */
+  function setFeedback(f: KitFeedback) {
+    const lines = feedbackLines(f);
+    errLine.textContent = lines.error ?? "";
+    errLine.hidden = lines.error === null;
+    statusLine.textContent = lines.status ?? "";
+    statusLine.hidden = lines.status === null;
+    busy.hidden = !lines.busy;
   }
+
+  const showError = (msg: string) => setFeedback({ kind: "error", error: msg });
 
   async function getJson<T>(url: string): Promise<T> {
     const r = await fetch(url);
@@ -134,7 +195,7 @@ export function buildSpendSection(params: SpendParams): HTMLElement {
   }
 
   async function onFind() {
-    errLine.hidden = true;
+    setFeedback({ kind: "idle" });
     out.textContent = "";
     signWrap.hidden = true;
     const base = explorerBase();
@@ -143,9 +204,7 @@ export function buildSpendSection(params: SpendParams): HTMLElement {
       return;
     }
     findBtn.disabled = true;
-    busy.hidden = false;
-    statusLine.hidden = false;
-    statusLine.textContent = "Looking up your addresses…";
+    setFeedback({ kind: "busy", status: "Looking up your addresses…" });
     try {
       const { external, internal } = await deriveAddresses(
         params.descriptorExternal,
@@ -170,8 +229,11 @@ export function buildSpendSection(params: SpendParams): HTMLElement {
 
       const confirmed = utxos.filter((u) => u.status.confirmed && u.status.block_height);
       if (confirmed.length === 0) {
-        statusLine.textContent =
-          "No confirmed coins found at this vault. If you just funded it, wait for a confirmation and try again.";
+        setFeedback({
+          kind: "info",
+          status:
+            "No confirmed coins found at this vault. If you just funded it, wait for a confirmation and try again.",
+        });
         return;
       }
 
@@ -188,12 +250,16 @@ export function buildSpendSection(params: SpendParams): HTMLElement {
       funding = fundingNext;
 
       const total = confirmed.reduce((s, u) => s + u.value, 0);
-      statusLine.textContent = `Found ${confirmed.length} coin(s) totalling ${total.toLocaleString()} sats. Enter a destination and sign.`;
+      setFeedback({
+        kind: "info",
+        status: `Found ${confirmed.length} coin(s) totalling ${total.toLocaleString()} sats. Now put your own wallet address at the top and sign.`,
+      });
       signWrap.hidden = false;
     } catch (e) {
       showError(`Couldn't reach the explorer. Check the address and your internet. (${(e as Error).message})`);
     } finally {
-      busy.hidden = true;
+      // `busy` is owned by setFeedback now, and every exit path above
+      // has called it. Only the button is re-enabled here.
       findBtn.disabled = false;
     }
   }
@@ -203,7 +269,7 @@ export function buildSpendSection(params: SpendParams): HTMLElement {
     out.textContent = "";
     const recipient = toInput.value.trim();
     if (!recipient) {
-      showError("Enter the address to send to.");
+      showError("Put the address of your own wallet at the top first.");
       return;
     }
     const fee = Math.max(1, Math.floor(Number(feeInput.value) || 1));
