@@ -66,6 +66,14 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc", "getrandom"] }
 hkdf  = "0.12"
 sha2  = "0.10"
+# Twilio signs its delivery webhooks with HMAC-SHA1; both crates are
+# already in the tree as transitive deps of the hashing stack.
+hmac  = "0.12"
+sha1  = "0.10"
+# Twilio posts its status callbacks as urlencoded forms; we parse the
+# raw body ourselves so the same map feeds the signature check and the
+# lookup. Already in the tree via `url`.
+form_urlencoded = "1"
 base64 = "0.22"
 subtle = "2"
 bech32 = "0.11"

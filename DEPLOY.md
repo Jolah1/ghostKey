@@ -633,19 +633,47 @@ documented at https://www.twilio.com/docs/whatsapp/sandbox.
 fly secrets set \
   TWILIO_ACCOUNT_SID="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
   TWILIO_AUTH_TOKEN="your-secret-token" \
-  TWILIO_SMS_FROM="+15551234567" \
+  TWILIO_SMS_FROM="+1XXXXXXXXXX" \
   TWILIO_WHATSAPP_FROM="+14155238886" \
   -a ghostkey
 ```
 
-All four are required together: setting some but not others puts the
-worker in a partial state and logs a loud warning. Set every
-`TWILIO_*` var or none.
+The **credentials** are all-or-nothing: a SID without a token (or the
+reverse) disables Twilio entirely and logs which one is missing. The
+**two senders are independent** — a working SMS number survives an
+unusable WhatsApp one, and vice versa.
 
-If `TWILIO_*` is unset, SMS and WhatsApp notifications stay queued
-(`status='pending'` in the `notifications` table) until a deployment
-with Twilio configured picks them up. A future deployment that adds
-Twilio will deliver the backlog automatically on its first tick.
+Each sender must be a real number provisioned on your account. Both
+are validated at boot for E.164 shape and against the reserved NANP
+555 ranges; a sender that fails disables **that channel only**, and
+`/health` reports it as unavailable rather than pretending. This is
+not paranoia: Twilio accepts a WhatsApp send from an unknown `From`
+with `201 queued` and only fails it asynchronously (error 63007), so
+a placeholder looks like it works forever.
+
+If a channel has no usable sender, its notifications **fail** with a
+`last_error` naming the reason. They do not sit pending waiting for a
+future deployment — that was a silent black hole, and a heir went
+unreached for five days because of it.
+
+##### Delivery callbacks
+
+Every SMS/WhatsApp send carries a `StatusCallback` pointing at
+`$GHOSTKEY_PUBLIC_BASE_URL/webhooks/twilio/status`, and Twilio POSTs
+each status transition back. **No configuration needed** — no Twilio
+console setup, no extra secret. The callback authenticates itself with
+Twilio's HMAC-SHA1 request signature over your existing auth token.
+
+The callback is only attached when `GHOSTKEY_PUBLIC_BASE_URL` is
+`https://`, since Twilio has to reach it from the public internet. On
+a local or plain-http deployment sends still work; you just get no
+delivery verdicts.
+
+Watch `notifications_undelivered` on `/health`. It counts messages a
+provider **accepted and then refused** — those rows still read
+`status='sent'`, so `notifications_failed` will not show them, and
+they are the worse failure because the owner was told the message went
+out. Any non-zero value means somebody was not reached.
 
 #### Web push (browser reminders)
 

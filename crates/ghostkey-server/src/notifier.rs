@@ -555,8 +555,10 @@ pub enum EnqueueError {
 
 /// Outcome of a single worker iteration on a single row.
 enum WorkerOutcome {
-    /// Successfully delivered.
-    Sent,
+    /// Handed off to the provider, which is NOT the same as delivered.
+    /// Carries the provider's id for the message (Twilio Message SID,
+    /// SMTP queue reply) so a later delivery callback can find the row.
+    Sent(Option<String>),
     /// Transient failure -- the row was re-scheduled.
     Retry,
     /// Final failure -- attempts exhausted.
@@ -785,7 +787,7 @@ async fn tick_once(pool: &SqlitePool, backends: Arc<Backends>) -> anyhow::Result
                 mark_permanent(pool, id, reason).await?;
                 WorkerOutcome::Skip
             }
-            Some(Ok(())) => WorkerOutcome::Sent,
+            Some(Ok(provider_id)) => WorkerOutcome::Sent(provider_id),
             Some(Err(e)) => {
                 // Two separate reasons to stop: the error can never
                 // succeed on retry (#313), or we've spent the budget.
@@ -809,15 +811,29 @@ async fn tick_once(pool: &SqlitePool, backends: Arc<Backends>) -> anyhow::Result
             }
         };
 
-        if matches!(outcome, WorkerOutcome::Sent) {
+        if let WorkerOutcome::Sent(provider_id) = &outcome {
+            // `sent` means the provider took it, nothing more. The
+            // delivery verdict arrives later on the status webhook and
+            // lands in `delivery_status` (#311).
             sqlx::query(
-                "UPDATE notifications SET status = 'sent', sent_at = ?, attempts = attempts + 1 WHERE id = ?",
+                "UPDATE notifications
+                    SET status = 'sent', sent_at = ?, attempts = attempts + 1,
+                        provider_message_id = ?
+                  WHERE id = ?",
             )
             .bind(&now_s)
+            .bind(provider_id.as_deref())
             .bind(id)
             .execute(pool)
             .await?;
-            tracing::info!(notif_id = id, vault_id = %vault_id, kind = %kind, channel = ?channel, "notification sent");
+            tracing::info!(
+                notif_id = id,
+                vault_id = %vault_id,
+                kind = %kind,
+                channel = ?channel,
+                provider_message_id = provider_id.as_deref().unwrap_or("-"),
+                "notification handed to provider"
+            );
         }
     }
     Ok(())
@@ -828,7 +844,9 @@ async fn tick_once(pool: &SqlitePool, backends: Arc<Backends>) -> anyhow::Result
 /// Return values:
 ///   - `None`: no backend configured for this channel; the caller
 ///     fails the row with a clear error (#278).
-///   - `Some(Ok)`: delivered. Caller flips to `sent`.
+///   - `Some(Ok(id))`: handed off. Caller flips to `sent` and records
+///     the provider's id, which a later delivery callback matches on.
+///     Handoff is NOT delivery — see `delivery_status` (#311).
 ///   - `Some(Err)`: backend rejected or timed out. Caller decides
 ///     retry vs. permanent.
 ///
@@ -840,7 +858,7 @@ async fn dispatch_send(
     channel: Channel,
     vault_id: &str,
     draft: &DraftPayload,
-) -> Option<Result<(), SendError>> {
+) -> Option<Result<Option<String>, SendError>> {
     // Each arm awaits a different `async fn`, which produces a
     // different opaque future type. We resolve each future to a
     // `Result` inside its own arm and only THEN wrap in Some/None,
@@ -861,7 +879,13 @@ async fn dispatch_send(
         }
         Channel::WebPush => {
             let cfg = backends.vapid.as_ref()?;
-            Some(send_webpush(pool, &backends.http, cfg, vault_id, draft).await)
+            // Push is a fan-out over many endpoints, so there is no
+            // single provider id to record.
+            Some(
+                send_webpush(pool, &backends.http, cfg, vault_id, draft)
+                    .await
+                    .map(|()| None),
+            )
         }
     }
 }
@@ -1042,7 +1066,11 @@ fn decrypt_draft(
 
 /// Build + send one email. Synchronous from the worker's point of
 /// view (we await it; the underlying transport is tokio).
-async fn send_email(cfg: &SmtpConfig, draft: &DraftPayload) -> Result<(), SendError> {
+/// Returns the SMTP server's reply to DATA. Resend and most relays put
+/// a queue id in there, and it is the only correlation handle an SMTP
+/// send gives us — worth keeping so an operator can quote it to the
+/// provider when a message never lands.
+async fn send_email(cfg: &SmtpConfig, draft: &DraftPayload) -> Result<Option<String>, SendError> {
     let from = cfg
         .from
         .parse()
@@ -1078,7 +1106,7 @@ async fn send_email(cfg: &SmtpConfig, draft: &DraftPayload) -> Result<(), SendEr
         builder = builder.credentials(Credentials::new(u.to_string(), p.to_string()));
     }
     let mailer = builder.build();
-    mailer.send(msg).await.map_err(|e| {
+    let response = mailer.send(msg).await.map_err(|e| {
         // Keep lettre's own verdict instead of re-deriving one from the
         // formatted string. `is_permanent` is a 5xx reply; everything
         // else (4xx, TLS, timeouts, connection failures) keeps its
@@ -1093,7 +1121,8 @@ async fn send_email(cfg: &SmtpConfig, draft: &DraftPayload) -> Result<(), SendEr
             permanent,
         }
     })?;
-    Ok(())
+    let reply = response.message().collect::<Vec<_>>().join(" ");
+    Ok(Some(reply.trim().to_string()).filter(|r| !r.is_empty()))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1187,7 +1216,7 @@ async fn send_twilio(
     cfg: &TwilioConfig,
     channel: Channel,
     draft: &DraftPayload,
-) -> Result<(), SendError> {
+) -> Result<Option<String>, SendError> {
     // Build the per-channel From/To shapes. WhatsApp on Twilio needs
     // the `whatsapp:` URI scheme on both sides; SMS uses bare E.164.
     let sender = match channel {
@@ -1235,11 +1264,22 @@ async fn send_twilio(
             permanent: true,
         })?;
 
-    let form = [
+    // Ask Twilio what actually happened. Without this its `201 queued`
+    // is the last we ever hear, and an async failure (63007 unknown
+    // sender, 63016 outside the WhatsApp session window, 30034
+    // unregistered 10DLC) never reaches us (#311).
+    //
+    // Only when the callback URL is one Twilio can reach: a localhost
+    // base would put a parameter on every send that can never fire.
+    let callback = status_callback_url();
+    let mut form = vec![
         ("From", from.as_str()),
         ("To", to.as_str()),
         ("Body", draft.body.as_str()),
     ];
+    if let Some(cb) = callback.as_deref() {
+        form.push(("StatusCallback", cb));
+    }
 
     let resp = client
         .post(&url)
@@ -1266,7 +1306,39 @@ async fn send_twilio(
             permanent: twilio_status_is_permanent(status),
         });
     }
-    Ok(())
+
+    // The Message SID is how a later status callback finds this row. A
+    // body we can't parse is not worth failing a successful send over —
+    // we lose the correlation, not the message.
+    let body = resp.text().await.unwrap_or_default();
+    let sid = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| {
+            v.get("sid")
+                .and_then(|s| s.as_str())
+                .map(str::to_string)
+                .filter(|s| !s.is_empty())
+        });
+    if sid.is_none() {
+        tracing::warn!(
+            "twilio accepted the send but returned no sid; its delivery status will be unlinkable"
+        );
+    }
+    Ok(sid)
+}
+
+/// Public URL Twilio should POST delivery updates to, or `None` when
+/// this deployment has no reachable one. Twilio fetches it from the
+/// public internet, so anything but https is worse than useless.
+pub(crate) fn status_callback_url() -> Option<String> {
+    let base = crate::scheduler::public_base_url();
+    if !base.starts_with("https://") {
+        return None;
+    }
+    Some(format!(
+        "{}/webhooks/twilio/status",
+        base.trim_end_matches('/')
+    ))
 }
 
 /* -------------------------------------------------------------------------- *
