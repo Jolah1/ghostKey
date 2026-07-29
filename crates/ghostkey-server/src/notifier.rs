@@ -773,7 +773,7 @@ async fn tick_once(pool: &SqlitePool, backends: Arc<Backends>) -> anyhow::Result
         // told the owner the message went out, and no operator signal
         // ever fired. Fail it loudly instead — if the backend is
         // configured later, the sender can re-enqueue.
-        let dispatch = dispatch_send(pool, &backends, channel, &vault_id, &draft).await;
+        let dispatch = dispatch_send(pool, &backends, channel, id, &vault_id, &draft).await;
         let outcome = match dispatch {
             None => {
                 let reason = undeliverable_reason(channel);
@@ -856,6 +856,7 @@ async fn dispatch_send(
     pool: &SqlitePool,
     backends: &Backends,
     channel: Channel,
+    notif_id: i64,
     vault_id: &str,
     draft: &DraftPayload,
 ) -> Option<Result<Option<String>, SendError>> {
@@ -866,7 +867,7 @@ async fn dispatch_send(
     match channel {
         Channel::Email => {
             let cfg = backends.smtp.as_ref()?;
-            Some(send_email(cfg, draft).await)
+            Some(send_email(cfg, notif_id, draft).await)
         }
         Channel::Sms | Channel::Whatsapp => {
             let cfg = backends.twilio.as_ref()?;
@@ -1064,13 +1065,64 @@ fn decrypt_draft(
     })
 }
 
+/// The domain to hang a Message-ID off, taken from the configured
+/// `From`. Falls back to a literal so a malformed `From` can't make
+/// message id generation fail — the send will fail on its own merits a
+/// few lines later, with a better error.
+fn message_id_domain(from: &str) -> String {
+    from.rsplit_once('@')
+        .map(|(_, rest)| rest.trim_end_matches('>').trim().to_string())
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| "ghostkey.invalid".to_string())
+}
+
+/// A stable RFC 5322 Message-ID for one notification row.
+///
+/// This is the correlation handle for email delivery feedback (#322).
+/// We send over SMTP, so the provider gives us no id at handoff — but
+/// Resend echoes the Message-ID back on every `email.*` webhook, so if
+/// we choose it ourselves we can match a bounce to the row that caused
+/// it. The alternative was searching by recipient, and recipients are
+/// sealed with a random nonce, so they are not searchable at all.
+///
+/// Two properties matter:
+///
+///   - **Stable across retries.** Derived from the row id, so attempt
+///     six carries the same id as attempt one and a late webhook still
+///     finds its row. No extra column, nothing to keep in sync.
+///   - **Opaque.** It is an HMAC under the master key rather than the
+///     row id in the clear. Message-IDs are visible to every recipient
+///     and every relay in the path; a bare counter would leak how many
+///     notifications this deployment has ever sent.
+///
+/// Not a secret and not a capability — forging one buys nothing, since
+/// the webhook is authenticated by its Svix signature and this only
+/// selects which row a verified event applies to.
+fn message_id_for(notif_id: i64, domain: &str) -> Result<String, SendError> {
+    use hmac::{Mac, SimpleHmac};
+    let key = crate::crypto::master_key_bytes()
+        .map_err(|e| SendError::Build(format!("master key: {e}")))?;
+    let mut mac = SimpleHmac::<sha2::Sha256>::new_from_slice(&key)
+        .map_err(|e| SendError::Build(format!("hmac: {e}")))?;
+    mac.update(b"ghostkey/notification-message-id/v1");
+    mac.update(&notif_id.to_be_bytes());
+    let tag = hex::encode(&mac.finalize().into_bytes()[..16]);
+    Ok(format!("<gk-{tag}@{domain}>"))
+}
+
 /// Build + send one email. Synchronous from the worker's point of
 /// view (we await it; the underlying transport is tokio).
-/// Returns the SMTP server's reply to DATA. Resend and most relays put
-/// a queue id in there, and it is the only correlation handle an SMTP
-/// send gives us — worth keeping so an operator can quote it to the
-/// provider when a message never lands.
-async fn send_email(cfg: &SmtpConfig, draft: &DraftPayload) -> Result<Option<String>, SendError> {
+///
+/// Returns the Message-ID we set, NOT the SMTP reply. The reply text
+/// was a guess: relays put *something* queue-shaped in there, but
+/// nothing says it matches what the provider later reports a bounce
+/// against. The Message-ID does, because we control both ends of it.
+/// The reply is still logged for an operator to quote at support.
+async fn send_email(
+    cfg: &SmtpConfig,
+    notif_id: i64,
+    draft: &DraftPayload,
+) -> Result<Option<String>, SendError> {
     let from = cfg
         .from
         .parse()
@@ -1080,10 +1132,21 @@ async fn send_email(cfg: &SmtpConfig, draft: &DraftPayload) -> Result<Option<Str
         .parse()
         .map_err(|e| SendError::Build(format!("to: {e}")))?;
 
+    let message_id = message_id_for(notif_id, &message_id_domain(&cfg.from))?;
+
     let msg = Message::builder()
         .from(from)
         .to(to)
         .subject(&draft.subject)
+        // Ours, not lettre's generated one, so a delivery webhook can
+        // be matched back to this row. Lettre wants the id without the
+        // angle brackets and adds them itself.
+        .message_id(Some(
+            message_id
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_string(),
+        ))
         .header(header::ContentType::TEXT_PLAIN)
         .body(draft.body.clone())
         .map_err(|e| SendError::Build(format!("msg: {e}")))?;
@@ -1122,7 +1185,13 @@ async fn send_email(cfg: &SmtpConfig, draft: &DraftPayload) -> Result<Option<Str
         }
     })?;
     let reply = response.message().collect::<Vec<_>>().join(" ");
-    Ok(Some(reply.trim().to_string()).filter(|r| !r.is_empty()))
+    tracing::debug!(
+        notif_id,
+        message_id = %message_id,
+        smtp_reply = %reply.trim(),
+        "email handed to the relay"
+    );
+    Ok(Some(message_id))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -2277,5 +2346,79 @@ mod tests {
         ] {
             assert!(!twilio_status_is_permanent(s), "{s} should be retryable");
         }
+    }
+
+    /* ---------------- email correlation (#322) ---------------- */
+
+    fn test_master_key() {
+        if std::env::var("GHOSTKEY_MASTER_KEY").is_err() {
+            use base64::Engine as _;
+            let b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode([7u8; 32]);
+            // SAFETY: tests are single-process; the value is fixed.
+            unsafe { std::env::set_var("GHOSTKEY_MASTER_KEY", &b64) };
+        }
+        let _ = crate::crypto::ensure_master_key_loaded();
+    }
+
+    /// The retry case, which is the whole reason this is derived
+    /// rather than random: attempt six must carry the same Message-ID
+    /// as attempt one, or a bounce webhook for the earlier attempt
+    /// finds nothing and the failure stays invisible.
+    #[test]
+    fn a_message_id_is_stable_for_a_row() {
+        test_master_key();
+        let a = message_id_for(42, "ghostkeyapp.com").expect("id");
+        let b = message_id_for(42, "ghostkeyapp.com").expect("id");
+        assert_eq!(a, b, "the same row must always produce the same id");
+    }
+
+    /// Different rows must not collide, or one bounce marks the wrong
+    /// notification undelivered.
+    #[test]
+    fn message_ids_are_distinct_per_row() {
+        test_master_key();
+        let ids: std::collections::BTreeSet<String> = (1..200i64)
+            .map(|i| message_id_for(i, "ghostkeyapp.com").expect("id"))
+            .collect();
+        assert_eq!(ids.len(), 199);
+    }
+
+    /// RFC 5322 shape, and opaque. A bare row id in the header would
+    /// tell every recipient and every relay how many notifications
+    /// this deployment has ever sent.
+    #[test]
+    fn a_message_id_is_well_formed_and_leaks_no_counter() {
+        test_master_key();
+        let id = message_id_for(7, "ghostkeyapp.com").expect("id");
+        assert!(id.starts_with("<gk-"), "{id}");
+        assert!(id.ends_with("@ghostkeyapp.com>"), "{id}");
+        assert!(!id.contains("-7@"), "the row id must not appear: {id}");
+        let tag = id
+            .trim_start_matches("<gk-")
+            .split('@')
+            .next()
+            .expect("tag");
+        assert_eq!(tag.len(), 32, "128-bit tag: {id}");
+        assert!(tag.chars().all(|c| c.is_ascii_hexdigit()), "{id}");
+    }
+
+    /// The domain comes off the configured From, in the shapes a From
+    /// actually takes.
+    #[test]
+    fn message_id_domain_is_taken_from_the_sender() {
+        assert_eq!(
+            message_id_domain("noreply@ghostkeyapp.com"),
+            "ghostkeyapp.com"
+        );
+        assert_eq!(
+            message_id_domain("GhostKey <noreply@ghostkeyapp.com>"),
+            "ghostkeyapp.com"
+        );
+        // Never panics or returns empty, whatever is configured: the
+        // send fails on its own merits a few lines later with a better
+        // error than "could not build a message id".
+        assert_eq!(message_id_domain("nonsense"), "ghostkey.invalid");
+        assert_eq!(message_id_domain(""), "ghostkey.invalid");
+        assert_eq!(message_id_domain("a@"), "ghostkey.invalid");
     }
 }

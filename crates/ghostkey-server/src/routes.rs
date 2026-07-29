@@ -258,6 +258,12 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
             "/webhooks/twilio/status",
             post(crate::delivery::twilio_status_webhook),
         )
+        // The email half (#322). Same shape, different provider:
+        // authentication is the Svix signature over the raw body, so
+        // the handler takes the body as a String and parses it itself.
+        // Unset RESEND_WEBHOOK_SECRET means 404, never an unsigned
+        // fallback.
+        .route("/webhooks/resend", post(crate::resend::resend_webhook))
         .route("/vaults", get(list_vaults))
         // Operator-only read endpoints (AdminAuth-gated; closed unless
         // GHOSTKEY_ADMIN_TOKEN_HASH is set). See admin.rs.
