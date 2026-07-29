@@ -153,6 +153,14 @@ pub enum NotificationKind {
     /// a short-lived, single-use recovery challenge; no vault metadata
     /// is returned until that challenge is redeemed.
     OwnerRecovery,
+    /// Owner-side, when a message to the HEIR came back with a negative
+    /// verdict (#327): "we could not reach the person you named."
+    ///
+    /// Fired from [`crate::delivery`] on the shared inbound path, so it
+    /// covers both providers. `vaults.heir_unreachable_alerted_at` makes
+    /// it at most once per address, and that column is cleared when the
+    /// address changes or when something is actually delivered to it.
+    HeirUnreachable,
 }
 
 impl NotificationKind {
@@ -173,6 +181,7 @@ impl NotificationKind {
             NotificationKind::Received => "received",
             NotificationKind::OwnerSend => "owner_send",
             NotificationKind::OwnerRecovery => "owner_recovery",
+            NotificationKind::HeirUnreachable => "heir_unreachable",
         }
     }
 }

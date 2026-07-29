@@ -2749,12 +2749,15 @@ async fn update_vault_heir(
                   heir_contact_nonce = ?,
                   heir_contact_channel = ?,
                   heir_contact_verified_at = CASE WHEN ?
-                      THEN NULL ELSE heir_contact_verified_at END
+                      THEN NULL ELSE heir_contact_verified_at END,
+                  heir_unreachable_alerted_at = CASE WHEN ?
+                      THEN NULL ELSE heir_unreachable_alerted_at END
             WHERE id = ?"#,
     )
     .bind(&sealed.ciphertext_b64)
     .bind(&sealed.nonce_b64)
     .bind(&req.channel)
+    .bind(contact_changed)
     .bind(contact_changed)
     .bind(&id)
     .execute(&state.db)
