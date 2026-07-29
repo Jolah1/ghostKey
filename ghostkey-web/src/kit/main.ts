@@ -363,12 +363,13 @@ function render() {
     el(`
     <div>
       <h2>Just want to check the money is there?</h2>
-      <p class="muted">No password needed. The easy way: open a block
-      explorer like mempool.space and search for the deposit address you
-      funded. You'll see the balance and every payment, with GhostKey
-      nowhere in the loop. One caveat: a public explorer can see which
-      address you looked up. To check privately, watch the vault in your
-      own Bitcoin Core (see the expert section just below).</p>
+      <p class="muted">No password needed. The easy way: open
+      blockstream.info or mempool.space and search for the deposit address
+      you funded. You'll see the balance and every payment, with GhostKey
+      nowhere in the loop. If one of those sites won't load for you, try
+      the other. One caveat: whichever you use can see which address you
+      looked up. To check privately, watch the vault in your own Bitcoin
+      Core (see the expert section just below).</p>
     </div>
   `),
   );

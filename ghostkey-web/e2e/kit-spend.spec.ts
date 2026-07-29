@@ -195,9 +195,13 @@ test("owner kit: unlock, find coins, sign in wasm, broadcast", async ({
   await page.getByRole("button", { name: "Unlock" }).click();
 
   // The spend panel appears only after a successful unlock + xprv splice.
-  const explorer = page.locator("[data-explorer]");
-  await expect(explorer).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator("[data-find]")).toBeVisible({ timeout: 30_000 });
 
+  // The explorer field lives under a collapsed "settings" section now, so
+  // a reader never meets it unless they need it. Open it to point this
+  // test at the mock Esplora.
+  await page.locator("[data-advanced] summary").click();
+  const explorer = page.locator("[data-explorer]");
   await explorer.fill(`${baseUrl}/api`);
   await page.locator("[data-to]").fill(fixture.recipient);
 
@@ -225,4 +229,45 @@ test("owner kit: unlock, find coins, sign in wasm, broadcast", async ({
   expect(tx.slice(8, 12)).toBe("0001");
   // It must be a different tx than the unsigned funding input.
   expect(tx).not.toBe(fixture.funding[0].tx_hex);
+});
+
+/** The failure path, which is the one a stranded reader actually meets.
+ *
+ *  An owner hit "Couldn't reach the explorer" against a real vault and
+ *  could not spend until they replaced the host by hand. The fields that
+ *  let them do that now live in a collapsed section, so the kit has to
+ *  open it for them: a message telling someone to look under a heading
+ *  they have never seen is only marginally better than silence. Port 1 on
+ *  loopback refuses instantly, so this stays hermetic and fast. */
+test("a dead lookup service opens the settings and names them", async ({ page }) => {
+  await page.goto(`${baseUrl}/`);
+  await page.fill('input[type="password"]', PASSWORD);
+  await page.getByRole("button", { name: "Unlock" }).click();
+
+  await expect(page.locator("[data-find]")).toBeVisible({ timeout: 30_000 });
+
+  const advanced = page.locator("[data-advanced]");
+  const explorer = page.locator("[data-explorer]");
+  // Collapsed by default: nobody should have to meet these to spend.
+  await expect(advanced).not.toHaveAttribute("open", /.*/);
+  await expect(explorer).toBeHidden();
+
+  await advanced.locator("summary").click();
+  await explorer.fill("http://127.0.0.1:1/api");
+  await advanced.locator("summary").click();
+  await expect(explorer).toBeHidden();
+  await page.locator("[data-find]").click();
+
+  const err = page.locator("[data-err]");
+  await expect(err).toBeVisible({ timeout: 30_000 });
+  // Named the wrong culprit before: a refused connection is the
+  // connection here, not the vault and not the address.
+  await expect(err).toContainText("never left this device");
+  await expect(err).toContainText("Settings most people don't need");
+  // And the section it names is now open, with the field in reach.
+  await expect(advanced).toHaveAttribute("open", /.*/);
+  await expect(explorer).toBeVisible();
+  // No half-finished progress claim underneath the error.
+  await expect(page.locator("[data-status]")).toBeHidden();
+  await expect(page.locator("[data-busy]")).toBeHidden();
 });

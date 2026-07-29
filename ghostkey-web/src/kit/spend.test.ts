@@ -8,12 +8,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ADVANCED_LABEL,
   EXPLORER_DISCLOSURE,
+  EXPLORER_OWN_NODE_HINT,
   RECIPIENT_HINT,
   RECIPIENT_LABEL,
   classifyStatus,
   explorerCandidates,
   explorerFailureMessage,
+  explorerTxUrl,
   feedbackLines,
   pickExplorer,
   scanFailureMessage,
@@ -87,9 +90,11 @@ describe("choosing a block explorer", () => {
   it("tries several mainnet mirrors, not one", () => {
     // The owner who reported this could not reach mempool.space "most
     // times", and one unreachable host stood between them and a vault.
-    const list = explorerCandidates("bitcoin", "https://mempool.space/api");
+    const list = explorerCandidates("bitcoin", "");
     expect(list.length).toBeGreaterThan(1);
-    expect(list[0]).toBe("https://mempool.space/api");
+    // blockstream leads because it is the one that actually answered for
+    // the owner who was stuck, and moved real money.
+    expect(list[0]).toBe("https://blockstream.info/api");
     expect(new Set(list).size).toBe(list.length);
     for (const url of list) expect(url.startsWith("https://")).toBe(true);
   });
@@ -104,9 +109,27 @@ describe("choosing a block explorer", () => {
   });
 
   it("ignores a trailing slash rather than treating it as a new host", () => {
-    expect(explorerCandidates("bitcoin", "https://mempool.space/api/")).toEqual(
-      explorerCandidates("bitcoin", "https://mempool.space/api"),
+    expect(explorerCandidates("bitcoin", "https://blockstream.info/api/")).toEqual(
+      explorerCandidates("bitcoin", "https://blockstream.info/api"),
     );
+  });
+
+  it("keeps the fallback when the reader picks one of OUR public hosts", () => {
+    // This is the case that stranded the owner: they typed a public
+    // mirror by hand because the default was failing. Dropping the
+    // fallback there would punish exactly the person already in trouble.
+    // Nothing new is disclosed, since every host tried is one this kit
+    // would have contacted anyway.
+    const list = explorerCandidates("bitcoin", "https://mempool.space/api");
+    expect(list[0]).toBe("https://mempool.space/api");
+    expect(list.length).toBeGreaterThan(1);
+    expect(list).toContain("https://blockstream.info/api");
+    expect(new Set(list).size).toBe(list.length);
+  });
+
+  it("still uses a host of the reader's OWN alone", () => {
+    const list = explorerCandidates("bitcoin", "https://my-node.local/api");
+    expect(list).toEqual(["https://my-node.local/api"]);
   });
 
   it("has nothing to offer on regtest, so the reader is asked", () => {
@@ -229,12 +252,81 @@ describe("scanFailureMessage", () => {
 });
 
 describe("the explorer disclosure", () => {
-  it("says plainly what an explorer learns", () => {
+  it("says plainly what an outside service learns, in words with no jargon", () => {
     // The server refuses to use a public indexer on mainnet for exactly
     // this reason. The kit does it anyway so an heir is not stranded, and
     // that trade is only defensible if it is stated.
     const d = EXPLORER_DISCLOSURE.toLowerCase();
     expect(d).toContain("addresses");
-    expect(d).toContain("your own");
+    expect(d).toContain("balance");
+    // It stays OUTSIDE the collapsed section, so it must not read as an
+    // instruction about a field the reader cannot see.
+    expect(d).not.toContain("here");
+    for (const jargon of ["api", "esplora", "explorer"]) expect(d).not.toContain(jargon);
+  });
+
+  it("keeps the run-your-own-node advice next to the field it refers to", () => {
+    expect(EXPLORER_OWN_NODE_HINT.toLowerCase()).toContain("your own");
+  });
+});
+
+describe("hiding the technical fields", () => {
+  it("labels the collapsed section as skippable, without jargon", () => {
+    // The reader asked the real question: how would a non-technical
+    // person know any of this? They should not have to. The kit walks a
+    // list of hosts by itself, so the field only matters when that fails.
+    const l = ADVANCED_LABEL.toLowerCase();
+    for (const jargon of ["api", "explorer", "esplora", "endpoint", "url"]) {
+      expect(l).not.toContain(jargon);
+    }
+  });
+
+  it("points failures at that exact label, so the two cannot drift", () => {
+    const unreachable = explorerFailureMessage([
+      { url: "https://a/api", reason: "Failed to fetch", reachable: false },
+    ]);
+    const answered = explorerFailureMessage([
+      { url: "https://a/api", reason: "error 400", reachable: true },
+    ]);
+    for (const msg of [unreachable, answered, explorerFailureMessage([])]) {
+      expect(msg).toContain(ADVANCED_LABEL);
+    }
+  });
+});
+
+describe("explorerTxUrl", () => {
+  const TXID = "2815f3dd" + "a".repeat(56);
+
+  it("turns the API address into a page a person can open", () => {
+    expect(explorerTxUrl("https://blockstream.info/api", TXID)).toBe(
+      `https://blockstream.info/tx/${TXID}`,
+    );
+    expect(explorerTxUrl("https://mempool.space/api", TXID)).toBe(
+      `https://mempool.space/tx/${TXID}`,
+    );
+  });
+
+  it("keeps a network path segment, which is the whole address on signet", () => {
+    expect(explorerTxUrl("https://mempool.space/signet/api", TXID)).toBe(
+      `https://mempool.space/signet/tx/${TXID}`,
+    );
+  });
+
+  it("works for a self-hosted Esplora, trailing slash and all", () => {
+    expect(explorerTxUrl("https://my-node.local/api/", TXID)).toBe(
+      `https://my-node.local/tx/${TXID}`,
+    );
+  });
+
+  it("returns nothing rather than inventing a link that 404s", () => {
+    // Better a bare id the reader can paste than a confident link to a
+    // page that does not exist, at the moment they most need to confirm
+    // their money arrived.
+    expect(explorerTxUrl("https://odd-host.example/rest/v1", TXID)).toBeNull();
+    expect(explorerTxUrl("not a url", TXID)).toBeNull();
+    expect(explorerTxUrl("https://blockstream.info/api", "nonsense")).toBeNull();
+    expect(explorerTxUrl("https://blockstream.info/api", "")).toBeNull();
+    // No javascript: or data: smuggled in through the explorer field.
+    expect(explorerTxUrl("javascript:alert(1)/api", TXID)).toBeNull();
   });
 });
