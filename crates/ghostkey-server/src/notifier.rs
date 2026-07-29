@@ -787,14 +787,18 @@ async fn tick_once(pool: &SqlitePool, backends: Arc<Backends>) -> anyhow::Result
             }
             Some(Ok(())) => WorkerOutcome::Sent,
             Some(Err(e)) => {
+                // Two separate reasons to stop: the error can never
+                // succeed on retry (#313), or we've spent the budget.
+                let permanent = e.is_permanent();
                 tracing::warn!(
                     notif_id = id,
                     kind = %kind,
                     channel = ?channel,
                     error = %e,
+                    permanent,
                     "send failed"
                 );
-                if attempts + 1 >= MAX_ATTEMPTS {
+                if permanent || attempts + 1 >= MAX_ATTEMPTS {
                     mark_permanent(pool, id, &format!("{e}")).await?;
                     WorkerOutcome::Permanent
                 } else {
@@ -970,9 +974,18 @@ async fn reschedule(
     Ok(())
 }
 
+/// Terminal failure. Increments `attempts` in the same statement.
+///
+/// It used to leave `attempts` alone, so the row that exhausted the
+/// budget recorded one fewer attempt than actually happened — a send
+/// that tried six times read `attempts=5`, which made the retry
+/// behaviour impossible to audit from the table (#313). Incrementing in
+/// SQL rather than binding a computed value keeps it atomic.
 async fn mark_permanent(pool: &SqlitePool, id: i64, err: &str) -> sqlx::Result<()> {
     sqlx::query(
-        "UPDATE notifications SET status = 'failed_permanent', last_error = ? WHERE id = ?",
+        "UPDATE notifications
+            SET status = 'failed_permanent', attempts = attempts + 1, last_error = ?
+          WHERE id = ?",
     )
     .bind(err)
     .bind(id)
@@ -1065,27 +1078,81 @@ async fn send_email(cfg: &SmtpConfig, draft: &DraftPayload) -> Result<(), SendEr
         builder = builder.credentials(Credentials::new(u.to_string(), p.to_string()));
     }
     let mailer = builder.build();
-    mailer
-        .send(msg)
-        .await
-        .map_err(|e| SendError::Smtp(format!("{e}")))?;
+    mailer.send(msg).await.map_err(|e| {
+        // Keep lettre's own verdict instead of re-deriving one from the
+        // formatted string. `is_permanent` is a 5xx reply; everything
+        // else (4xx, TLS, timeouts, connection failures) keeps its
+        // retry budget.
+        let permanent = e.is_permanent();
+        let code = e
+            .status()
+            .map(|c| format!(" (code {c})"))
+            .unwrap_or_default();
+        SendError::Smtp {
+            msg: format!("{e}{code}"),
+            permanent,
+        }
+    })?;
     Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]
 enum SendError {
+    /// Building the message failed: an unparseable From/To, a body the
+    /// MIME builder rejected. Deterministic — the same inputs fail the
+    /// same way forever, so retrying only burns the budget.
     #[error("smtp build: {0}")]
     Build(String),
-    #[error("smtp: {0}")]
-    Smtp(String),
+    /// SMTP transport error. `permanent` comes from lettre's own
+    /// classification (`Error::is_permanent`, i.e. a 5xx reply) rather
+    /// than from parsing the message text.
+    #[error("smtp: {msg}")]
+    Smtp { msg: String, permanent: bool },
     /// Twilio HTTP error or non-2xx response. Carries the body
     /// snippet so the operator can read the API's complaint.
-    #[error("twilio: {0}")]
-    Twilio(String),
+    #[error("twilio: {msg}")]
+    Twilio { msg: String, permanent: bool },
     /// Web push fan-out failed for every (non-pruned) subscription.
-    /// Carries the last per-endpoint error.
+    /// Carries the last per-endpoint error. Always retryable: the fan-out
+    /// already prunes subscriptions the push service rejects outright, so
+    /// what reaches here is a whole-fan-out failure, which is usually the
+    /// push service being unreachable.
     #[error("webpush: {0}")]
     WebPush(String),
+}
+
+impl SendError {
+    /// Whether retrying this send could ever succeed.
+    ///
+    /// A permanent error goes straight to `failed_permanent` on the
+    /// first attempt instead of consuming all six (#313). Re-sending to
+    /// an address the receiving server has already refused is what puts
+    /// addresses on a provider's suppression list and dings the sending
+    /// domain's reputation — and every real alarm and claim link goes
+    /// out on that domain.
+    fn is_permanent(&self) -> bool {
+        match self {
+            SendError::Build(_) => true,
+            SendError::Smtp { permanent, .. } | SendError::Twilio { permanent, .. } => *permanent,
+            SendError::WebPush(_) => false,
+        }
+    }
+}
+
+/// Classify a Twilio HTTP response status.
+///
+/// 4xx means Twilio understood us and refused: an invalid number
+/// (21211), an unregistered 10DLC sender (30034), bad credentials. None
+/// of those fix themselves on retry. The exceptions are 429 (rate
+/// limited) and 408 (request timeout), which are explicitly "try again".
+/// 5xx is Twilio having a bad day, so keep the budget for it.
+fn twilio_status_is_permanent(status: reqwest::StatusCode) -> bool {
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status == reqwest::StatusCode::REQUEST_TIMEOUT
+    {
+        return false;
+    }
+    status.is_client_error()
 }
 
 /// Deliver a Draft via Twilio's Programmable Messaging API.
@@ -1124,18 +1191,23 @@ async fn send_twilio(
     // Build the per-channel From/To shapes. WhatsApp on Twilio needs
     // the `whatsapp:` URI scheme on both sides; SMS uses bare E.164.
     let sender = match channel {
-        Channel::Sms | Channel::Whatsapp => cfg
-            .sender_for(channel)
-            .ok_or_else(|| SendError::Twilio(format!("no usable Twilio sender for {channel:?}")))?,
+        Channel::Sms | Channel::Whatsapp => {
+            cfg.sender_for(channel).ok_or_else(|| SendError::Twilio {
+                msg: format!("no usable Twilio sender for {channel:?}"),
+                // A missing sender is deployment config, not weather.
+                permanent: true,
+            })?
+        }
         Channel::Email | Channel::WebPush => {
             // Defensive: send_twilio should only ever be called for
             // sms/whatsapp. If a caller routes Email or WebPush here
             // it's a bug; surface it loudly rather than silently
             // sending the body over SMS to a recipient that isn't a
             // phone number.
-            return Err(SendError::Twilio(format!(
-                "send_twilio called with {channel:?}; this is a bug"
-            )));
+            return Err(SendError::Twilio {
+                msg: format!("send_twilio called with {channel:?}; this is a bug"),
+                permanent: true,
+            });
         }
     };
     let (from, to) = match channel {
@@ -1158,7 +1230,10 @@ async fn send_twilio(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
-        .map_err(|e| SendError::Twilio(format!("client build: {e}")))?;
+        .map_err(|e| SendError::Twilio {
+            msg: format!("client build: {e}"),
+            permanent: true,
+        })?;
 
     let form = [
         ("From", from.as_str()),
@@ -1172,7 +1247,11 @@ async fn send_twilio(
         .form(&form)
         .send()
         .await
-        .map_err(|e| SendError::Twilio(format!("send: {e}")))?;
+        .map_err(|e| SendError::Twilio {
+            // Network/DNS/timeout. Keep the retry budget.
+            msg: format!("send: {e}"),
+            permanent: false,
+        })?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -1182,7 +1261,10 @@ async fn send_twilio(
         // doesn't fill the disk.
         let body = resp.text().await.unwrap_or_else(|_| "<no body>".into());
         let snippet: String = body.chars().take(500).collect();
-        return Err(SendError::Twilio(format!("HTTP {status}: {snippet}")));
+        return Err(SendError::Twilio {
+            msg: format!("HTTP {status}: {snippet}"),
+            permanent: twilio_status_is_permanent(status),
+        });
     }
     Ok(())
 }
@@ -1722,7 +1804,8 @@ mod tests {
         let err = send_twilio(&cfg, Channel::Email, &draft)
             .await
             .expect_err("must refuse");
-        assert!(matches!(err, SendError::Twilio(_)), "got: {err:?}");
+        assert!(matches!(err, SendError::Twilio { .. }), "got: {err:?}");
+        assert!(err.is_permanent(), "routing bug can't fix itself on retry");
     }
 
     /// 4xx from Twilio surfaces as a SendError::Twilio carrying the
@@ -1756,9 +1839,11 @@ mod tests {
             .await
             .expect_err("must fail");
         match err {
-            SendError::Twilio(msg) => {
+            SendError::Twilio { ref msg, permanent } => {
                 assert!(msg.contains("400"), "should include status: {msg}");
                 assert!(msg.contains("21211"), "should include Twilio body: {msg}");
+                // 21211 is an invalid number: five more sends won't help.
+                assert!(permanent, "4xx must not consume the retry budget");
             }
             other => panic!("expected Twilio error, got {other:?}"),
         }
@@ -1834,5 +1919,291 @@ mod tests {
         let err = last_error.expect("must carry a reason");
         assert!(err.contains("Twilio"), "reason names the config: {err}");
         assert!(err.contains("whatsapp"), "reason names the channel: {err}");
+    }
+
+    /* ---------------------------------------------------------------- *
+     *  #313: retryability                                              *
+     *                                                                  *
+     *  A permanent failure must stop on attempt 1. Re-sending to an    *
+     *  address the receiving server already refused is what puts an    *
+     *  address on a provider's suppression list and dings the sending  *
+     *  domain's reputation — and ghostkeyapp.com carries every real    *
+     *  alarm and claim link.                                           *
+     * ---------------------------------------------------------------- */
+
+    /// In-memory DB + one vault row, so notifications satisfy their FK.
+    async fn notif_pool(vault_id: &str) -> SqlitePool {
+        if std::env::var("GHOSTKEY_MASTER_KEY").is_err() {
+            let b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode([0u8; 32]);
+            // SAFETY: tests are single-process; the value is fixed.
+            unsafe { std::env::set_var("GHOSTKEY_MASTER_KEY", &b64) };
+        }
+        let _ = crate::crypto::ensure_master_key_loaded();
+
+        let pool: SqlitePool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect sqlite::memory");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+        sqlx::query(
+            r#"INSERT INTO vaults (id, network, descriptor_external, descriptor_internal,
+                    timelock_blocks, checkin_period_secs, grace_period_secs,
+                    created_at, next_deadline_at, status)
+               VALUES (?,'regtest','d-ext','d-int', 144, 86400, 3600,
+                    '2026-01-01T00:00:00Z','2026-01-02T00:00:00Z','ok')"#,
+        )
+        .bind(vault_id)
+        .execute(&pool)
+        .await
+        .expect("insert vault");
+        pool
+    }
+
+    /// A Twilio mock pinned to one status code, plus a call counter so a
+    /// test can prove how many sends actually left the process.
+    async fn spawn_twilio_returning(
+        status: AxStatusCode,
+        body: &'static str,
+    ) -> (Arc<std::sync::atomic::AtomicUsize>, String) {
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hits_for_handler = hits.clone();
+        let app = Router::new()
+            .route(
+                "/2010-04-01/Accounts/:sid/Messages.json",
+                ax_post(
+                    move |AxState(h): AxState<Arc<std::sync::atomic::AtomicUsize>>| async move {
+                        h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        (status, body)
+                    },
+                ),
+            )
+            .with_state(hits_for_handler);
+        let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (hits, format!("http://{addr}"))
+    }
+
+    fn twilio_backends(api_base: String) -> Arc<Backends> {
+        Arc::new(Backends {
+            smtp: None,
+            twilio: Some(mock_cfg(api_base)),
+            vapid: None,
+            http: reqwest::Client::new(),
+        })
+    }
+
+    async fn row_state(pool: &SqlitePool, id: i64) -> (String, i64, Option<String>) {
+        sqlx::query_as("SELECT status, attempts, last_error FROM notifications WHERE id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .expect("row")
+    }
+
+    /// Matrix row 1: a permanent provider rejection stops on attempt 1.
+    /// Twilio 21211 is "invalid To number" — five more sends cannot
+    /// make the number valid.
+    #[tokio::test]
+    async fn permanent_rejection_fails_on_first_attempt() {
+        let pool = notif_pool("v-perm").await;
+        let (hits, url) = spawn_twilio_returning(
+            AxStatusCode::BAD_REQUEST,
+            r#"{"code":21211,"message":"Invalid To number"}"#,
+        )
+        .await;
+        let id = enqueue(
+            &pool,
+            "v-perm",
+            NotificationKind::DrillInvite,
+            Channel::Sms,
+            "+15005550001",
+            "practice",
+            "hello",
+        )
+        .await
+        .expect("enqueue");
+
+        tick_once(&pool, twilio_backends(url)).await.expect("tick");
+
+        let (status, attempts, err) = row_state(&pool, id).await;
+        assert_eq!(status, "failed_permanent", "must not retry a 4xx");
+        assert_eq!(attempts, 1, "the one attempt must be recorded");
+        assert!(err.unwrap_or_default().contains("21211"));
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "exactly one send left the process",
+        );
+    }
+
+    /// Matrix row 2: a transient provider failure keeps its budget and
+    /// goes back to pending with a future schedule.
+    #[tokio::test]
+    async fn transient_rejection_reschedules() {
+        let pool = notif_pool("v-transient").await;
+        let (_hits, url) =
+            spawn_twilio_returning(AxStatusCode::INTERNAL_SERVER_ERROR, "upstream boom").await;
+        let id = enqueue(
+            &pool,
+            "v-transient",
+            NotificationKind::DrillInvite,
+            Channel::Sms,
+            "+15005550002",
+            "practice",
+            "hello",
+        )
+        .await
+        .expect("enqueue");
+
+        tick_once(&pool, twilio_backends(url)).await.expect("tick");
+
+        let (status, attempts, err) = row_state(&pool, id).await;
+        assert_eq!(status, "pending", "5xx keeps its retry budget");
+        assert_eq!(attempts, 1);
+        assert!(err.unwrap_or_default().contains("500"));
+    }
+
+    /// Matrix row 3: exhausting the budget on transient errors records
+    /// every attempt. The terminal update used to leave `attempts`
+    /// alone, so a row that tried six times read `attempts = 5`.
+    #[tokio::test]
+    async fn exhausted_transient_retries_record_every_attempt() {
+        let pool = notif_pool("v-exhaust").await;
+        let (hits, url) =
+            spawn_twilio_returning(AxStatusCode::SERVICE_UNAVAILABLE, "still down").await;
+        let id = enqueue(
+            &pool,
+            "v-exhaust",
+            NotificationKind::DrillInvite,
+            Channel::Sms,
+            "+15005550003",
+            "practice",
+            "hello",
+        )
+        .await
+        .expect("enqueue");
+
+        let backends = twilio_backends(url);
+        for _ in 0..MAX_ATTEMPTS {
+            // Backoff pushes scheduled_at into the future; pull it back
+            // so the next tick picks the row up.
+            sqlx::query("UPDATE notifications SET scheduled_at = ? WHERE id = ?")
+                .bind("2020-01-01T00:00:00Z")
+                .bind(id)
+                .execute(&pool)
+                .await
+                .expect("rewind schedule");
+            tick_once(&pool, backends.clone()).await.expect("tick");
+        }
+
+        let (status, attempts, _) = row_state(&pool, id).await;
+        assert_eq!(status, "failed_permanent", "budget spent");
+        assert_eq!(
+            attempts, MAX_ATTEMPTS,
+            "attempts must equal the sends actually made",
+        );
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst) as i64,
+            MAX_ATTEMPTS,
+            "and the provider must have seen exactly that many",
+        );
+    }
+
+    /// Matrix row 4: a permanent failure is a fact about one send. It
+    /// must not touch the vault's stored contact — GhostKey keeps no
+    /// suppression list, and a submission-relay rejection (Resend's 550
+    /// for a placeholder domain) is not evidence that a real recipient
+    /// bounced.
+    #[tokio::test]
+    async fn permanent_failure_leaves_the_contact_alone() {
+        let pool = notif_pool("v-scope").await;
+        let (_hits, url) = spawn_twilio_returning(
+            AxStatusCode::BAD_REQUEST,
+            r#"{"code":21211,"message":"Invalid To number"}"#,
+        )
+        .await;
+        let before: Option<String> =
+            sqlx::query_scalar("SELECT heir_contact_ciphertext FROM vaults WHERE id = 'v-scope'")
+                .fetch_one(&pool)
+                .await
+                .expect("vault");
+        let id = enqueue(
+            &pool,
+            "v-scope",
+            NotificationKind::DrillInvite,
+            Channel::Sms,
+            "+15005550004",
+            "practice",
+            "hello",
+        )
+        .await
+        .expect("enqueue");
+
+        tick_once(&pool, twilio_backends(url)).await.expect("tick");
+
+        let (status, _, _) = row_state(&pool, id).await;
+        assert_eq!(status, "failed_permanent");
+        let after: Option<String> =
+            sqlx::query_scalar("SELECT heir_contact_ciphertext FROM vaults WHERE id = 'v-scope'")
+                .fetch_one(&pool)
+                .await
+                .expect("vault");
+        assert_eq!(before, after, "a failed send must not rewrite the contact");
+        // And no other row was created off the back of it.
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications")
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+        assert_eq!(count, 1, "no suppression bookkeeping row");
+    }
+
+    /// Matrix row 5: deterministic build failures are permanent. A
+    /// From/To the MIME builder can't parse fails identically forever.
+    #[test]
+    fn build_errors_are_permanent() {
+        assert!(SendError::Build("to: bad address".into()).is_permanent());
+        assert!(
+            !SendError::WebPush("fan-out failed".into()).is_permanent(),
+            "push service unreachable is weather, not a verdict",
+        );
+        assert!(SendError::Smtp {
+            msg: "550 mailbox unavailable".into(),
+            permanent: true,
+        }
+        .is_permanent(),);
+        assert!(!SendError::Smtp {
+            msg: "451 try again later".into(),
+            permanent: false,
+        }
+        .is_permanent(),);
+    }
+
+    /// Twilio's status codes split into "we refused you" and "we're
+    /// having a moment". 429 and 408 sit on the retryable side despite
+    /// being 4xx.
+    #[test]
+    fn twilio_status_classification() {
+        use reqwest::StatusCode as S;
+        for s in [S::BAD_REQUEST, S::UNAUTHORIZED, S::FORBIDDEN, S::NOT_FOUND] {
+            assert!(twilio_status_is_permanent(s), "{s} should be permanent");
+        }
+        for s in [
+            S::TOO_MANY_REQUESTS,
+            S::REQUEST_TIMEOUT,
+            S::INTERNAL_SERVER_ERROR,
+            S::BAD_GATEWAY,
+            S::SERVICE_UNAVAILABLE,
+        ] {
+            assert!(!twilio_status_is_permanent(s), "{s} should be retryable");
+        }
     }
 }
