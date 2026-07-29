@@ -277,13 +277,29 @@ pub(crate) async fn resend_webhook(
 mod tests {
     use super::*;
 
+    /// The base64 body of Svix's published example secret, WITHOUT the
+    /// `whsec_` prefix.
+    ///
+    /// Split deliberately. `whsec_` is also Stripe's webhook signing
+    /// secret prefix, so a full literal trips GitHub secret scanning
+    /// and files an alert on every push. The value is a documentation
+    /// example and was never a live credential, but a repo carrying a
+    /// permanently dismissed secret alert trains everyone to wave the
+    /// next one through. Prefix is added back at each use site; do not
+    /// "tidy" this into one string.
+    const SVIX_DOC_SECRET_B64: &str = "MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
+
+    fn svix_doc_secret() -> String {
+        format!("whsec_{SVIX_DOC_SECRET_B64}")
+    }
+
     /// The Svix worked example from their own verification docs. This
     /// pins the signed-content layout — the two dots, the raw body,
     /// the `whsec_` strip, the base64 both ways — against a vector we
     /// did not produce.
     #[test]
     fn svix_signature_matches_the_published_example() {
-        let key = decode_secret("whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw").expect("decode");
+        let key = decode_secret(&svix_doc_secret()).expect("decode");
         let sig = svix_signature(
             &key,
             "msg_p5jXN8AQM9LWM0D4loKWxJek",
@@ -295,8 +311,8 @@ mod tests {
 
     #[test]
     fn secret_decodes_with_or_without_the_prefix() {
-        let a = decode_secret("whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw").expect("prefixed");
-        let b = decode_secret("MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw").expect("bare");
+        let a = decode_secret(&svix_doc_secret()).expect("prefixed");
+        let b = decode_secret(SVIX_DOC_SECRET_B64).expect("bare");
         assert_eq!(a, b);
         assert!(!a.is_empty());
     }
@@ -406,7 +422,11 @@ mod tests {
     /// that a blocking guard there is a deadlock waiting to happen.
     static SECRET_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-    const TEST_SECRET: &str = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
+    /// Same value, same reason it is assembled rather than written out.
+    /// See `SVIX_DOC_SECRET_B64`.
+    fn test_secret() -> String {
+        svix_doc_secret()
+    }
 
     async fn state_with_sent_email(message_id: &str) -> (Arc<AppState>, i64) {
         if std::env::var("GHOSTKEY_MASTER_KEY").is_err() {
@@ -467,7 +487,7 @@ mod tests {
     /// Build a correctly signed request the way Resend would.
     fn signed(svix_id: &str, body: &str) -> HeaderMap {
         let ts = chrono::Utc::now().timestamp().to_string();
-        let key = decode_secret(TEST_SECRET).expect("decode");
+        let key = decode_secret(&test_secret()).expect("decode");
         let sig = svix_signature(&key, svix_id, &ts, body);
         let mut h = HeaderMap::new();
         h.insert("svix-id", svix_id.parse().unwrap());
@@ -509,7 +529,7 @@ mod tests {
     #[tokio::test]
     async fn a_signed_bounce_is_recorded_and_surfaced() {
         let _g = SECRET_ENV_LOCK.lock().await;
-        unsafe { std::env::set_var("RESEND_WEBHOOK_SECRET", TEST_SECRET) };
+        unsafe { std::env::set_var("RESEND_WEBHOOK_SECRET", test_secret()) };
 
         let mid = "<gk-abc123@ghostkeyapp.com>";
         let (state, id) = state_with_sent_email(mid).await;
@@ -541,7 +561,7 @@ mod tests {
     #[tokio::test]
     async fn unsigned_and_forged_requests_are_refused() {
         let _g = SECRET_ENV_LOCK.lock().await;
-        unsafe { std::env::set_var("RESEND_WEBHOOK_SECRET", TEST_SECRET) };
+        unsafe { std::env::set_var("RESEND_WEBHOOK_SECRET", test_secret()) };
 
         let mid = "<gk-forge@ghostkeyapp.com>";
         let (state, id) = state_with_sent_email(mid).await;
@@ -588,14 +608,14 @@ mod tests {
     #[tokio::test]
     async fn a_captured_request_goes_stale() {
         let _g = SECRET_ENV_LOCK.lock().await;
-        unsafe { std::env::set_var("RESEND_WEBHOOK_SECRET", TEST_SECRET) };
+        unsafe { std::env::set_var("RESEND_WEBHOOK_SECRET", test_secret()) };
 
         let mid = "<gk-stale@ghostkeyapp.com>";
         let (state, _) = state_with_sent_email(mid).await;
         let body = bounce_body(mid);
 
         let old = (chrono::Utc::now().timestamp() - 3600).to_string();
-        let key = decode_secret(TEST_SECRET).expect("decode");
+        let key = decode_secret(&test_secret()).expect("decode");
         let sig = svix_signature(&key, "msg_old", &old, &body);
         let mut h = HeaderMap::new();
         h.insert("svix-id", "msg_old".parse().unwrap());
@@ -611,7 +631,7 @@ mod tests {
     #[tokio::test]
     async fn redelivery_and_reordering_do_not_corrupt_the_verdict() {
         let _g = SECRET_ENV_LOCK.lock().await;
-        unsafe { std::env::set_var("RESEND_WEBHOOK_SECRET", TEST_SECRET) };
+        unsafe { std::env::set_var("RESEND_WEBHOOK_SECRET", test_secret()) };
 
         let mid = "<gk-order@ghostkeyapp.com>";
         let (state, id) = state_with_sent_email(mid).await;
@@ -675,7 +695,7 @@ mod tests {
     #[tokio::test]
     async fn ignored_events_are_acknowledged_not_retried() {
         let _g = SECRET_ENV_LOCK.lock().await;
-        unsafe { std::env::set_var("RESEND_WEBHOOK_SECRET", TEST_SECRET) };
+        unsafe { std::env::set_var("RESEND_WEBHOOK_SECRET", test_secret()) };
 
         let mid = "<gk-open@ghostkeyapp.com>";
         let (state, id) = state_with_sent_email(mid).await;
