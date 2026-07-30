@@ -1,0 +1,19 @@
+-- When we last told the owner their heir could not be reached (#327).
+--
+-- A negative verdict on a heir-directed message already writes an
+-- `event`, which the dashboard's activity feed renders. That is only
+-- useful to an owner who happens to be looking. The whole failure this
+-- product has is silent, so the owner has to be told, on the channel
+-- they already confirmed.
+--
+-- This column exists to make that at-most-once per address. A bounce
+-- typically repeats: the scheduler retries, and every heir-directed
+-- kind (claim_link, claim_ready, drill_invite) can fail independently.
+-- Mailing the owner each time would teach them to filter the one alert
+-- that means their inheritance plan is broken.
+--
+-- Cleared in two places, both meaning "the old alert no longer
+-- describes reality": when the heir's address changes (the owner is
+-- fixing it), and when a heir-directed message is actually delivered
+-- (the address works now, so a later failure deserves a fresh alarm).
+ALTER TABLE vaults ADD COLUMN heir_unreachable_alerted_at TEXT;

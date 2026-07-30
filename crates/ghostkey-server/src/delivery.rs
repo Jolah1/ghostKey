@@ -336,6 +336,7 @@ pub(crate) async fn record_delivery(
             })),
         )
         .await?;
+        alert_owner_heir_unreachable(db, &vault_id, &kind, status, &now).await?;
     } else {
         tracing::info!(
             notif_id = id,
@@ -404,6 +405,18 @@ async fn record_heir_reachable(
     .await?
     .rows_affected();
 
+    // The address works right now, so any earlier "could not be reached"
+    // alert is stale. Clearing it re-arms the alarm: if this address
+    // starts failing again later, that is news, and the owner hearing it
+    // once already must not silence it forever.
+    sqlx::query(
+        "UPDATE vaults SET heir_unreachable_alerted_at = NULL
+          WHERE id = ? AND heir_unreachable_alerted_at IS NOT NULL",
+    )
+    .bind(vault_id)
+    .execute(db)
+    .await?;
+
     if updated > 0 {
         tracing::info!(
             vault_id,
@@ -420,6 +433,106 @@ async fn record_heir_reachable(
             Some(serde_json::json!({ "via": kind })),
         )
         .await?;
+    }
+    Ok(())
+}
+
+/// Owner-facing words for a heir-directed message that did not arrive.
+///
+/// Split by status because the causes are genuinely different and this
+/// page has already been burned once by copy that asserted a cause it
+/// did not know. A bounce means the message is not coming. A complaint
+/// means it arrived and the reader marked it as junk, which is not the
+/// same thing and must not be reported as if it were.
+///
+/// The heir's address is deliberately absent. It would make the typo
+/// obvious in one glance, but this file follows the precedent already
+/// set for deposit amounts: email is the least private place to put
+/// something, and the dashboard is one tap away and shows it.
+pub(crate) fn heir_alert_copy(status: &str, base: &str) -> (String, String) {
+    if status == "complained" {
+        return (
+            "Your heir marked our message as spam".to_string(),
+            format!(
+                "The person you named as your heir received our message and marked it as junk.\n\n\
+                 Why this matters: their mail provider may now block what we send them, including \
+                 the link they would need to claim your Bitcoin.\n\n\
+                 What to do: tell them to expect mail from us, and to move it out of their junk \
+                 folder. You can check their details here: {base}\n\n\
+                 From GhostKey"
+            ),
+        );
+    }
+    (
+        "We could not reach your heir".to_string(),
+        format!(
+            "We tried to send a message to the person you named as your heir, and it did not \
+             arrive.\n\n\
+             Why this matters: if your Bitcoin were being claimed today, they would not get the \
+             link. Nothing else about your vault has changed, and your money is untouched.\n\n\
+             What to do: check the address you saved for them. One wrong letter is the usual \
+             cause, and it is the kind of thing only you can spot: {base}\n\n\
+             From GhostKey"
+        ),
+    )
+}
+
+/// Tell the owner, once, that their heir is unreachable.
+///
+/// Before this, a heir bounce wrote a log line and an activity event and
+/// nothing else, so an owner found out only by going looking. The one
+/// thing this product does is reach a person on a day years from now;
+/// discovering years late that the address was wrong is the failure, not
+/// an edge case.
+///
+/// Owners whose own address is unconfirmed hear nothing, because
+/// `enqueue_owner_email` refuses to mail an unverified address. That is
+/// the right call for an address we have never proven, and it is exactly
+/// why #326 is open.
+async fn alert_owner_heir_unreachable(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+    kind: &str,
+    status: &str,
+    now: &str,
+) -> Result<(), sqlx::Error> {
+    if !is_heir_directed(kind) {
+        return Ok(());
+    }
+    // At most once per address. Claiming the slot first means a
+    // duplicate verdict, a retry, or two heir-directed kinds failing
+    // together cannot produce two emails.
+    let claimed = sqlx::query(
+        "UPDATE vaults SET heir_unreachable_alerted_at = ?
+          WHERE id = ? AND heir_unreachable_alerted_at IS NULL",
+    )
+    .bind(now)
+    .bind(vault_id)
+    .execute(db)
+    .await?
+    .rows_affected();
+    if claimed == 0 {
+        return Ok(());
+    }
+
+    let (subject, body) = heir_alert_copy(status, &crate::scheduler::public_base_url());
+    match crate::notifier::enqueue_owner_email(
+        db,
+        vault_id,
+        crate::notifier::NotificationKind::HeirUnreachable,
+        &subject,
+        &body,
+    )
+    .await
+    {
+        Ok(true) => tracing::warn!(vault_id, kind, status, "told the owner their heir bounced"),
+        Ok(false) => tracing::warn!(
+            vault_id,
+            kind,
+            status,
+            "heir unreachable and the OWNER has no confirmed address either, so nobody was told"
+        ),
+        Err(e) => tracing::error!(vault_id, error = %e, "could not enqueue heir-unreachable alert"),
     }
     Ok(())
 }
@@ -914,6 +1027,283 @@ mod tests {
             .expect("record");
 
         assert_eq!(heir_verified_at(&pool).await, None);
+    }
+
+    /// Give the fixture vault a confirmed owner email.
+    ///
+    /// Without this, `enqueue_owner_email` refuses to mail an unverified
+    /// address and returns false, so every assertion about "the owner was
+    /// told" passes while no mail exists. A mutation that alerted on
+    /// every single bounce survived because of exactly that, which is the
+    /// second time tonight a vacuous assertion has hidden a behaviour.
+    async fn with_confirmed_owner(pool: &sqlx::SqlitePool) {
+        let sealed = crate::crypto::seal_for_vault("v-del", b"owner@example.test").expect("seal");
+        sqlx::query(
+            "UPDATE vaults
+                SET owner_contact_ciphertext = ?,
+                    owner_contact_nonce = ?,
+                    owner_contact_channel = 'email',
+                    owner_contact_verified_at = '2026-01-01T00:00:00Z'
+              WHERE id = 'v-del'",
+        )
+        .bind(&sealed.ciphertext_b64)
+        .bind(&sealed.nonce_b64)
+        .execute(pool)
+        .await
+        .expect("owner contact");
+    }
+
+    async fn alerted_at(pool: &sqlx::SqlitePool) -> Option<String> {
+        sqlx::query_scalar("SELECT heir_unreachable_alerted_at FROM vaults WHERE id='v-del'")
+            .fetch_one(pool)
+            .await
+            .expect("vault")
+    }
+
+    async fn alerts_queued(pool: &sqlx::SqlitePool) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE kind='heir_unreachable'")
+            .fetch_one(pool)
+            .await
+            .expect("count")
+    }
+
+    /// The gap this closes: a heir bounce used to write a log line and an
+    /// activity event, so the owner found out only by going looking. The
+    /// product's one job is reaching a person years from now.
+    #[tokio::test]
+    async fn a_bounced_heir_message_alarms_the_owner() {
+        let (pool, id) = db_with_sent_notification("SM-bounce").await;
+        with_confirmed_owner(&pool).await;
+        sqlx::query("UPDATE notifications SET kind='claim_link' WHERE id=?")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .expect("kind");
+        assert_eq!(alerted_at(&pool).await, None);
+
+        record_delivery(&pool, &twilio_event("SM-bounce", "failed", Some("30003")))
+            .await
+            .expect("record");
+
+        assert!(
+            alerted_at(&pool).await.is_some(),
+            "the owner has to be told, not merely logged at"
+        );
+        assert_eq!(
+            alerts_queued(&pool).await,
+            1,
+            "an actual message to the owner, not just a flag"
+        );
+    }
+
+    /// A bounce repeats: retries, and three heir-directed kinds that can
+    /// each fail. Mailing every time would train the owner to filter the
+    /// one alert that means their plan is broken.
+    #[tokio::test]
+    async fn the_owner_is_told_once_per_address() {
+        let (pool, id) = db_with_sent_notification("SM-again").await;
+        with_confirmed_owner(&pool).await;
+        sqlx::query("UPDATE notifications SET kind='claim_link' WHERE id=?")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .expect("kind");
+
+        // Two DIFFERENT heir-directed messages, each bouncing. Repeated
+        // verdicts on one message are already stopped by the rank rule,
+        // so they cannot exercise this guard: the case that can is a
+        // second kind failing to the same bad address, which is what
+        // happens in life when a claim link and a practice invite both go
+        // to one typo.
+        record_delivery(&pool, &twilio_event("SM-again", "failed", None))
+            .await
+            .expect("record");
+
+        let second = crate::notifier::enqueue(
+            &pool,
+            "v-del",
+            crate::notifier::NotificationKind::DrillInvite,
+            crate::notifier::Channel::Whatsapp,
+            "+15005550009",
+            "subject",
+            "body",
+        )
+        .await
+        .expect("enqueue");
+        sqlx::query(
+            "UPDATE notifications SET status='sent', provider_message_id='SM-again-2' WHERE id=?",
+        )
+        .bind(second)
+        .execute(&pool)
+        .await
+        .expect("hand off");
+        record_delivery(&pool, &twilio_event("SM-again-2", "bounced", None))
+            .await
+            .expect("record");
+
+        let first = alerted_at(&pool).await.expect("alerted");
+        assert_eq!(
+            alerts_queued(&pool).await,
+            1,
+            "exactly one alert, not three"
+        );
+        assert_eq!(alerted_at(&pool).await.as_deref(), Some(first.as_str()));
+    }
+
+    /// An owner alarm bouncing says nothing about the heir, and must not
+    /// tell the owner their heir is unreachable. That would be the same
+    /// fault as the copy this whole change is fixing: asserting a cause
+    /// we do not know.
+    #[tokio::test]
+    async fn an_owner_message_bouncing_does_not_blame_the_heir() {
+        let (pool, id) = db_with_sent_notification("SM-ownerfail").await;
+        with_confirmed_owner(&pool).await;
+        sqlx::query("UPDATE notifications SET kind='alarm_owner' WHERE id=?")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .expect("kind");
+
+        record_delivery(&pool, &twilio_event("SM-ownerfail", "failed", None))
+            .await
+            .expect("record");
+
+        assert_eq!(alerted_at(&pool).await, None);
+        assert_eq!(alerts_queued(&pool).await, 0);
+    }
+
+    /// Re-arming. Having heard once must not silence the alarm forever:
+    /// an address that starts working and later breaks again is news.
+    ///
+    /// The good verdict has to arrive on a NEW message. Within one
+    /// message a negative verdict is terminal by design (`delivery_rank`
+    /// refuses to walk backwards), which is also how this plays out in
+    /// life: the owner fixes the address and runs another practice, and
+    /// that is a different notification.
+    #[tokio::test]
+    async fn a_delivery_on_a_later_message_re_arms_the_alarm() {
+        let (pool, id) = db_with_sent_notification("SM-rearm").await;
+        sqlx::query("UPDATE notifications SET kind='drill_invite' WHERE id=?")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .expect("kind");
+
+        record_delivery(&pool, &twilio_event("SM-rearm", "failed", None))
+            .await
+            .expect("record");
+        assert!(alerted_at(&pool).await.is_some(), "alerted once");
+
+        // A second practice run: a new notification, handed off, then
+        // delivered.
+        let second = crate::notifier::enqueue(
+            &pool,
+            "v-del",
+            crate::notifier::NotificationKind::DrillInvite,
+            crate::notifier::Channel::Whatsapp,
+            "+15005550009",
+            "subject",
+            "body",
+        )
+        .await
+        .expect("enqueue");
+        sqlx::query(
+            "UPDATE notifications SET status='sent', provider_message_id='SM-rearm-2' WHERE id=?",
+        )
+        .bind(second)
+        .execute(&pool)
+        .await
+        .expect("hand off");
+
+        record_delivery(&pool, &twilio_event("SM-rearm-2", "delivered", None))
+            .await
+            .expect("record");
+
+        assert_eq!(
+            alerted_at(&pool).await,
+            None,
+            "it works now, so a future failure deserves a fresh alarm"
+        );
+    }
+
+    /// And within one message the bounce stays terminal, so a stale
+    /// `delivered` replay cannot quietly mark a dead address as working.
+    #[tokio::test]
+    async fn a_stale_delivered_replay_cannot_undo_a_bounce() {
+        let (pool, id) = db_with_sent_notification("SM-stale").await;
+        sqlx::query("UPDATE notifications SET kind='drill_invite' WHERE id=?")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .expect("kind");
+
+        record_delivery(&pool, &twilio_event("SM-stale", "bounced", None))
+            .await
+            .expect("record");
+
+        let mut late = twilio_event("SM-stale", "delivered", None);
+        late.event_id = "SM-stale:late".into();
+        assert_eq!(
+            record_delivery(&pool, &late).await.expect("record"),
+            Recorded::Stale
+        );
+        assert!(alerted_at(&pool).await.is_some(), "the alarm stands");
+        assert_eq!(heir_verified_at(&pool).await, None, "still not proven");
+    }
+
+    /// A complaint is not a bounce. The message arrived and the reader
+    /// marked it junk, and reporting that as "could not be reached" would
+    /// be a confident wrong answer.
+    #[test]
+    fn a_complaint_is_not_reported_as_a_failure_to_arrive() {
+        let (subject, body) = heir_alert_copy("complained", "https://x.test");
+        assert!(subject.to_lowercase().contains("spam"), "{subject}");
+        assert!(!subject.to_lowercase().contains("could not reach"));
+        assert!(body.contains("received our message"), "{body}");
+
+        let (subject, body) = heir_alert_copy("bounced", "https://x.test");
+        assert!(subject.contains("could not reach"), "{subject}");
+        assert!(
+            body.contains("did not \narrive") || body.contains("did not arrive"),
+            "{body}"
+        );
+    }
+
+    /// Copy rules this project holds itself to: plain words, no jargon,
+    /// the reader told what it means and what to do, and reassured that
+    /// their money is untouched.
+    #[test]
+    fn the_alert_says_what_it_means_and_what_to_do() {
+        for status in [
+            "bounced",
+            "failed",
+            "undelivered",
+            "suppressed",
+            "complained",
+        ] {
+            let (subject, body) = heir_alert_copy(status, "https://dash.test");
+            assert!(!subject.is_empty(), "{status}");
+            assert!(
+                body.contains("https://dash.test"),
+                "{status}: needs a way to act"
+            );
+            assert!(body.contains("What to do"), "{status}");
+            let lower = body.to_lowercase();
+            for jargon in ["smtp", "bounce", "verdict", "webhook", "550", "esplora"] {
+                assert!(
+                    !lower.contains(jargon),
+                    "{status} body leaks jargon: {jargon}"
+                );
+            }
+            // The heir's address is not in here on purpose; see the
+            // function doc.
+            assert!(
+                !lower.contains("@"),
+                "{status} body must not carry an address"
+            );
+        }
+        let (_, body) = heir_alert_copy("bounced", "https://dash.test");
+        assert!(body.contains("untouched"), "say the money is safe");
     }
 
     /// An owner-directed message being delivered says nothing about the
