@@ -1531,12 +1531,58 @@ pub fn parse_owner_contact(
 /// was never verified. Lifecycle mail (welcome / funded / received /
 /// sent) must never go to an address nobody has proven they own — see
 /// the 20260610000002 migration for why that matters.
+/// Whether an owner address has to have been confirmed before we mail it.
+///
+/// Both answers are defensible and the codebase needs both, so the
+/// choice is written at the call site rather than baked in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnerAddressPolicy {
+    /// Only mail an address whose owner clicked the confirmation link.
+    /// Right for anything optional: a welcome note, a deposit receipt.
+    /// Sending those to an unproven address is how a typo turns into a
+    /// spam complaint against our domain.
+    ConfirmedOnly,
+    /// Mail whatever address we hold, confirmed or not.
+    ///
+    /// Right when the message is the point of the product. The
+    /// scheduler already works this way for deadline warnings and the
+    /// heir's claim link, and for good reason: an owner whose address is
+    /// merely unconfirmed is usually perfectly reachable, and staying
+    /// silent to protect them from a possible bounce is how they lose
+    /// their coins without ever being told.
+    AnyAddressWeHold,
+}
+
+/// Mail the owner, refusing unless the address has been confirmed.
+///
+/// Shorthand for [`OwnerAddressPolicy::ConfirmedOnly`]; see
+/// [`enqueue_owner_email_with`] when the message matters more than the
+/// confirmation does.
 pub async fn enqueue_owner_email(
     pool: &SqlitePool,
     vault_id: &str,
     kind: NotificationKind,
     subject: &str,
     body: &str,
+) -> Result<bool, EnqueueError> {
+    enqueue_owner_email_with(
+        pool,
+        vault_id,
+        kind,
+        subject,
+        body,
+        OwnerAddressPolicy::ConfirmedOnly,
+    )
+    .await
+}
+
+pub async fn enqueue_owner_email_with(
+    pool: &SqlitePool,
+    vault_id: &str,
+    kind: NotificationKind,
+    subject: &str,
+    body: &str,
+    policy: OwnerAddressPolicy,
 ) -> Result<bool, EnqueueError> {
     type Row = (
         Option<String>, // owner_contact_ciphertext
@@ -1555,7 +1601,7 @@ pub async fn enqueue_owner_email(
     let Some((ct, nn, ch, verified_at)) = row else {
         return Ok(false);
     };
-    if verified_at.is_none() {
+    if verified_at.is_none() && policy == OwnerAddressPolicy::ConfirmedOnly {
         return Ok(false);
     }
     let Some(contact) = parse_owner_contact(vault_id, ct.as_deref(), nn.as_deref(), ch.as_deref())?
