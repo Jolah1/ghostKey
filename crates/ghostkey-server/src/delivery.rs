@@ -516,12 +516,20 @@ async fn alert_owner_heir_unreachable(
     }
 
     let (subject, body) = heir_alert_copy(status, &crate::scheduler::public_base_url());
-    match crate::notifier::enqueue_owner_email(
+    // Not gated on the owner having confirmed their own address. That
+    // gate exists to keep optional mail off unproven addresses, and this
+    // message is the opposite of optional: it is the one warning that
+    // their inheritance plan is broken. The scheduler already mails
+    // deadline warnings and the heir's claim link the same way, so
+    // suppressing only this one left the least-protected owners — the
+    // unconfirmed ones — the least informed.
+    match crate::notifier::enqueue_owner_email_with(
         db,
         vault_id,
         crate::notifier::NotificationKind::HeirUnreachable,
         &subject,
         &body,
+        crate::notifier::OwnerAddressPolicy::AnyAddressWeHold,
     )
     .await
     {
@@ -530,7 +538,7 @@ async fn alert_owner_heir_unreachable(
             vault_id,
             kind,
             status,
-            "heir unreachable and the OWNER has no confirmed address either, so nobody was told"
+            "heir unreachable and we hold no owner email at all, so nobody was told"
         ),
         Err(e) => tracing::error!(vault_id, error = %e, "could not enqueue heir-unreachable alert"),
     }
@@ -1053,6 +1061,26 @@ mod tests {
         .expect("owner contact");
     }
 
+    /// An owner email we hold but which was never confirmed. Seven of
+    /// sixteen mainnet vaults looked like this, and they were the ones
+    /// this alarm used to skip.
+    async fn with_unconfirmed_owner(pool: &sqlx::SqlitePool) {
+        let sealed = crate::crypto::seal_for_vault("v-del", b"owner@example.test").expect("seal");
+        sqlx::query(
+            "UPDATE vaults
+                SET owner_contact_ciphertext = ?,
+                    owner_contact_nonce = ?,
+                    owner_contact_channel = 'email',
+                    owner_contact_verified_at = NULL
+              WHERE id = 'v-del'",
+        )
+        .bind(&sealed.ciphertext_b64)
+        .bind(&sealed.nonce_b64)
+        .execute(pool)
+        .await
+        .expect("owner contact");
+    }
+
     async fn alerted_at(pool: &sqlx::SqlitePool) -> Option<String> {
         sqlx::query_scalar("SELECT heir_unreachable_alerted_at FROM vaults WHERE id='v-del'")
             .fetch_one(pool)
@@ -1094,6 +1122,56 @@ mod tests {
             1,
             "an actual message to the owner, not just a flag"
         );
+    }
+
+    /// The owners least protected were the least informed.
+    ///
+    /// This alarm went through the confirmed-only path, so an owner who
+    /// never clicked their verification link heard nothing when their
+    /// heir bounced — while the same owner still received deadline
+    /// warnings and their heir still received a claim link, because the
+    /// scheduler was never gated that way. Backwards, and this is the
+    /// case that proves it fixed.
+    #[tokio::test]
+    async fn an_unconfirmed_owner_is_still_told_their_heir_bounced() {
+        let (pool, id) = db_with_sent_notification("SM-unconf").await;
+        with_unconfirmed_owner(&pool).await;
+        sqlx::query("UPDATE notifications SET kind='claim_link' WHERE id=?")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .expect("kind");
+
+        record_delivery(&pool, &twilio_event("SM-unconf", "bounced", None))
+            .await
+            .expect("record");
+
+        assert_eq!(
+            alerts_queued(&pool).await,
+            1,
+            "an unconfirmed address is usually a working address"
+        );
+    }
+
+    /// And the distinction stays real: optional mail must still refuse an
+    /// unproven address, or a typo becomes a spam complaint against our
+    /// own domain.
+    #[tokio::test]
+    async fn optional_owner_mail_still_refuses_an_unconfirmed_address() {
+        let (pool, _id) = db_with_sent_notification("SM-optional").await;
+        with_unconfirmed_owner(&pool).await;
+
+        let queued = crate::notifier::enqueue_owner_email(
+            &pool,
+            "v-del",
+            crate::notifier::NotificationKind::Funded,
+            "subject",
+            "body",
+        )
+        .await
+        .expect("enqueue");
+
+        assert!(!queued, "confirmed-only must stay confirmed-only");
     }
 
     /// A bounce repeats: retries, and three heir-directed kinds that can
