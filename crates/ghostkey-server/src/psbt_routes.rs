@@ -641,12 +641,14 @@ pub async fn claim_unlock_estimate(
         Option<i64>,    // chain_unlock_height
         Option<i64>,    // chain_tip_height
         Option<String>, // chain_scanned_at
+        Option<i64>,    // chain_has_unspent
     );
     let row: Option<Row> = sqlx::query_as(
         r#"SELECT id, network, timelock_blocks,
                   claim_token_hash, claim_token_used_at,
                   descriptor_external, descriptor_internal,
-                  chain_unlock_height, chain_tip_height, chain_scanned_at
+                  chain_unlock_height, chain_tip_height, chain_scanned_at,
+                  chain_has_unspent
              FROM vaults
             WHERE claim_token_hash = ?"#,
     )
@@ -671,6 +673,7 @@ pub async fn claim_unlock_estimate(
         cached_unlock_height: row.7,
         cached_tip_height: row.8,
         cached_scanned_at: row.9,
+        cached_has_unspent: row.10,
     };
     let est = unlock_estimate_with_cache(&state.db, &input, now).await?;
     Ok(Json(UnlockEstimateView::from_estimate(&est, now)))
@@ -694,13 +697,15 @@ pub async fn get_sealed_heir_xprv(
         Option<i64>,    // chain_unlock_height
         Option<i64>,    // chain_tip_height
         Option<String>, // chain_scanned_at
+        Option<i64>,    // chain_has_unspent
     );
     let row: Option<Row> = sqlx::query_as(
         r#"SELECT id, network, timelock_blocks,
                   claim_token_hash, claim_token_used_at,
                   heir_xprv_sealed_ct_b64, heir_xprv_sealed_nonce,
                   descriptor_external, descriptor_internal,
-                  chain_unlock_height, chain_tip_height, chain_scanned_at
+                  chain_unlock_height, chain_tip_height, chain_scanned_at,
+                  chain_has_unspent
              FROM vaults
             WHERE claim_token_hash = ?"#,
     )
@@ -740,6 +745,7 @@ pub async fn get_sealed_heir_xprv(
             cached_unlock_height: row.9,
             cached_tip_height: row.10,
             cached_scanned_at: row.11.clone(),
+            cached_has_unspent: row.12,
         };
         match unlock_estimate_with_cache(&state.db, &input, now).await {
             Ok(est) => {
@@ -1499,6 +1505,29 @@ pub async fn owner_send(
     )
     .await?;
 
+    // A full drain leaves no inheritance to monitor. Move active/grace
+    // states back to `unfunded` immediately; the scheduler will reactivate
+    // the vault if a later deposit appears. Do not rewrite a live/final
+    // heir claim here: those states have their own receipt semantics.
+    if remaining_sat == 0 {
+        let changed = sqlx::query(
+            "UPDATE vaults SET status = 'unfunded', claim_eligible_at = NULL \
+             WHERE id = ? AND status IN ('ok', 'warning', 'alarmed', 'frozen')",
+        )
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
+        if changed.rows_affected() == 1 {
+            record_event(
+                &state.db,
+                &id,
+                "vault_empty",
+                Some(serde_json::json!({ "reason": "owner_full_drain" })),
+            )
+            .await?;
+        }
+    }
+
     // Emailed receipt, and a theft alarm in disguise: a send the owner
     // didn't make means the vault password has leaked. No amounts or
     // destination in email; the dashboard activity feed has both.
@@ -1735,6 +1764,9 @@ pub(crate) struct UnlockEstimate {
     /// valid, or `None` when there are no confirmed UTXOs to anchor the
     /// timelock yet. Based on the youngest *confirmed* coin.
     pub unlock_height: Option<u32>,
+    /// True when the scan found any unspent output, confirmed or pending.
+    /// An unconfirmed change output exists but has no unlock height yet.
+    pub has_unspent: bool,
 }
 
 /// Scan a vault's addresses via Esplora and compute its on-chain
@@ -1785,7 +1817,9 @@ pub(crate) async fn scan_unlock_estimate(
         // height (issuing the link slightly early is harmless — the heir
         // still can't spend until the chain matures).
         let mut youngest_conf: Option<u32> = None;
+        let mut has_unspent = false;
         for utxo in wallet.list_unspent() {
+            has_unspent = true;
             if let bdk_wallet::chain::ChainPosition::Confirmed { anchor, .. } = utxo.chain_position
             {
                 let h = anchor.block_id.height;
@@ -1798,6 +1832,7 @@ pub(crate) async fn scan_unlock_estimate(
         Ok(UnlockEstimate {
             tip_height,
             unlock_height,
+            has_unspent,
         })
     })
     .await
@@ -1821,6 +1856,7 @@ pub(crate) struct EstimateInput {
     pub cached_unlock_height: Option<i64>,
     pub cached_tip_height: Option<i64>,
     pub cached_scanned_at: Option<String>,
+    pub cached_has_unspent: Option<i64>,
 }
 
 /// Return the vault's unlock estimate, reusing the cached value while it
@@ -1842,10 +1878,12 @@ pub(crate) async fn unlock_estimate_with_cache(
     // A fresh cache with a recorded tip answers directly. A fresh row
     // with no tip means we have never scanned; fall through and do so.
     if cache_fresh {
-        if let Some(tip) = input.cached_tip_height {
+        if let (Some(tip), Some(has_unspent)) = (input.cached_tip_height, input.cached_has_unspent)
+        {
             return Ok(UnlockEstimate {
                 tip_height: tip as u32,
                 unlock_height: input.cached_unlock_height.map(|h| h as u32),
+                has_unspent: has_unspent != 0,
             });
         }
     }
@@ -1865,12 +1903,14 @@ pub(crate) async fn unlock_estimate_with_cache(
         r#"UPDATE vaults
               SET chain_unlock_height = ?,
                   chain_tip_height    = ?,
-                  chain_scanned_at    = ?
+                  chain_scanned_at    = ?,
+                  chain_has_unspent   = ?
             WHERE id = ?"#,
     )
     .bind(est.unlock_height.map(|h| h as i64))
     .bind(est.tip_height as i64)
     .bind(now.to_rfc3339())
+    .bind(i64::from(est.has_unspent))
     .bind(&input.vault_id)
     .execute(db)
     .await
