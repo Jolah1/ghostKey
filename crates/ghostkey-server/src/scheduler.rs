@@ -182,6 +182,7 @@ async fn send_claim_ready_notices(state: &AppState) -> anyhow::Result<()> {
         Option<i64>,    // chain_unlock_height
         Option<i64>,    // chain_tip_height
         Option<String>, // chain_scanned_at
+        Option<i64>,    // chain_has_unspent
     );
     let rows: Vec<ReadyRow> = sqlx::query_as(
         r#"SELECT id, claim_opened_at,
@@ -189,7 +190,8 @@ async fn send_claim_ready_notices(state: &AppState) -> anyhow::Result<()> {
                   claim_token_at_rest_b64,
                   descriptor_external, descriptor_internal,
                   network, timelock_blocks,
-                  chain_unlock_height, chain_tip_height, chain_scanned_at
+                  chain_unlock_height, chain_tip_height, chain_scanned_at,
+                  chain_has_unspent
              FROM vaults
             WHERE claim_opened_at IS NOT NULL
               AND claim_ready_notified_at IS NULL
@@ -213,6 +215,7 @@ async fn send_claim_ready_notices(state: &AppState) -> anyhow::Result<()> {
         chain_unlock_height,
         chain_tip_height,
         chain_scanned_at,
+        chain_has_unspent,
     ) in rows
     {
         let ready_at = crate::config::parse_rfc(&opened_s) + chrono::Duration::seconds(window);
@@ -232,6 +235,7 @@ async fn send_claim_ready_notices(state: &AppState) -> anyhow::Result<()> {
             cached_unlock_height: chain_unlock_height,
             cached_tip_height: chain_tip_height,
             cached_scanned_at: chain_scanned_at,
+            cached_has_unspent: chain_has_unspent,
         };
         if !onchain_funds_ready(state, &input, now).await {
             continue;
@@ -895,11 +899,13 @@ async fn activate_funded_vaults(state: &AppState, _now_iso: &str) -> anyhow::Res
             Option<i64>,    // chain_unlock_height
             Option<i64>,    // chain_tip_height
             Option<String>, // chain_scanned_at
+            Option<i64>,    // chain_has_unspent
         ),
     >(
         r#"SELECT id, checkin_period_secs, grace_period_secs,
                   descriptor_external, descriptor_internal, network, timelock_blocks,
-                  chain_unlock_height, chain_tip_height, chain_scanned_at
+                  chain_unlock_height, chain_tip_height, chain_scanned_at,
+                  chain_has_unspent
              FROM vaults
             WHERE status = 'unfunded'"#,
     )
@@ -918,6 +924,7 @@ async fn activate_funded_vaults(state: &AppState, _now_iso: &str) -> anyhow::Res
         chain_unlock_height,
         chain_tip_height,
         chain_scanned_at,
+        chain_has_unspent,
     ) in rows
     {
         let input = crate::psbt_routes::EstimateInput {
@@ -929,14 +936,18 @@ async fn activate_funded_vaults(state: &AppState, _now_iso: &str) -> anyhow::Res
             cached_unlock_height: chain_unlock_height,
             cached_tip_height: chain_tip_height,
             cached_scanned_at: chain_scanned_at,
+            cached_has_unspent: chain_has_unspent,
         };
 
-        // Funded == the address scan finds at least one UTXO (a
-        // successful estimate). Any error — no UTXOs yet, or a transient
-        // failure reaching the chain — means "not yet"; leave the vault
-        // unfunded and try again next tick.
+        // Funded == the address scan finds at least one UTXO, including a
+        // pending one. An empty successful scan is still "not funded";
+        // an explorer error is "unknown" and fails safe the same way.
         match crate::psbt_routes::unlock_estimate_with_cache(&state.db, &input, now).await {
-            Ok(_) => record_chain_scan(true, None, now),
+            Ok(est) if est.has_unspent => record_chain_scan(true, None, now),
+            Ok(_) => {
+                record_chain_scan(true, None, now);
+                continue;
+            }
             Err(e) => {
                 record_chain_scan(false, Some(e.to_string()), now);
                 continue;
@@ -1275,6 +1286,14 @@ struct VaultChainRow {
     chain_unlock_height: Option<i64>,
     chain_tip_height: Option<i64>,
     chain_scanned_at: Option<String>,
+    chain_has_unspent: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeirContactGate {
+    Ready,
+    Waiting,
+    Empty,
 }
 
 /// Pure decision: are the coins within `lead_blocks` of being spendable?
@@ -1285,6 +1304,48 @@ fn issue_ready(unlock_height: Option<u32>, tip_height: u32, lead_blocks: u32) ->
         Some(unlock) => unlock.saturating_sub(tip_height) <= lead_blocks,
         None => false,
     }
+}
+
+fn heir_contact_gate(
+    est: &crate::psbt_routes::UnlockEstimate,
+    lead_blocks: u32,
+) -> HeirContactGate {
+    if !est.has_unspent {
+        HeirContactGate::Empty
+    } else if issue_ready(est.unlock_height, est.tip_height, lead_blocks) {
+        HeirContactGate::Ready
+    } else {
+        HeirContactGate::Waiting
+    }
+}
+
+/// Retire a drained grace-period vault without losing its configuration.
+/// `unfunded` is intentionally reusable: a later deposit is detected by
+/// `activate_funded_vaults`, which starts a fresh check-in clock.
+async fn return_empty_vault_to_unfunded(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+) -> anyhow::Result<bool> {
+    let changed = sqlx::query(
+        "UPDATE vaults SET status = 'unfunded', claim_eligible_at = NULL \
+         WHERE id = ? AND status = 'alarmed'",
+    )
+    .bind(vault_id)
+    .execute(db)
+    .await?;
+    if changed.rows_affected() == 0 {
+        return Ok(false);
+    }
+    record_event(
+        db,
+        vault_id,
+        "vault_empty",
+        Some(serde_json::json!({
+            "reason": "chain_scan_found_no_unspent_outputs"
+        })),
+    )
+    .await?;
+    Ok(true)
 }
 
 /// True once the on-chain timelock has fully matured (or the gate is
@@ -1326,12 +1387,12 @@ async fn heir_contact_ready(
     state: &AppState,
     row: &VaultChainRow,
     now: chrono::DateTime<Utc>,
-) -> bool {
+) -> HeirContactGate {
     // Tests and live demos run the server-clock machine without a real
     // chain; let them through unchanged.
     if !ONCHAIN_GATE_ENABLED.load(std::sync::atomic::Ordering::Relaxed) || crate::demo::demo_mode()
     {
-        return true;
+        return HeirContactGate::Ready;
     }
 
     let input = crate::psbt_routes::EstimateInput {
@@ -1343,6 +1404,7 @@ async fn heir_contact_ready(
         cached_unlock_height: row.chain_unlock_height,
         cached_tip_height: row.chain_tip_height,
         cached_scanned_at: row.chain_scanned_at.clone(),
+        cached_has_unspent: row.chain_has_unspent,
     };
     match crate::psbt_routes::unlock_estimate_with_cache(&state.db, &input, now).await {
         Ok(est) => {
@@ -1350,7 +1412,7 @@ async fn heir_contact_ready(
             let lead_blocks = (crate::config::claim_challenge_window_secs()
                 / crate::config::TARGET_BLOCK_SECS)
                 .max(0) as u32;
-            issue_ready(est.unlock_height, est.tip_height, lead_blocks)
+            heir_contact_gate(&est, lead_blocks)
         }
         Err(e) => {
             record_chain_scan(false, Some(e.to_string()), now);
@@ -1358,7 +1420,7 @@ async fn heir_contact_ready(
                 vault_id = %row.id, error = %e,
                 "on-chain maturity scan failed; not advancing this tick"
             );
-            false
+            HeirContactGate::Waiting
         }
     }
 }
@@ -1403,6 +1465,7 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
             Option<i64>,    // chain_unlock_height (cache)
             Option<i64>,    // chain_tip_height (cache)
             Option<String>, // chain_scanned_at (cache)
+            Option<i64>,    // chain_has_unspent (cache)
         ),
     >(
         r#"SELECT id, label,
@@ -1410,7 +1473,8 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
                   claim_token_at_rest_b64, claim_token_hash,
                   descriptor_external, descriptor_internal,
                   network, timelock_blocks,
-                  chain_unlock_height, chain_tip_height, chain_scanned_at
+                  chain_unlock_height, chain_tip_height, chain_scanned_at,
+                  chain_has_unspent
              FROM vaults
             WHERE status = 'alarmed'
               AND claim_eligible_at IS NOT NULL
@@ -1442,6 +1506,7 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
         chain_unlock_height,
         chain_tip_height,
         chain_scanned_at,
+        chain_has_unspent,
     ) in due
     {
         // Fix A: server-eligible is not enough. Only contact the heir
@@ -1456,9 +1521,17 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
             chain_unlock_height,
             chain_tip_height,
             chain_scanned_at,
+            chain_has_unspent,
         };
-        if !heir_contact_ready(state, &chain_row, Utc::now()).await {
-            continue;
+        match heir_contact_ready(state, &chain_row, Utc::now()).await {
+            HeirContactGate::Ready => {}
+            HeirContactGate::Waiting => continue,
+            HeirContactGate::Empty => {
+                if return_empty_vault_to_unfunded(&state.db, &id).await? {
+                    tracing::info!(vault_id = %id, "drained vault returned to unfunded state");
+                }
+                continue;
+            }
         }
 
         // Decide whether this is a password vault or a legacy row.
@@ -1941,6 +2014,27 @@ mod tests {
     }
 
     #[test]
+    fn heir_contact_gate_distinguishes_empty_from_unconfirmed() {
+        let empty = crate::psbt_routes::UnlockEstimate {
+            tip_height: 1000,
+            unlock_height: None,
+            has_unspent: false,
+        };
+        assert_eq!(heir_contact_gate(&empty, 288), HeirContactGate::Empty);
+
+        let unconfirmed = crate::psbt_routes::UnlockEstimate {
+            tip_height: 1000,
+            unlock_height: None,
+            has_unspent: true,
+        };
+        assert_eq!(
+            heir_contact_gate(&unconfirmed, 288),
+            HeirContactGate::Waiting,
+            "pending change must not be retired as an empty vault"
+        );
+    }
+
+    #[test]
     fn ln_gate_pauses_during_outage_and_grants_capped_recovery_grace() {
         let mut gate = LnGate::default();
         let t0 = Utc::now();
@@ -2233,11 +2327,12 @@ mod tests {
                 id, network, descriptor_external, descriptor_internal,
                 timelock_blocks, checkin_period_secs, grace_period_secs,
                 created_at, next_deadline_at, status, claim_eligible_at,
-                chain_unlock_height, chain_tip_height, chain_scanned_at
+                chain_unlock_height, chain_tip_height, chain_scanned_at,
+                chain_has_unspent
             ) VALUES ('v-fund','regtest','tr(fake/v-fund/0/*)','tr(fake/v-fund/1/*)',
                 144, 86400, 3600, '2026-01-01T00:00:00Z',
                 '2026-01-01T00:00:00Z', 'unfunded', '2026-01-01T00:00:00Z',
-                200, 150, ?)"#,
+                200, 150, ?, 1)"#,
         )
         .bind(now.to_rfc3339())
         .execute(&pool)
@@ -2261,6 +2356,73 @@ mod tests {
             nd > now,
             "check-in clock must be (re)started into the future on activation, got {nd}"
         );
+    }
+
+    #[tokio::test]
+    async fn empty_cached_scan_does_not_reactivate_unfunded_vault() {
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        let now = Utc::now();
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status,
+                chain_tip_height, chain_scanned_at, chain_has_unspent
+            ) VALUES ('v-empty','regtest','tr(fake/v-empty/0/*)','tr(fake/v-empty/1/*)',
+                144, 86400, 3600, '2026-01-01T00:00:00Z',
+                '2026-01-01T00:00:00Z', 'unfunded', 150, ?, 0)"#,
+        )
+        .bind(now.to_rfc3339())
+        .execute(&pool)
+        .await
+        .expect("insert");
+
+        activate_funded_vaults(&state, &now.to_rfc3339())
+            .await
+            .expect("scan empty vault");
+        let status: String = sqlx::query_scalar("SELECT status FROM vaults WHERE id = 'v-empty'")
+            .fetch_one(&pool)
+            .await
+            .expect("status");
+        assert_eq!(status, "unfunded");
+    }
+
+    #[tokio::test]
+    async fn drained_alarmed_vault_returns_to_unfunded_once() {
+        let pool = fresh_db().await;
+        insert_vault(
+            &pool,
+            "v-drained",
+            "alarmed",
+            "2026-01-01T00:00:00Z",
+            Some("2026-01-02T00:00:00Z"),
+        )
+        .await;
+
+        assert!(return_empty_vault_to_unfunded(&pool, "v-drained")
+            .await
+            .expect("retire"));
+        assert!(!return_empty_vault_to_unfunded(&pool, "v-drained")
+            .await
+            .expect("idempotent retry"));
+        let (status, eligible): (String, Option<String>) =
+            sqlx::query_as("SELECT status, claim_eligible_at FROM vaults WHERE id = 'v-drained'")
+                .fetch_one(&pool)
+                .await
+                .expect("vault");
+        assert_eq!(status, "unfunded");
+        assert!(eligible.is_none());
+        let events: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE vault_id = 'v-drained' AND kind = 'vault_empty'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("events");
+        assert_eq!(events, 1);
     }
 
     #[tokio::test]

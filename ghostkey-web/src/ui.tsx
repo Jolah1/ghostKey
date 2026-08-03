@@ -428,6 +428,7 @@ export function friendlyEventKind(kind: string): string {
     case "resolved": return "Back on track";
     case "lightning_invoice_issued": return "Check-in invoice created";
     case "owner_send": return "You sent Bitcoin";
+    case "vault_empty": return "Vault is empty";
     case "received": return "You received Bitcoin";
     case "owner_contact_verified": return "Email confirmed";
     case "timelock_started": return "Waiting period started";

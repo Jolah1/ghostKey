@@ -2848,6 +2848,8 @@ async fn get_vault(
         let est = crate::psbt_routes::UnlockEstimate {
             tip_height: tip as u32,
             unlock_height: row.chain_unlock_height.map(|h| h as u32),
+            // ETA derivation only consumes the heights.
+            has_unspent: row.chain_unlock_height.is_some(),
         };
         crate::psbt_routes::UnlockEstimateView::from_estimate(&est, Utc::now()).unlock_eta
     });
