@@ -116,6 +116,10 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
     let now = Utc::now().to_rfc3339();
     unfreeze_expired_panics(state, &now).await?;
     activate_funded_vaults(state, &now).await?;
+    // Before the reminder and alarm steps, so a vault that was emptied
+    // off-server drops out of the clock this tick rather than being
+    // nagged (or escalated) about coins that are already gone.
+    retire_drained_vaults(state).await?;
     issue_pre_deadline_reminders(state, &now).await?;
     transition_ok_to_alarmed(state, &now).await?;
     send_alarm_escalations(state, &now).await?;
@@ -1013,6 +1017,97 @@ async fn activate_funded_vaults(state: &AppState, _now_iso: &str) -> anyhow::Res
     Ok(())
 }
 
+/// The mirror of `activate_funded_vaults`: stop the check-in clock once
+/// a healthy vault has been emptied.
+///
+/// #338 already retired drained vaults in the grace period, but only
+/// those: an `ok` vault whose coins were swept stayed `ok` forever. It
+/// kept asking its owner to check in on nothing, and if they ever
+/// stopped it would run the whole alarm cascade and hand their heir a
+/// claim link to an empty vault. That is the state the offline recovery
+/// kit leaves behind, since the server never sees that transaction.
+///
+/// Empty means a successful scan found no UTXOs at all, pending
+/// included, so a send with unconfirmed change doesn't read as a drain.
+/// A scan that can't reach the chain is "unknown" and changes nothing.
+/// The scan is cached for `MATURITY_CACHE_TTL_SECS`, so this costs at
+/// most one Esplora hit per vault per cache window, exactly like the
+/// activation sweep it mirrors.
+///
+/// Only `ok` vaults. `alarmed` belongs to the grace-period path, and
+/// `frozen` (panic) and the claim statuses must never be reset here.
+async fn retire_drained_vaults(state: &AppState) -> anyhow::Result<()> {
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,         // id
+            String,         // descriptor_external
+            String,         // descriptor_internal
+            String,         // network
+            i64,            // timelock_blocks
+            Option<i64>,    // chain_unlock_height
+            Option<i64>,    // chain_tip_height
+            Option<String>, // chain_scanned_at
+            Option<i64>,    // chain_has_unspent
+        ),
+    >(
+        r#"SELECT id,
+                  descriptor_external, descriptor_internal, network, timelock_blocks,
+                  chain_unlock_height, chain_tip_height, chain_scanned_at,
+                  chain_has_unspent
+             FROM vaults
+            WHERE status = 'ok'"#,
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let now = Utc::now();
+    for (
+        id,
+        descriptor_external,
+        descriptor_internal,
+        network,
+        timelock_blocks,
+        chain_unlock_height,
+        chain_tip_height,
+        chain_scanned_at,
+        chain_has_unspent,
+    ) in rows
+    {
+        let input = crate::psbt_routes::EstimateInput {
+            vault_id: id.clone(),
+            descriptor_external,
+            descriptor_internal,
+            network,
+            timelock_blocks,
+            cached_unlock_height: chain_unlock_height,
+            cached_tip_height: chain_tip_height,
+            cached_scanned_at: chain_scanned_at,
+            cached_has_unspent: chain_has_unspent,
+        };
+
+        match crate::psbt_routes::unlock_estimate_with_cache(&state.db, &input, now).await {
+            Ok(est) if est.has_unspent => {
+                record_chain_scan(true, None, now);
+                continue;
+            }
+            Ok(_) => record_chain_scan(true, None, now),
+            Err(e) => {
+                record_chain_scan(false, Some(e.to_string()), now);
+                continue;
+            }
+        }
+
+        if return_empty_vault_to_unfunded(&state.db, &id, "ok").await? {
+            tracing::info!(
+                vault_id = %id,
+                "vault emptied off-server; check-in clock stopped (ok -> unfunded)"
+            );
+        }
+    }
+    Ok(())
+}
+
 async fn transition_ok_to_alarmed(state: &AppState, now_iso: &str) -> anyhow::Result<()> {
     let due = sqlx::query_as::<
         _,
@@ -1319,18 +1414,27 @@ fn heir_contact_gate(
     }
 }
 
-/// Retire a drained grace-period vault without losing its configuration.
-/// `unfunded` is intentionally reusable: a later deposit is detected by
+/// Retire a drained vault without losing its configuration. `unfunded`
+/// is intentionally reusable: a later deposit is detected by
 /// `activate_funded_vaults`, which starts a fresh check-in clock.
+///
+/// `from_status` is the status the caller expects to find, and the
+/// UPDATE is a compare-and-swap on it, so a racing tick that already
+/// moved the vault can't be undone. Two callers: the grace-period path
+/// (`alarmed`, which also clears the claim deadline) and the healthy
+/// path (`ok`), which is what catches a vault emptied by a wallet the
+/// server never saw.
 async fn return_empty_vault_to_unfunded(
     db: &sqlx::SqlitePool,
     vault_id: &str,
+    from_status: &str,
 ) -> anyhow::Result<bool> {
     let changed = sqlx::query(
         "UPDATE vaults SET status = 'unfunded', claim_eligible_at = NULL \
-         WHERE id = ? AND status = 'alarmed'",
+         WHERE id = ? AND status = ?",
     )
     .bind(vault_id)
+    .bind(from_status)
     .execute(db)
     .await?;
     if changed.rows_affected() == 0 {
@@ -1527,7 +1631,7 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
             HeirContactGate::Ready => {}
             HeirContactGate::Waiting => continue,
             HeirContactGate::Empty => {
-                if return_empty_vault_to_unfunded(&state.db, &id).await? {
+                if return_empty_vault_to_unfunded(&state.db, &id, "alarmed").await? {
                     tracing::info!(vault_id = %id, "drained vault returned to unfunded state");
                 }
                 continue;
@@ -2403,12 +2507,16 @@ mod tests {
         )
         .await;
 
-        assert!(return_empty_vault_to_unfunded(&pool, "v-drained")
-            .await
-            .expect("retire"));
-        assert!(!return_empty_vault_to_unfunded(&pool, "v-drained")
-            .await
-            .expect("idempotent retry"));
+        assert!(
+            return_empty_vault_to_unfunded(&pool, "v-drained", "alarmed")
+                .await
+                .expect("retire")
+        );
+        assert!(
+            !return_empty_vault_to_unfunded(&pool, "v-drained", "alarmed")
+                .await
+                .expect("idempotent retry")
+        );
         let (status, eligible): (String, Option<String>) =
             sqlx::query_as("SELECT status, claim_eligible_at FROM vaults WHERE id = 'v-drained'")
                 .fetch_one(&pool)
@@ -2423,6 +2531,128 @@ mod tests {
         .await
         .expect("events");
         assert_eq!(events, 1);
+    }
+
+    /// The status a caller passes is a compare-and-swap, not a hint: it
+    /// must refuse a vault sitting in any other state. This is what
+    /// stops the healthy-path sweep from resetting a frozen (panic) or
+    /// mid-claim vault if it ever picked one up.
+    #[tokio::test]
+    async fn retiring_a_vault_refuses_a_status_mismatch() {
+        let pool = fresh_db().await;
+        insert_vault(
+            &pool,
+            "v-frozen",
+            "frozen",
+            "2026-01-01T00:00:00Z",
+            Some("2026-01-02T00:00:00Z"),
+        )
+        .await;
+
+        assert!(
+            !return_empty_vault_to_unfunded(&pool, "v-frozen", "ok")
+                .await
+                .expect("cas"),
+            "a frozen vault must not be retired by the ok-path sweep"
+        );
+        let status: String = sqlx::query_scalar("SELECT status FROM vaults WHERE id = 'v-frozen'")
+            .fetch_one(&pool)
+            .await
+            .expect("status");
+        assert_eq!(status, "frozen");
+    }
+
+    /// The gap #338 left: a vault emptied while still healthy stayed
+    /// `ok` and kept its check-in clock running over nothing. The cache
+    /// stands in for a scan that found no UTXOs (`chain_has_unspent`
+    /// 0), which is the state the offline recovery kit leaves behind.
+    #[tokio::test]
+    async fn drained_ok_vault_stops_its_checkin_clock() {
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        let now = Utc::now();
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status, claim_eligible_at,
+                chain_tip_height, chain_scanned_at, chain_has_unspent
+            ) VALUES ('v-swept','regtest','tr(fake/v-swept/0/*)','tr(fake/v-swept/1/*)',
+                144, 86400, 3600, '2026-01-01T00:00:00Z',
+                '2026-06-01T00:00:00Z', 'ok', '2026-06-02T00:00:00Z',
+                150, ?, 0)"#,
+        )
+        .bind(now.to_rfc3339())
+        .execute(&pool)
+        .await
+        .expect("insert");
+
+        retire_drained_vaults(&state).await.expect("retire");
+
+        let (status, eligible): (String, Option<String>) =
+            sqlx::query_as("SELECT status, claim_eligible_at FROM vaults WHERE id = 'v-swept'")
+                .fetch_one(&pool)
+                .await
+                .expect("vault");
+        assert_eq!(status, "unfunded", "a drained ok vault must stop its clock");
+        assert!(eligible.is_none());
+        let events: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE vault_id = 'v-swept' AND kind = 'vault_empty'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("events");
+        assert_eq!(events, 1);
+
+        // Second sweep: the vault is `unfunded` now, so the ok-path CAS
+        // finds nothing and no duplicate event lands.
+        retire_drained_vaults(&state).await.expect("second sweep");
+        let events: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE vault_id = 'v-swept' AND kind = 'vault_empty'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("events");
+        assert_eq!(events, 1, "retiring must be once per drain, not per tick");
+    }
+
+    /// The other half: a funded vault must survive the same sweep
+    /// untouched. Without this the test above would pass on a function
+    /// that retires everything.
+    #[tokio::test]
+    async fn funded_ok_vault_survives_the_drain_sweep() {
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        let now = Utc::now();
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status,
+                chain_unlock_height, chain_tip_height, chain_scanned_at,
+                chain_has_unspent
+            ) VALUES ('v-held','regtest','tr(fake/v-held/0/*)','tr(fake/v-held/1/*)',
+                144, 86400, 3600, '2026-01-01T00:00:00Z',
+                '2026-06-01T00:00:00Z', 'ok', 200, 150, ?, 1)"#,
+        )
+        .bind(now.to_rfc3339())
+        .execute(&pool)
+        .await
+        .expect("insert");
+
+        retire_drained_vaults(&state).await.expect("retire");
+
+        let status: String = sqlx::query_scalar("SELECT status FROM vaults WHERE id = 'v-held'")
+            .fetch_one(&pool)
+            .await
+            .expect("status");
+        assert_eq!(status, "ok", "a funded vault must keep its check-in clock");
     }
 
     #[tokio::test]

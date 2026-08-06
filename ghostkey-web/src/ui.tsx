@@ -430,6 +430,9 @@ export function friendlyEventKind(kind: string): string {
     case "owner_send": return "You sent Bitcoin";
     case "vault_empty": return "Vault is empty";
     case "received": return "You received Bitcoin";
+    // A spend the server did not build, so we know the coins left but
+    // not who moved them or why. Say only that much.
+    case "funds_spent": return "Bitcoin left this vault";
     case "owner_contact_verified": return "Email confirmed";
     case "timelock_started": return "Waiting period started";
     case "claim_issued": return "Claim link sent to your heir";

@@ -1,0 +1,15 @@
+-- Mark a recorded deposit as gone, so the feed can say so once.
+--
+-- `vault_deposits` only ever recorded money arriving. When a vault was
+-- emptied by a transaction the server did not build (the offline
+-- recovery kit, or a wallet the owner imported the descriptor into),
+-- the balance dropped to zero and the activity feed said nothing at
+-- all. The owner saw an empty vault with no explanation.
+--
+-- The balance scan already lists every unspent output. A recorded
+-- deposit that is no longer in that list has been spent; we stamp it
+-- here and emit one `funds_spent` event. The stamp is what makes it
+-- exactly once, the same way the primary key makes `received` exactly
+-- once. NULL means still unspent, which is the correct value for every
+-- row that already exists.
+ALTER TABLE vault_deposits ADD COLUMN spent_at TEXT;

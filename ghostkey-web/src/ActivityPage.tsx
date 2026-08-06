@@ -78,6 +78,10 @@ function detailLine(e: ActivityEvent): string | null {
       const amt = num(d, "amount_sat");
       return amt != null ? `${formatBtc(amt)} in` : null;
     }
+    case "funds_spent": {
+      const amt = num(d, "amount_sat");
+      return amt != null ? `${formatBtc(amt)} out` : null;
+    }
     case "owner_send": {
       const sent = num(d, "sent_sat");
       const left = num(d, "remaining_sat");
