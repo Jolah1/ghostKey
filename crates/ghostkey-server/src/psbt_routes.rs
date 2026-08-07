@@ -2213,6 +2213,123 @@ pub(crate) async fn record_new_deposits(
     }
 }
 
+/// The mirror of `record_new_deposits`: log money that has *left*.
+///
+/// `owner_send` and `claim_broadcast` already cover spends the server
+/// itself built. Nothing covered the rest — an owner spending from the
+/// offline recovery kit, or from a wallet they imported the descriptor
+/// into, emptied the vault and the feed stayed silent. The dashboard
+/// showed a zero balance with no line explaining where it went.
+///
+/// `still_unspent` is every outpoint the scan can still spend. Any
+/// recorded deposit missing from it is gone, so we stamp `spent_at` and
+/// emit one `funds_spent` event. The stamp does for spends what the
+/// primary key does for receives: the UPDATE only touches rows where
+/// `spent_at IS NULL`, so a later scan of the same vault is a no-op.
+///
+/// Spends the server *did* build are stamped but stay silent, because
+/// `owner_send` and `claim_broadcast` already tell that story with the
+/// destination and txid this function cannot know. The test is whether
+/// the deposit was seen before the vault's most recent server-built
+/// spend: if it was, that spend consumed it. Only external-keychain
+/// deposits are in this table (change from a send lands on the internal
+/// keychain and is never recorded), so a partial send consumes every
+/// row that predates it and leaves nothing to misattribute. A deposit
+/// that arrives afterwards has a later `seen_at` and still reports.
+///
+/// Deliberately narrow when it does speak. It says the coin left; it
+/// does not say where or why, because a chain scan cannot tell an
+/// owner's move from a theft. Naming a cause we can't verify would be
+/// worse than the silence this replaces.
+///
+/// Best-effort, like its sibling: a logging failure must never fail the
+/// balance read that triggered it.
+pub(crate) async fn record_spent_deposits(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+    still_unspent: &[String],
+    now: chrono::DateTime<Utc>,
+) {
+    let recorded: Vec<(String, i64, String)> = match sqlx::query_as(
+        "SELECT outpoint, amount_sat, seen_at FROM vault_deposits \
+          WHERE vault_id = ? AND spent_at IS NULL",
+    )
+    .bind(vault_id)
+    .fetch_all(db)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, vault_id, "could not read deposits to check for spends");
+            return;
+        }
+    };
+    if recorded.is_empty() {
+        return;
+    }
+
+    // Timestamps are RFC3339 written by this process, so they compare
+    // lexicographically. An error here reads as "no server-built spend",
+    // which errs toward reporting rather than staying quiet.
+    let last_server_spend: Option<String> = sqlx::query_scalar(
+        "SELECT MAX(created_at) FROM events \
+          WHERE vault_id = ? AND kind IN ('owner_send', 'claim_broadcast')",
+    )
+    .bind(vault_id)
+    .fetch_one(db)
+    .await
+    .unwrap_or(None);
+
+    let live: std::collections::HashSet<&str> = still_unspent.iter().map(String::as_str).collect();
+
+    for (outpoint, amount_sat, seen_at) in recorded {
+        if live.contains(outpoint.as_str()) {
+            continue;
+        }
+        // CAS on spent_at: whichever concurrent scan wins gets the row,
+        // the loser sees 0 rows and stays quiet.
+        let stamped = sqlx::query(
+            "UPDATE vault_deposits SET spent_at = ? \
+              WHERE vault_id = ? AND outpoint = ? AND spent_at IS NULL",
+        )
+        .bind(now.to_rfc3339())
+        .bind(vault_id)
+        .bind(&outpoint)
+        .execute(db)
+        .await;
+
+        match stamped {
+            Ok(res) if res.rows_affected() == 1 => {}
+            Ok(_) => continue, // another scan already claimed it
+            Err(e) => {
+                tracing::warn!(error = %e, vault_id, "failed to stamp spent deposit");
+                continue;
+            }
+        }
+
+        if last_server_spend
+            .as_deref()
+            .is_some_and(|t| seen_at.as_str() <= t)
+        {
+            continue; // already reported as an owner send or a claim
+        }
+
+        if let Err(e) = crate::routes::record_event(
+            db,
+            vault_id,
+            "funds_spent",
+            Some(serde_json::json!({
+                "amount_sat": amount_sat,
+                "outpoint": outpoint,
+            })),
+        )
+        .await
+        {
+            tracing::warn!(error = %e, vault_id, "failed to record funds_spent event");
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct VaultBalanceView {
     pub vault_id: String,
@@ -2255,9 +2372,9 @@ pub async fn get_vault_balance(
 
     let urls = esplora_urls(network)?;
     let id_for_resp = id.clone();
-    type ScanResult = (u64, u64, u64, Vec<ConfirmedDeposit>);
+    type ScanResult = (u64, u64, u64, Vec<ConfirmedDeposit>, Vec<String>);
     let _concurrency_permit = crate::concurrency::acquire_esplora().await;
-    let (confirmed_sat, unconfirmed_sat, total_sat, deposits) =
+    let (confirmed_sat, unconfirmed_sat, total_sat, deposits, still_unspent) =
         tokio::task::spawn_blocking(move || -> Result<ScanResult, BlockingErr> {
             let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
                 .map_err(|e| BlockingErr::Vault(e.to_string()))?;
@@ -2277,8 +2394,18 @@ pub async fn get_vault_balance(
             // Collect confirmed receives off this same scan (no extra chain
             // poll). External keychain only: internal is owner-send change,
             // not a deposit (#213).
+            //
+            // `still_unspent` is the same walk without either filter: every
+            // outpoint the wallet can still spend, change and unconfirmed
+            // included. It's the complement of `deposits` — what's missing
+            // from it is what left the vault. Keeping unconfirmed entries in
+            // is what makes a reorg safe: a deposit whose confirmation is
+            // rolled back reappears here as pending, so it reads as present,
+            // not spent.
             let mut deposits = Vec::new();
+            let mut still_unspent = Vec::new();
             for utxo in wallet.list_unspent() {
+                still_unspent.push(utxo.outpoint.to_string());
                 if utxo.keychain != bdk_wallet::KeychainKind::External {
                     continue;
                 }
@@ -2292,12 +2419,14 @@ pub async fn get_vault_balance(
                     });
                 }
             }
-            Ok((confirmed, unconfirmed, total, deposits))
+            Ok((confirmed, unconfirmed, total, deposits, still_unspent))
         })
         .await
         .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
 
-    record_new_deposits(&state.db, &id, &deposits, Utc::now()).await;
+    let now = Utc::now();
+    record_new_deposits(&state.db, &id, &deposits, now).await;
+    record_spent_deposits(&state.db, &id, &still_unspent, now).await;
 
     Ok(Json(VaultBalanceView {
         vault_id: id_for_resp,
@@ -2639,6 +2768,129 @@ mod tests {
         )
         .await;
         assert_eq!(received_count(&pool, "vault-2").await, 1);
+    }
+
+    async fn spent_count(pool: &sqlx::SqlitePool, vault_id: &str) -> i64 {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE vault_id = ? AND kind = 'funds_spent'",
+        )
+        .bind(vault_id)
+        .fetch_one(pool)
+        .await
+        .expect("count funds_spent events")
+    }
+
+    #[tokio::test]
+    async fn record_spent_deposits_emits_once_per_outpoint() {
+        let pool = memory_db().await;
+        seed_vault(&pool, "vault-1").await;
+        seed_vault(&pool, "vault-2").await;
+        let now = Utc::now();
+        let vault = "vault-1";
+
+        record_new_deposits(
+            &pool,
+            vault,
+            &[
+                deposit("aaaa:0", 100_000, 800_000),
+                deposit("bbbb:1", 50_000, 800_001),
+            ],
+            now,
+        )
+        .await;
+
+        // Both still on-chain: nothing left, nothing logged.
+        record_spent_deposits(
+            &pool,
+            vault,
+            &["aaaa:0".to_string(), "bbbb:1".to_string()],
+            now,
+        )
+        .await;
+        assert_eq!(spent_count(&pool, vault).await, 0);
+
+        // One swept off-server. The scan still sees the other, plus a
+        // change output we never recorded as a deposit — which must not
+        // confuse the comparison.
+        record_spent_deposits(
+            &pool,
+            vault,
+            &["bbbb:1".to_string(), "dddd:0".to_string()],
+            now,
+        )
+        .await;
+        assert_eq!(spent_count(&pool, vault).await, 1);
+
+        // The dashboard reloads and rescans: the same gone outpoint must
+        // not log a second time.
+        record_spent_deposits(&pool, vault, &["bbbb:1".to_string()], now).await;
+        assert_eq!(
+            spent_count(&pool, vault).await,
+            1,
+            "a re-scan must not double-log a spend"
+        );
+
+        // The vault is emptied: only the remaining deposit logs.
+        record_spent_deposits(&pool, vault, &[], now).await;
+        assert_eq!(spent_count(&pool, vault).await, 2);
+
+        // Spends are scoped per vault; vault-2 has its own ledger and is
+        // untouched by any of the above.
+        assert_eq!(spent_count(&pool, "vault-2").await, 0);
+    }
+
+    /// An owner send already says where the money went. The scan that
+    /// follows must stamp those deposits without adding a second, vaguer
+    /// line about the same coins — but a deposit that arrives *after*
+    /// the send is not covered by it and must still report.
+    #[tokio::test]
+    async fn a_server_built_send_suppresses_the_duplicate_line() {
+        let pool = memory_db().await;
+        seed_vault(&pool, "vault-send").await;
+        let vault = "vault-send";
+
+        let before = Utc::now() - chrono::Duration::seconds(60);
+        record_new_deposits(&pool, vault, &[deposit("aaaa:0", 100_000, 800_000)], before).await;
+
+        crate::routes::record_event(&pool, vault, "owner_send", None)
+            .await
+            .expect("owner send");
+
+        // A deposit that landed after the send; the send cannot have
+        // spent it.
+        let after = Utc::now() + chrono::Duration::seconds(60);
+        record_new_deposits(&pool, vault, &[deposit("bbbb:1", 30_000, 800_010)], after).await;
+
+        // The scan finds the vault empty: both deposits are gone.
+        record_spent_deposits(&pool, vault, &[], Utc::now()).await;
+        assert_eq!(
+            spent_count(&pool, vault).await,
+            1,
+            "only the deposit the owner send could not explain reports"
+        );
+
+        // Both rows are stamped even so, or the pre-send deposit would be
+        // re-evaluated on every future scan.
+        let unstamped: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM vault_deposits WHERE vault_id = ? AND spent_at IS NULL",
+        )
+        .bind(vault)
+        .fetch_one(&pool)
+        .await
+        .expect("count unstamped");
+        assert_eq!(unstamped, 0);
+    }
+
+    /// A vault with no recorded deposits (never scanned, or created
+    /// before the deposit ledger shipped) must stay silent, not read an
+    /// empty scan as everything having been spent.
+    #[tokio::test]
+    async fn record_spent_deposits_is_silent_without_a_ledger() {
+        let pool = memory_db().await;
+        seed_vault(&pool, "vault-bare").await;
+
+        record_spent_deposits(&pool, "vault-bare", &[], Utc::now()).await;
+        assert_eq!(spent_count(&pool, "vault-bare").await, 0);
     }
 
     /// Give the vault the sealed + verified owner email the setup
