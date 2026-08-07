@@ -308,7 +308,7 @@ export function AddHeirPortal({
       aria-modal="true"
       aria-labelledby="add-heir-title"
     >
-      <div className="card relative w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
+      <div className="card relative w-full max-w-xl p-6 max-h-[90vh] overflow-y-auto">
         <button
           type="button"
           aria-label="Close"
@@ -400,12 +400,11 @@ export function AddHeirPortal({
               </Field>
 
               <div>
-                <p className="text-xs uppercase tracking-wider text-dim">
-                  Optional video message
-                </p>
-                <p className="mt-1 mb-2 text-xs text-muted">
-                  A short clip only this heir can unlock. Proof the claim link
-                  is really from you.
+                {/* The recorder carries its own heading and explainer, so
+                    this line says only what it doesn't: where the clip
+                    ends up. Same shape as the setup portal's note. */}
+                <p className="mb-2 text-xs text-dim">
+                  Encrypted for this heir and released with their claim link.
                 </p>
                 <VideoMessageRecorder
                   heirName={heirName.trim() || undefined}

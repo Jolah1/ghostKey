@@ -182,17 +182,30 @@ export function VideoMessageRecorder({
       </p>
 
       <div className="mt-4">
-        {(phase === "idle" || phase === "recording") && (
-          <div className="overflow-hidden rounded-xl bg-black/80">
-            {/* Live camera preview while idle/recording. */}
-            <video
-              ref={videoRef}
-              className="aspect-video w-full object-cover"
-              playsInline
-              muted
-            />
-          </div>
-        )}
+        {/* Live camera preview. Only *shown* once recording starts: at
+         * idle the element held an empty black 16:9 box that ate the
+         * height of every dialog embedding this (Add Heir was scrolling
+         * its password field off-screen because of it).
+         *
+         * Hidden rather than unmounted, deliberately. start() assigns
+         * srcObject to videoRef BEFORE it calls setPhase("recording"),
+         * so dropping the element from the tree at idle would leave the
+         * ref null on that assignment: camera and recording would work
+         * and the preview would stay black. */}
+        <div
+          className={
+            phase === "recording"
+              ? "overflow-hidden rounded-xl bg-black/80"
+              : "hidden"
+          }
+        >
+          <video
+            ref={videoRef}
+            className="aspect-video w-full object-cover"
+            playsInline
+            muted
+          />
+        </div>
 
         {phase === "review" && previewUrl && (
           <div className="overflow-hidden rounded-xl bg-black/80">
