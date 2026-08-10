@@ -120,6 +120,9 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
     // off-server drops out of the clock this tick rather than being
     // nagged (or escalated) about coins that are already gone.
     retire_drained_vaults(state).await?;
+    // Same placement, same reason, for the vault that was never funded at
+    // all: stop its clock before anything can nag or escalate on it.
+    stand_down_never_funded_vaults(state).await?;
     issue_pre_deadline_reminders(state, &now).await?;
     transition_ok_to_alarmed(state, &now).await?;
     send_alarm_escalations(state, &now).await?;
@@ -1119,6 +1122,96 @@ async fn retire_drained_vaults(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Stop the clock on a vault that is `ok` but was never funded.
+///
+/// The sweep above deliberately ignores these: with no deposit on record
+/// they cannot have been drained, and calling them drained is what
+/// announced brand-new vaults as emptied. But they still must not run a
+/// check-in clock, or they go overdue and count down to notifying an heir
+/// about a vault holding nothing (signet, 2026-08-10).
+///
+/// So this is the same status change with none of the drain story: no
+/// event, no owner mail, just the clock stopped. It exists for vaults
+/// created before funding-gated status applied everywhere; once those are
+/// drained from the estate it will simply never match a row.
+///
+/// The chain scan is still what decides. A vault whose deposits were
+/// never recorded — nobody loaded its balance — but which does hold coins
+/// reads as `has_unspent` and is left alone.
+async fn stand_down_never_funded_vaults(state: &AppState) -> anyhow::Result<()> {
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            String,
+            i64,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+            Option<i64>,
+        ),
+    >(
+        r#"SELECT id,
+                  descriptor_external, descriptor_internal, network, timelock_blocks,
+                  chain_unlock_height, chain_tip_height, chain_scanned_at,
+                  chain_has_unspent
+             FROM vaults
+            WHERE status = 'ok'
+              AND NOT EXISTS (SELECT 1 FROM vault_deposits d WHERE d.vault_id = vaults.id)"#,
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let now = Utc::now();
+    for (
+        id,
+        descriptor_external,
+        descriptor_internal,
+        network,
+        timelock_blocks,
+        chain_unlock_height,
+        chain_tip_height,
+        chain_scanned_at,
+        chain_has_unspent,
+    ) in rows
+    {
+        let input = crate::psbt_routes::EstimateInput {
+            vault_id: id.clone(),
+            descriptor_external,
+            descriptor_internal,
+            network,
+            timelock_blocks,
+            cached_unlock_height: chain_unlock_height,
+            cached_tip_height: chain_tip_height,
+            cached_scanned_at: chain_scanned_at,
+            cached_has_unspent: chain_has_unspent,
+        };
+
+        match crate::psbt_routes::unlock_estimate_with_cache(&state.db, &input, now).await {
+            // Holds coins after all: genuinely funded, leave the clock be.
+            Ok(est) if est.has_unspent => {
+                record_chain_scan(true, None, now);
+                continue;
+            }
+            Ok(_) => record_chain_scan(true, None, now),
+            Err(e) => {
+                record_chain_scan(false, Some(e.to_string()), now);
+                continue;
+            }
+        }
+
+        if return_never_funded_vault_to_unfunded(&state.db, &id, "ok").await? {
+            tracing::info!(
+                vault_id = %id,
+                "vault was never funded; check-in clock stopped (ok -> unfunded)"
+            );
+        }
+    }
+    Ok(())
+}
+
 async fn transition_ok_to_alarmed(state: &AppState, now_iso: &str) -> anyhow::Result<()> {
     let due = sqlx::query_as::<
         _,
@@ -1440,6 +1533,30 @@ async fn return_empty_vault_to_unfunded(
     vault_id: &str,
     from_status: &str,
 ) -> anyhow::Result<bool> {
+    return_empty_vault_to_unfunded_inner(db, vault_id, from_status, true).await
+}
+
+/// As above, but silent: the status changes and nothing is written to the
+/// activity feed.
+///
+/// For a vault that was never funded there is no story to tell. Its feed
+/// should not gain a "vault is empty" entry describing money that never
+/// arrived — the owner would be reading about an event that did not
+/// happen.
+async fn return_never_funded_vault_to_unfunded(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+    from_status: &str,
+) -> anyhow::Result<bool> {
+    return_empty_vault_to_unfunded_inner(db, vault_id, from_status, false).await
+}
+
+async fn return_empty_vault_to_unfunded_inner(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+    from_status: &str,
+    record: bool,
+) -> anyhow::Result<bool> {
     let changed = sqlx::query(
         "UPDATE vaults SET status = 'unfunded', claim_eligible_at = NULL \
          WHERE id = ? AND status = ?",
@@ -1451,15 +1568,17 @@ async fn return_empty_vault_to_unfunded(
     if changed.rows_affected() == 0 {
         return Ok(false);
     }
-    record_event(
-        db,
-        vault_id,
-        "vault_empty",
-        Some(serde_json::json!({
-            "reason": "chain_scan_found_no_unspent_outputs"
-        })),
-    )
-    .await?;
+    if record {
+        record_event(
+            db,
+            vault_id,
+            "vault_empty",
+            Some(serde_json::json!({
+                "reason": "chain_scan_found_no_unspent_outputs"
+            })),
+        )
+        .await?;
+    }
     Ok(true)
 }
 
@@ -2725,6 +2844,93 @@ mod tests {
         .await
         .expect("events");
         assert_eq!(events, 0, "and must not claim its money left");
+    }
+
+    /// The never-funded vault still has to stop its clock — it just does
+    /// so quietly, with no claim that money left.
+    #[tokio::test]
+    async fn never_funded_ok_vault_stands_down_without_a_drain_story() {
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        let now = Utc::now();
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status, claim_eligible_at,
+                chain_tip_height, chain_scanned_at, chain_has_unspent
+            ) VALUES ('v-idle','regtest','tr(fake/v-idle/0/*)','tr(fake/v-idle/1/*)',
+                144, 86400, 3600, '2026-01-01T00:00:00Z',
+                '2026-06-01T00:00:00Z', 'ok', '2026-06-02T00:00:00Z',
+                150, ?, 0)"#,
+        )
+        .bind(now.to_rfc3339())
+        .execute(&pool)
+        .await
+        .expect("insert");
+
+        stand_down_never_funded_vaults(&state)
+            .await
+            .expect("stand down");
+
+        let (status, eligible): (String, Option<String>) =
+            sqlx::query_as("SELECT status, claim_eligible_at FROM vaults WHERE id = 'v-idle'")
+                .fetch_one(&pool)
+                .await
+                .expect("vault");
+        assert_eq!(status, "unfunded", "an unfunded vault must not run a clock");
+        assert!(eligible.is_none());
+        // The whole point of splitting this from the drain sweep: no
+        // event claiming money left a vault that never had any.
+        let events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE vault_id = 'v-idle'")
+                .fetch_one(&pool)
+                .await
+                .expect("events");
+        assert_eq!(events, 0, "nothing happened, so nothing may be reported");
+    }
+
+    /// And it must not touch a vault that actually holds coins, even when
+    /// no deposit was ever recorded for it.
+    #[tokio::test]
+    async fn stand_down_leaves_a_funded_vault_alone() {
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        let now = Utc::now();
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status,
+                chain_unlock_height, chain_tip_height, chain_scanned_at,
+                chain_has_unspent
+            ) VALUES ('v-quiet','regtest','tr(fake/v-quiet/0/*)','tr(fake/v-quiet/1/*)',
+                144, 86400, 3600, '2026-01-01T00:00:00Z',
+                '2026-06-01T00:00:00Z', 'ok', 200, 150, ?, 1)"#,
+        )
+        .bind(now.to_rfc3339())
+        .execute(&pool)
+        .await
+        .expect("insert");
+
+        stand_down_never_funded_vaults(&state)
+            .await
+            .expect("stand down");
+
+        let status: String = sqlx::query_scalar("SELECT status FROM vaults WHERE id = 'v-quiet'")
+            .fetch_one(&pool)
+            .await
+            .expect("status");
+        assert_eq!(
+            status, "ok",
+            "coins on chain outrank a missing deposit record"
+        );
     }
 
     /// A spent deposit still counts as proof the vault once held coins —

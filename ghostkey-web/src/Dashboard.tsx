@@ -2507,9 +2507,15 @@ function EmptyState({
           <Button onClick={() => onNavigate("setup")}>
             {shown && reason !== "gone" ? "Add an heir" : "Set up a vault"}
           </Button>
-          <Button variant="ghost" onClick={() => onNavigate("checkin")}>
-            Sign in
-          </Button>
+          {/* Sign in only where it can help. An owner who just closed out
+              their last heir is already signed in on this device, so
+              offering it there is noise. A vault that vanished from the
+              server is the one case where signing in may find others. */}
+          {!shown || reason === "gone" ? (
+            <Button variant="ghost" onClick={() => onNavigate("checkin")}>
+              Sign in
+            </Button>
+          ) : null}
         </div>
       </div>
     </main>

@@ -859,14 +859,18 @@ fn validate_contact_shape(channel: &str, contact: &str) -> Result<(), ApiError> 
 /// Lightning to check in on) an empty vault. The scheduler flips them to
 /// `ok` on first funding (see `scheduler::activate_funded_vaults`).
 ///
-/// Demo deployments have no real chain to detect funding on, so vaults
-/// start active.
+/// This holds on every deployment, demo included. Demo mode used to
+/// start vaults `ok` on the reasoning that "demo deployments have no
+/// real chain to detect funding on" — which was never true of signet,
+/// where the scheduler scans Mutinynet. The carve-out meant a demo vault
+/// with no coins ran a check-in clock, went overdue, and counted down to
+/// notifying an heir about an empty vault (signet, 2026-08-10).
+///
+/// `demo_mode` is about cadence, not about chains: it shortens check-in
+/// periods and the claim window so a demo fits in a sitting. Nothing
+/// about it implies coins cannot be detected.
 fn initial_vault_status() -> &'static str {
-    if crate::demo::demo_mode() {
-        "ok"
-    } else {
-        "unfunded"
-    }
+    "unfunded"
 }
 
 async fn create_vault(
@@ -933,7 +937,7 @@ async fn create_vault(
     .execute(&state.db)
     .await?;
 
-    // Hold the clock until the vault is funded (no-op in demo mode).
+    // Hold the clock until the vault is funded.
     let initial_status = initial_vault_status();
     if initial_status != "ok" {
         sqlx::query("UPDATE vaults SET status = ? WHERE id = ?")
@@ -1577,7 +1581,7 @@ async fn create_vault_from_xpub(
     .execute(&state.db)
     .await?;
 
-    // Hold the clock until the vault is funded (no-op in demo mode).
+    // Hold the clock until the vault is funded.
     let initial_status = initial_vault_status();
     if initial_status != "ok" {
         sqlx::query("UPDATE vaults SET status = ? WHERE id = ?")
@@ -2033,7 +2037,7 @@ async fn create_vault_guardian(
         .await?;
     }
 
-    // Hold the clock until the vault is funded (no-op in demo mode).
+    // Hold the clock until the vault is funded.
     let initial_status = initial_vault_status();
     if initial_status != "ok" {
         sqlx::query("UPDATE vaults SET status = ? WHERE id = ?")
@@ -5107,6 +5111,26 @@ mod tests {
         let (fp, _path, xpub) =
             ghostkey_core::keys::account_xpub(&master, Network::Regtest).unwrap();
         (xpub.to_string(), format!("{fp}"))
+    }
+
+    /// A new vault never starts its check-in clock, on any deployment.
+    ///
+    /// Demo mode used to start vaults `ok`, so a demo vault holding
+    /// nothing went overdue and counted down to notifying an heir about
+    /// an empty vault. `demo_mode()` caches in a OnceLock and other tests
+    /// in this binary pin it, so this asserts the value directly rather
+    /// than trying to drive the flag — the point is that the result no
+    /// longer depends on it at all.
+    #[test]
+    fn a_new_vault_never_starts_its_clock() {
+        assert_eq!(
+            initial_vault_status(),
+            "unfunded",
+            "funding starts the clock; creation must not"
+        );
+        // Whatever demo mode is in this process, the answer is the same.
+        let _ = crate::demo::demo_mode();
+        assert_eq!(initial_vault_status(), "unfunded");
     }
 
     #[test]
