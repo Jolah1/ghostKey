@@ -1138,27 +1138,37 @@ async fn retire_drained_vaults(state: &AppState) -> anyhow::Result<()> {
 /// The chain scan is still what decides. A vault whose deposits were
 /// never recorded — nobody loaded its balance — but which does hold coins
 /// reads as `has_unspent` and is left alone.
+///
+/// Covers `alarmed` as well as `ok`. A never-funded vault that had
+/// already escalated before this shipped is stuck there: the alarmed
+/// reconciliation only rescues it once `claim_eligible_at` passes, so
+/// until then the owner reads "your heir will be notified" and collects
+/// escalation mail over a vault holding nothing. The heir is never
+/// actually contacted — `HeirContactGate::Empty` catches that at
+/// eligibility — but the owner should not be living with the warning
+/// either.
 async fn stand_down_never_funded_vaults(state: &AppState) -> anyhow::Result<()> {
     let rows = sqlx::query_as::<
         _,
         (
-            String,
-            String,
-            String,
-            String,
-            i64,
+            String, // id
+            String, // status (CAS'd on, so read rather than assumed)
+            String, // descriptor_external
+            String, // descriptor_internal
+            String, // network
+            i64,    // timelock_blocks
             Option<i64>,
             Option<i64>,
             Option<String>,
             Option<i64>,
         ),
     >(
-        r#"SELECT id,
+        r#"SELECT id, status,
                   descriptor_external, descriptor_internal, network, timelock_blocks,
                   chain_unlock_height, chain_tip_height, chain_scanned_at,
                   chain_has_unspent
              FROM vaults
-            WHERE status = 'ok'
+            WHERE status IN ('ok', 'alarmed')
               AND NOT EXISTS (SELECT 1 FROM vault_deposits d WHERE d.vault_id = vaults.id)"#,
     )
     .fetch_all(&state.db)
@@ -1167,6 +1177,7 @@ async fn stand_down_never_funded_vaults(state: &AppState) -> anyhow::Result<()> 
     let now = Utc::now();
     for (
         id,
+        status,
         descriptor_external,
         descriptor_internal,
         network,
@@ -1202,10 +1213,14 @@ async fn stand_down_never_funded_vaults(state: &AppState) -> anyhow::Result<()> 
             }
         }
 
-        if return_never_funded_vault_to_unfunded(&state.db, &id, "ok").await? {
+        // CAS on the status we read, so a vault that escalated between the
+        // query and here is left for the next tick rather than silently
+        // reset from under a transition that is mid-flight.
+        if return_never_funded_vault_to_unfunded(&state.db, &id, &status).await? {
             tracing::info!(
                 vault_id = %id,
-                "vault was never funded; check-in clock stopped (ok -> unfunded)"
+                from = %status,
+                "vault was never funded; check-in clock stopped (-> unfunded)"
             );
         }
     }
@@ -2891,6 +2906,61 @@ mod tests {
                 .await
                 .expect("events");
         assert_eq!(events, 0, "nothing happened, so nothing may be reported");
+    }
+
+    /// A never-funded vault that already escalated is the one the owner
+    /// actually sees: "Check-in overdue, your heir will be notified", on a
+    /// vault holding nothing. The alarmed reconciliation only rescues it
+    /// once claim_eligible_at passes, which can be a whole grace period of
+    /// warnings about money that never existed.
+    #[tokio::test]
+    async fn never_funded_alarmed_vault_also_stands_down() {
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        let now = Utc::now();
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status, claim_eligible_at,
+                chain_tip_height, chain_scanned_at, chain_has_unspent
+            ) VALUES ('v-alarmed-empty','regtest','tr(fake/v-ae/0/*)','tr(fake/v-ae/1/*)',
+                144, 86400, 3600, '2026-01-01T00:00:00Z',
+                '2026-06-01T00:00:00Z', 'alarmed', '2027-06-02T00:00:00Z',
+                150, ?, 0)"#,
+        )
+        .bind(now.to_rfc3339())
+        .execute(&pool)
+        .await
+        .expect("insert");
+
+        stand_down_never_funded_vaults(&state)
+            .await
+            .expect("stand down");
+
+        let (status, eligible): (String, Option<String>) = sqlx::query_as(
+            "SELECT status, claim_eligible_at FROM vaults WHERE id = 'v-alarmed-empty'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("vault");
+        assert_eq!(
+            status, "unfunded",
+            "an alarmed vault holding nothing must stand down, not wait out the grace period"
+        );
+        assert!(
+            eligible.is_none(),
+            "and must lose its claim eligibility with the alarm"
+        );
+        let events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE vault_id = 'v-alarmed-empty'")
+                .fetch_one(&pool)
+                .await
+                .expect("events");
+        assert_eq!(events, 0, "still nothing to report");
     }
 
     /// And it must not touch a vault that actually holds coins, even when
