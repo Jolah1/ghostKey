@@ -61,7 +61,7 @@ import {
 } from "./crypto/sealing";
 import {
   getAllVaultMetas,
-  getActiveVaultId,
+  getTrustedVaultId,
   getVaultMeta,
   getVaultOwnerToken,
   saveVaultMeta,
@@ -133,7 +133,10 @@ export function SignInPortal({
   // to sign in, never a password reset — the password does the actual
   // unlocking in both flows and cannot be recovered by anyone.
   const [useEmailLink, setUseEmailLink] = useState(false);
-  const localVaultId = localUnlock ? getActiveVaultId() : null;
+  // Not getActiveVaultId(): the pointer can be dropped while this device
+  // still holds usable credentials, and reading it made a known device ask
+  // for an email link as though it were new.
+  const localVaultId = localUnlock ? getTrustedVaultId() : null;
   const localMeta = localVaultId ? getVaultMeta(localVaultId) : null;
   const localLock = localMeta?.ownerTokenLock ?? null;
   // A vault set up before the trusted-device lock shipped has no encrypted
@@ -478,6 +481,7 @@ export function SignInPortal({
     setError(null);
     const groupId = crypto.randomUUID();
     let firstId: string | null = null;
+    let firstLiveId: string | null = null;
 
     for (let i = 0; i < recoveryBundles.length; i++) {
       const { vault: v, sealed_blobs: blobs } = recoveryBundles[i];
@@ -541,6 +545,10 @@ export function SignInPortal({
           groupId,
         });
         if (!firstId) firstId = v.id;
+        // Prefer a vault the owner can still act on. Landing on a closed
+        // one just because it sorted first reads as "my heir claimed my
+        // Bitcoin" to someone who came here to manage a different heir.
+        if (!firstLiveId && v.status !== "claimed") firstLiveId = v.id;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         const isAuthTagFail = /poly1305|tag|invalid|decryp/i.test(msg);
@@ -558,7 +566,7 @@ export function SignInPortal({
       setPhase({ kind: "idle" });
       return;
     }
-    setActiveVaultId(firstId);
+    setActiveVaultId(firstLiveId ?? firstId);
     setPhase({ kind: "done" });
     onUnlock?.();
     onNavigate("dashboard");

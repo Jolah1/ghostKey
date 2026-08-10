@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   canLocalUnlock,
   getActiveVaultId,
+  getAllVaultMetas,
+  getTrustedVaultId,
   getVaultMeta,
+  removeVaultMeta,
+  setActiveVaultId,
   getVaultOwnerToken,
   hasLockedVaultCredential,
   lockVaultCredential,
@@ -236,5 +240,78 @@ describe("a validated lock moves the owner token out of the meta", () => {
 
     expect(getVaultMeta("fresh")?.ownerToken).toBe("setup-owner-token");
     expect(getVaultOwnerToken("fresh")).toBe("setup-owner-token");
+  });
+});
+
+describe("device keeps knowing you after the active vault goes away", () => {
+  beforeEach(() => {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: globalThis,
+    });
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: memoryStorage(),
+    });
+    Object.defineProperty(globalThis, "sessionStorage", {
+      configurable: true,
+      value: memoryStorage(),
+    });
+  });
+
+  function twoHeirs() {
+    saveVaultMeta({
+      id: "ara",
+      label: "Ara",
+      owner: { address: "owner@example.com" },
+      heir: { name: "Ara", email: "", address: "" },
+      createdAt: "2026-08-01T00:00:00Z",
+      ownerToken: "ara-token",
+    });
+    saveVaultMeta({
+      id: "fola",
+      label: "Fola",
+      owner: { address: "owner@example.com" },
+      heir: { name: "Fola", email: "", address: "" },
+      createdAt: "2026-08-02T00:00:00Z",
+      ownerToken: "fola-token",
+    });
+    setActiveVaultId("ara");
+  }
+
+  /** The reported bug: removing Ara made the sign-in portal email a link
+   *  as though this were a new device, while Fola's credentials sat in
+   *  storage untouched. */
+  it("hands the pointer to a remaining vault instead of nulling it", () => {
+    twoHeirs();
+
+    removeVaultMeta("ara");
+
+    expect(getAllVaultMetas().map((v) => v.id)).toEqual(["fola"]);
+    expect(canLocalUnlock("fola")).toBe(true);
+    expect(getActiveVaultId()).toBe("fola");
+    expect(getTrustedVaultId()).toBe("fola");
+  });
+
+  it("still finds a usable vault when the pointer is cleared outright", () => {
+    twoHeirs();
+    // Whatever clears it — an older build, a half-finished flow — the
+    // device still holds credentials and must not be treated as new.
+    setActiveVaultId(null);
+
+    expect(getActiveVaultId()).toBeNull();
+    expect(getTrustedVaultId()).toBe("ara");
+  });
+
+  it("reports no trusted vault once the last one is gone", () => {
+    twoHeirs();
+
+    removeVaultMeta("ara");
+    removeVaultMeta("fola");
+
+    expect(getAllVaultMetas()).toEqual([]);
+    expect(getActiveVaultId()).toBeNull();
+    // Genuinely a fresh device now: the email link is the right path.
+    expect(getTrustedVaultId()).toBeNull();
   });
 });
