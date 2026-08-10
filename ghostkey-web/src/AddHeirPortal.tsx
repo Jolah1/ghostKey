@@ -40,10 +40,37 @@ import {
 import { generateParty, wipe, type Network } from "./crypto/keygen";
 import { prepareVideo } from "./crypto/video";
 import { randomBytes } from "@noble/hashes/utils.js";
-import { getVaultMeta, saveVaultMeta, setActiveVaultId } from "./vaultStore";
+import {
+  getVaultMeta,
+  getVaultOwnerToken,
+  saveVaultMeta,
+  setActiveVaultId,
+} from "./vaultStore";
 import { VideoMessageRecorder, type RecordedClip } from "./VideoMessageRecorder";
 
 const PLACEHOLDER_OWNER_TOKEN = "ghostkey-placeholder-owner-token-v1";
+
+/** This device holds no usable owner credential, so nothing was even
+ *  attempted with the password. Distinct from a wrong password. */
+export class MissingOwnerToken extends Error {
+  constructor() {
+    super("No owner credential on this device.");
+    this.name = "MissingOwnerToken";
+  }
+}
+
+/**
+ * Whether a thrown error is AEAD decryption failing, which is the only
+ * thing that actually means "wrong password".
+ *
+ * unsealOwner surfaces the auth-tag check as an opaque error whose text
+ * varies by browser, so we match the vocabulary rather than a type. Same
+ * heuristic the sign-in portal uses.
+ */
+export function isUnsealFailure(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return /poly1305|tag|invalid|decryp/i.test(msg);
+}
 
 type Channel = "email" | "sms" | "whatsapp";
 
@@ -118,8 +145,13 @@ export function AddHeirPortal({
     let ownerXprv: string;
     let ownerXpubTagged: string;
     try {
-      const siblingToken = getVaultMeta(siblingVaultId)?.ownerToken;
-      if (!siblingToken) throw new Error("Sign in again before adding an heir.");
+      // getVaultOwnerToken, not getVaultMeta().ownerToken: a vault with a
+      // validated password lock keeps its live token in sessionStorage and
+      // the at-rest meta holds `undefined`. Reading the meta directly meant
+      // Add Heir failed for every owner who had signed in, and said their
+      // password was wrong.
+      const siblingToken = getVaultOwnerToken(siblingVaultId);
+      if (!siblingToken) throw new MissingOwnerToken();
       const blobs = await api.getSealedBlobs(siblingVaultId, siblingToken);
       if (!blobs.owner_xpub_fragment_external) {
         setPhase({ kind: "form" });
@@ -153,10 +185,18 @@ export function AddHeirPortal({
       ownerXprv = unsealed.ownerXprv;
     } catch (e) {
       setPhase({ kind: "form" });
+      // Only a failed unseal means a wrong password. Everything else in
+      // this block — a missing credential, a bad xpub fragment — used to
+      // be reported as one, which told owners they had lost a password
+      // they still had.
       setError(
         e instanceof ApiError
           ? e.message
-          : "That password didn't unlock the vault. Check it and try again.",
+          : e instanceof MissingOwnerToken
+            ? "This device is locked. Sign in with your password, then add the heir."
+            : isUnsealFailure(e)
+              ? "That password didn't unlock the vault. Check it and try again."
+              : `Could not add this heir: ${e instanceof Error ? e.message : String(e)}`,
       );
       return;
     }
