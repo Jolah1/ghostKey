@@ -299,8 +299,29 @@ export function removeVaultMeta(id: string): boolean {
   delete map[id];
   deleteLiveToken(id);
   writeAll(map);
-  if (getActiveVaultId() === id) setActiveVaultId(null);
+  if (getActiveVaultId() === id) {
+    // Hand the pointer to whatever is left rather than nulling it. A null
+    // here read as "this device knows nobody", so removing one heir made
+    // the sign-in portal email a link as if this were a new device, with
+    // the owner's other vaults sitting in storage the whole time.
+    const next = Object.keys(map)[0] ?? null;
+    setActiveVaultId(next);
+  }
   return true;
+}
+
+/**
+ * The vault this device should offer to unlock, preferring the active one.
+ *
+ * Sign-in reads this to decide between the local password form and emailing
+ * a link. It must answer "does this device hold usable credentials", which
+ * is not the same question as "is a vault currently selected" — the pointer
+ * can be dropped (heir removed, vault dismissed) while the credentials stay.
+ */
+export function getTrustedVaultId(): string | null {
+  const active = getActiveVaultId();
+  if (canLocalUnlock(active)) return active;
+  return getAllVaultMetas().find((m) => canLocalUnlock(m.id))?.id ?? null;
 }
 
 /**

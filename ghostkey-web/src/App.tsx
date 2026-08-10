@@ -40,6 +40,7 @@ import {
   canLocalUnlock,
   getAllVaultMetas,
   getActiveVaultId,
+  getTrustedVaultId,
   getVaultOwnerToken,
   hasLockedVaultCredential,
   hasVaultCredentialLock,
@@ -659,7 +660,11 @@ export default function App() {
       {location.kind === "route" && location.route === "recovery-guide" && <RecoveryGuide onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "checkin" && (
         <SignInPortal
-          localUnlock={canLocalUnlock(getActiveVaultId())}
+          // Asks "does this device hold credentials", not "is a vault
+          // selected". The old form read the active pointer, so removing
+          // an heir made this device look brand new and sign-in emailed
+          // a link instead of offering the password form.
+          localUnlock={canLocalUnlock(getTrustedVaultId())}
           onNavigate={setRoute}
           onUnlock={() => {
             touchSession();

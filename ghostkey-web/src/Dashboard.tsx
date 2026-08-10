@@ -39,6 +39,7 @@ import { countdown, parseRfc } from "./time";
 import { AssistChat } from "./AssistChat";
 import {
   getActiveVaultId,
+  getAllVaultMetas,
   getVaultMeta,
   getVaultOwnerToken,
   getVaultsByGroup,
@@ -119,6 +120,10 @@ export function Dashboard({ onNavigate }: Props) {
   const [lightningOpen, setLightningOpen] = useState(false);
   // Whether the "Add a heir" modal is open.
   const [addHeirOpen, setAddHeirOpen] = useState(false);
+  // Set when the owner closes out the last vault on this device. Keeps them
+  // on the dashboard with an explanation instead of dropping them on the
+  // landing page as though they had never signed in.
+  const [emptied, setEmptied] = useState<EmptyReason>(null);
   // VAPID public key from /health, or null when the server has no
   // push keypair configured. Gates the reminder opt-in card.
   const [pushKey, setPushKey] = useState<string | null>(null);
@@ -162,16 +167,16 @@ export function Dashboard({ onNavigate }: Props) {
         // The server no longer has this vault (e.g. owner deleted it
         // from another device, or it was an old test row). Drop the
         // local meta so the dashboard doesn't keep clinging to a row
-        // that's gone — then route to landing rather than auto-
-        // switching to whatever other vault happens to be in
-        // localStorage.
+        // that's gone, then say so in place. Silently switching to
+        // whatever else is in localStorage is what made a claimed
+        // sibling look like the vault the owner had just been on.
         removeVaultMeta(activeId);
-        onNavigate("landing");
+        setEmptied("gone");
         return;
       }
       // Otherwise swallow; the next tick may succeed.
     }
-  }, [activeId, ownerToken, onNavigate, groupVaults]);
+  }, [activeId, ownerToken, groupVaults]);
 
   // Initial load.
   useEffect(() => {
@@ -294,7 +299,16 @@ export function Dashboard({ onNavigate }: Props) {
     removeVaultMeta(siblingId);
     const remaining = groupVaults.filter((v) => v.id !== siblingId);
     if (remaining.length === 0) {
-      onNavigate("landing");
+      // Other heirs may live in other groups; removeVaultMeta has already
+      // pointed us at one. Only show the empty state when the device truly
+      // has nothing left, never bounce to the landing page.
+      const elsewhere = getAllVaultMetas();
+      if (elsewhere.length === 0) {
+        setEmptied("removed");
+        return;
+      }
+      setActiveVaultId(elsewhere[0].id);
+      if (typeof window !== "undefined") window.location.reload();
       return;
     }
     // Switch active to the first remaining sibling and reload so all
@@ -303,6 +317,9 @@ export function Dashboard({ onNavigate }: Props) {
     if (typeof window !== "undefined") window.location.reload();
   }
 
+  if (emptied) {
+    return <EmptyState onNavigate={onNavigate} reason={emptied} />;
+  }
   if (!activeId || !meta) {
     return <EmptyState onNavigate={onNavigate} />;
   }
@@ -390,7 +407,18 @@ export function Dashboard({ onNavigate }: Props) {
                       (v) => v.id !== meta.id,
                     );
                     if (remaining.length === 0) {
-                      onNavigate("landing");
+                      // Same rule as removing an heir: land on a sibling in
+                      // another group if there is one, otherwise say the
+                      // vault is closed. Never the landing page.
+                      const elsewhere = getAllVaultMetas();
+                      if (elsewhere.length === 0) {
+                        setEmptied("closed");
+                        return;
+                      }
+                      setActiveVaultId(elsewhere[0].id);
+                      if (typeof window !== "undefined") {
+                        window.location.reload();
+                      }
                       return;
                     }
                     // Multi-heir: the other heirs' vaults are still
@@ -2432,20 +2460,53 @@ function humanAgo(then: Date, now: Date): string {
 
 /* ----------------------------- Empty state -------------------------------- */
 
-function EmptyState({ onNavigate }: { onNavigate: (r: Route) => void }) {
+/** Why the dashboard has nothing to show. `null` is a device that never
+ *  had a vault; the rest are owners who just closed one out and need to
+ *  be told that, not greeted like a stranger. */
+export type EmptyReason = null | "removed" | "closed" | "gone";
+
+function EmptyState({
+  onNavigate,
+  reason = null,
+}: {
+  onNavigate: (r: Route) => void;
+  reason?: EmptyReason;
+}) {
+  // Each heir is its own vault, so "add an heir" and "set up a vault" are
+  // the same act once nothing is left on the device. Lead with the owner's
+  // word for it.
+  const copy = {
+    removed: {
+      title: "That was your last heir",
+      body: "This vault has nobody to inherit it now. Your Bitcoin is untouched and still yours — add an heir whenever you're ready.",
+    },
+    closed: {
+      title: "Vault closed",
+      body: "That heir's share has been claimed and this device is clear. Your other Bitcoin is unaffected. You can add another heir any time.",
+    },
+    gone: {
+      title: "This vault is no longer on the server",
+      body: "It was removed, possibly from another device. Nothing here can reach it. Sign in if you have other vaults.",
+    },
+  };
+  const shown = reason ? copy[reason] : null;
+
   return (
     <main className="bg-app fade-in">
       <div className="mx-auto max-w-xl px-5 py-20 text-center md:py-28">
         <p className="eyebrow-dim">Dashboard</p>
         <h1 className="mt-6 font-serif text-3xl md:text-4xl">
-          No vault on this device yet
+          {shown ? shown.title : "No vault on this device yet"}
         </h1>
         <p className="mt-3 text-muted">
-          Set one up in a few minutes, or sign in with your email and password
-          if you already have one.
+          {shown
+            ? shown.body
+            : "Set one up in a few minutes, or sign in with your email and password if you already have one."}
         </p>
         <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-          <Button onClick={() => onNavigate("setup")}>Set up a vault</Button>
+          <Button onClick={() => onNavigate("setup")}>
+            {shown && reason !== "gone" ? "Add an heir" : "Set up a vault"}
+          </Button>
           <Button variant="ghost" onClick={() => onNavigate("checkin")}>
             Sign in
           </Button>
