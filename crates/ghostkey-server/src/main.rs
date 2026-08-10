@@ -141,8 +141,21 @@ async fn main() -> Result<()> {
     tracing::info!(
         vault_tokens_sealed = token_migration.vault_tokens_sealed,
         guardian_tokens_sealed = token_migration.guardian_tokens_sealed,
+        vault_tokens_skipped = token_migration.vault_tokens_skipped,
+        guardian_tokens_skipped = token_migration.guardian_tokens_skipped,
         "legacy claim-token sealing migration complete"
     );
+    // Repeat the skip count at warn level. The line above is one info
+    // record among many at boot; a vault with an unredeemable claim
+    // token is worth an operator noticing.
+    let skipped = token_migration.vault_tokens_skipped + token_migration.guardian_tokens_skipped;
+    if skipped > 0 {
+        tracing::warn!(
+            skipped,
+            "legacy claim tokens left unsealed because they no longer match their own hash; \
+             the affected heirs cannot redeem their claim links (vault ids logged above)"
+        );
+    }
 
     // Lightning provider: HttpProvider talking to a sidecar (either
     // Breez or LNbits — same wire protocol) when
