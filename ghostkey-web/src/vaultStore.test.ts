@@ -179,3 +179,62 @@ describe("trusted-device inactivity lock", () => {
     expect(getVaultOwnerToken("vault-migrate")).toBeNull();
   });
 });
+
+describe("a validated lock moves the owner token out of the meta", () => {
+  beforeEach(() => {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: globalThis,
+    });
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: memoryStorage(),
+    });
+    Object.defineProperty(globalThis, "sessionStorage", {
+      configurable: true,
+      value: memoryStorage(),
+    });
+  });
+
+  /** The trap that broke Add Heir for three weeks: after sign-in the token
+   *  lives in sessionStorage, so reading meta.ownerToken yields undefined
+   *  while the credential is perfectly usable. Callers must go through
+   *  getVaultOwnerToken. */
+  it("is invisible via getVaultMeta but present via getVaultOwnerToken", () => {
+    saveVaultMeta({
+      id: "signed-in",
+      label: "Queen",
+      owner: { address: "owner@example.com" },
+      heir: { name: "Queen", email: "", address: "" },
+      createdAt: "2026-08-10T00:00:00Z",
+      ownerToken: "live-owner-token",
+      ownerTokenLock: {
+        passwordSalt: "salt",
+        memKiB: 64,
+        iters: 3,
+        ownerTokenBlob: { v: 1, ct: "ct", nonce: "nonce" },
+        ownerEmailHash: "hash",
+        validated: true,
+      },
+    });
+
+    expect(getVaultMeta("signed-in")?.ownerToken).toBeUndefined();
+    expect(getVaultOwnerToken("signed-in")).toBe("live-owner-token");
+  });
+
+  /** A vault created in setup has no validated lock yet, so the token
+   *  stays in the meta. This is why the bug never showed during setup. */
+  it("keeps the token in the meta when there is no validated lock", () => {
+    saveVaultMeta({
+      id: "fresh",
+      label: "Fresh",
+      owner: { address: "owner@example.com" },
+      heir: { name: "Fay", email: "", address: "" },
+      createdAt: "2026-08-10T00:00:00Z",
+      ownerToken: "setup-owner-token",
+    });
+
+    expect(getVaultMeta("fresh")?.ownerToken).toBe("setup-owner-token");
+    expect(getVaultOwnerToken("fresh")).toBe("setup-owner-token");
+  });
+});
