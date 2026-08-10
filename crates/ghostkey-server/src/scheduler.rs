@@ -1051,12 +1051,23 @@ async fn retire_drained_vaults(state: &AppState) -> anyhow::Result<()> {
             Option<i64>,    // chain_has_unspent
         ),
     >(
+        // The EXISTS clause is what separates "the coins left" from "coins
+        // never arrived". Both look identical to a chain scan — no unspent
+        // outputs — but only the first is a drain worth acting on.
+        //
+        // `vault_deposits` rows are never deleted (a spend stamps
+        // `spent_at`), so one row is permanent proof this vault once held
+        // money. Without this, demo mode's habit of creating vaults as
+        // `ok` before funding meant every new vault was announced as
+        // "emptied off-server" seconds after it was created (signet,
+        // 2026-08-10).
         r#"SELECT id,
                   descriptor_external, descriptor_internal, network, timelock_blocks,
                   chain_unlock_height, chain_tip_height, chain_scanned_at,
                   chain_has_unspent
              FROM vaults
-            WHERE status = 'ok'"#,
+            WHERE status = 'ok'
+              AND EXISTS (SELECT 1 FROM vault_deposits d WHERE d.vault_id = vaults.id)"#,
     )
     .fetch_all(&state.db)
     .await?;
@@ -2589,6 +2600,15 @@ mod tests {
         .execute(&pool)
         .await
         .expect("insert");
+        // This vault really was funded once: the sweep only acts on a
+        // vault with a deposit on record.
+        sqlx::query(
+            "INSERT INTO vault_deposits (vault_id, outpoint, amount_sat, height, seen_at)
+             VALUES ('v-swept', 'abc:0', 50000, 100, '2026-01-02T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("deposit");
 
         retire_drained_vaults(&state).await.expect("retire");
 
@@ -2653,6 +2673,101 @@ mod tests {
             .await
             .expect("status");
         assert_eq!(status, "ok", "a funded vault must keep its check-in clock");
+    }
+
+    /// A vault that never received a satoshi is empty for the ordinary
+    /// reason, and must not be reported as drained.
+    ///
+    /// Demo mode creates vaults as `ok` before they are funded, so this
+    /// sweep announced every brand-new demo vault as "emptied off-server"
+    /// within one tick of its creation (signet, 2026-08-10). The chain
+    /// scan cannot tell the two cases apart; the deposit ledger can.
+    #[tokio::test]
+    async fn never_funded_ok_vault_is_not_reported_as_drained() {
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        let now = Utc::now();
+        // Same shape as the drained vault above — status `ok`, scan found
+        // nothing — differing only in having no deposit on record.
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status, claim_eligible_at,
+                chain_tip_height, chain_scanned_at, chain_has_unspent
+            ) VALUES ('v-fresh','regtest','tr(fake/v-fresh/0/*)','tr(fake/v-fresh/1/*)',
+                144, 86400, 3600, '2026-01-01T00:00:00Z',
+                '2026-06-01T00:00:00Z', 'ok', '2026-06-02T00:00:00Z',
+                150, ?, 0)"#,
+        )
+        .bind(now.to_rfc3339())
+        .execute(&pool)
+        .await
+        .expect("insert");
+
+        retire_drained_vaults(&state).await.expect("retire");
+
+        let status: String = sqlx::query_scalar("SELECT status FROM vaults WHERE id = 'v-fresh'")
+            .fetch_one(&pool)
+            .await
+            .expect("status");
+        assert_eq!(
+            status, "ok",
+            "a vault that never held coins cannot have been emptied"
+        );
+        let events: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE vault_id = 'v-fresh' AND kind = 'vault_empty'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("events");
+        assert_eq!(events, 0, "and must not claim its money left");
+    }
+
+    /// A spent deposit still counts as proof the vault once held coins —
+    /// that is the whole drain case. Guards against narrowing the EXISTS
+    /// to unspent rows, which would make the sweep never fire.
+    #[tokio::test]
+    async fn a_fully_spent_deposit_still_retires_the_vault() {
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        let now = Utc::now();
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status, claim_eligible_at,
+                chain_tip_height, chain_scanned_at, chain_has_unspent
+            ) VALUES ('v-spent','regtest','tr(fake/v-spent/0/*)','tr(fake/v-spent/1/*)',
+                144, 86400, 3600, '2026-01-01T00:00:00Z',
+                '2026-06-01T00:00:00Z', 'ok', '2026-06-02T00:00:00Z',
+                150, ?, 0)"#,
+        )
+        .bind(now.to_rfc3339())
+        .execute(&pool)
+        .await
+        .expect("insert");
+        sqlx::query(
+            "INSERT INTO vault_deposits (vault_id, outpoint, amount_sat, height, seen_at, spent_at)
+             VALUES ('v-spent', 'def:0', 50000, 100, '2026-01-02T00:00:00Z', '2026-02-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("deposit");
+
+        retire_drained_vaults(&state).await.expect("retire");
+
+        let status: String = sqlx::query_scalar("SELECT status FROM vaults WHERE id = 'v-spent'")
+            .fetch_one(&pool)
+            .await
+            .expect("status");
+        assert_eq!(status, "unfunded");
     }
 
     #[tokio::test]
