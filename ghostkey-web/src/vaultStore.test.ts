@@ -5,6 +5,7 @@ import {
   getAllVaultMetas,
   getTrustedVaultId,
   getVaultMeta,
+  getVaultsByGroup,
   removeVaultMeta,
   setActiveVaultId,
   getVaultOwnerToken,
@@ -313,5 +314,81 @@ describe("device keeps knowing you after the active vault goes away", () => {
     expect(getActiveVaultId()).toBeNull();
     // Genuinely a fresh device now: the email link is the right path.
     expect(getTrustedVaultId()).toBeNull();
+  });
+});
+
+describe("shares come back oldest first", () => {
+  beforeEach(() => {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: globalThis,
+    });
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: memoryStorage(),
+    });
+    Object.defineProperty(globalThis, "sessionStorage", {
+      configurable: true,
+      value: memoryStorage(),
+    });
+  });
+
+  function saveShare(id: string, createdAt: string) {
+    saveVaultMeta({
+      id,
+      label: id,
+      owner: { address: "owner@example.com" },
+      heir: { name: id, email: "", address: "" },
+      createdAt,
+      ownerToken: `${id}-token`,
+    });
+  }
+
+  /** "The first heir I set up" has to survive the trip through storage.
+   *  Object key order is the order things were written, which is not the
+   *  order the owner created them in. */
+  it("orders by creation date, not by the order they were stored", () => {
+    saveShare("fola", "2026-08-02T00:00:00Z");
+    saveShare("ara", "2026-08-01T00:00:00Z");
+    saveShare("tunde", "2026-08-03T00:00:00Z");
+
+    expect(getAllVaultMetas().map((v) => v.id)).toEqual([
+      "ara",
+      "fola",
+      "tunde",
+    ]);
+  });
+
+  it("agrees with getVaultsByGroup on what comes first", () => {
+    saveVaultMeta({
+      id: "second",
+      label: "second",
+      owner: { address: "owner@example.com" },
+      heir: { name: "second", email: "", address: "" },
+      createdAt: "2026-08-05T00:00:00Z",
+      ownerToken: "second-token",
+      groupId: "g1",
+    });
+    saveVaultMeta({
+      id: "first",
+      label: "first",
+      owner: { address: "owner@example.com" },
+      heir: { name: "first", email: "", address: "" },
+      createdAt: "2026-08-04T00:00:00Z",
+      ownerToken: "first-token",
+      groupId: "g1",
+    });
+
+    expect(getAllVaultMetas()[0].id).toBe("first");
+    expect(getVaultsByGroup("g1")[0].id).toBe("first");
+  });
+
+  /** Same timestamp is possible when several shares are created in one
+   *  setup run. Ties break on id so the landing share never flips. */
+  it("breaks ties on id so the order is stable", () => {
+    saveShare("bbb", "2026-08-01T00:00:00Z");
+    saveShare("aaa", "2026-08-01T00:00:00Z");
+
+    expect(getAllVaultMetas().map((v) => v.id)).toEqual(["aaa", "bbb"]);
   });
 });

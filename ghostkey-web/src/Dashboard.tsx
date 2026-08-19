@@ -395,42 +395,6 @@ export function Dashboard({ onNavigate }: Props) {
                 <VaultClosedCard
                   meta={meta}
                   multiHeir={groupVaults.length > 1}
-                  onDismiss={() => {
-                    // Final close-out for this heir's share: drop the
-                    // local meta so the dashboard stops treating this
-                    // terminal vault as active. The server-side row
-                    // stays — claim history is the owner's record. They
-                    // can also "Remove heir" before dismissing if they
-                    // want it gone server-side too.
-                    removeVaultMeta(meta.id);
-                    const remaining = groupVaults.filter(
-                      (v) => v.id !== meta.id,
-                    );
-                    if (remaining.length === 0) {
-                      // Same rule as removing an heir: land on a sibling in
-                      // another group if there is one, otherwise say the
-                      // vault is closed. Never the landing page.
-                      const elsewhere = getAllVaultMetas();
-                      if (elsewhere.length === 0) {
-                        setEmptied("closed");
-                        return;
-                      }
-                      setActiveVaultId(elsewhere[0].id);
-                      if (typeof window !== "undefined") {
-                        window.location.reload();
-                      }
-                      return;
-                    }
-                    // Multi-heir: the other heirs' vaults are still
-                    // live and still need check-ins. Switch to the next
-                    // one and reload so the dashboard re-derives against
-                    // it rather than bouncing the owner to the landing
-                    // page.
-                    setActiveVaultId(remaining[0].id);
-                    if (typeof window !== "undefined") {
-                      window.location.reload();
-                    }
-                  }}
                 />
               ) : isClaiming ? (
                 <ClaimInProgressCard
@@ -1559,11 +1523,9 @@ function AwaitingFundingCard({ meta }: { meta: VaultMeta }) {
 function VaultClosedCard({
   meta,
   multiHeir,
-  onDismiss,
 }: {
   meta: VaultMeta;
   multiHeir: boolean;
-  onDismiss: () => void;
 }) {
   return (
     <section className="card relative overflow-hidden p-5 text-center md:p-8">
@@ -1574,19 +1536,20 @@ function VaultClosedCard({
         >
           ✓
         </div>
+        {/* A claim closes one heir's share, never the vault. The
+            heading always carries the heir's name so this sentence can
+            never be read as a statement about the owner's whole vault
+            (which is what "This vault's work is done" did). There is no
+            dismiss button: the share stays visible, marked claimed, and
+            only leaves when the owner removes that heir. */}
         <h2 className="mt-6 font-serif text-2xl">
-          {multiHeir
-            ? `${meta.heir.name || "Your heir"}'s share claimed`
-            : "Vault closed"}
+          {`${meta.heir.name || "Your heir"}'s share is claimed`}
         </h2>
         <p className="mt-2 max-w-md text-sm text-muted">
           {multiHeir
-            ? `${meta.heir.name || "Your heir"} claimed their share. This part is done. Your other heirs' vaults are still active, so keep checking in for them.`
-            : `${meta.heir.name || "Your heir"} claimed the funds. Check-ins are no longer needed. This vault's work is done.`}
+            ? `${meta.heir.name || "Your heir"} claimed their share. Your other shares are unaffected.`
+            : `${meta.heir.name || "Your heir"} claimed their share. Nothing more to do for it. You can add another heir any time.`}
         </p>
-        <Button onClick={onDismiss} className="mt-6">
-          Done
-        </Button>
       </div>
     </section>
   );
@@ -2463,7 +2426,7 @@ function humanAgo(then: Date, now: Date): string {
 /** Why the dashboard has nothing to show. `null` is a device that never
  *  had a vault; the rest are owners who just closed one out and need to
  *  be told that, not greeted like a stranger. */
-export type EmptyReason = null | "removed" | "closed" | "gone";
+export type EmptyReason = null | "removed" | "gone";
 
 function EmptyState({
   onNavigate,
@@ -2472,17 +2435,17 @@ function EmptyState({
   onNavigate: (r: Route) => void;
   reason?: EmptyReason;
 }) {
-  // Each heir is its own vault, so "add an heir" and "set up a vault" are
-  // the same act once nothing is left on the device. Lead with the owner's
-  // word for it.
+  // "Add an heir" and "set up a vault" are two different acts: the first
+  // adds a share to the vault you are already signed into, the second
+  // starts a separate vault on a separate email. This screen can only
+  // offer the second one honestly, because the owner's email and key live
+  // on the vault rows themselves — removing the last heir deletes the last
+  // row and the account with it, so there is nothing here to add a share
+  // to. Restoring "Add an heir" here needs the server to keep the row.
   const copy = {
     removed: {
       title: "That was your last heir",
-      body: "This vault has nobody to inherit it now. Your Bitcoin is untouched and still yours — add an heir whenever you're ready.",
-    },
-    closed: {
-      title: "Vault closed",
-      body: "That heir's share has been claimed and this device is clear. Your other Bitcoin is unaffected. You can add another heir any time.",
+      body: "Your vault has no heirs right now. Your Bitcoin is untouched and still yours. Set up a vault again whenever you're ready.",
     },
     gone: {
       title: "This vault is no longer on the server",
@@ -2504,9 +2467,10 @@ function EmptyState({
             : "Set one up in a few minutes, or sign in with your email and password if you already have one."}
         </p>
         <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-          <Button onClick={() => onNavigate("setup")}>
-            {shown && reason !== "gone" ? "Add an heir" : "Set up a vault"}
-          </Button>
+          {/* One route, one label. This button has always gone to the
+              full new-email setup flow, so labelling it "Add an heir"
+              told the owner it would do something it never did. */}
+          <Button onClick={() => onNavigate("setup")}>Set up a vault</Button>
           {/* Sign in only where it can help. An owner who just closed out
               their last heir is already signed in on this device, so
               offering it there is noise. A vault that vanished from the

@@ -162,8 +162,16 @@ export function getVaultOwnerToken(id: string): string | null {
   return readLiveTokens()[id] ?? readAll()[id]?.ownerToken ?? null;
 }
 
+/** Every vault meta on this device, oldest first. The order matters:
+ *  callers use "the first one" to mean the share the owner set up
+ *  first, and object key order is an accident of how storage was
+ *  written, not creation order. `getVaultsByGroup` already sorts this
+ *  way; these two must not disagree. */
 export function getAllVaultMetas(): VaultMeta[] {
-  return Object.values(readAll());
+  return Object.values(readAll()).sort((a, b) => {
+    const byDate = a.createdAt.localeCompare(b.createdAt);
+    return byDate !== 0 ? byDate : a.id.localeCompare(b.id);
+  });
 }
 
 export function hasLockedVaultCredential(id: string | null): boolean {

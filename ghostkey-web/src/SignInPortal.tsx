@@ -483,8 +483,18 @@ export function SignInPortal({
     let firstId: string | null = null;
     let firstLiveId: string | null = null;
 
-    for (let i = 0; i < recoveryBundles.length; i++) {
-      const { vault: v, sealed_blobs: blobs } = recoveryBundles[i];
+    // Oldest share first. The owner asked to land on the heir they set up
+    // first, and "first" has to mean creation order, not whatever order
+    // the server happened to return the bundles in. This also fixes the
+    // order the metas are written in, which is the order the rest of the
+    // app reads them back.
+    const ordered = [...recoveryBundles].sort((a, b) => {
+      const byDate = a.vault.created_at.localeCompare(b.vault.created_at);
+      return byDate !== 0 ? byDate : a.vault.id.localeCompare(b.vault.id);
+    });
+
+    for (let i = 0; i < ordered.length; i++) {
+      const { vault: v, sealed_blobs: blobs } = ordered[i];
       setPhase({ kind: "unsealing", vaultId: v.id, progress: 0 });
 
       try {
@@ -507,7 +517,7 @@ export function SignInPortal({
             setPhase({
               kind: "unsealing",
               vaultId: v.id,
-              progress: Math.round(((i + p) / recoveryBundles.length) * 100),
+              progress: Math.round(((i + p) / ordered.length) * 100),
             }),
         });
 
@@ -545,9 +555,10 @@ export function SignInPortal({
           groupId,
         });
         if (!firstId) firstId = v.id;
-        // Prefer a vault the owner can still act on. Landing on a closed
-        // one just because it sorted first reads as "my heir claimed my
+        // Prefer a share the owner can still act on. Landing on a claimed
+        // one just because it came first reads as "my heir claimed my
         // Bitcoin" to someone who came here to manage a different heir.
+        // With the sort above this is now the oldest share still active.
         if (!firstLiveId && v.status !== "claimed") firstLiveId = v.id;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
