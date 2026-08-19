@@ -35,7 +35,14 @@ rust-version = "1.85"
 [workspace.dependencies]
 # Bitcoin stack
 bdk_wallet = { version = "1.0.0", features = ["keys-bip39"] }
-bdk_esplora = { version = "0.20", default-features = false, features = ["std", "blocking-https-rustls", "async-https-rustls"] }
+# No `async-https-rustls`. We only ever build the blocking client
+# (`build_blocking()` in psbt_routes.rs); there is no `AsyncClient` or
+# `EsploraAsyncExt` anywhere in the workspace. Carrying the async feature
+# linked in reqwest 0.11 -> hyper 0.14 -> h2 0.3, a whole second HTTP
+# stack we never call, and dragged its advisories in with it
+# (RUSTSEC-2026-0258, RUSTSEC-2025-0134). Add it back only alongside code
+# that actually uses the async client.
+bdk_esplora = { version = "0.20", default-features = false, features = ["std", "blocking-https-rustls"] }
 bdk_bitcoind_rpc = "0.18"
 bitcoin = { version = "0.32", features = ["rand-std", "serde"] }
 miniscript = { version = "12", features = ["serde"] }

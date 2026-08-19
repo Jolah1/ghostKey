@@ -67,14 +67,4 @@ ignore = [
   "RUSTSEC-2026-0098",
   "RUSTSEC-2026-0099",
   "RUSTSEC-2026-0104",
-
-  # RUSTSEC-2025-0134: rustls-pemfile 1.x is unmaintained.
-  #
-  # Same dependency chain as the rustls-webpki entries above (reqwest
-  # 0.11 -> esplora-client -> bdk_esplora). Not a security CVE — just
-  # a notice that 1.x will receive no further patches. Resolves
-  # automatically the day we bump esplora-client / bdk_esplora.
-  # Revisit when:
-  #   Same trigger as the rustls-webpki entries.
-  "RUSTSEC-2025-0134",
 ]
