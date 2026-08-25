@@ -64,6 +64,12 @@ export interface VaultView {
    *  verification link. Absent/null when the vault has no email on
    *  file; `false` drives the dashboard's "confirm your email" card. */
   owner_contact_verified?: boolean | null;
+   /** The money has arrived but the check-in clock is not running,
+    *  because the owner's email is still unconfirmed (#326). Present
+    *  only on the owner `GET /vaults/:id`. Distinguishes the two
+    *  things `status: "unfunded"` means: waiting for coins, and coins
+    *  are here and waiting for you. */
+  activation_held?: boolean | null;
   /** Whether a trusted contact is on file. Gates the panic-stop
    *  copy's "your trusted contact will be alerted" promise — only
    *  rendered when true (issue #70). Absent on list/create
