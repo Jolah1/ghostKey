@@ -41,10 +41,15 @@ describe("heirContactBlockedReason", () => {
     expect(reason).not.toContain("claim is underway");
   });
 
-  it("says so plainly when the vault is already claimed", () => {
-    expect(
-      heirContactBlockedReason({ hasOwnerToken: true, status: "claimed" }),
-    ).toContain("vault is closed");
+  it("says the share is claimed, not that the vault is closed", () => {
+    const reason = heirContactBlockedReason({
+      hasOwnerToken: true,
+      status: "claimed",
+    });
+    expect(reason).toContain("share is claimed");
+    // A claim ends one heir's share. The vault stays open, and saying
+    // otherwise tells the owner their whole plan is over.
+    expect(reason).not.toContain("vault is closed");
   });
 
   it("keeps the claim wording for a claim actually underway", () => {

@@ -420,7 +420,7 @@ export function usePolling(
 
 export function friendlyEventKind(kind: string): string {
   switch (kind) {
-    case "registered": return "Vault activated";
+    case "registered": return "Share activated";
     case "checkin": return "Checked in";
     case "warning": return "Reminder due soon";
     case "pre_deadline_reminder": return "Reminder sent";
@@ -428,11 +428,11 @@ export function friendlyEventKind(kind: string): string {
     case "resolved": return "Back on track";
     case "lightning_invoice_issued": return "Check-in invoice created";
     case "owner_send": return "You sent Bitcoin";
-    case "vault_empty": return "Vault is empty";
+    case "vault_empty": return "Share is empty";
     case "received": return "You received Bitcoin";
     // A spend the server did not build, so we know the coins left but
     // not who moved them or why. Say only that much.
-    case "funds_spent": return "Bitcoin left this vault";
+    case "funds_spent": return "Bitcoin left this share";
     case "owner_contact_verified": return "Email confirmed";
     case "timelock_started": return "Waiting period started";
     case "claim_issued": return "Claim link sent to your heir";

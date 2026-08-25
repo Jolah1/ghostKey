@@ -120,6 +120,13 @@ export function Dashboard({ onNavigate }: Props) {
   const [lightningOpen, setLightningOpen] = useState(false);
   // Whether the "Add a heir" modal is open.
   const [addHeirOpen, setAddHeirOpen] = useState(false);
+  // Whether the "Close this vault" confirmation is open.
+  const [closeOpen, setCloseOpen] = useState(false);
+  // Status of every share in this vault, keyed by share id. The share
+  // on screen also has its status in `vault`; this map is what lets the
+  // dashboard say anything about the vault as a whole, like whether
+  // every heir has claimed.
+  const [shareStatus, setShareStatus] = useState<Record<string, string>>({});
   // Set when the owner closes out the last vault on this device. Keeps them
   // on the dashboard with an explanation instead of dropping them on the
   // landing page as though they had never signed in.
@@ -138,24 +145,43 @@ export function Dashboard({ onNavigate }: Props) {
     try {
       const v = await api.getVault(activeId, ownerToken);
       setVault(v);
-      // Activity spans the whole account, not just the heir on screen,
-      // so nothing an owner did on another heir is hidden. Best-effort
-      // per sibling: if one heir's fetch fails we just omit its rows.
       const perHeir = await Promise.all(
-        groupVaults.map((g) =>
-          api
-            .listEvents(g.id, getVaultOwnerToken(g.id))
+        groupVaults.map(async (g) => {
+          const token = getVaultOwnerToken(g.id);
+          // Activity spans the whole account, not just the heir on
+          // screen, so nothing an owner did on another heir is hidden.
+          // Best-effort per sibling: if one heir's fetch fails we just
+          // omit its rows.
+          const events = await api
+            .listEvents(g.id, token)
             .then((evs): ActivityEvent[] =>
               evs.map((e) => ({ ...e, heirName: g.heir.name })),
             )
-            .catch((): ActivityEvent[] => []),
-        ),
+            .catch((): ActivityEvent[] => []);
+          // The share on screen already has its status in `v`; the rest
+          // need their own fetch. Without it the dashboard can only
+          // speak about one share, so it can't tell a claimed sibling
+          // from a live one, or know when the whole vault is finished.
+          const status =
+            g.id === activeId
+              ? v.status
+              : await api
+                  .getVault(g.id, token)
+                  .then((sv): string | null => sv.status)
+                  .catch((): string | null => null);
+          return { id: g.id, events, status };
+        }),
       );
       setEvents(
         perHeir
-          .flat()
+          .flatMap((p) => p.events)
           .sort((a, b) => a.created_at.localeCompare(b.created_at)),
       );
+      const statuses: Record<string, string> = {};
+      for (const p of perHeir) {
+        if (p.status) statuses[p.id] = p.status;
+      }
+      setShareStatus(statuses);
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         setError(
@@ -317,6 +343,68 @@ export function Dashboard({ onNavigate }: Props) {
     if (typeof window !== "undefined") window.location.reload();
   }
 
+  // Closing the whole vault. This is the only way to end the last
+  // share, which is why it carries a full explanation instead of
+  // sitting in the heir list as one more "Remove". It deletes every
+  // share row and the local copies of them.
+  //
+  // It does nothing to the Bitcoin. The coins stay where they are and
+  // stay spendable from the owner's own wallet, and the timelock is
+  // baked into the address either way, so closing here cannot undo it.
+  async function onCloseVault() {
+    setError(null);
+    const pairs: Array<{ meta: VaultMeta; token: string }> = [];
+    const missing: string[] = [];
+    for (const g of groupVaults) {
+      const token = getVaultOwnerToken(g.id);
+      if (token) pairs.push({ meta: g, token });
+      else missing.push(g.heir.name || "an heir");
+    }
+    if (missing.length > 0) {
+      setCloseOpen(false);
+      setError(
+        `This browser doesn't have the owner credential for ${missing.join(
+          ", ",
+        )}. Sign in first, then close the vault.`,
+      );
+      return;
+    }
+    setBusy(true);
+    let done = 0;
+    for (const { meta: g, token } of pairs) {
+      try {
+        await api.deleteVault(g.id, token);
+      } catch (e) {
+        // A 404 means the row is already gone, so keep going and clean
+        // up locally. Anything else stops here and says how far it got,
+        // rather than leaving the owner thinking the vault is closed.
+        if (!(e instanceof ApiError && e.status === 404)) {
+          setBusy(false);
+          setCloseOpen(false);
+          setError(
+            `Closed ${done} of ${pairs.length} shares, then couldn't close ` +
+              `${g.heir.name || "one of them"}: ` +
+              `${e instanceof ApiError ? e.message : String(e)}. ` +
+              `Try again to finish.`,
+          );
+          return;
+        }
+      }
+      removeVaultMeta(g.id);
+      done += 1;
+    }
+    setBusy(false);
+    setCloseOpen(false);
+    // Other vaults may live on this device under a different email.
+    const elsewhere = getAllVaultMetas();
+    if (elsewhere.length === 0) {
+      setEmptied("closed");
+      return;
+    }
+    setActiveVaultId(elsewhere[0].id);
+    if (typeof window !== "undefined") window.location.reload();
+  }
+
   if (emptied) {
     return <EmptyState onNavigate={onNavigate} reason={emptied} />;
   }
@@ -346,6 +434,12 @@ export function Dashboard({ onNavigate }: Props) {
       isClaiming ||
       isClosed ||
       parseRfc(vault.next_deadline_at) < now);
+  // Whether every heir has claimed, and whether to offer closing the
+  // vault at all. See `vaultCloseState`.
+  const { allClaimed: allSharesClaimed, canClose } = vaultCloseState(
+    groupVaults,
+    shareStatus,
+  );
 
   return (
     <main className="bg-app fade-in">
@@ -460,7 +554,6 @@ export function Dashboard({ onNavigate }: Props) {
                 <HeirGroupList
                   groupVaults={groupVaults}
                   activeId={activeId}
-                  activeClosed={isClosed}
                   onSelect={(id) => {
                     // Switch active vault. Reload so the dashboard
                     // re-runs against the new active id. We could do
@@ -473,19 +566,15 @@ export function Dashboard({ onNavigate }: Props) {
                     }
                   }}
                   onRemove={onRemoveHeir}
+                  statusById={shareStatus}
                 />
               ) : (
-                <HeirCard
-                  meta={meta}
-                  vault={vault}
-                  onRemove={
-                    // Heir protection: once a claim is live the owner can
-                    // no longer remove the heir (server enforces this too).
-                    isClosed || isClaiming
-                      ? undefined
-                      : () => onRemoveHeir(meta.id, meta.heir.name)
-                  }
-                />
+                // No "Remove" on the last share. A share is meant to end
+                // in a claim, not a deletion: the owner can die before
+                // the heir claims, and a stray tap here would take the
+                // whole plan with it. Ending the last one is closing the
+                // vault, which lives below with the full explanation.
+                <HeirCard meta={meta} vault={vault} />
               )}
 
               {/* Add another heir — own share, own claim link, same
@@ -501,6 +590,22 @@ export function Dashboard({ onNavigate }: Props) {
                   >
                     Add Heir
                   </Button>
+                </div>
+              ) : null}
+
+              {/* Closing the vault. Kept out of the way while the plan
+                  is still doing its job: it shows once every heir has
+                  claimed, or when one share is left and the owner has
+                  no other way to end it. */}
+              {vault && canClose ? (
+                <div className="mt-4">
+                  <button
+                    type="button"
+                    onClick={() => setCloseOpen(true)}
+                    className="text-xs text-dim underline underline-offset-4 hover:text-muted"
+                  >
+                    Close this vault
+                  </button>
                 </div>
               ) : null}
             </div>
@@ -558,6 +663,16 @@ export function Dashboard({ onNavigate }: Props) {
             // the newly added sibling.
             if (typeof window !== "undefined") window.location.reload();
           }}
+        />
+      ) : null}
+
+      {closeOpen ? (
+        <CloseVaultDialog
+          shareCount={groupVaults.length}
+          allClaimed={allSharesClaimed}
+          busy={busy}
+          onCancel={() => setCloseOpen(false)}
+          onConfirm={onCloseVault}
         />
       ) : null}
 
@@ -1069,7 +1184,7 @@ function ReceiveCard({
           {qrUrl ? (
             <img
               src={qrUrl}
-              alt={`QR code for vault address ${view.address}`}
+              alt={`QR code for the share address ${view.address}`}
               className="h-36 w-36 rounded-lg bg-white p-1"
             />
           ) : null}
@@ -1218,8 +1333,8 @@ function SendCard({
         <p className="mt-1.5 text-sm text-muted">
           Network fee: {formatSats(result.fee_sat)}.{" "}
           {result.remaining_sat > 0
-            ? `The remaining ${formatSats(result.remaining_sat)} stays in your vault, still covered by your inheritance plan. Your heir's waiting clock starts fresh from this move.`
-            : "The vault is now empty; add Bitcoin any time to keep the plan going."}
+            ? `The remaining ${formatSats(result.remaining_sat)} stays in this share, still covered by your inheritance plan. Your heir's waiting clock starts fresh from this move.`
+            : "This share is now empty; add Bitcoin any time to keep the plan going."}
         </p>
         <div className="mt-3 flex items-center gap-3">
           <a
@@ -1343,7 +1458,7 @@ function SendCard({
                 destination={destination.trim()}
                 amountLabel={
                   sendAll
-                    ? "Everything in your vault"
+                    ? "Everything in this share"
                     : `${formatSats(amountSat as number)}${amountUsd ? ` (≈ ${amountUsd})` : ""}`
                 }
                 networkLabel={network === "bitcoin" ? "Bitcoin" : `${network} network`}
@@ -1407,19 +1522,24 @@ function Greeting({
   let headline: string;
   let sub: string;
   if (isUnfunded) {
-    headline = "Fund your vault to start";
-    sub = `Add Bitcoin to your vault to start it. Check-ins begin once the funds arrive, not before.`;
+    // Money lives in a share, not in the vault as a whole, so name the
+    // heir whose share is waiting on it. With several heirs this is
+    // the difference between "which one?" and an obvious next step.
+    headline = `Fund ${meta.heir.name || "your heir"}'s share to start`;
+    sub = `Add Bitcoin to this share to start it. Check-ins begin once the funds arrive, not before.`;
   } else if (isClosed) {
+    // A claim ends one heir's share. It never closes the vault: the
+    // owner keeps the same key and can add another heir on top of it.
     const heirName = meta.heir.name || "Your heir";
-    headline = multiHeir ? `${heirName}'s share claimed` : "Vault closed";
+    headline = `${heirName}'s share is claimed`;
     sub = multiHeir
-      ? `${heirName} claimed their share. Your other heirs are unaffected.`
-      : `${heirName} claimed the funds.`;
+      ? `${heirName} claimed their share. Your other shares are unaffected.`
+      : `${heirName} claimed their share. You can add another heir any time.`;
   } else if (isClaiming) {
     const heirName = meta.heir.name || "Your heir";
     if (vault?.status === "claiming") {
       headline = "Your heir is claiming";
-      sub = `${heirName} is finalising the claim. The check-in loop is over for this vault.`;
+      sub = `${heirName} is finalising the claim. The check-in loop is over for this share.`;
     } else {
       // timelock_started: the link is out, but Bitcoin's timelock has to
       // run before the funds can move. The heir is waiting, not claiming.
@@ -1445,7 +1565,7 @@ function Greeting({
     headline = "You're still here";
     const next = deadline ? countdown(deadline, now).friendly : null;
     sub =
-      (last ? `Last checked in ${ago}.` : `Vault for ${meta.heir.name} is active.`) +
+      (last ? `Last checked in ${ago}.` : `${meta.heir.name}'s share is active.`) +
       // `friendly` already starts with "in", so no extra "in" here (T3).
       (next ? ` Next reminder ${next}.` : "");
   }
@@ -1501,9 +1621,11 @@ function AwaitingFundingCard({ meta }: { meta: VaultMeta }) {
         >
           ₿
         </div>
-        <h2 className="mt-6 font-serif text-2xl">Fund your vault to start</h2>
+        <h2 className="mt-6 font-serif text-2xl">
+          {`Fund ${meta.heir.name || "your heir"}'s share to start`}
+        </h2>
         <p className="mt-2 max-w-md text-sm text-muted">
-          Send Bitcoin to your vault using the balance card below. Nothing
+          Send Bitcoin to this share using the balance card below. Nothing
           starts until the funds arrive: no check-in clock, no reminders, and
           {" "}
           {meta.heir.name || "your heir"} can't be contacted. Once it's funded,
@@ -2110,13 +2232,9 @@ function prettySeconds(secs: number): string {
 function HeirCard({
   meta,
   vault,
-  onRemove,
 }: {
   meta: VaultMeta;
   vault: VaultView | null;
-  /** When provided, renders a "Remove" button. Omit on terminal
-   *  states (claimed vaults) where removal isn't meaningful. */
-  onRemove?: () => void;
 }) {
   const status = vault?.status ?? "ok";
   // T1 (#117): while the owner is alive and checking in, the heir is just
@@ -2151,16 +2269,6 @@ function HeirCard({
         </p>
       </div>
       <StatusPill tone={pill.tone} label={pill.label} />
-      {onRemove ? (
-        <button
-          type="button"
-          onClick={onRemove}
-          className="rounded-md px-2 py-1 text-xs text-muted hover:bg-[var(--surface-2,var(--surface))] hover:text-alarm"
-          aria-label={`Remove ${meta.heir.name}`}
-        >
-          Remove
-        </button>
-      ) : null}
     </div>
   );
 }
@@ -2173,28 +2281,24 @@ function HeirCard({
  * this lets the owner inspect each heir's individual state without
  * leaving the dashboard.
  *
- * The per-heir status pill is intentionally NOT shown here yet — we
- * only have the active vault's `VaultView` from the server; fetching
- * status for every sibling on every dashboard load would multiply
- * server calls. Acceptable for an MVP: the active vault's status is
- * the one in the big check-in card; switching active vault shows
- * that sibling's status. Phase 2 (server-side vault_groups + a
- * batch fetch endpoint) makes this less awkward.
+ * Each row's status comes from `statusById`, which the dashboard
+ * fills by fetching every share on refresh. That is one call per
+ * share; a server-side batch endpoint would do it in one, but the
+ * fan-out already happens for activity, so this rides along with it.
  */
 function HeirGroupList({
   groupVaults,
   activeId,
-  activeClosed,
+  statusById,
   onSelect,
   onRemove,
 }: {
   groupVaults: VaultMeta[];
   activeId: string | null;
-  // Whether the currently-selected heir's vault is claimed/closed. We
-  // only know the live status of the active vault (see note above), so
-  // this is the one sibling we can label "Claimed" rather than a
-  // selection state.
-  activeClosed: boolean;
+  /** Status of each share, keyed by share id. A share missing from the
+   *  map is one whose fetch failed, so it gets the neutral treatment
+   *  rather than a claim we can't stand behind. */
+  statusById: Record<string, string>;
   onSelect: (id: string) => void;
   onRemove: (id: string, heirName: string) => void;
 }) {
@@ -2206,6 +2310,9 @@ function HeirGroupList({
       {groupVaults.map((meta) => {
         const isActive = meta.id === activeId;
         const heirName = meta.heir.name || "(unnamed)";
+        const status = statusById[meta.id];
+        const claimed = status === "claimed";
+        const removable = shareRemovable(status);
         return (
           <div
             key={meta.id}
@@ -2232,28 +2339,24 @@ function HeirGroupList({
                   {meta.heir.email || "—"}
                 </p>
               </div>
-              {isActive ? (
-                activeClosed ? (
-                  <span className="text-xs text-muted font-medium">
-                    Claimed
-                  </span>
-                ) : (
-                  <span className="text-xs text-accent font-medium">
-                    Viewing
-                  </span>
-                )
+              {claimed ? (
+                <span className="text-xs text-muted font-medium">Claimed</span>
+              ) : isActive ? (
+                <span className="text-xs text-accent font-medium">Viewing</span>
               ) : (
                 <span className="text-xs text-muted">Tap to view</span>
               )}
             </button>
-            <button
-              type="button"
-              onClick={() => onRemove(meta.id, heirName)}
-              className="rounded-md px-2 py-1 text-xs text-muted hover:bg-[var(--surface-2,var(--surface))] hover:text-alarm"
-              aria-label={`Remove ${heirName}`}
-            >
-              Remove
-            </button>
+            {removable ? (
+              <button
+                type="button"
+                onClick={() => onRemove(meta.id, heirName)}
+                className="rounded-md px-2 py-1 text-xs text-muted hover:bg-[var(--surface-2,var(--surface))] hover:text-alarm"
+                aria-label={`Remove ${heirName}`}
+              >
+                Remove
+              </button>
+            ) : null}
           </div>
         );
       })}
@@ -2263,6 +2366,179 @@ function HeirGroupList({
       </p>
     </div>
   );
+}
+
+/* --------------------------- Close vault dialog --------------------------- */
+
+/**
+ * Closing the vault is the one destructive act GhostKey offers an
+ * owner, so it gets a page of its own rather than a browser confirm.
+ * Two things it has to say plainly, because getting either wrong
+ * frightens people or misleads them:
+ *
+ *   - The Bitcoin is untouched. It never moved, and closing can't
+ *     move it.
+ *   - Closing does NOT undo the waiting period, and it does not reach
+ *     into a recovery kit the heir already has. Saying otherwise would
+ *     be the kind of impossibility claim this codebase doesn't make.
+ */
+function CloseVaultDialog({
+  shareCount,
+  allClaimed,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  shareCount: number;
+  /** Every heir has already claimed, so the links being revoked are
+   *  spent ones. Softens the warning without hiding it. */
+  allClaimed: boolean;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const [understood, setUnderstood] = useState(false);
+  const shares = shareCount === 1 ? "share" : "shares";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="close-vault-title"
+    >
+      <div className="card relative w-full max-w-xl p-6 max-h-[90vh] overflow-y-auto">
+        <button
+          type="button"
+          aria-label="Close"
+          onClick={onCancel}
+          disabled={busy}
+          className="absolute right-3 top-3 rounded-full p-2 text-muted hover:bg-surface-2 hover:text-[var(--text)]"
+        >
+          ✕
+        </button>
+
+        <h2 id="close-vault-title" className="font-serif text-2xl">
+          Close this vault?
+        </h2>
+        <p className="mt-2 text-sm text-muted">
+          This ends the plan we hold for you. It does not touch your money.
+        </p>
+
+        <p className="mt-5 text-xs uppercase tracking-wider text-dim">
+          What stays yours
+        </p>
+        <ul className="mt-2 space-y-2 text-sm text-muted">
+          <li>
+            Your Bitcoin stays where it is, in your own wallet. GhostKey
+            never held your keys, so there is nothing here to give back.
+          </li>
+          <li>
+            The waiting period is built into your Bitcoin address.
+            Closing here cannot change that. If you gave an heir their
+            recovery kit, they still have it. To end the plan on the
+            Bitcoin side too, move your coins to a fresh wallet.
+          </li>
+        </ul>
+
+        <p className="mt-5 text-xs uppercase tracking-wider text-dim">
+          What goes
+        </p>
+        <ul className="mt-2 space-y-2 text-sm text-muted">
+          <li>
+            All {shareCount} {shares} in this vault are deleted.
+            {allClaimed
+              ? " Those claims are already done, so nobody loses anything they were waiting for."
+              : " Your heirs can no longer claim through GhostKey."}
+          </li>
+          <li>
+            The messages and files you left for them go with it. We keep
+            no copy.
+          </li>
+          <li>Check-ins stop. Nobody will be contacted for you again.</li>
+        </ul>
+
+        <p className="mt-5 text-sm text-[var(--text)]">
+          This cannot be undone. A claim link, once gone, cannot be
+          brought back.
+        </p>
+
+        <label className="mt-5 flex items-start gap-3 text-sm text-muted">
+          <input
+            type="checkbox"
+            checked={understood}
+            onChange={(e) => setUnderstood(e.target.checked)}
+            disabled={busy}
+            className="mt-0.5"
+          />
+          <span>I understand this cannot be undone.</span>
+        </label>
+
+        <div className="mt-6 flex flex-wrap items-center gap-3">
+          <Button variant="ghost" onClick={onCancel} disabled={busy}>
+            Keep my vault
+          </Button>
+          <Button
+            onClick={onConfirm}
+            disabled={!understood}
+            loading={busy}
+          >
+            Close vault
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* -------------------------- Share lifecycle rules ------------------------- */
+
+/**
+ * Whether a share can still be removed from the heir list.
+ *
+ * Once a claim is live the server refuses removal, and a share that
+ * has already been claimed is history the owner shouldn't be able to
+ * delete with a stray tap. A share whose status we couldn't fetch
+ * stays removable: the server is the one that decides, and it will
+ * say no if it has to.
+ */
+export function shareRemovable(status: string | undefined): boolean {
+  return status !== "claimed" && !claimInFlight(status);
+}
+
+/** The heir has the claim link and Bitcoin is doing its part. Nothing
+ *  the owner does here may take that away. */
+function claimInFlight(status: string | undefined): boolean {
+  return status === "claiming" || status === "timelock_started";
+}
+
+/**
+ * When to offer "Close this vault".
+ *
+ * Closing is kept out of the way while the plan is still doing its
+ * job. It appears in exactly two places: once every heir has claimed,
+ * so the vault has nothing left to do, and when a single share is
+ * left, which is the only case where the owner has no other way to
+ * end it (the last share has no "Remove").
+ *
+ * A share we couldn't fetch counts as not claimed, so `allClaimed`
+ * only goes true when we actually know.
+ *
+ * Never while a claim is in flight. An heir holding a live claim link
+ * must not have it deleted out from under them, and closing is a
+ * delete with a longer explanation.
+ */
+export function vaultCloseState(
+  shares: { id: string }[],
+  statusById: Record<string, string>,
+): { allClaimed: boolean; canClose: boolean } {
+  const allClaimed =
+    shares.length > 0 && shares.every((s) => statusById[s.id] === "claimed");
+  const inFlight = shares.some((s) => claimInFlight(statusById[s.id]));
+  return {
+    allClaimed,
+    canClose: !inFlight && (allClaimed || shares.length === 1),
+  };
 }
 
 /* ----------------------------- Activity card ------------------------------ */
@@ -2362,7 +2638,7 @@ function MoreLinks({
   if (showEmergency)
     items.push({
       label: "Emergency options",
-      desc: "Freeze this vault if needed",
+      desc: "Freeze this share if needed",
       route: "emergency",
     });
   if (items.length === 0) return null;
@@ -2426,7 +2702,7 @@ function humanAgo(then: Date, now: Date): string {
 /** Why the dashboard has nothing to show. `null` is a device that never
  *  had a vault; the rest are owners who just closed one out and need to
  *  be told that, not greeted like a stranger. */
-export type EmptyReason = null | "removed" | "gone";
+export type EmptyReason = null | "removed" | "gone" | "closed";
 
 function EmptyState({
   onNavigate,
@@ -2445,11 +2721,15 @@ function EmptyState({
   const copy = {
     removed: {
       title: "That was your last heir",
-      body: "Your vault has no heirs right now. Your Bitcoin is untouched and still yours. Set up a vault again whenever you're ready.",
+      body: "Your vault has no shares left. Your Bitcoin is untouched and still yours. Set up a vault again whenever you're ready.",
     },
     gone: {
-      title: "This vault is no longer on the server",
-      body: "It was removed, possibly from another device. Nothing here can reach it. Sign in if you have other vaults.",
+      title: "This share is no longer on the server",
+      body: "It was removed, possibly from another device. Nothing here can reach it. Sign in if you have other shares.",
+    },
+    closed: {
+      title: "Your vault is closed",
+      body: "Your Bitcoin is untouched and still yours, in your own wallet. What's gone is the plan we held for it: the claim links no longer work, and nobody will be contacted for you. Set up a vault again whenever you're ready.",
     },
   };
   const shown = reason ? copy[reason] : null;
