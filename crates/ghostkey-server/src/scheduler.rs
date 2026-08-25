@@ -892,6 +892,27 @@ async fn enqueue_pre_deadline_reminder(
 /// leaves the vault `unfunded` and retries next tick. Demo deployments
 /// create vaults already `ok` (there is no real chain to scan), so this
 /// is a no-op there.
+///
+/// # The unverified-owner hold (#326)
+///
+/// Funding is necessary to start the clock but not sufficient. An owner
+/// whose email was never confirmed is an owner we have no evidence we
+/// can reach, and this is the whole cascade's entry point: everything
+/// downstream — reminders, the ok->alarmed flip, escalations, and
+/// finally the heir's claim link — filters on `status = 'ok'`. Letting
+/// an unreachable owner in here is how vault `4a7aaf77` ran a reminder,
+/// an alarm, three escalations and a claim link on mainnet with every
+/// row reading `sent` and nobody ever seeing one of them.
+///
+/// So a funded vault whose owner email is unconfirmed stays `unfunded`:
+/// funded, inert, and shown as such on the dashboard. Failing here is
+/// recoverable — the owner confirms and the clock starts. Failing at the
+/// deadline is not.
+///
+/// The hold is only for the `email` channel. There is no verification
+/// flow for sms or whatsapp, and none for a vault with no owner contact
+/// at all, so holding those would brick a vault permanently rather than
+/// prompt anyone.
 async fn activate_funded_vaults(state: &AppState, _now_iso: &str) -> anyhow::Result<()> {
     let rows = sqlx::query_as::<
         _,
@@ -907,12 +928,17 @@ async fn activate_funded_vaults(state: &AppState, _now_iso: &str) -> anyhow::Res
             Option<i64>,    // chain_tip_height
             Option<String>, // chain_scanned_at
             Option<i64>,    // chain_has_unspent
+            Option<String>, // owner_contact_channel
+            Option<String>, // owner_contact_verified_at
+            i64,            // has_owner_contact
         ),
     >(
         r#"SELECT id, checkin_period_secs, grace_period_secs,
                   descriptor_external, descriptor_internal, network, timelock_blocks,
                   chain_unlock_height, chain_tip_height, chain_scanned_at,
-                  chain_has_unspent
+                  chain_has_unspent,
+                  owner_contact_channel, owner_contact_verified_at,
+                  owner_contact_ciphertext IS NOT NULL AS has_owner_contact
              FROM vaults
             WHERE status = 'unfunded'"#,
     )
@@ -932,6 +958,9 @@ async fn activate_funded_vaults(state: &AppState, _now_iso: &str) -> anyhow::Res
         chain_tip_height,
         chain_scanned_at,
         chain_has_unspent,
+        owner_contact_channel,
+        owner_contact_verified_at,
+        has_owner_contact,
     ) in rows
     {
         let input = crate::psbt_routes::EstimateInput {
@@ -959,6 +988,17 @@ async fn activate_funded_vaults(state: &AppState, _now_iso: &str) -> anyhow::Res
                 record_chain_scan(false, Some(e.to_string()), now);
                 continue;
             }
+        }
+
+        // Funded, but we may still have no evidence we can reach the
+        // owner. See the hold note on this function.
+        if owner_email_unconfirmed(
+            has_owner_contact == 1,
+            &owner_contact_channel,
+            &owner_contact_verified_at,
+        ) {
+            hold_activation(&state.db, &id).await?;
+            continue;
         }
 
         let next = now + chrono::Duration::seconds(checkin_secs + grace_secs);
@@ -1017,6 +1057,54 @@ async fn activate_funded_vaults(state: &AppState, _now_iso: &str) -> anyhow::Res
             tracing::warn!(vault_id = %id, error = %e, "could not enqueue funded email");
         }
     }
+    Ok(())
+}
+
+/// Whether this vault's owner is reachable only through an email
+/// address nobody has ever confirmed.
+///
+/// False for every other channel, and for a vault with no sealed owner
+/// contact, because neither has a way to become true. A legacy row with
+/// a channel but no ciphertext is one we cannot mail at all, so holding
+/// it would brick it rather than prompt anyone. Mirrors the condition
+/// behind `VaultView::owner_contact_verified`.
+///
+/// See the hold note on `activate_funded_vaults`.
+pub(crate) fn owner_email_unconfirmed(
+    has_owner_contact: bool,
+    channel: &Option<String>,
+    verified_at: &Option<String>,
+) -> bool {
+    has_owner_contact && channel.as_deref() == Some("email") && verified_at.is_none()
+}
+
+/// Leave a funded vault `unfunded` because its owner's email is
+/// unconfirmed, and say so once in its history.
+///
+/// Once, not once per tick: this runs every scheduler pass for as long
+/// as the owner takes to click the link, and an activity feed full of
+/// the same line is a feed the owner stops reading.
+async fn hold_activation(db: &sqlx::SqlitePool, vault_id: &str) -> anyhow::Result<()> {
+    let already: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM events WHERE vault_id = ? AND kind = 'activation_held')",
+    )
+    .bind(vault_id)
+    .fetch_one(db)
+    .await?;
+    if already {
+        return Ok(());
+    }
+    record_event(
+        db,
+        vault_id,
+        "activation_held",
+        Some(serde_json::json!({ "reason": "owner_email_unverified" })),
+    )
+    .await?;
+    tracing::info!(
+        vault_id = %vault_id,
+        "funds detected but owner email unconfirmed; check-in clock held (#326)"
+    );
     Ok(())
 }
 
@@ -2638,6 +2726,186 @@ mod tests {
             .await
             .expect("status");
         assert_eq!(status, "unfunded");
+    }
+
+    /// Put a vault's maturity cache into the state a scan that found
+    /// coins leaves behind, so `activate_funded_vaults` reads "funded"
+    /// straight from cache instead of reaching for a chain.
+    async fn mark_funded(pool: &SqlitePool, id: &str, now: chrono::DateTime<Utc>) {
+        sqlx::query(
+            "UPDATE vaults
+                SET chain_unlock_height = 200, chain_tip_height = 150,
+                    chain_scanned_at = ?, chain_has_unspent = 1
+              WHERE id = ?",
+        )
+        .bind(now.to_rfc3339())
+        .bind(id)
+        .execute(pool)
+        .await
+        .expect("mark funded");
+    }
+
+    async fn count_events(pool: &SqlitePool, id: &str, kind: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE vault_id = ? AND kind = ?")
+            .bind(id)
+            .bind(kind)
+            .fetch_one(pool)
+            .await
+            .expect("count events")
+    }
+
+    /// #326. Funding is not enough to start the clock: an owner whose
+    /// email nobody ever confirmed is an owner we have no evidence we
+    /// can reach, and the clock is the door to the whole cascade —
+    /// reminders, alarm, escalations, and the heir's claim link. Mainnet
+    /// vault `4a7aaf77` ran all four with every row reading `sent`.
+    #[tokio::test]
+    async fn funded_vault_with_unverified_owner_email_is_held() {
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        let now = Utc::now();
+        insert_vault_with_sealed_owner(
+            &pool,
+            "v-held",
+            "unfunded",
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:00Z",
+            "owner@example.com",
+        )
+        .await;
+        mark_funded(&pool, "v-held", now).await;
+
+        activate_funded_vaults(&state, &now.to_rfc3339())
+            .await
+            .expect("activate");
+
+        let status: String = sqlx::query_scalar("SELECT status FROM vaults WHERE id = 'v-held'")
+            .fetch_one(&pool)
+            .await
+            .expect("status");
+        assert_eq!(
+            status, "unfunded",
+            "a funded vault whose owner email is unconfirmed must not start the clock"
+        );
+        assert_eq!(
+            count_events(&pool, "v-held", "activation_held").await,
+            1,
+            "the hold must be visible in the vault's history"
+        );
+        assert_eq!(
+            count_events(&pool, "v-held", "funded").await,
+            0,
+            "a held vault has not been activated, so it must not claim it was"
+        );
+    }
+
+    /// The other half: confirming the email is what opens the door. The
+    /// hold has to be a hold, not a wall.
+    #[tokio::test]
+    async fn funded_vault_with_verified_owner_email_activates() {
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        let now = Utc::now();
+        insert_vault_with_sealed_owner(
+            &pool,
+            "v-ok",
+            "unfunded",
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:00Z",
+            "owner@example.com",
+        )
+        .await;
+        mark_funded(&pool, "v-ok", now).await;
+        sqlx::query("UPDATE vaults SET owner_contact_verified_at = ? WHERE id = 'v-ok'")
+            .bind(now.to_rfc3339())
+            .execute(&pool)
+            .await
+            .expect("verify owner");
+
+        activate_funded_vaults(&state, &now.to_rfc3339())
+            .await
+            .expect("activate");
+
+        let (status, next_deadline): (String, String) =
+            sqlx::query_as("SELECT status, next_deadline_at FROM vaults WHERE id = 'v-ok'")
+                .fetch_one(&pool)
+                .await
+                .expect("read");
+        assert_eq!(status, "ok", "a confirmed owner's funded vault activates");
+        let nd = chrono::DateTime::parse_from_rfc3339(&next_deadline)
+            .expect("parse deadline")
+            .with_timezone(&Utc);
+        assert!(nd > now, "the clock must start from activation, got {nd}");
+        assert_eq!(count_events(&pool, "v-ok", "activation_held").await, 0);
+    }
+
+    /// The sweep runs every tick for as long as the owner takes to click
+    /// the link. One line in the activity feed, not one per tick.
+    #[tokio::test]
+    async fn activation_hold_is_recorded_once_not_every_tick() {
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        let now = Utc::now();
+        insert_vault_with_sealed_owner(
+            &pool,
+            "v-nag",
+            "unfunded",
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:00Z",
+            "owner@example.com",
+        )
+        .await;
+        mark_funded(&pool, "v-nag", now).await;
+
+        for _ in 0..3 {
+            activate_funded_vaults(&state, &now.to_rfc3339())
+                .await
+                .expect("activate");
+        }
+
+        assert_eq!(count_events(&pool, "v-nag", "activation_held").await, 1);
+    }
+
+    /// A vault with no owner contact at all has no way to become
+    /// verified, so holding it would brick it rather than prompt
+    /// anyone. It activates on funding as it always did.
+    #[tokio::test]
+    async fn funded_vault_with_no_owner_contact_still_activates() {
+        let pool = fresh_db().await;
+        let state = AppState {
+            db: pool.clone(),
+            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
+        };
+        let now = Utc::now();
+        insert_vault(
+            &pool,
+            "v-nocontact",
+            "unfunded",
+            "2026-01-01T00:00:00Z",
+            Some("2026-01-01T00:00:00Z"),
+        )
+        .await;
+        mark_funded(&pool, "v-nocontact", now).await;
+
+        activate_funded_vaults(&state, &now.to_rfc3339())
+            .await
+            .expect("activate");
+
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM vaults WHERE id = 'v-nocontact'")
+                .fetch_one(&pool)
+                .await
+                .expect("status");
+        assert_eq!(status, "ok");
     }
 
     #[tokio::test]

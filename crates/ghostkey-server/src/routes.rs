@@ -459,6 +459,11 @@ struct Health {
     notifications_undelivered: i64,
     /// Vaults with no proof the heir's address is reachable (#327).
     vaults_heir_unverified: i64,
+    /// Vaults still holding their check-in clock closed because the
+    /// owner's email was never confirmed (#326). The number that would
+    /// have shown, months earlier, that seven of sixteen mainnet vaults
+    /// were running a cascade at an address nobody had ever reached.
+    vaults_owner_unverified: i64,
     /// False when the oldest due notification has been waiting past the
     /// stuck threshold (15 min). Alert on this alongside
     /// `scheduler_healthy`: a stalled notifier silently stops contacting
@@ -550,6 +555,17 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
     .await
     .unwrap_or(0);
 
+    let vaults_owner_unverified: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM vaults
+          WHERE owner_contact_ciphertext IS NOT NULL
+            AND owner_contact_channel = 'email'
+            AND owner_contact_verified_at IS NULL
+            AND status NOT IN ('claimed', 'cancelled')",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
     let notifications_undelivered: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM notifications
           WHERE delivery_status IN ('undelivered', 'failed', 'bounced', 'complained')",
@@ -586,6 +602,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         notifications_failed,
         notifications_undelivered,
         vaults_heir_unverified,
+        vaults_owner_unverified,
         notifier_healthy,
         chain_scan_healthy,
         chain_scan_consecutive_failures: scan.consecutive_failures as i64,
@@ -690,10 +707,24 @@ pub struct VaultView {
     /// tapping the verification link we sent at setup. `None` when
     /// the vault has no sealed owner email on file (legacy CLI rows,
     /// or non-email channels); the dashboard nags while this is
-    /// `Some(false)`. Informational only — the scheduler delivers
-    /// reminders to unverified addresses regardless.
+    /// `Some(false)`.
+    ///
+    /// Not informational any more: since #326 an unconfirmed email
+    /// holds the check-in clock closed. See `activation_held`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_contact_verified: Option<bool>,
+    /// The money has arrived but the clock is not running, because the
+    /// owner's email is still unconfirmed (#326).
+    ///
+    /// Its own field rather than something the dashboard infers,
+    /// because the two states it separates look identical from
+    /// outside: `unfunded` means "waiting for coins" and `unfunded`
+    /// also means "coins are here, waiting for you". Telling a funded
+    /// owner to go and fund their share is the kind of wrong that
+    /// makes people think the money is lost. Only populated on the
+    /// owner-authenticated `GET /vaults/:id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activation_held: Option<bool>,
     /// The vault's descriptor pair (receive + change). Only populated
     /// on the owner-authenticated `GET /vaults/:id` — list/create
     /// responses leave them `None`. The dashboard embeds these in the
@@ -970,6 +1001,7 @@ async fn create_vault(
                 // Legacy CLI route stores the plaintext contact and
                 // doesn't participate in email verification.
                 owner_contact_verified: None,
+                activation_held: None,
                 descriptor_external: None,
                 descriptor_internal: None,
                 has_trusted_contact: None,
@@ -1675,6 +1707,9 @@ async fn create_vault_from_xpub(
                 } else {
                     None
                 },
+                // A brand-new vault has no coins yet, so nothing is
+                // being held. The owner GET reports it from then on.
+                activation_held: None,
                 // Return the public descriptor pair so the setup browser
                 // can build the heir envelope (block A) immediately,
                 // without a second round-trip. Watch-only; no secrets.
@@ -2112,6 +2147,9 @@ async fn create_vault_guardian(
                 } else {
                     None
                 },
+                // A brand-new vault has no coins yet, so nothing is
+                // being held. The owner GET reports it from then on.
+                activation_held: None,
                 descriptor_external: Some(pair.external.clone()),
                 descriptor_internal: Some(pair.internal.clone()),
                 has_trusted_contact: None,
@@ -2804,6 +2842,8 @@ async fn get_vault(
         /// Cached on-chain maturity scan (refreshed by the scheduler).
         chain_unlock_height: Option<i64>,
         chain_tip_height: Option<i64>,
+        /// Whether that scan last saw coins (0/1, null before any scan).
+        chain_has_unspent: Option<i64>,
         /// Claim fire drill progress (#223).
         drill_started_at: Option<String>,
         drill_opened_at: Option<String>,
@@ -2819,7 +2859,7 @@ async fn get_vault(
                   owner_contact_verified_at,
                   descriptor_external, descriptor_internal,
                   trusted_contact_ciphertext IS NOT NULL AS has_trusted_contact,
-                  chain_unlock_height, chain_tip_height,
+                  chain_unlock_height, chain_tip_height, chain_has_unspent,
                   drill_started_at, drill_opened_at, drill_completed_at
            FROM vaults WHERE id = ?"#,
     )
@@ -2858,6 +2898,15 @@ async fn get_vault(
         crate::psbt_routes::UnlockEstimateView::from_estimate(&est, Utc::now()).unlock_eta
     });
 
+    // Before the struct literal takes ownership of the row's fields.
+    let activation_held = row.status == "unfunded"
+        && row.chain_has_unspent == Some(1)
+        && crate::scheduler::owner_email_unconfirmed(
+            row.has_owner_contact == 1,
+            &row.owner_contact_channel,
+            &row.owner_contact_verified_at,
+        );
+
     Ok(Json(VaultView {
         id: row.id,
         label: row.label,
@@ -2883,6 +2932,11 @@ async fn get_vault(
         } else {
             None
         },
+        // The same condition the scheduler holds on, plus the two facts
+        // that make it visible to the owner: still `unfunded`, and the
+        // last scan saw coins. Anything else reads `false`, including a
+        // vault nobody has funded yet.
+        activation_held: Some(activation_held),
         descriptor_external: Some(row.descriptor_external),
         descriptor_internal: Some(row.descriptor_internal),
         has_trusted_contact: Some(row.has_trusted_contact == 1),

@@ -446,6 +446,8 @@ export function friendlyEventKind(kind: string): string {
     case "claim_resolved": return "Your heir opened the claim page";
     case "panic_activated": return "Emergency freeze on";
     case "panic_expired": return "Emergency freeze ended";
+    // #326. Funded, but the clock is waiting on a confirmed email.
+    case "activation_held": return "Waiting for your email confirmation";
     case "drill_started": return "Practice claim sent";
     case "drill_opened": return "Your heir opened the practice link";
     case "drill_completed": return "Your heir completed the practice claim";

@@ -497,7 +497,10 @@ export function Dashboard({ onNavigate }: Props) {
                   unlockEta={vault?.unlock_eta ?? null}
                 />
               ) : isUnfunded ? (
-                <AwaitingFundingCard meta={meta} />
+                <AwaitingFundingCard
+                  meta={meta}
+                  held={vault.activation_held === true}
+                />
               ) : (
                 <HeartbeatCard
                   meta={meta}
@@ -1611,7 +1614,55 @@ function VaultLoadingCard() {
  * owner at the balance card below (their deposit address) and reassure
  * them the countdown hasn't begun.
  */
-function AwaitingFundingCard({ meta }: { meta: VaultMeta }) {
+/**
+ * Funded, but the clock has not started because the owner's email is
+ * still unconfirmed (#326).
+ *
+ * This replaces the "fund your share" card rather than sitting next to
+ * it. Telling someone who has just sent Bitcoin to go and send Bitcoin
+ * is how a person concludes their money is gone.
+ *
+ * The tone is deliberately not an error. Nothing is wrong and nothing
+ * is at risk: the coins are on-chain in an address only the owner can
+ * spend from, and one tap in an email starts everything.
+ */
+function ClockHeldCard({ meta }: { meta: VaultMeta }) {
+  return (
+    <section className="card relative overflow-hidden p-5 text-center md:p-8">
+      <div className="flex flex-col items-center">
+        <div
+          aria-hidden="true"
+          className="flex h-16 w-16 items-center justify-center rounded-full bg-[var(--surface-2,var(--surface))] text-3xl"
+        >
+          ✉
+        </div>
+        <h2 className="mt-6 font-serif text-2xl">
+          Your Bitcoin arrived. Confirm your email to start.
+        </h2>
+        <p className="mt-2 max-w-md text-sm text-muted">
+          The money is safe in your share and only you can spend it. We
+          just can&apos;t start your check-in clock until we know we can
+          reach you, because everything after it depends on you getting
+          our reminders. Tap the link in the email we sent, and{" "}
+          {meta.heir.name || "your heir"}&apos;s plan begins.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function AwaitingFundingCard({
+  meta,
+  held,
+}: {
+  meta: VaultMeta;
+  /** The coins have landed; what's missing is the owner's confirmed
+   *  email (#326). Same `unfunded` status, opposite instruction. */
+  held: boolean;
+}) {
+  if (held) {
+    return <ClockHeldCard meta={meta} />;
+  }
   return (
     <section className="card relative overflow-hidden p-5 text-center md:p-8">
       <div className="flex flex-col items-center">
@@ -2040,9 +2091,9 @@ function ConfirmEmailCard({
           state.message
         ) : (
           <>
-            <span className="font-semibold">Confirm your email.</span> Until
-            you do, we can&apos;t remind you to check in, and a missed
-            reminder can trigger the inheritance by accident.
+            <span className="font-semibold">Confirm your email.</span> Your
+            check-in clock stays stopped until you do, so nothing starts
+            and nobody is contacted. Tap the link and you&apos;re running.
           </>
         )}
       </p>
