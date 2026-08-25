@@ -498,7 +498,7 @@ const FAQS = [
   },
   {
     q: "What kinds of Bitcoin can I deposit?",
-    a: "Any Bitcoin you already hold. You send it from your wallet to your vault's own Bitcoin address, one whose rules already include your heir. We never hold it and can't spend it.",
+    a: "Any Bitcoin you already hold. Each heir's share has its own Bitcoin address, with rules that already include them. You send from your own wallet to that address. We never hold it and can't spend it.",
   },
   {
     q: "Is this a legal will?",

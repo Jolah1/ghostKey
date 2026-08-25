@@ -109,7 +109,7 @@ export function HeirMessagePage({ onNavigate }: PageProps) {
         <Fallback
           loading={loading}
           hasVault={Boolean(meta)}
-          emptyText="A message isn't available once a vault is closed."
+          emptyText="A message isn't available once the share is claimed."
           onNavigate={onNavigate}
         />
       )}
@@ -179,7 +179,7 @@ export function EmergencyPage({ onNavigate }: PageProps) {
   return (
     <ToolPage
       title="Emergency options"
-      intro="If your wallet is ever compromised, freeze this vault so no claim can proceed."
+      intro="If your wallet is ever compromised, freeze this share so no claim can proceed."
       onNavigate={onNavigate}
     >
       {ready && vault?.lnurl_panic ? (
@@ -191,7 +191,7 @@ export function EmergencyPage({ onNavigate }: PageProps) {
         <Fallback
           loading={loading}
           hasVault={Boolean(meta)}
-          emptyText="Emergency freeze isn't available for this vault right now."
+          emptyText="Emergency freeze isn't available for this share right now."
           onNavigate={onNavigate}
         />
       )}
@@ -254,7 +254,7 @@ export function ToolsPage({ onNavigate }: PageProps) {
   if (vault?.lnurl_panic && vault.status !== "frozen" && !isClosed && !isClaiming) {
     items.push({
       label: "Emergency options",
-      desc: "Freeze this vault if needed",
+      desc: "Freeze this share if needed",
       route: "emergency",
     });
   }
@@ -372,7 +372,7 @@ export function heirContactBlockedReason({
     return "This browser isn't signed in as the owner of this vault, so it can't change how the heir is reached. Sign in on the device you set the vault up on.";
   }
   if (status === "claimed") {
-    return "This vault is closed, so there's nobody left to reach.";
+    return "This share is claimed, so there's nobody left to reach.";
   }
   return "This isn't available once a claim is underway.";
 }

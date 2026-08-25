@@ -4,7 +4,7 @@ import { friendlyEventKind } from "./ui";
 describe("friendlyEventKind (#117 T4)", () => {
   it("maps known database codes to plain English", () => {
     expect(friendlyEventKind("owner_send")).toBe("You sent Bitcoin");
-    expect(friendlyEventKind("vault_empty")).toBe("Vault is empty");
+    expect(friendlyEventKind("vault_empty")).toBe("Share is empty");
     expect(friendlyEventKind("lightning_invoice_issued")).toBe(
       "Check-in invoice created",
     );

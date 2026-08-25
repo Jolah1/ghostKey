@@ -37,7 +37,7 @@ export function ConfirmSend({
    *  character can be checked. */
   destination: string;
   /** What's leaving the vault, already formatted (e.g. "50,000 sat" or
-   *  "Everything in your vault"). */
+   *  "Everything in this share"). */
   amountLabel: string;
   /** Human network name (e.g. "Bitcoin", "signet network"). */
   networkLabel: string;

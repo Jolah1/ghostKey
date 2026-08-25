@@ -571,7 +571,7 @@ export function SignInPortal({
 
     if (!firstId) {
       setError(
-        "These vaults were set up before cross-device sign-in shipped. " +
+        "This vault was set up before cross-device sign-in shipped. " +
           "Check in from the device you used originally.",
       );
       setPhase({ kind: "idle" });

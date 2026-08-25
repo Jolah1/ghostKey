@@ -17,7 +17,7 @@ export const pcm: Vocab = {
   status: makeStatus({
     unfunded: {
       label: "Dey wait for money",
-      long: "Send Bitcoin go your vault make e start. Check-in go begin once money enter.",
+      long: "Send Bitcoin go this share make e start. Check-in go begin once money enter.",
     },
     ok: {
       label: "E dey work",
@@ -41,11 +41,11 @@ export const pcm: Vocab = {
     },
     claimed: {
       label: "Don pass to dem",
-      long: "Dem don claim this vault.",
+      long: "Dem don claim this share.",
     },
     frozen: {
       label: "Panic stop",
-      long: "You trigger panic. The vault go freeze for 90 days.",
+      long: "You trigger panic. This share go freeze for 90 days.",
     },
   }),
   claim: {
@@ -157,7 +157,7 @@ export const pcm: Vocab = {
     reviewAndSend: "Check and send",
     sendingBitcoin: "We dey send Bitcoin…",
     sendTheBitcoin: "Send the Bitcoin",
-    everythingMinusFee: "Everything for the vault, minus network fee",
+    everythingMinusFee: "Everything for this share, minus network fee",
     defaultFeeLabel: "2 sat/vB",
     someonesLeftYou: "Somebody leave something for you",
     pageDescription: "Somebody wey you know leave you Bitcoin. Dem set up GhostKey so that if dem ever stop to check in, the link go reach you. Na wetin don happen. This page na for you.",
@@ -283,7 +283,7 @@ export const pcm: Vocab = {
     },
     noUtxos: {
       headline: "Nothing dey to claim yet",
-      body: "The vault empty right now. Either dem never fund am, or somebody don move the Bitcoin out.",
+      body: "This share empty right now. Either dem never fund am, or somebody don move the Bitcoin out.",
       nextStep: "Contact the person wey set this up. Dem fit tell you whether to wait or whether nothing ever dey inside.",
     },
     psbtNotFullySigned: {
@@ -303,7 +303,7 @@ export const pcm: Vocab = {
     },
     olderFormat: {
       headline: "This link dey use older format",
-      body: "The way dem set this vault up dey supported, but our automatic detection confuse.",
+      body: "The way dem set this share up dey supported, but our automatic detection confuse.",
       nextStep: "Contact the person wey set this up so we fit help finish the claim by hand.",
     },
     serverError: {
@@ -362,7 +362,7 @@ export const pcm: Vocab = {
     sendPractice: "Send a practice",
     cancel: "Cancel",
     sending: "We dey send…",
-    errorRealClaimUnderway: "Real claim don start for this vault, so practice no fit happen.",
+    errorRealClaimUnderway: "Real claim don start for this share, so practice no fit happen.",
     errorSendingFailed: "Sending no work. Your vault fine. Try again later.",
     lineCompleted: (who, when) =>
       when ? `${who} don complete practice claim for ${when}.` : `${who} don complete practice claim.`,

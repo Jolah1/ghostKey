@@ -12,7 +12,7 @@ export const en: Vocab = {
   status: makeStatus({
     unfunded: {
       label: "Awaiting funding",
-      long: "Send Bitcoin to your vault to activate it. Check-ins start once it's funded.",
+      long: "Send Bitcoin to this share to activate it. Check-ins start once it's funded.",
     },
     ok: {
       label: "Active",
@@ -36,11 +36,11 @@ export const en: Vocab = {
     },
     claimed: {
       label: "Passed on",
-      long: "This vault has been claimed.",
+      long: "This share has been claimed.",
     },
     frozen: {
       label: "Panic stop",
-      long: "You triggered a panic. The vault is frozen for 90 days.",
+      long: "You triggered a panic. This share is frozen for 90 days.",
     },
   }),
   claim: {
@@ -152,7 +152,7 @@ export const en: Vocab = {
     reviewAndSend: "Review and send",
     sendingBitcoin: "Sending Bitcoin…",
     sendTheBitcoin: "Send the Bitcoin",
-    everythingMinusFee: "Everything in the vault, minus the network fee",
+    everythingMinusFee: "Everything in this share, minus the network fee",
     defaultFeeLabel: "2 sat/vB",
     someonesLeftYou: "Someone left you something",
     pageDescription: "Someone you knew left you Bitcoin. They set up GhostKey so that if they ever stopped checking in, the link would reach you. That's what happened. This page is for you.",
@@ -278,7 +278,7 @@ export const en: Vocab = {
     },
     noUtxos: {
       headline: "There's nothing to claim yet",
-      body: "The vault is empty right now. Either it hasn't been funded, or someone has already moved the Bitcoin out.",
+      body: "This share is empty right now. Either it hasn't been funded, or someone has already moved the Bitcoin out.",
       nextStep: "Contact the person who set this up. They can tell you whether to wait or whether nothing was ever inside.",
     },
     psbtNotFullySigned: {
@@ -298,7 +298,7 @@ export const en: Vocab = {
     },
     olderFormat: {
       headline: "This link uses an older format",
-      body: "The way this vault was set up is supported, but our automatic detection got confused.",
+      body: "The way this share was set up is supported, but our automatic detection got confused.",
       nextStep: "Contact the person who set this up so we can help finish the claim by hand.",
     },
     serverError: {
@@ -357,7 +357,7 @@ export const en: Vocab = {
     sendPractice: "Send a practice",
     cancel: "Cancel",
     sending: "Sending…",
-    errorRealClaimUnderway: "A real claim is already underway on this vault, so a practice run isn't possible.",
+    errorRealClaimUnderway: "A real claim is already underway on this share, so a practice run isn't possible.",
     errorSendingFailed: "Sending failed. Your vault is fine. Try again in a moment.",
     lineCompleted: (who, when) =>
       when ? `${who} completed a practice claim on ${when}.` : `${who} completed a practice claim.`,
