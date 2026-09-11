@@ -1907,15 +1907,16 @@ fn trips_backoff(e: &BlockingErr) -> bool {
 }
 
 fn explorer_backoff() -> &'static std::sync::Mutex<ExplorerBackoff> {
-    static B: std::sync::OnceLock<std::sync::Mutex<ExplorerBackoff>> =
-        std::sync::OnceLock::new();
+    static B: std::sync::OnceLock<std::sync::Mutex<ExplorerBackoff>> = std::sync::OnceLock::new();
     B.get_or_init(Default::default)
 }
 
 /// When maturity scans may resume, or `None` if they aren't paused. For
 /// `/health`.
 pub(crate) fn explorer_retry_at(now: chrono::DateTime<Utc>) -> Option<chrono::DateTime<Utc>> {
-    let b = explorer_backoff().lock().expect("explorer backoff poisoned");
+    let b = explorer_backoff()
+        .lock()
+        .expect("explorer backoff poisoned");
     b.remaining_secs(now).and(b.retry_at)
 }
 
@@ -1986,7 +1987,9 @@ pub(crate) async fn unlock_estimate_with_cache(
     )
     .await;
     {
-        let mut backoff = explorer_backoff().lock().expect("explorer backoff poisoned");
+        let mut backoff = explorer_backoff()
+            .lock()
+            .expect("explorer backoff poisoned");
         match &scanned {
             Ok(_) => backoff.record_success(),
             Err(e) if trips_backoff(e) => backoff.record_failure(now),
@@ -2694,7 +2697,10 @@ mod tests {
         let now = Utc::now();
         let mut b = ExplorerBackoff::default();
         b.record_failure(now);
-        assert_eq!(b.remaining_secs(now + chrono::Duration::seconds(59)), Some(1));
+        assert_eq!(
+            b.remaining_secs(now + chrono::Duration::seconds(59)),
+            Some(1)
+        );
         assert_eq!(b.remaining_secs(now + chrono::Duration::seconds(60)), None);
         // The streak outlives the pause: failing again straight after it
         // lifts waits longer, not back at the start.
@@ -2706,7 +2712,9 @@ mod tests {
     #[test]
     fn only_explorer_errors_pause_scans() {
         assert!(trips_backoff(&BlockingErr::Esplora("HTTP 429".into())));
-        assert!(!trips_backoff(&BlockingErr::Vault("scan worker panic".into())));
+        assert!(!trips_backoff(&BlockingErr::Vault(
+            "scan worker panic".into()
+        )));
         assert!(!trips_backoff(&BlockingErr::Build("fee".into())));
         assert!(!trips_backoff(&BlockingErr::NoUtxos));
         // Our own skip must not extend the pause it came from.

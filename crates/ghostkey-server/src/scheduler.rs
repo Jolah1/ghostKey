@@ -2352,8 +2352,12 @@ mod tests {
     fn skipped_scans_do_not_count_as_failures() {
         use crate::psbt_routes::BlockingErr;
         assert!(!counts_as_scan_failure(&BlockingErr::BackingOff(60)));
-        assert!(counts_as_scan_failure(&BlockingErr::Esplora("HTTP 429".into())));
-        assert!(counts_as_scan_failure(&BlockingErr::Vault("bad descriptor".into())));
+        assert!(counts_as_scan_failure(&BlockingErr::Esplora(
+            "HTTP 429".into()
+        )));
+        assert!(counts_as_scan_failure(&BlockingErr::Vault(
+            "bad descriptor".into()
+        )));
     }
 
     #[test]
