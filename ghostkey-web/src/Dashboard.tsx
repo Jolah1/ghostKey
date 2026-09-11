@@ -423,6 +423,7 @@ export function Dashboard({ onNavigate }: Props) {
   //     here" to "Missed deadline".
   const isClaiming =
     vault?.status === "timelock_started" || vault?.status === "claiming";
+  const heirNotice = heirReachNotice(vault);
   const isClosed = vault?.status === "claimed";
   // Not funded yet: the check-in clock hasn't started, so no deadline
   // is "past" and none of the check-in affordances apply.
@@ -479,6 +480,16 @@ export function Dashboard({ onNavigate }: Props) {
             {vault && !isClosed && !isClaiming && vault.owner_contact_verified === false ? (
               <div className="mb-5">
                 <ConfirmEmailCard vaultId={vault.id} ownerToken={ownerToken} />
+              </div>
+            ) : null}
+
+            {heirNotice ? (
+              <div className="mb-5">
+                <HeirReachCard
+                  kind={heirNotice}
+                  heirName={meta.heir.name}
+                  onNavigate={onNavigate}
+                />
               </div>
             ) : null}
 
@@ -2026,6 +2037,93 @@ const pushDismissKey = (vaultId: string) => `gk:pushDismissed:${vaultId}`;
  * are on" confirmation, then disappears for good (the subscription
  * check hides it on subsequent visits).
  */
+/* ------------------------- Heir reachability ------------------------------- */
+
+/**
+ * Which heir warning, if any, the dashboard should show (#327).
+ *
+ * `unreachable` always shows: something we sent the heir bounced or was
+ * marked as spam, and the owner is the only person who can fix it.
+ * `unconfirmed` is a gentler nudge to send a practice claim, since that
+ * is the one thing that proves the address works. It stays hidden once
+ * a practice is out, so an owner who did the right thing isn't nagged
+ * while the delivery report comes back.
+ *
+ * Neither shows once a claim is underway. The link has already gone
+ * out, and fixing the address then would not send it again, so the card
+ * would reassure the owner about something it can't fix.
+ */
+export function heirReachNotice(
+  vault: Pick<VaultView, "status" | "heir_reachability" | "drill_started_at"> | null,
+): "unreachable" | "unconfirmed" | null {
+  if (!vault) return null;
+  if (
+    vault.status === "claimed" ||
+    vault.status === "claiming" ||
+    vault.status === "timelock_started"
+  ) {
+    return null;
+  }
+  if (vault.heir_reachability === "unreachable") return "unreachable";
+  if (vault.heir_reachability === "unconfirmed" && !vault.drill_started_at) {
+    return "unconfirmed";
+  }
+  return null;
+}
+
+function HeirReachCard({
+  kind,
+  heirName,
+  onNavigate,
+}: {
+  kind: "unreachable" | "unconfirmed";
+  heirName: string;
+  onNavigate: (r: Route) => void;
+}) {
+  const name = heirName || "your heir";
+  if (kind === "unreachable") {
+    return (
+      <div
+        className="flex items-center justify-between gap-3 rounded-xl border border-app px-4 py-3"
+        style={{ background: "var(--warning-tint)", color: "var(--warning)" }}
+        role="alert"
+        data-testid="heir-reach-card"
+      >
+        <p className="text-sm text-[var(--text)]">
+          <span className="font-semibold">There&apos;s a problem reaching {name}.</span>{" "}
+          If your Bitcoin were claimed today, they might not get the link.
+          Check the address you saved for them.
+        </p>
+        <button
+          type="button"
+          onClick={() => onNavigate("heir-contact")}
+          className="shrink-0 text-xs font-medium text-[var(--text)] underline underline-offset-2"
+        >
+          Check address
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div
+      className="card-flat flex items-center justify-between gap-3 px-4 py-3"
+      data-testid="heir-reach-card"
+    >
+      <p className="text-sm text-[var(--text)]">
+        <span className="font-semibold">We haven&apos;t reached {name} yet.</span>{" "}
+        Send them a practice claim. It&apos;s how we check their address works.
+      </p>
+      <button
+        type="button"
+        onClick={() => onNavigate("practice")}
+        className="shrink-0 text-xs font-medium text-[var(--text)] underline underline-offset-2"
+      >
+        Send practice
+      </button>
+    </div>
+  );
+}
+
 /* ------------------------- Confirm-email card ------------------------------ */
 
 /**
