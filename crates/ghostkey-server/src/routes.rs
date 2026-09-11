@@ -485,6 +485,9 @@ struct Health {
     /// RFC3339 time of the last successful maturity scan, null if none
     /// has run since boot.
     chain_scan_last_ok_at: Option<String>,
+    /// After the block explorer fails, scans pause and resume at this
+    /// RFC3339 time. Null when they aren't paused.
+    chain_scan_retry_at: Option<String>,
 }
 
 /// A due notification older than this is treated as evidence the notifier
@@ -608,6 +611,8 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         chain_scan_consecutive_failures: scan.consecutive_failures as i64,
         chain_scan_last_error: scan.last_err,
         chain_scan_last_ok_at: scan.last_ok_at.map(|t| t.to_rfc3339()),
+        chain_scan_retry_at: crate::psbt_routes::explorer_retry_at(Utc::now())
+            .map(|t| t.to_rfc3339()),
     })
 }
 
