@@ -1680,6 +1680,10 @@ pub(crate) enum BlockingErr {
     Vault(String),
     #[error("esplora: {0}")]
     Esplora(String),
+    /// We skipped the explorer on purpose: it failed recently and we are
+    /// waiting out the pause before asking again. See [`ExplorerBackoff`].
+    #[error("block explorer is busy; trying again in {0}s")]
+    BackingOff(i64),
     #[error("build: {0}")]
     Build(String),
     #[error("no UTXOs found at vault addresses")]
@@ -1691,6 +1695,7 @@ impl From<BlockingErr> for ApiError {
         match e {
             BlockingErr::Vault(s) => ApiError::Validation(s),
             BlockingErr::Esplora(s) => ApiError::Validation(s),
+            e @ BlockingErr::BackingOff(_) => ApiError::Validation(e.to_string()),
             BlockingErr::Build(s) => ApiError::Validation(s),
             BlockingErr::NoUtxos => {
                 ApiError::Validation("no UTXOs found at vault addresses".into())
@@ -1807,7 +1812,10 @@ pub(crate) async fn scan_unlock_estimate(
         })?;
         wallet
             .apply_update(update)
-            .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
+            // Our wallet choked on what the explorer sent. That's this
+            // vault's problem, not the explorer's, so it must not pause
+            // scans for everyone else.
+            .map_err(|e| BlockingErr::Vault(format!("apply_update: {e}")))?;
 
         let tip_height = wallet.latest_checkpoint().height();
         let csv = vault.timelock_blocks();
@@ -1836,13 +1844,80 @@ pub(crate) async fn scan_unlock_estimate(
         })
     })
     .await
-    .map_err(|e| BlockingErr::Esplora(format!("scan worker panic: {e}")))?
+    .map_err(|e| BlockingErr::Vault(format!("scan worker panic: {e}")))?
 }
 
 /// How long a cached on-chain maturity estimate stays usable before a
 /// rescan (~1 block): finer granularity is wasted when the chain only
 /// advances every ~10 min, and it caps Esplora load per waiting vault.
 pub(crate) const MATURITY_CACHE_TTL_SECS: i64 = 600;
+
+/// First pause after the block explorer fails. Each further failure in a
+/// row doubles it, up to [`EXPLORER_BACKOFF_MAX_SECS`].
+const EXPLORER_BACKOFF_BASE_SECS: i64 = 60;
+/// Longest pause: one cache lifetime, about a block. Past that a waiting
+/// vault would be scanned less often than a healthy one.
+const EXPLORER_BACKOFF_MAX_SECS: i64 = MATURITY_CACHE_TTL_SECS;
+
+/// Process-wide pause on maturity scans after the block explorer fails.
+///
+/// A failed scan writes nothing to the vault's cache, so without this the
+/// next tick rescans the same vault 30 seconds later. When the explorer
+/// is rate limiting us, every waiting vault then retries every tick, and
+/// we answer a 429 by asking twenty times harder. The pause is global
+/// rather than per vault because a rate limit or an outage is about the
+/// explorer, not about any one vault: once one scan fails, the rest of
+/// the tick would fail the same way.
+///
+/// Only explorer errors trip it. A bad descriptor fails the same on every
+/// endpoint and must not stall every other vault.
+#[derive(Debug, Default)]
+pub(crate) struct ExplorerBackoff {
+    failures: u32,
+    retry_at: Option<chrono::DateTime<Utc>>,
+}
+
+impl ExplorerBackoff {
+    /// Seconds left in the current pause, or `None` when a scan may go
+    /// ahead.
+    fn remaining_secs(&self, now: chrono::DateTime<Utc>) -> Option<i64> {
+        let left = (self.retry_at? - now).num_seconds();
+        (left > 0).then_some(left)
+    }
+
+    fn record_failure(&mut self, now: chrono::DateTime<Utc>) {
+        self.failures = self.failures.saturating_add(1);
+        let doublings = (self.failures - 1).min(16);
+        let secs = EXPLORER_BACKOFF_BASE_SECS
+            .saturating_mul(1_i64 << doublings)
+            .min(EXPLORER_BACKOFF_MAX_SECS);
+        self.retry_at = Some(now + chrono::Duration::seconds(secs));
+    }
+
+    fn record_success(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Only the explorer's own failures pause scans. Anything else is about
+/// one vault and would fail the same on every retry, so pausing everyone
+/// for it would let one broken vault stall the rest.
+fn trips_backoff(e: &BlockingErr) -> bool {
+    matches!(e, BlockingErr::Esplora(_))
+}
+
+fn explorer_backoff() -> &'static std::sync::Mutex<ExplorerBackoff> {
+    static B: std::sync::OnceLock<std::sync::Mutex<ExplorerBackoff>> =
+        std::sync::OnceLock::new();
+    B.get_or_init(Default::default)
+}
+
+/// When maturity scans may resume, or `None` if they aren't paused. For
+/// `/health`.
+pub(crate) fn explorer_retry_at(now: chrono::DateTime<Utc>) -> Option<chrono::DateTime<Utc>> {
+    let b = explorer_backoff().lock().expect("explorer backoff poisoned");
+    b.remaining_secs(now).and(b.retry_at)
+}
 
 /// A vault's descriptors plus whatever maturity estimate is already
 /// cached on its row — enough to answer "when can the heir spend?"
@@ -1890,14 +1965,35 @@ pub(crate) async fn unlock_estimate_with_cache(
 
     let net = crate::config::parse_network(&input.network)
         .map_err(|e| BlockingErr::Vault(format!("unknown vault network: {e}")))?;
-    let est = scan_unlock_estimate(
+
+    // The explorer failed recently. Fail this one without asking, the
+    // same way a failed scan would, so nothing advances on a chain we
+    // couldn't read.
+    if let Some(secs) = explorer_backoff()
+        .lock()
+        .expect("explorer backoff poisoned")
+        .remaining_secs(now)
+    {
+        return Err(BlockingErr::BackingOff(secs));
+    }
+
+    let scanned = scan_unlock_estimate(
         input.descriptor_external.clone(),
         input.descriptor_internal.clone(),
         net,
         input.timelock_blocks.max(0) as u32,
         None,
     )
-    .await?;
+    .await;
+    {
+        let mut backoff = explorer_backoff().lock().expect("explorer backoff poisoned");
+        match &scanned {
+            Ok(_) => backoff.record_success(),
+            Err(e) if trips_backoff(e) => backoff.record_failure(now),
+            Err(_) => {}
+        }
+    }
+    let est = scanned?;
 
     if let Err(e) = sqlx::query(
         r#"UPDATE vaults
@@ -2573,6 +2669,60 @@ mod tests {
     fn parse_esplora_urls_rejects_empty() {
         assert!(parse_esplora_urls("", Network::Signet).is_err());
         assert!(parse_esplora_urls(" , ,", Network::Signet).is_err());
+    }
+
+    #[test]
+    fn explorer_backoff_starts_open() {
+        let b = ExplorerBackoff::default();
+        assert_eq!(b.remaining_secs(Utc::now()), None);
+    }
+
+    #[test]
+    fn explorer_backoff_doubles_and_caps_at_one_cache_lifetime() {
+        let now = Utc::now();
+        let mut b = ExplorerBackoff::default();
+        let mut pauses = Vec::new();
+        for _ in 0..8 {
+            b.record_failure(now);
+            pauses.push(b.remaining_secs(now).expect("paused after a failure"));
+        }
+        assert_eq!(pauses, vec![60, 120, 240, 480, 600, 600, 600, 600]);
+    }
+
+    #[test]
+    fn explorer_backoff_lifts_when_the_pause_runs_out() {
+        let now = Utc::now();
+        let mut b = ExplorerBackoff::default();
+        b.record_failure(now);
+        assert_eq!(b.remaining_secs(now + chrono::Duration::seconds(59)), Some(1));
+        assert_eq!(b.remaining_secs(now + chrono::Duration::seconds(60)), None);
+        // The streak outlives the pause: failing again straight after it
+        // lifts waits longer, not back at the start.
+        let later = now + chrono::Duration::seconds(60);
+        b.record_failure(later);
+        assert_eq!(b.remaining_secs(later), Some(120));
+    }
+
+    #[test]
+    fn only_explorer_errors_pause_scans() {
+        assert!(trips_backoff(&BlockingErr::Esplora("HTTP 429".into())));
+        assert!(!trips_backoff(&BlockingErr::Vault("scan worker panic".into())));
+        assert!(!trips_backoff(&BlockingErr::Build("fee".into())));
+        assert!(!trips_backoff(&BlockingErr::NoUtxos));
+        // Our own skip must not extend the pause it came from.
+        assert!(!trips_backoff(&BlockingErr::BackingOff(60)));
+    }
+
+    #[test]
+    fn explorer_backoff_resets_on_a_real_scan() {
+        let now = Utc::now();
+        let mut b = ExplorerBackoff::default();
+        b.record_failure(now);
+        b.record_failure(now);
+        b.record_success();
+        assert_eq!(b.remaining_secs(now), None);
+        b.record_failure(now);
+        assert_eq!(b.remaining_secs(now), Some(60), "streak starts over");
     }
 
     #[test]
