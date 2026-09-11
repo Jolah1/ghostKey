@@ -66,6 +66,7 @@ import { usePrice, btcAndUsd, satsToUsd, formatUsd } from "./fiat";
 import { fanOutCheckin, lastResortCheckinOpen } from "./checkin";
 import { useToolDoneState } from "./toolStatus";
 import type { Route } from "./App";
+import { unlockErrorMessage } from "./unlockErrors";
 
 interface Props {
   onNavigate: (r: Route) => void;
@@ -1292,11 +1293,7 @@ function SendCard({
       ownerXprv = unsealed.ownerXprv;
     } catch (e) {
       setPhase("idle");
-      setError(
-        e instanceof ApiError
-          ? e.message
-          : "That password didn't unlock the vault. Check it and try again.",
-      );
+      setError(unlockErrorMessage(e));
       return;
     }
 

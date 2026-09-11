@@ -5,7 +5,8 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { isUnsealFailure, MissingOwnerToken } from "./AddHeirPortal";
+import { MissingOwnerToken } from "./AddHeirPortal";
+import { isUnsealFailure } from "./unlockErrors";
 
 describe("isUnsealFailure", () => {
   it("recognises the AEAD failures browsers actually throw", () => {
