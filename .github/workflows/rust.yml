@@ -152,7 +152,7 @@ jobs:
       # a cold runner). It's the standard fast path for cargo extensions
       # in CI.
       - name: Install cargo-audit
-        uses: taiki-e/install-action@b6b84cf49ebfe0176417bdce007c624f0db37f20 # v2
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a # v2
         with:
           tool: cargo-audit
 
