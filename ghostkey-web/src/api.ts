@@ -70,6 +70,12 @@ export interface VaultView {
     *  things `status: "unfunded"` means: waiting for coins, and coins
     *  are here and waiting for you. */
   activation_held?: boolean | null;
+  /** Can we reach the heir (#327)? `unreachable`: the last message to
+   *  them bounced or was marked as spam. `unconfirmed`: nothing sent to
+   *  them has ever been confirmed delivered. `confirmed`: something was.
+   *  Absent when the heir isn't on email, because only email tells us
+   *  a message arrived. Only on the owner `GET /vaults/:id`. */
+  heir_reachability?: "unreachable" | "unconfirmed" | "confirmed" | null;
   /** Whether a trusted contact is on file. Gates the panic-stop
    *  copy's "your trusted contact will be alerted" promise — only
    *  rendered when true (issue #70). Absent on list/create
