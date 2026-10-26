@@ -58,13 +58,106 @@ ignore = [
   #   startup. The ghostkey-cli reaches the same code via the user's
   #   own bitcoind RPC endpoint, which they likewise control.
   # Status:
-  #   Tracked. The right fix is to migrate to bdk_esplora 0.22+ when
-  #   we next do a BDK upgrade pass. Until then we accept this with
-  #   eyes open and the threat model above.
+  #   Tracked. An earlier version of this note said the fix was to
+  #   migrate to bdk_esplora 0.22+. That was tested on 2026-10-26 and
+  #   is wrong: bdk_esplora 0.22.3 resolves esplora-client to 0.12.3,
+  #   which still depends on minreq 2.14 and so still pulls rustls
+  #   0.21. It also adds a second bdk_core (0.6.4 beside the 0.4.1 that
+  #   bdk_wallet 1.0.0 pins), which is its own hazard.
+  #
+  #   The real fix is esplora-client 0.13+, which replaced minreq with
+  #   `bitreq`. No bdk_esplora release depends on it yet. And it is not
+  #   sufficient on its own: bitcoincore-rpc 0.19 -> jsonrpc 0.18 pulls
+  #   minreq independently, so both legs have to move before rustls
+  #   0.21 leaves the tree.
   # Revisit when:
-  #   We schedule the next BDK upgrade pass, OR a minreq 3.x release
-  #   trickles down through esplora-client.
+  #   A bdk_esplora release depends on esplora-client 0.13+ (dropping
+  #   minreq for bitreq), AND bitcoincore-rpc no longer reaches minreq
+  #   through jsonrpc.
   "RUSTSEC-2026-0098",
   "RUSTSEC-2026-0099",
   "RUSTSEC-2026-0104",
+
+  # RUSTSEC-2026-0381: webpki-roots bundled roots trust distrusted emSign intermediates.
+  # RUSTSEC-2026-0382: rustls-webpki may accept distrusted intermediates.
+  #
+  # Why we can't currently fix these:
+  #   Same minreq chain as the three advisories above, and stuck for
+  #   the same reason. The fixed versions (webpki-roots >=1.0.10,
+  #   rustls-webpki >=0.103.16) are both in the tree already and are
+  #   what rustls 0.23 uses. Only the copies underneath rustls 0.21
+  #   (webpki-roots 0.25.4, rustls-webpki 0.101.7) are flagged, and
+  #   rustls 0.21 accepts neither fixed version.
+  # Why the impact in our case is low:
+  #   Both are about trusting a certificate path we should have
+  #   rejected. The affected client is minreq, which we point only at
+  #   an Esplora URL the operator sets at startup (and, in the CLI, the
+  #   user's own bitcoind RPC endpoint). An attacker needs a
+  #   certificate from a distrusted emSign intermediate for that exact
+  #   host, and the data at risk is public blockchain data we read, not
+  #   anything we send. No key material or vault secret crosses this
+  #   client.
+  # Status:
+  #   Same fix and same blocker as RUSTSEC-2026-0098/0099/0104 above.
+  # Revisit when:
+  #   See the "Revisit when" immediately above; one change clears all five.
+  "RUSTSEC-2026-0381",
+  "RUSTSEC-2026-0382",
+
+  # RUSTSEC-2026-0346: rustls `Debug` impls for client session values expose TLS secrets.
+  # RUSTSEC-2026-0349: rustls unauthenticated ServerHello can downgrade later
+  #                    connections to classical key exchange.
+  #
+  # Scope of this entry:
+  #   Both advisories cover rustls 0.21 and 0.23. The 0.23 copy is
+  #   FIXED in the tree (we are on 0.23.46). Only the 0.21.12 copy
+  #   under minreq is accepted here, for the same reason as every
+  #   other entry on that chain: rustls 0.21 will never receive a fix,
+  #   since the patched version is 0.23.46. Note cargo-audit ignores by
+  #   advisory ID and not per version, so these two lines also cover
+  #   the 0.23 copy we have already patched. Lockfile versions only
+  #   move forward, so that is acceptable.
+  # Why the impact in our case is low:
+  #   0346 only leaks secrets if something prints rustls client session
+  #   values with `Debug`. Neither we nor minreq does.
+  #   0349 is a downgrade away from post-quantum key exchange. rustls
+  #   0.21 never offered post-quantum key exchange, so on that copy
+  #   there is nothing to downgrade from.
+  # Revisit when:
+  #   Same condition as RUSTSEC-2026-0098/0099/0104 above.
+  "RUSTSEC-2026-0346",
+  "RUSTSEC-2026-0349",
+
+  # RUSTSEC-2026-0387: crypto-bigint timing variability in operations
+  # intended to be constant-time.
+  #
+  # Why we can't fix this in a lockfile bump:
+  #   It reaches us through a direct dependency we chose:
+  #     ghostkey-server
+  #       └── p256 0.13          ← ours
+  #             └── elliptic-curve 0.13.8
+  #                   └── crypto-bigint 0.5.5 (vulnerable)
+  #   The advisory wants >=0.7.6. `p256 = "0.14"` does resolve
+  #   crypto-bigint to 0.7.10 (verified 2026-10-26), but it is not a
+  #   drop-in: it moves to rand_core 0.10, so `ThreadRng` no longer
+  #   satisfies `CryptoRng` at push.rs:346, and `to_encoded_point` is
+  #   gone from `PublicKey` at push.rs:129 and push.rs:449.
+  # Why the impact in our case is low:
+  #   p256 is the Web Push crypto in `push.rs`: ECDSA to sign the VAPID
+  #   JWT, ECDH to encrypt the payload. A timing sidechannel needs
+  #   precise, repeated measurement of those operations, and the VAPID
+  #   key signs when the notifier decides to send rather than when a
+  #   caller asks, so there is no way to drive it on demand. The worst
+  #   case is disclosure of the VAPID signing key, which would let
+  #   someone send push notifications to subscribers. It is not a
+  #   Bitcoin key: it cannot move funds or affect a claim.
+  # Status:
+  #   Tracked in issue #380, with the three compile errors written out.
+  #   Deliberately not bundled into a dependency bump, because item one
+  #   is about where key-generation randomness comes from and getting
+  #   that wrong would be worse than the advisory.
+  # Revisit when:
+  #   #380 lands, or p256 publishes a 0.13.x that takes crypto-bigint
+  #   >=0.7.6.
+  "RUSTSEC-2026-0387",
 ]
