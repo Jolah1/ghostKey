@@ -31,6 +31,7 @@ import {
   type RecordedClip,
 } from "./VideoMessageRecorder";
 import { Button, Field, InlineAlert } from "./ui";
+import { unlockErrorMessage } from "./unlockErrors";
 
 /** One line describing the stored clip, for the card and its tests. */
 export function videoStatusLine(status: VideoStatusView): string {
@@ -141,11 +142,7 @@ export function VideoMessageCard({
       ownerXprv = unsealed.ownerXprv;
     } catch (e) {
       setBusy(null);
-      setError(
-        e instanceof ApiError
-          ? e.message
-          : "That password didn't unlock the vault. Check it and try again.",
-      );
+      setError(unlockErrorMessage(e));
       return;
     }
 

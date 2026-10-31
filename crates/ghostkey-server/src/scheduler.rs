@@ -985,7 +985,7 @@ async fn activate_funded_vaults(state: &AppState, _now_iso: &str) -> anyhow::Res
                 continue;
             }
             Err(e) => {
-                record_chain_scan(false, Some(e.to_string()), now);
+                record_chain_scan_err(&e, now);
                 continue;
             }
         }
@@ -1195,7 +1195,7 @@ async fn retire_drained_vaults(state: &AppState) -> anyhow::Result<()> {
             }
             Ok(_) => record_chain_scan(true, None, now),
             Err(e) => {
-                record_chain_scan(false, Some(e.to_string()), now);
+                record_chain_scan_err(&e, now);
                 continue;
             }
         }
@@ -1296,7 +1296,7 @@ async fn stand_down_never_funded_vaults(state: &AppState) -> anyhow::Result<()> 
             }
             Ok(_) => record_chain_scan(true, None, now),
             Err(e) => {
-                record_chain_scan(false, Some(e.to_string()), now);
+                record_chain_scan_err(&e, now);
                 continue;
             }
         }
@@ -1569,6 +1569,21 @@ fn record_chain_scan(ok: bool, err: Option<String>, now: chrono::DateTime<Utc>) 
     }
 }
 
+/// Record a failed maturity scan, unless we skipped it on purpose.
+fn record_chain_scan_err(e: &crate::psbt_routes::BlockingErr, now: chrono::DateTime<Utc>) {
+    if counts_as_scan_failure(e) {
+        record_chain_scan(false, Some(e.to_string()), now);
+    }
+}
+
+/// A scan skipped during the explorer's pause is not a new failure.
+/// Counting it would add one to the streak for every waiting vault on
+/// every tick, and would replace the real error (the 429) in `/health`
+/// with our own note about pausing.
+fn counts_as_scan_failure(e: &crate::psbt_routes::BlockingErr) -> bool {
+    !matches!(e, crate::psbt_routes::BlockingErr::BackingOff(_))
+}
+
 /// Snapshot the maturity-scan health for `/health`.
 pub fn chain_scan_health_snapshot() -> ChainScanHealth {
     chain_scan_health()
@@ -1705,7 +1720,7 @@ async fn onchain_funds_ready(
             issue_ready(est.unlock_height, est.tip_height, 0)
         }
         Err(e) => {
-            record_chain_scan(false, Some(e.to_string()), now);
+            record_chain_scan_err(&e, now);
             false
         }
     }
@@ -1752,7 +1767,7 @@ async fn heir_contact_ready(
             heir_contact_gate(&est, lead_blocks)
         }
         Err(e) => {
-            record_chain_scan(false, Some(e.to_string()), now);
+            record_chain_scan_err(&e, now);
             tracing::warn!(
                 vault_id = %row.id, error = %e,
                 "on-chain maturity scan failed; not advancing this tick"
@@ -2331,6 +2346,18 @@ mod tests {
         let h = chain_scan_health_snapshot();
         assert_eq!(h.consecutive_failures, 0);
         assert!(h.last_err.is_none());
+    }
+
+    #[test]
+    fn skipped_scans_do_not_count_as_failures() {
+        use crate::psbt_routes::BlockingErr;
+        assert!(!counts_as_scan_failure(&BlockingErr::BackingOff(60)));
+        assert!(counts_as_scan_failure(&BlockingErr::Esplora(
+            "HTTP 429".into()
+        )));
+        assert!(counts_as_scan_failure(&BlockingErr::Vault(
+            "bad descriptor".into()
+        )));
     }
 
     #[test]

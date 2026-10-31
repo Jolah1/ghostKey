@@ -17,7 +17,14 @@ on:
   # Daily 04:17 UTC re-scan so a freshly-disclosed CVE in a transitive
   # dep can't sit unnoticed until the next push. The audit job is the
   # only consumer of this trigger — the build/test jobs only run on
-  # actual code changes.
+  # actual code changes, which the `if:` on each of them enforces.
+  #
+  # That guard used to be missing from fmt/clippy/test, so the cron ran
+  # them too. With the toolchain unpinned, a new stable release could
+  # turn the nightly red on code nobody had touched, which is what
+  # happened on 2026-10-02 when Rust 1.99 tightened `double_must_use`.
+  # Nothing those three can discover on a cron is new now: neither the
+  # code nor the pinned compiler moves between pushes.
   schedule:
     - cron: "17 4 * * *"
 
@@ -39,31 +46,80 @@ jobs:
   fmt:
     name: cargo fmt
     runs-on: ubuntu-latest
+    # The cron exists for the audit job. Neither the code nor the
+    # pinned compiler changes between pushes, so this job can only
+    # repeat what the last push already said.
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Pinned rather than tracking whatever `stable` resolves to, so a
+      # new Rust release can't turn CI red on unchanged code. Bump this
+      # deliberately, in its own PR, where the new lints can be read.
+      #
+      # Pinned here on the action and NOT in a rust-toolchain.toml:
+      # rustup reads that file wherever it finds it, including inside
+      # the `rust:1.86-slim-bookworm` builder stage in our Dockerfile,
+      # so every Fly image build would fetch this toolchain and compile
+      # production with it instead of the version the Dockerfile pins.
+      # The audit job stays on the runner's preinstalled Rust, for the
+      # reason documented on that job.
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
+          toolchain: 1.99.1
           components: rustfmt
       - run: cargo fmt --all -- --check
 
   clippy:
     name: cargo clippy
     runs-on: ubuntu-latest
+    # The cron exists for the audit job. Neither the code nor the
+    # pinned compiler changes between pushes, so this job can only
+    # repeat what the last push already said.
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Pinned rather than tracking whatever `stable` resolves to, so a
+      # new Rust release can't turn CI red on unchanged code. Bump this
+      # deliberately, in its own PR, where the new lints can be read.
+      #
+      # Pinned here on the action and NOT in a rust-toolchain.toml:
+      # rustup reads that file wherever it finds it, including inside
+      # the `rust:1.86-slim-bookworm` builder stage in our Dockerfile,
+      # so every Fly image build would fetch this toolchain and compile
+      # production with it instead of the version the Dockerfile pins.
+      # The audit job stays on the runner's preinstalled Rust, for the
+      # reason documented on that job.
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
+          toolchain: 1.99.1
           components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
     name: cargo test
     runs-on: ubuntu-latest
+    # The cron exists for the audit job. Neither the code nor the
+    # pinned compiler changes between pushes, so this job can only
+    # repeat what the last push already said.
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Pinned rather than tracking whatever `stable` resolves to, so a
+      # new Rust release can't turn CI red on unchanged code. Bump this
+      # deliberately, in its own PR, where the new lints can be read.
+      #
+      # Pinned here on the action and NOT in a rust-toolchain.toml:
+      # rustup reads that file wherever it finds it, including inside
+      # the `rust:1.86-slim-bookworm` builder stage in our Dockerfile,
+      # so every Fly image build would fetch this toolchain and compile
+      # production with it instead of the version the Dockerfile pins.
+      # The audit job stays on the runner's preinstalled Rust, for the
+      # reason documented on that job.
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo test --workspace --locked
 
   regtest-e2e:
@@ -82,8 +138,21 @@ jobs:
       BITCOIND_VERSION: "27.2"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Pinned rather than tracking whatever `stable` resolves to, so a
+      # new Rust release can't turn CI red on unchanged code. Bump this
+      # deliberately, in its own PR, where the new lints can be read.
+      #
+      # Pinned here on the action and NOT in a rust-toolchain.toml:
+      # rustup reads that file wherever it finds it, including inside
+      # the `rust:1.86-slim-bookworm` builder stage in our Dockerfile,
+      # so every Fly image build would fetch this toolchain and compile
+      # production with it instead of the version the Dockerfile pins.
+      # The audit job stays on the runner's preinstalled Rust, for the
+      # reason documented on that job.
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       # Cache the extracted bitcoind binary across runs. Download +
       # SHA256 verification + extraction is ~10 s on a cold runner; the
@@ -152,7 +221,7 @@ jobs:
       # a cold runner). It's the standard fast path for cargo extensions
       # in CI.
       - name: Install cargo-audit
-        uses: taiki-e/install-action@b6b84cf49ebfe0176417bdce007c624f0db37f20 # v2
+        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2
         with:
           tool: cargo-audit
 

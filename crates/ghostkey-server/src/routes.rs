@@ -485,6 +485,9 @@ struct Health {
     /// RFC3339 time of the last successful maturity scan, null if none
     /// has run since boot.
     chain_scan_last_ok_at: Option<String>,
+    /// After the block explorer fails, scans pause and resume at this
+    /// RFC3339 time. Null when they aren't paused.
+    chain_scan_retry_at: Option<String>,
 }
 
 /// A due notification older than this is treated as evidence the notifier
@@ -608,6 +611,8 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         chain_scan_consecutive_failures: scan.consecutive_failures as i64,
         chain_scan_last_error: scan.last_err,
         chain_scan_last_ok_at: scan.last_ok_at.map(|t| t.to_rfc3339()),
+        chain_scan_retry_at: crate::psbt_routes::explorer_retry_at(Utc::now())
+            .map(|t| t.to_rfc3339()),
     })
 }
 
@@ -725,6 +730,11 @@ pub struct VaultView {
     /// owner-authenticated `GET /vaults/:id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activation_held: Option<bool>,
+    /// Can we reach the heir (#327)? `"unreachable"`, `"unconfirmed"` or
+    /// `"confirmed"`; see [`heir_reachability`]. Only populated on the
+    /// owner-authenticated `GET /vaults/:id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heir_reachability: Option<String>,
     /// The vault's descriptor pair (receive + change). Only populated
     /// on the owner-authenticated `GET /vaults/:id` — list/create
     /// responses leave them `None`. The dashboard embeds these in the
@@ -1002,6 +1012,7 @@ async fn create_vault(
                 // doesn't participate in email verification.
                 owner_contact_verified: None,
                 activation_held: None,
+                heir_reachability: None,
                 descriptor_external: None,
                 descriptor_internal: None,
                 has_trusted_contact: None,
@@ -1710,6 +1721,7 @@ async fn create_vault_from_xpub(
                 // A brand-new vault has no coins yet, so nothing is
                 // being held. The owner GET reports it from then on.
                 activation_held: None,
+                heir_reachability: None,
                 // Return the public descriptor pair so the setup browser
                 // can build the heir envelope (block A) immediately,
                 // without a second round-trip. Watch-only; no secrets.
@@ -2150,6 +2162,7 @@ async fn create_vault_guardian(
                 // A brand-new vault has no coins yet, so nothing is
                 // being held. The owner GET reports it from then on.
                 activation_held: None,
+                heir_reachability: None,
                 descriptor_external: Some(pair.external.clone()),
                 descriptor_internal: Some(pair.internal.clone()),
                 has_trusted_contact: None,
@@ -2809,13 +2822,42 @@ async fn update_vault_heir(
     Ok(Json(read_heir_profile(&state.db, &id).await?))
 }
 
+/// Can we reach the heir? (#327)
+///
+/// Only email gives us delivery reports, so a heir on any other channel
+/// reads `None`: we can't tell, and "unconfirmed" forever would nag the
+/// owner about something they can't fix. No channel on file means
+/// email, the setup default.
+///
+/// A failure wins over an old confirmation. `heir_contact_verified_at`
+/// is only ever set, never cleared by a later bounce, while the alert
+/// flag is cleared by the next good delivery, so the alert always
+/// describes the latest verdict.
+pub(crate) fn heir_reachability(
+    has_contact: bool,
+    channel: Option<&str>,
+    verified: bool,
+    alerted: bool,
+) -> Option<&'static str> {
+    if !has_contact || !matches!(channel, None | Some("email")) {
+        return None;
+    }
+    Some(if alerted {
+        "unreachable"
+    } else if verified {
+        "confirmed"
+    } else {
+        "unconfirmed"
+    })
+}
+
 async fn get_vault(
     auth: OwnerAuth,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<VaultView>, ApiError> {
     let id = auth.vault_id;
     // Named row struct rather than a tuple: sqlx only implements
-    // FromRow for tuples up to 16 columns and this query carries 17.
+    // FromRow for tuples up to 16 columns and this query carries more.
     #[derive(sqlx::FromRow)]
     struct VaultRow {
         id: String,
@@ -2848,6 +2890,11 @@ async fn get_vault(
         drill_started_at: Option<String>,
         drill_opened_at: Option<String>,
         drill_completed_at: Option<String>,
+        /// Has a sealed heir contact (0/1).
+        has_heir_contact: i64,
+        heir_contact_channel: Option<String>,
+        heir_contact_verified_at: Option<String>,
+        heir_unreachable_alerted_at: Option<String>,
     }
     let row = sqlx::query_as::<_, VaultRow>(
         r#"SELECT id, label, network, timelock_blocks,
@@ -2860,7 +2907,10 @@ async fn get_vault(
                   descriptor_external, descriptor_internal,
                   trusted_contact_ciphertext IS NOT NULL AS has_trusted_contact,
                   chain_unlock_height, chain_tip_height, chain_has_unspent,
-                  drill_started_at, drill_opened_at, drill_completed_at
+                  drill_started_at, drill_opened_at, drill_completed_at,
+                  heir_contact_ciphertext IS NOT NULL AS has_heir_contact,
+                  heir_contact_channel, heir_contact_verified_at,
+                  heir_unreachable_alerted_at
            FROM vaults WHERE id = ?"#,
     )
     .bind(&id)
@@ -2899,6 +2949,12 @@ async fn get_vault(
     });
 
     // Before the struct literal takes ownership of the row's fields.
+    let heir_reachability = heir_reachability(
+        row.has_heir_contact == 1,
+        row.heir_contact_channel.as_deref(),
+        row.heir_contact_verified_at.is_some(),
+        row.heir_unreachable_alerted_at.is_some(),
+    );
     let activation_held = row.status == "unfunded"
         && row.chain_has_unspent == Some(1)
         && crate::scheduler::owner_email_unconfirmed(
@@ -2937,6 +2993,7 @@ async fn get_vault(
         // last scan saw coins. Anything else reads `false`, including a
         // vault nobody has funded yet.
         activation_held: Some(activation_held),
+        heir_reachability: heir_reachability.map(str::to_string),
         descriptor_external: Some(row.descriptor_external),
         descriptor_internal: Some(row.descriptor_internal),
         has_trusted_contact: Some(row.has_trusted_contact == 1),
@@ -5175,6 +5232,38 @@ mod tests {
     /// in this binary pin it, so this asserts the value directly rather
     /// than trying to drive the flag — the point is that the result no
     /// longer depends on it at all.
+    #[test]
+    fn heir_reachability_reports_the_latest_verdict() {
+        // Email heir, nothing confirmed yet.
+        assert_eq!(
+            heir_reachability(true, Some("email"), false, false),
+            Some("unconfirmed")
+        );
+        // No channel on file is email.
+        assert_eq!(
+            heir_reachability(true, None, false, false),
+            Some("unconfirmed")
+        );
+        assert_eq!(
+            heir_reachability(true, Some("email"), true, false),
+            Some("confirmed")
+        );
+        // A bounce after an old confirmation: the bounce is the news.
+        assert_eq!(
+            heir_reachability(true, Some("email"), true, true),
+            Some("unreachable")
+        );
+        assert_eq!(
+            heir_reachability(true, Some("email"), false, true),
+            Some("unreachable")
+        );
+        // No delivery reports on other channels, so no claim either way.
+        assert_eq!(heir_reachability(true, Some("sms"), false, false), None);
+        assert_eq!(heir_reachability(true, Some("whatsapp"), false, true), None);
+        // Nothing sealed to reach.
+        assert_eq!(heir_reachability(false, Some("email"), false, false), None);
+    }
+
     #[test]
     fn a_new_vault_never_starts_its_clock() {
         assert_eq!(

@@ -19,7 +19,7 @@ GhostKey is a free, open-source way to make sure your Bitcoin reaches the people
 
 That's the whole job. One tap a month.
 
-If you stop tapping, a countdown starts. When it ends, your heir gets one email with a link. They open it in any browser, paste their Bitcoin address, and receive a transaction they sign with their own wallet. No account. No app. No one holds their funds at any point.
+If you stop tapping, a countdown starts. When it ends, your heir gets one email with a link. They open it in any browser, paste a Bitcoin address, and the coins go straight from the vault to that address. No account. No app.
 
 ---
 
@@ -44,12 +44,20 @@ GhostKey packages one specific, well-tested Bitcoin inheritance pattern into som
 
 Your Bitcoin sits in a special address with two keys:
 
-- **Your key**: you can spend it any time
-- **Your heir's key**: they can spend it only after your countdown has expired
+- **Your key**: you can spend it any time, before and after the countdown
+- **Your heir's key**: it only works once your coins have sat unmoved for the waiting period you chose
 
-Tapping "I'm still here" resets the countdown. Stop tapping long enough, and the countdown reaches zero, at which point only your heir's key works.
+There are two clocks. Bitcoin keeps one: the heir's key unlocks a set number of blocks after your coins last moved. GhostKey keeps the other: tapping "I'm still here" resets it, and your heir only gets their link after you stop tapping **and** Bitcoin's clock has run out.
 
-No one at GhostKey can touch the funds. The rules are enforced by Bitcoin, not by this website.
+Tapping does not touch Bitcoin's clock. Once your coins have sat for the full waiting period, the heir's key can spend on-chain even while you are still checking in. What keeps it unused is that the key travels in the heir's link, and GhostKey doesn't send that link until you stop. To restart Bitcoin's clock, move your coins to a fresh vault address (see [DESIGN.md](./DESIGN.md) and [#94](https://github.com/Jolah1/ghostKey/issues/94)).
+
+What GhostKey can and can't do:
+
+- **Your key** is locked by your password in your browser. GhostKey never has your password.
+- **Your heir's key, easy setup:** GhostKey makes this key for an heir with no wallet, and our server keeps what it needs to send them the link later. So our server could rebuild that key and use it once Bitcoin's clock has run out.
+- **Your heir's key, advanced setup:** if your heir already has a wallet, we only get their public key. We can't spend with it, ever.
+
+The full picture, including the trade-offs we accepted on purpose, is in the [threat model](./docs/threat-model.md).
 
 ---
 
@@ -94,7 +102,7 @@ What works today:
 What's still being built:
 - Hardware wallet PSBT export (`--export-psbt` / `--sign-psbt` on the CLI)
 - Setup from a plain Bitcoin address (without needing an xpub)
-- Translations: Pidgin first (planned), then Yoruba, Igbo, Hausa
+- Translations: Pidgin (in progress), then Yoruba, Igbo, Hausa
 - External mainnet security review
 
 ---
@@ -179,4 +187,4 @@ PRs welcome, especially on anything in the "still being built" list above, plus 
 Security issues: [SECURITY.md](./SECURITY.md). Please report privately first.
 
 
-**License:** Apache-2.0 or MIT, at your option. See [LICENSE.md](./LICENSE.md).
+**License:** Apache-2.0 ([LICENSE-APACHE](./LICENSE-APACHE)) or MIT ([LICENSE-MIT](./LICENSE-MIT)), at your option.
