@@ -341,5 +341,5 @@ on GitHub for bite-sized work that's already scoped out.
 By contributing, you agree your work will be licensed under the same
 terms as the project: the Apache License 2.0
 ([LICENSE-APACHE](./LICENSE-APACHE)) or the MIT license
-([LICENSE-MIT](./LICENSE-MIT)), at the user's option. See
-[LICENSE.md](./LICENSE.md).
+([LICENSE-MIT](./LICENSE-MIT)), at the user's option, without any
+additional terms or conditions.
