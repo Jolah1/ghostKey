@@ -75,7 +75,9 @@ pub fn run(profile_dir: &Path, args: Args) -> Result<()> {
         ),
     };
 
-    let vault = Vault::new(
+    // New vaults use the standard format (#386), which Liana and other
+    // Miniscript wallets can open.
+    let vault = Vault::new_standard(
         &owner_ext,
         &owner_int,
         &heir_ext,

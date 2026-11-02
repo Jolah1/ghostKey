@@ -192,14 +192,27 @@ fn sync_wallet(w: &mut Wallet, rpc: &Client) -> Result<u32> {
     Ok(w.latest_checkpoint().height())
 }
 
-fn build_vault_and_keys() -> Result<(Vault, Xpriv, Xpriv)> {
+/// Which vault format a test builds: the legacy NUMS + `or_d` leaf, or
+/// the standard format (#386) with the owner as the Taproot internal key.
+/// The spend tests run against both, since existing vaults stay legacy.
+#[derive(Clone, Copy, Debug)]
+enum Format {
+    Legacy,
+    Standard,
+}
+
+fn build_vault_and_keys_in(format: Format) -> Result<(Vault, Xpriv, Xpriv)> {
     let net = Network::Regtest;
     // Deterministic seeds — fine for a regtest test.
     let owner_m = Xpriv::new_master(net, &[0xA1; 32])?;
     let heir_m = Xpriv::new_master(net, &[0xB2; 32])?;
     let (ofp, op, ox) = account_xpub(&owner_m, net)?;
     let (hfp, hp, hx) = account_xpub(&heir_m, net)?;
-    let vault = Vault::new(
+    let build = match format {
+        Format::Legacy => Vault::new,
+        Format::Standard => Vault::new_standard,
+    };
+    let vault = build(
         &descriptor_key_fragment(ofp, &op, &ox, Chain::External),
         &descriptor_key_fragment(ofp, &op, &ox, Chain::Internal),
         &descriptor_key_fragment(hfp, &hp, &hx, Chain::External),
@@ -219,6 +232,16 @@ fn fee_rate() -> FeeRate {
 #[test]
 #[ignore]
 fn owner_checkin_then_heir_claim() -> Result<()> {
+    owner_checkin_then_heir_claim_in(Format::Legacy)
+}
+
+#[test]
+#[ignore]
+fn owner_checkin_then_heir_claim_standard() -> Result<()> {
+    owner_checkin_then_heir_claim_in(Format::Standard)
+}
+
+fn owner_checkin_then_heir_claim_in(format: Format) -> Result<()> {
     // 1. Bring up a regtest node and prime it with spendable coin.
     let node = Bitcoind::spawn()?;
     let bare = node.client()?;
@@ -231,7 +254,7 @@ fn owner_checkin_then_heir_claim() -> Result<()> {
     );
 
     // 2. Construct the vault and a watch + owner-signing wallet pair.
-    let (vault, owner_m, heir_m) = build_vault_and_keys()?;
+    let (vault, owner_m, heir_m) = build_vault_and_keys_in(format)?;
     let mut watch = build_watch_only(&vault)?;
     let mut owner_w = build_signing(&vault, &owner_m)?;
 
@@ -266,6 +289,26 @@ fn owner_checkin_then_heir_claim() -> Result<()> {
     let checkin_tx = built.psbt.extract_tx()?;
     let checkin_txid = checkin_tx.compute_txid();
     println!("check-in txid = {checkin_txid}");
+    // Legacy owner spends go through the tapscript leaf (signature,
+    // script, control block). In the standard format the owner is the
+    // internal key, so the spend is a key-path spend: one signature,
+    // indistinguishable from a single-key wallet.
+    for input in &checkin_tx.input {
+        match format {
+            Format::Legacy => assert!(
+                input.witness.len() > 1,
+                "legacy owner spend should be a script-path spend"
+            ),
+            Format::Standard => {
+                assert_eq!(
+                    input.witness.len(),
+                    1,
+                    "standard owner spend should be a key-path spend"
+                );
+                assert_eq!(input.witness.nth(0).map(<[u8]>::len), Some(64));
+            }
+        }
+    }
     broadcast_tx(&bare, &checkin_tx)?;
     mine_blocks(&node_w, 1)?;
 
@@ -374,13 +417,23 @@ fn owner_checkin_then_heir_claim() -> Result<()> {
 #[test]
 #[ignore]
 fn manual_psbt_claim_is_self_contained_and_signable() -> Result<()> {
+    manual_psbt_claim_is_self_contained_and_signable_in(Format::Legacy)
+}
+
+#[test]
+#[ignore]
+fn manual_psbt_claim_is_self_contained_and_signable_standard() -> Result<()> {
+    manual_psbt_claim_is_self_contained_and_signable_in(Format::Standard)
+}
+
+fn manual_psbt_claim_is_self_contained_and_signable_in(format: Format) -> Result<()> {
     let net = Network::Regtest;
     let node = Bitcoind::spawn()?;
     let bare = node.client()?;
     let node_w = ensure_node_wallet(&node, "miner")?;
     mine_blocks(&node_w, 101)?;
 
-    let (vault, _owner_m, heir_m) = build_vault_and_keys()?;
+    let (vault, _owner_m, heir_m) = build_vault_and_keys_in(format)?;
 
     // Fund the vault's first deposit address.
     let mut watch = build_watch_only(&vault)?;
@@ -467,13 +520,23 @@ fn manual_psbt_claim_is_self_contained_and_signable() -> Result<()> {
 #[test]
 #[ignore]
 fn heir_signs_then_watch_only_finalizes_like_the_server() -> Result<()> {
+    heir_signs_then_watch_only_finalizes_like_the_server_in(Format::Legacy)
+}
+
+#[test]
+#[ignore]
+fn heir_signs_then_watch_only_finalizes_like_the_server_standard() -> Result<()> {
+    heir_signs_then_watch_only_finalizes_like_the_server_in(Format::Standard)
+}
+
+fn heir_signs_then_watch_only_finalizes_like_the_server_in(format: Format) -> Result<()> {
     let net = Network::Regtest;
     let node = Bitcoind::spawn()?;
     let bare = node.client()?;
     let node_w = ensure_node_wallet(&node, "miner")?;
     mine_blocks(&node_w, 101)?;
 
-    let (vault, _owner_m, heir_m) = build_vault_and_keys()?;
+    let (vault, _owner_m, heir_m) = build_vault_and_keys_in(format)?;
 
     // Fund + mature the timelock.
     let mut watch = build_watch_only(&vault)?;
@@ -551,13 +614,23 @@ fn heir_signs_then_watch_only_finalizes_like_the_server() -> Result<()> {
 #[test]
 #[ignore]
 fn offline_sweep_owner_and_heir() -> Result<()> {
+    offline_sweep_owner_and_heir_in(Format::Legacy)
+}
+
+#[test]
+#[ignore]
+fn offline_sweep_owner_and_heir_standard() -> Result<()> {
+    offline_sweep_owner_and_heir_in(Format::Standard)
+}
+
+fn offline_sweep_owner_and_heir_in(format: Format) -> Result<()> {
     let net = Network::Regtest;
     let node = Bitcoind::spawn()?;
     let bare = node.client()?;
     let node_w = ensure_node_wallet(&node, "miner")?;
     mine_blocks(&node_w, 101)?;
 
-    let (vault, owner_m, heir_m) = build_vault_and_keys()?;
+    let (vault, owner_m, heir_m) = build_vault_and_keys_in(format)?;
     let secp = Secp256k1::new();
     // The kit holds the BIP86 *account* key, not the master — derive it.
     let owner_acct = owner_m.derive_priv(&secp, &vault_account_path(net))?;
@@ -690,6 +763,18 @@ fn offline_sweep_owner_and_heir() -> Result<()> {
 #[test]
 #[ignore]
 fn emit_wasm_owner_fixture() -> Result<()> {
+    emit_wasm_owner_fixture_in(Format::Legacy)
+}
+
+/// Same as [`emit_wasm_owner_fixture`] for a standard-format vault (#386); its output
+/// is `crates/ghostkey-wasm/tests/fixture_owner_standard.json`.
+#[test]
+#[ignore]
+fn emit_wasm_owner_fixture_standard() -> Result<()> {
+    emit_wasm_owner_fixture_in(Format::Standard)
+}
+
+fn emit_wasm_owner_fixture_in(format: Format) -> Result<()> {
     use bitcoin::consensus::encode::serialize_hex;
     use bitcoin::hashes::Hash;
     use bitcoin::{
@@ -697,7 +782,7 @@ fn emit_wasm_owner_fixture() -> Result<()> {
     };
 
     let net = Network::Regtest;
-    let (vault, owner_m, _heir_m) = build_vault_and_keys()?;
+    let (vault, owner_m, _heir_m) = build_vault_and_keys_in(format)?;
     let secp = Secp256k1::new();
     let owner_acct = owner_m.derive_priv(&secp, &vault_account_path(net))?;
 

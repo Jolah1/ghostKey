@@ -20,9 +20,14 @@ members = [
 # where it gets its own Cargo.lock and its own dep universe. See each
 # crate's README and DESIGN.md § "Lightning check-ins" for the
 # rationale.
+#
+# `tools/liana-compat` is excluded so Liana (a git dependency we only use
+# to check vault compatibility, #386) stays out of the main lock file and
+# the production build.
 exclude = [
     "crates/ghostkey-lightning-breez",
     "crates/ghostkey-lightning-lnbits",
+    "tools/liana-compat",
 ]
 
 [workspace.package]

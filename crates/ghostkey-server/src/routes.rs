@@ -9,7 +9,7 @@ use axum::{Json, Router};
 use bitcoin::bip32::Fingerprint;
 use chrono::{DateTime, Duration, Utc};
 use ghostkey_core::descriptor::{
-    build_descriptor_pair, build_guardian_descriptor_pair, parse_descriptor,
+    build_guardian_descriptor_pair, build_standard_descriptor_from_fragments, parse_descriptor,
 };
 use ghostkey_core::keys::{descriptor_key_fragment, parse_xpub, vault_account_path, Chain};
 use serde::{Deserialize, Serialize};
@@ -1044,7 +1044,7 @@ async fn create_vault(
  *  parse the bracketed prefix to recover the fingerprint; the embedded path  *
  *  is not used directly — we always re-derive the canonical `m/86'/coin'/0'` *
  *  for the requested network. (Wallets that export a non-BIP86 path will    *
- *  fail the parse_descriptor round-trip in build_descriptor_pair, which we   *
+ *  fail the descriptor parse in the standard-format builder, which we       *
  *  surface as a clean validation error.)                                     *
  * -------------------------------------------------------------------------- */
 
@@ -1296,18 +1296,23 @@ async fn create_vault_from_xpub(
     let heir_ext = descriptor_key_fragment(heir_fp, &path, &heir_xpub, Chain::External);
     let heir_int = descriptor_key_fragment(heir_fp, &path, &heir_xpub, Chain::Internal);
 
-    let pair = build_descriptor_pair(
+    // New vaults use the standard format (#386): the same spending rule
+    // as the legacy NUMS + `or_d` leaf, written so Liana and other
+    // Miniscript wallets can open the vault. Existing vaults keep the
+    // descriptors they were created with. Guardian vaults stay on their
+    // own builder, since their claim policy can't fit Liana's format.
+    let pair = build_standard_descriptor_from_fragments(
         &owner_ext,
         &owner_int,
         &heir_ext,
         &heir_int,
         req.timelock_blocks,
     )
-    .map_err(|e| ApiError::Validation(format!("descriptor build: {e}")))?;
+    .map_err(|e| ApiError::Validation(format!("descriptor build: {e}")))?
+    .pair;
 
-    // build_descriptor_pair already round-trips through parse_descriptor,
-    // but we re-validate here defensively in case a future refactor
-    // changes that contract.
+    // The builder already parses the descriptor, but we re-validate here
+    // defensively in case a future refactor changes that contract.
     parse_descriptor(&pair.external)
         .map_err(|e| ApiError::Validation(format!("descriptor_external: {e}")))?;
     parse_descriptor(&pair.internal)
@@ -5358,10 +5363,13 @@ mod tests {
         let he = descriptor_key_fragment(heir_fp, &path, &heir_xpub, Chain::External);
         let hi = descriptor_key_fragment(heir_fp, &path, &heir_xpub, Chain::Internal);
 
-        let pair = build_descriptor_pair(&oe, &oi, &he, &hi, 144).unwrap();
+        let pair = build_standard_descriptor_from_fragments(&oe, &oi, &he, &hi, 144)
+            .unwrap()
+            .pair;
         assert!(
-            pair.external.starts_with("tr("),
-            "external: {}",
+            pair.external
+                .starts_with(&format!("tr({}", &oe[..oe.len() - 4])),
+            "the owner should be the Taproot internal key: {}",
             pair.external
         );
         assert!(pair.external.contains("older(144)"));
