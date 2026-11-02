@@ -141,7 +141,8 @@ pub struct StandardDescriptor {
     /// the form Liana and other Miniscript wallets import.
     pub multipath: String,
     /// The same descriptor split into its `/0/*` and `/1/*` halves, for
-    /// code that tracks the two chains separately.
+    /// code that tracks the two chains separately. No checksum, matching
+    /// the legacy pair.
     pub pair: DescriptorPair,
 }
 
@@ -198,13 +199,49 @@ pub fn build_standard_descriptor(
             "expected exactly a receive and a change descriptor".into(),
         ));
     };
+    // The pair is stored without a checksum, like the legacy pair: signing
+    // splices an xprv into the string, which would invalidate one.
+    let no_checksum = |d: &Descriptor<miniscript::DescriptorPublicKey>| {
+        let s = d.to_string();
+        s.split_once('#')
+            .map_or(s.clone(), |(body, _)| body.to_string())
+    };
     Ok(StandardDescriptor {
         multipath: desc.to_string(),
         pair: DescriptorPair {
-            external: external.to_string(),
-            internal: internal.to_string(),
+            external: no_checksum(&external),
+            internal: no_checksum(&internal),
         },
     })
+}
+
+/// [`build_standard_descriptor`] from the four per-chain key fragments the
+/// legacy builders take (`[fp/path]xpub/0/*` and `.../1/*` for each
+/// party), so callers that already render fragments can switch formats by
+/// switching function. Each party's two fragments must share one account
+/// key.
+pub fn build_standard_descriptor_from_fragments(
+    owner_external: &str,
+    owner_internal: &str,
+    heir_external: &str,
+    heir_internal: &str,
+    timelock_blocks: u32,
+) -> Result<StandardDescriptor> {
+    let owner = account_key_from_fragments("owner", owner_external, owner_internal)?;
+    let heir = account_key_from_fragments("heir", heir_external, heir_internal)?;
+    build_standard_descriptor(owner, heir, timelock_blocks)
+}
+
+/// `[fp/path]xpub/0/*` + `[fp/path]xpub/1/*` -> `[fp/path]xpub`.
+fn account_key_from_fragments<'a>(who: &str, external: &'a str, internal: &str) -> Result<&'a str> {
+    let ext = external.strip_suffix("/0/*");
+    let int_ = internal.strip_suffix("/1/*");
+    match (ext, int_) {
+        (Some(e), Some(i)) if e == i => Ok(e),
+        _ => Err(Error::InvalidDescriptor(format!(
+            "{who}: expected the same key ending in /0/* and /1/*, got {external} and {internal}"
+        ))),
+    }
 }
 
 /// An account-level xpub with an origin: Liana needs the origin to know
@@ -549,13 +586,12 @@ mod tests {
     fn standard_descriptor_pair_matches_the_multipath_halves() {
         let (owner, heir) = account_keys(Network::Regtest);
         let std = build_standard_descriptor(&owner, &heir, 4_320).unwrap();
-        let strip = |s: &str| s.split('#').next().unwrap().to_string();
         assert_eq!(
-            strip(&std.pair.external),
+            std.pair.external,
             format!("tr({owner}/0/*,and_v(v:pk({heir}/0/*),older(4320)))")
         );
         assert_eq!(
-            strip(&std.pair.internal),
+            std.pair.internal,
             format!("tr({owner}/1/*,and_v(v:pk({heir}/1/*),older(4320)))")
         );
         // The receive half derives the same address as the multipath
@@ -607,5 +643,17 @@ mod tests {
         // Timelock out of CSV range.
         assert!(build_standard_descriptor(&owner, &heir, 0).is_err());
         assert!(build_standard_descriptor(&owner, &heir, MAX_CSV_BLOCKS + 1).is_err());
+    }
+
+    #[test]
+    fn standard_descriptor_from_fragments_matches_account_keys() {
+        let (oe, oi, he, hi) = fragments(Network::Regtest);
+        let (owner, heir) = account_keys(Network::Regtest);
+        let from_frag = build_standard_descriptor_from_fragments(&oe, &oi, &he, &hi, 144).unwrap();
+        let direct = build_standard_descriptor(&owner, &heir, 144).unwrap();
+        assert_eq!(from_frag, direct);
+        // Mismatched chains or keys are refused.
+        assert!(build_standard_descriptor_from_fragments(&oi, &oe, &he, &hi, 144).is_err());
+        assert!(build_standard_descriptor_from_fragments(&oe, &hi, &he, &hi, 144).is_err());
     }
 }
