@@ -197,6 +197,27 @@ jobs:
       - name: Run regtest end-to-end test
         run: cargo test -p ghostkey-core --test regtest_e2e -- --ignored --nocapture
 
+  # Runs GhostKey's standard vault format through Liana's own descriptor
+  # parser (#386), so "every new vault is also a Liana wallet" stays true.
+  # Lives outside the workspace (tools/liana-compat) so Liana never enters
+  # the main lock file or the production build. Not a required check.
+  liana-compat:
+    name: liana compatibility
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Same pinned toolchain as fmt/clippy/test; see the fmt job for why.
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: tools/liana-compat
+      - name: Check Liana accepts the standard vault format
+        working-directory: tools/liana-compat
+        run: cargo run --quiet
+
   audit:
     name: cargo audit
     runs-on: ubuntu-latest
