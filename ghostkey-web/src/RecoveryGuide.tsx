@@ -17,6 +17,7 @@
 import type { ReactNode } from "react";
 import type { Route } from "./App";
 import { api } from "./api";
+import { NeverAskNotice } from "./NeverAskNotice";
 
 interface Props {
   onNavigate: (r: Route) => void;
@@ -58,7 +59,11 @@ export function RecoveryGuide({ onNavigate }: Props) {
           </div>
         </section>
 
-        <div className="mt-12 space-y-10">
+        <div className="mt-6">
+          <NeverAskNotice />
+        </div>
+
+        <div className="mt-6 space-y-10">
           <Section title="Why this works">
             <p>
               When you set up a vault, the plan is written into Bitcoin itself
