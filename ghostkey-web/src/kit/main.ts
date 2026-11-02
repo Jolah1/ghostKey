@@ -152,6 +152,12 @@ function render() {
         It's worth looking up “GhostKey Bitcoin inheritance” on your own
         first, so you understand what this is, before trusting any link.
         This file works on its own and asks you for nothing but the code.</p>
+        <p style="margin-bottom:0"><strong>What GhostKey will never ask you for.</strong>
+        Your 12 or 24 words, a password for your wallet, money or a fee,
+        or to let anyone see or control your phone or computer. If anyone
+        asks you for these, it is not us. The code kept with this file
+        only ever goes into this file: never type it into a website or
+        give it to anyone.</p>
       </div>
     </div>
   `

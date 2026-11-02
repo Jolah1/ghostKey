@@ -51,6 +51,16 @@ export const pcm: Vocab = {
   claim: {
     header: "Message for you",
     loading: "We dey open your link…",
+    neverAsk: {
+      title: "GhostKey no go ever ask you for",
+      items: [
+        "your 12 or 24 words",
+        "password for your wallet",
+        "money or any fee",
+        "make anybody see or control your phone or computer",
+      ],
+      closing: "If anybody ask you for any of these, no be us.",
+    },
     notFound: {
       eyebrow: "This link no dey work",
       title: "We no fit find anything for this link",

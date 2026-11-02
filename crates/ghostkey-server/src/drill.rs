@@ -185,12 +185,16 @@ async fn enqueue_drill_invite(
              steps. A practice link cannot move any money.\n\n\
              {claim_url}\n\n\
              When you finish, they will see that the practice worked.\n\n\
-             From GhostKey\n"
+             {never_ask}\
+             From GhostKey\n",
+            never_ask = notifier::NEVER_ASK_EMAIL,
         ),
         _ => format!(
             "Hello {heir_name}, {opener}. {who} set something up for you \
              through GhostKey and asked you to do a quick practice run \
-             while they can help. It cannot move any money:\n\n{claim_url}"
+             while they can help. It cannot move any money:\n\n{claim_url}\n\n\
+             {never_ask}",
+            never_ask = notifier::NEVER_ASK_SHORT,
         ),
     };
 

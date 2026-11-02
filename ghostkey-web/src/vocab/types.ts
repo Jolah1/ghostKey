@@ -68,6 +68,13 @@ export interface ClaimVocab {
   /** Top-right header note ("A message for you"). */
   header: string;
   loading: string;
+  /** What GhostKey will never ask for (#392). Shown before any step, so a
+   *  fake page or message has nothing to take. */
+  neverAsk: {
+    title: string;
+    items: string[];
+    closing: string;
+  };
   notFound: Screen;
   alreadyUsed: Screen;
   timelockWait: {
