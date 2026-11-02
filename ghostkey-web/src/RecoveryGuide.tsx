@@ -60,7 +60,7 @@ export function RecoveryGuide({ onNavigate }: Props) {
         </section>
 
         <div className="mt-6">
-          <NeverAskNotice />
+          <NeverAskNotice lead="If someone left you Bitcoin through GhostKey:" />
         </div>
 
         <div className="mt-6 space-y-10">
