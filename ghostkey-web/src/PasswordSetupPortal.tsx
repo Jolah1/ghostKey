@@ -2484,13 +2484,13 @@ function FundAddressCard({
       ? "Send from any Bitcoin wallet, any amount."
       : `This vault is on the ${network} test network. Don't send real Bitcoin here.`;
   const [copied, setCopied] = useState(false);
-  // Uppercase bech32 packs into the QR's alphanumeric mode, giving a
-  // sparser, easier-to-scan code. Wallets accept either case. Same
-  // pattern as the dashboard's Add Bitcoin card.
+  // Encode the address exactly as the copy button gives it. Uppercase
+  // bech32 is valid but some wallets reject it (#399). Same pattern as
+  // the dashboard's Add Bitcoin card.
   const qrUrl = useMemo(() => {
     if (!address) return null;
     const qr = qrcode(0, "M");
-    qr.addData(address.toUpperCase());
+    qr.addData(address);
     qr.make();
     return qr.createDataURL(5, 8);
   }, [address]);
