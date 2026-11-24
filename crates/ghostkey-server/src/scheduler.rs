@@ -886,13 +886,13 @@ async fn activate_funded_vaults(state: &AppState, _now_iso: &str) -> anyhow::Res
         // pending one. An empty successful scan is still "not funded";
         // an explorer error is "unknown" and fails safe the same way.
         match crate::psbt_routes::unlock_estimate_with_cache(&state.db, &input, now).await {
-            Ok(est) if est.has_unspent => record_chain_scan(true, None, now),
+            Ok(est) if est.has_unspent => record_chain_scan(&input.network, true, None, now),
             Ok(_) => {
-                record_chain_scan(true, None, now);
+                record_chain_scan(&input.network, true, None, now);
                 continue;
             }
             Err(e) => {
-                record_chain_scan_err(&e, now);
+                record_chain_scan_err(&input.network, &e, now);
                 continue;
             }
         }
@@ -1097,12 +1097,12 @@ async fn retire_drained_vaults(state: &AppState) -> anyhow::Result<()> {
 
         match crate::psbt_routes::unlock_estimate_with_cache(&state.db, &input, now).await {
             Ok(est) if est.has_unspent => {
-                record_chain_scan(true, None, now);
+                record_chain_scan(&input.network, true, None, now);
                 continue;
             }
-            Ok(_) => record_chain_scan(true, None, now),
+            Ok(_) => record_chain_scan(&input.network, true, None, now),
             Err(e) => {
-                record_chain_scan_err(&e, now);
+                record_chain_scan_err(&input.network, &e, now);
                 continue;
             }
         }
@@ -1198,12 +1198,12 @@ async fn stand_down_never_funded_vaults(state: &AppState) -> anyhow::Result<()> 
         match crate::psbt_routes::unlock_estimate_with_cache(&state.db, &input, now).await {
             // Holds coins after all: genuinely funded, leave the clock be.
             Ok(est) if est.has_unspent => {
-                record_chain_scan(true, None, now);
+                record_chain_scan(&input.network, true, None, now);
                 continue;
             }
-            Ok(_) => record_chain_scan(true, None, now),
+            Ok(_) => record_chain_scan(&input.network, true, None, now),
             Err(e) => {
-                record_chain_scan_err(&e, now);
+                record_chain_scan_err(&input.network, &e, now);
                 continue;
             }
         }
@@ -1460,7 +1460,15 @@ fn chain_scan_health() -> &'static Mutex<ChainScanHealth> {
 /// Record a scheduler maturity-scan outcome. A success (including a cache
 /// hit) clears the failure streak; a failure extends it and keeps the
 /// error for `/health`.
-fn record_chain_scan(ok: bool, err: Option<String>, now: chrono::DateTime<Utc>) {
+///
+/// Only scans on the server's own network count. A test-network vault on
+/// a mainnet server is read from a public test explorer, and that
+/// explorer's rate limits must not make mainnet look unhealthy (or hide
+/// a real mainnet failure behind a test-network one).
+fn record_chain_scan(network: &str, ok: bool, err: Option<String>, now: chrono::DateTime<Utc>) {
+    if network != crate::config::default_network() {
+        return;
+    }
     let mut h = chain_scan_health()
         .lock()
         .expect("chain scan health poisoned");
@@ -1475,9 +1483,13 @@ fn record_chain_scan(ok: bool, err: Option<String>, now: chrono::DateTime<Utc>) 
 }
 
 /// Record a failed maturity scan, unless we skipped it on purpose.
-fn record_chain_scan_err(e: &crate::psbt_routes::BlockingErr, now: chrono::DateTime<Utc>) {
+fn record_chain_scan_err(
+    network: &str,
+    e: &crate::psbt_routes::BlockingErr,
+    now: chrono::DateTime<Utc>,
+) {
     if counts_as_scan_failure(e) {
-        record_chain_scan(false, Some(e.to_string()), now);
+        record_chain_scan(network, false, Some(e.to_string()), now);
     }
 }
 
@@ -1621,11 +1633,11 @@ async fn onchain_funds_ready(
     match crate::psbt_routes::unlock_estimate_with_cache(&state.db, input, now).await {
         // lead_blocks = 0: matured exactly when tip has reached the unlock.
         Ok(est) => {
-            record_chain_scan(true, None, now);
+            record_chain_scan(&input.network, true, None, now);
             issue_ready(est.unlock_height, est.tip_height, 0)
         }
         Err(e) => {
-            record_chain_scan_err(&e, now);
+            record_chain_scan_err(&input.network, &e, now);
             false
         }
     }
@@ -1665,14 +1677,14 @@ async fn heir_contact_ready(
     };
     match crate::psbt_routes::unlock_estimate_with_cache(&state.db, &input, now).await {
         Ok(est) => {
-            record_chain_scan(true, None, now);
+            record_chain_scan(&input.network, true, None, now);
             let lead_blocks = (crate::config::claim_challenge_window_secs()
                 / crate::config::TARGET_BLOCK_SECS)
                 .max(0) as u32;
             heir_contact_gate(&est, lead_blocks)
         }
         Err(e) => {
-            record_chain_scan_err(&e, now);
+            record_chain_scan_err(&input.network, &e, now);
             tracing::warn!(
                 vault_id = %row.id, error = %e,
                 "on-chain maturity scan failed; not advancing this tick"
@@ -2241,21 +2253,43 @@ mod tests {
     fn chain_scan_health_tracks_failure_streak() {
         let now = Utc::now();
         // Success clears the streak and any error.
-        record_chain_scan(true, None, now);
+        record_chain_scan(crate::config::default_network(), true, None, now);
         let h = chain_scan_health_snapshot();
         assert_eq!(h.consecutive_failures, 0);
         assert!(h.last_err.is_none());
         assert!(h.last_ok_at.is_some());
         // Failures accumulate and keep the latest error.
-        record_chain_scan(false, Some("esplora down".into()), now);
-        record_chain_scan(false, Some("still down".into()), now);
+        record_chain_scan(
+            crate::config::default_network(),
+            false,
+            Some("esplora down".into()),
+            now,
+        );
+        record_chain_scan(
+            crate::config::default_network(),
+            false,
+            Some("still down".into()),
+            now,
+        );
         let h = chain_scan_health_snapshot();
         assert_eq!(h.consecutive_failures, 2);
         assert_eq!(h.last_err.as_deref(), Some("still down"));
         // A success resets again.
-        record_chain_scan(true, None, now);
+        record_chain_scan(crate::config::default_network(), true, None, now);
         let h = chain_scan_health_snapshot();
         assert_eq!(h.consecutive_failures, 0);
+        assert!(h.last_err.is_none());
+
+        // A scan on another network (a test vault on this server, read
+        // from a public test explorer) never touches this server's health.
+        let other = if crate::config::default_network() == "signet" {
+            "testnet"
+        } else {
+            "signet"
+        };
+        record_chain_scan(other, false, Some("public explorer 429".into()), now);
+        let h = chain_scan_health_snapshot();
+        assert_eq!(h.consecutive_failures, 0, "other networks must not count");
         assert!(h.last_err.is_none());
     }
 
