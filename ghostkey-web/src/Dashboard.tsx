@@ -47,7 +47,6 @@ import {
   setActiveVaultId,
   type VaultMeta,
 } from "./vaultStore";
-import { LightningCheckin } from "./LightningCheckin";
 import { AddHeirPortal } from "./AddHeirPortal";
 import { ConfirmSend } from "./ConfirmSend";
 import {
@@ -63,7 +62,7 @@ import {
 } from "./push";
 import { unsealOwner } from "./crypto/sealing";
 import { usePrice, btcAndUsd, satsToUsd, formatUsd } from "./fiat";
-import { fanOutCheckin, lastResortCheckinOpen } from "./checkin";
+import { fanOutCheckin } from "./checkin";
 import { heirContactDue } from "./heirContact";
 import { useToolDoneState } from "./toolStatus";
 import type { Route } from "./App";
@@ -108,18 +107,10 @@ export function Dashboard({ onNavigate }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [justChecked, setJustChecked] = useState(false);
-  // Whether this server has a Lightning provider wired up. We read
-  // it once on mount via /health; if the server flips state we'll
-  // pick it up on the next page load. Treating it as static-per-load
-  // avoids re-rendering the dashboard every poll.
-  const [lightningEnabled, setLightningEnabled] = useState(false);
   // Whether the server is running in seconds-scale demo mode. Drives
   // the "Waiting period" StatCard's units (seconds vs blocks) so the
   // dashboard matches what the operator picked at setup time.
   const [demoMode, setDemoMode] = useState(false);
-  // Whether the Lightning check-in modal is open. The modal owns its
-  // own invoice + polling state; we just toggle visibility here.
-  const [lightningOpen, setLightningOpen] = useState(false);
   // Whether the "Add a heir" modal is open.
   const [addHeirOpen, setAddHeirOpen] = useState(false);
   // Whether the "Close this vault" confirmation is open.
@@ -211,21 +202,19 @@ export function Dashboard({ onNavigate }: Props) {
     if (activeId) void refresh();
   }, [activeId, refresh]);
 
-  // Probe the server once to learn whether Lightning check-ins are
-  // available. Silent on failure — we just leave the button hidden.
+  // Probe the server once for demo mode and the push key. Silent on
+  // failure: both just stay off.
   useEffect(() => {
     let alive = true;
     api
       .health()
       .then((h) => {
         if (!alive) return;
-        setLightningEnabled(Boolean(h.lightning_enabled));
         setDemoMode(Boolean(h.demo_mode));
         setPushKey(h.push_public_key ?? null);
       })
       .catch(() => {
         if (!alive) return;
-        setLightningEnabled(false);
         setDemoMode(false);
         setPushKey(null);
       });
@@ -523,8 +512,6 @@ export function Dashboard({ onNavigate }: Props) {
                   justChecked={justChecked}
                   error={error}
                   onCheckin={onCheckin}
-                  lightningEnabled={lightningEnabled}
-                  onLightning={() => setLightningOpen(true)}
                 />
               )}
             </div>
@@ -539,12 +526,6 @@ export function Dashboard({ onNavigate }: Props) {
                   heirLabel={groupVaults.length > 1 ? meta.heir.name : null}
                   onNavigate={onNavigate}
                 />
-              </div>
-            ) : null}
-
-            {vault?.lnurl_checkin && !isClosed && !isClaiming && !isUnfunded ? (
-              <div className="mt-5">
-                <LnurlCard lnurl={vault.lnurl_checkin} />
               </div>
             ) : null}
 
@@ -689,32 +670,6 @@ export function Dashboard({ onNavigate }: Props) {
           busy={busy}
           onCancel={() => setCloseOpen(false)}
           onConfirm={onCloseVault}
-        />
-      ) : null}
-
-      {lightningOpen && activeId ? (
-        <LightningCheckin
-          vaultId={activeId}
-          ownerToken={ownerToken}
-          onPaid={() => {
-            setLightningOpen(false);
-            setJustChecked(true);
-            window.setTimeout(() => setJustChecked(false), 4000);
-            void refresh();
-          }}
-          onClose={() => setLightningOpen(false)}
-          onFreeCheckin={
-            // Last resort only: the free tap is offered inside the
-            // Lightning modal's error state, but only within the final
-            // 24h before the heir would be contacted. Outside that
-            // window Lightning is the only way to check in.
-            lastResortCheckinOpen(vault?.claim_eligible_at, now)
-              ? () => {
-                  setLightningOpen(false);
-                  onCheckin();
-                }
-              : undefined
-          }
         />
       ) : null}
 
@@ -1795,8 +1750,6 @@ function HeartbeatCard({
   justChecked,
   error,
   onCheckin,
-  lightningEnabled,
-  onLightning,
 }: {
   meta: VaultMeta;
   vault: VaultView | null;
@@ -1805,8 +1758,6 @@ function HeartbeatCard({
   justChecked: boolean;
   error: string | null;
   onCheckin: () => void;
-  lightningEnabled: boolean;
-  onLightning: () => void;
 }) {
   const cd = vault
     ? countdown(parseRfc(vault.next_deadline_at), now)
@@ -1832,13 +1783,7 @@ function HeartbeatCard({
     <section className="card relative overflow-hidden p-5 text-center md:p-8">
       <div className="flex flex-col items-center">
         <Heartbeat
-          onTap={
-            busy || locked
-              ? undefined
-              : lightningEnabled
-                ? onLightning
-                : onCheckin
-          }
+          onTap={busy || locked ? undefined : onCheckin}
           disabled={busy || locked}
         />
 
@@ -1858,48 +1803,22 @@ function HeartbeatCard({
               : `Let ${meta.heir.name} know the clock is reset.`}
         </p>
 
-        {/* Lightning is THE check-in when the server supports it: the
-            small payment is the proof of life. The free button only
-            appears on servers without Lightning (local dev, demo) so
-            those keep working. */}
+        {/* Checking in is free: being signed in on this device is the
+            proof of life. */}
         <div className="mt-6 flex w-full max-w-xs flex-col items-stretch gap-3 md:max-w-none md:flex-row md:flex-wrap md:items-center md:justify-center">
-          {lightningEnabled ? (
-            <Button
-              onClick={onLightning}
-              disabled={justChecked || locked}
-              size="lg"
-            >
-              {justChecked
-                ? "Checked in ✓"
-                : locked
-                  ? "Checked in for this period"
-                  : "⚡ Check in with Lightning"}
-            </Button>
-          ) : (
-            <Button
-              onClick={onCheckin}
-              loading={busy}
-              disabled={justChecked || locked}
-              size="lg"
-            >
-              {justChecked
-                ? "Checked in ✓"
-                : locked
-                  ? "Checked in for this period"
-                  : "I'm still here"}
-            </Button>
-          )}
+          <Button
+            onClick={onCheckin}
+            loading={busy}
+            disabled={justChecked || locked}
+            size="lg"
+          >
+            {justChecked
+              ? "Checked in ✓"
+              : locked
+                ? "Checked in for this period"
+                : "I'm still here"}
+          </Button>
         </div>
-
-        {!locked && lightningEnabled ? (
-          <>
-            <p className="mt-2 text-xs text-dim">
-              Pay the small invoice from any Lightning wallet. The
-              payment is your proof of life.
-            </p>
-            <LightningStatusBadge />
-          </>
-        ) : null}
 
         {cd ? (
           <p className="mt-5 text-xs text-muted" aria-live="polite">
@@ -1915,107 +1834,6 @@ function HeartbeatCard({
         ) : null}
       </div>
     </section>
-  );
-}
-
-/* --------------------------- Lightning status ----------------------------- */
-
-/**
- * Reachability badge for the Lightning sidecar.
- *
- * `/health` only reports "operator wired up env vars." A user
- * staring at the "⚡ Pay a few sats" button doesn't yet know whether
- * the sidecar is actually up. We poll `/health/lightning` (server
- * caches the underlying probe for 5s, so this is cheap) and surface
- * the answer as a tiny coloured dot + label inline with the hint.
- *
- * Render-skip rules:
- *   - 404 from older servers → render nothing. Callers shouldn't
- *     even see this component on those builds, but defence-in-depth.
- *   - probe returns `enabled: false` → render nothing (the parent
- *     already gates on `lightningEnabled`; reaching this state means
- *     the operator flipped env vars between renders, in which case
- *     hiding the badge until next page load is fine).
- *   - probe pending on first mount → render nothing rather than a
- *     flash of "unknown" copy.
- */
-function LightningStatusBadge() {
-  const [state, setState] = useState<
-    | { kind: "loading" }
-    | { kind: "hidden" }
-    | { kind: "ready" }
-    | { kind: "warming" }
-    | { kind: "error"; message: string }
-  >({ kind: "loading" });
-
-  useEffect(() => {
-    let alive = true;
-
-    const poll = () => {
-      api
-        .healthLightning()
-        .then((r) => {
-          if (!alive) return;
-          if (!r.enabled) {
-            setState({ kind: "hidden" });
-          } else if (r.error) {
-            setState({ kind: "error", message: r.error });
-          } else if (r.ready) {
-            setState({ kind: "ready" });
-          } else {
-            setState({ kind: "warming" });
-          }
-        })
-        .catch(() => {
-          if (!alive) return;
-          // 404 / network error — older server or offline.
-          // Stay quiet rather than scaring the user.
-          setState({ kind: "hidden" });
-        });
-    };
-
-    poll();
-    // Refresh in the background every 30s so the user sees a
-    // sidecar recovery (or failure) without a page reload. Five-
-    // second server-side cache means this is one downstream
-    // network call per probe regardless of how many tabs are open.
-    const timer = window.setInterval(poll, 30_000);
-    return () => {
-      alive = false;
-      window.clearInterval(timer);
-    };
-  }, []);
-
-  if (state.kind === "loading" || state.kind === "hidden") return null;
-
-  const dotColour =
-    state.kind === "ready"
-      ? "var(--ok)"
-      : state.kind === "warming"
-        ? "var(--warning)"
-        : "var(--alarm)";
-  const label =
-    state.kind === "ready"
-      ? "Lightning ready"
-      : state.kind === "warming"
-        ? "Lightning starting up"
-        : "Lightning offline";
-  const title =
-    state.kind === "error" ? state.message : undefined;
-
-  return (
-    <p
-      className="mt-1.5 text-xs text-dim"
-      title={title}
-      data-testid="ln-status-badge"
-    >
-      <span
-        aria-hidden="true"
-        className="mr-1.5 inline-block h-2 w-2 rounded-full align-middle"
-        style={{ background: dotColour }}
-      />
-      {label}
-    </p>
   );
 }
 
@@ -2978,64 +2796,6 @@ function FrozenBanner({ vault, now }: { vault: VaultView; now: Date }) {
           : "Auto-unfreezes after the 90-day window."}
         {vault.has_trusted_contact ? " Your trusted contact has been alerted." : ""}
       </p>
-    </section>
-  );
-}
-
-/* ----------------------------- LNURL card --------------------------------- */
-
-function LnurlCard({ lnurl }: { lnurl: string }) {
-  // Collapsed by default — the raw LNURL string is a wall of
-  // monospace most visits never need (the big check-in button above
-  // covers the common path). Expanding mirrors ReceiveCard.
-  const [expanded, setExpanded] = useState(false);
-  const [copied, setCopied] = useState(false);
-  function copy() {
-    void navigator.clipboard.writeText(lnurl).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
-    });
-  }
-  // `lightning:` URI lets a wallet on the same device pick up the
-  // LNURL directly when the user taps the button on mobile. On
-  // desktop it's a no-op (no handler) — the QR rendering would help
-  // there, but a string-copy fallback gets us 90% of the way without
-  // pulling in a QR library.
-  const deepLink = `lightning:${lnurl}`;
-  return (
-    <section className="card-flat p-5">
-      <p className="text-xs uppercase tracking-wider text-dim">
-        Check in with a tiny Lightning payment
-      </p>
-      <p className="mt-1.5 text-sm text-muted">
-        The same code works every time. No setup, no expiry.
-      </p>
-      {!expanded ? (
-        <div className="mt-3">
-          <Button size="sm" variant="ghost" onClick={() => setExpanded(true)}>
-            Show Lightning code
-          </Button>
-        </div>
-      ) : (
-        <>
-          <div className="mt-3 break-all rounded bg-[var(--bg-elev)] p-3 font-mono text-xs">
-            {lnurl}
-          </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <Button size="sm" variant="ghost" onClick={copy}>
-              {copied ? "Copied ✓" : "Copy LNURL"}
-            </Button>
-            <a href={deepLink} className="inline-block">
-              <Button size="sm" variant="ghost">
-                Open in wallet
-              </Button>
-            </a>
-            <Button size="sm" variant="ghost" onClick={() => setExpanded(false)}>
-              Hide
-            </Button>
-          </div>
-        </>
-      )}
     </section>
   );
 }

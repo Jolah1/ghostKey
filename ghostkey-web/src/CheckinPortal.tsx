@@ -15,7 +15,7 @@
  * We surface that as a specific "this device doesn't have your
  * credentials" message rather than the generic "lookup failed".
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   Button,
   Field,
@@ -35,8 +35,6 @@ import {
 import { countdown, parseRfc } from "./time";
 import { useVocab } from "./vocab";
 import { getVaultOwnerToken } from "./vaultStore";
-import { LightningCheckin } from "./LightningCheckin";
-import { lastResortCheckinOpen } from "./checkin";
 
 type State =
   | { kind: "empty" }
@@ -52,27 +50,9 @@ export function CheckinPortal({ initialId }: { initialId?: string }) {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [justChecked, setJustChecked] = useState(false);
-  const [lightningEnabled, setLightningEnabled] = useState(false);
-  const [lightningOpen, setLightningOpen] = useState(false);
 
   const now = useTicker(1000);
 
-  // Lightning is the check-in when the server supports it (same as the
-  // dashboard). The free button stays only as a last resort.
-  useEffect(() => {
-    let alive = true;
-    api
-      .health()
-      .then((h) => {
-        if (alive) setLightningEnabled(h.lightning_enabled);
-      })
-      .catch(() => {
-        /* leave Lightning off; the free button still works */
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
 
   const tokenFor = useCallback(
     (id: string) => getVaultOwnerToken(id.trim()),
@@ -230,36 +210,10 @@ export function CheckinPortal({ initialId }: { initialId?: string }) {
             justChecked={justChecked}
             actionError={actionError}
             onCheckin={onCheckin}
-            lightningEnabled={lightningEnabled}
-            onLightning={() => setLightningOpen(true)}
           />
         )}
       </div>
 
-      {lightningOpen && state.kind === "loaded" ? (
-        <LightningCheckin
-          vaultId={state.vault.id}
-          ownerToken={tokenFor(state.vault.id)}
-          onPaid={() => {
-            setLightningOpen(false);
-            setJustChecked(true);
-            window.setTimeout(() => setJustChecked(false), 2400);
-            void refresh();
-          }}
-          onClose={() => setLightningOpen(false)}
-          onFreeCheckin={
-            // Last resort only: free check-in is offered inside the
-            // Lightning error state, and only within the final 24h
-            // before the heir would be contacted.
-            lastResortCheckinOpen(state.vault.claim_eligible_at, now)
-              ? () => {
-                  setLightningOpen(false);
-                  onCheckin();
-                }
-              : undefined
-          }
-        />
-      ) : null}
     </main>
   );
 }
@@ -274,8 +228,6 @@ function Result({
   justChecked,
   actionError,
   onCheckin,
-  lightningEnabled,
-  onLightning,
 }: {
   vault: VaultView;
   events: VaultEvent[];
@@ -284,8 +236,6 @@ function Result({
   justChecked: boolean;
   actionError: string | null;
   onCheckin: () => void;
-  lightningEnabled: boolean;
-  onLightning: () => void;
 }) {
   const cd = useMemo(
     () => countdown(parseRfc(vault.next_deadline_at), now),
@@ -317,7 +267,7 @@ function Result({
 
       <div className="p-8 text-center">
         <Heartbeat
-          onTap={busy || isUnfunded ? undefined : lightningEnabled ? onLightning : onCheckin}
+          onTap={busy || isUnfunded ? undefined : onCheckin}
           disabled={busy || isUnfunded || vault.status === "claimed"}
         />
 
@@ -333,15 +283,9 @@ function Result({
 
         {!isUnfunded && vault.status !== "claimed" && (
           <div className="mt-6">
-            {lightningEnabled ? (
-              <Button onClick={onLightning} size="lg">
-                {justChecked ? "Checked in" : "⚡ Check in with Lightning"}
-              </Button>
-            ) : (
-              <Button onClick={onCheckin} loading={busy} size="lg">
-                {justChecked ? "Checked in" : "I'm still here"}
-              </Button>
-            )}
+            <Button onClick={onCheckin} loading={busy} size="lg">
+              {justChecked ? "Checked in" : "I'm still here"}
+            </Button>
           </div>
         )}
 
