@@ -624,7 +624,7 @@ export function Dashboard({ onNavigate }: Props) {
                 !vault?.drill_started_at
               }
               showEmergency={
-                Boolean(vault?.lnurl_panic) &&
+                Boolean(vault) &&
                 vault?.status !== "frozen" &&
                 !isClosed &&
                 !isClaiming
@@ -2802,97 +2802,115 @@ function FrozenBanner({ vault, now }: { vault: VaultView; now: Date }) {
 
 /* ----------------------------- Panic card --------------------------------- */
 
+/**
+ * Emergency stop. Freezes this share for 90 days so no claim can go
+ * ahead, and alerts the trusted contact if one is on file. Free and
+ * signed-in; it used to be triggered by paying a Lightning invoice.
+ */
 export function PanicCard({
-  lnurl,
+  vaultId,
+  ownerToken,
   hasTrustedContact,
 }: {
-  lnurl: string;
+  vaultId: string;
+  ownerToken: string | null;
   // The "alert your trusted contact" copy only renders when one is on
-  // file — promising an alert the server won't send is issue #70.
+  // file. Promising an alert the server won't send is issue #70.
   hasTrustedContact: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const [confirm, setConfirm] = useState(false);
-  const [copied, setCopied] = useState(false);
-  if (!expanded) {
+  const [step, setStep] = useState<"closed" | "confirm" | "sending" | "done">(
+    "closed",
+  );
+  const [frozenUntil, setFrozenUntil] = useState<Date | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function freeze() {
+    setStep("sending");
+    setError(null);
+    try {
+      const resp = await api.panicStop(vaultId, ownerToken);
+      setFrozenUntil(parseRfc(resp.frozen_until));
+      setStep("done");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setStep("confirm");
+    }
+  }
+
+  if (step === "done") {
+    return (
+      <section className="rounded-md border border-amber-500/40 bg-amber-500/10 p-5">
+        <p className="text-sm font-semibold text-amber-200">
+          This share is frozen.
+        </p>
+        <p className="mt-1 text-xs text-amber-100/80">
+          No claim can go ahead
+          {frozenUntil
+            ? ` until ${frozenUntil.toLocaleDateString(undefined, {
+                day: "numeric",
+                month: "long",
+                year: "numeric",
+              })}`
+            : " for 90 days"}
+          . It unfreezes by itself after that.
+          {hasTrustedContact ? " Your trusted contact has been alerted." : ""}
+        </p>
+      </section>
+    );
+  }
+
+  if (step === "closed") {
     return (
       <section className="card-flat p-5">
         <p className="text-xs uppercase tracking-wider text-dim">
           Emergency stop
         </p>
         <p className="mt-1.5 text-sm text-muted">
-          If your wallet is compromised, freeze this vault for 90 days
+          If your password, phone or wallet is ever compromised, freeze this
+          share for 90 days
           {hasTrustedContact ? " and alert your trusted contact" : ""}.
         </p>
         <div className="mt-3">
-          <Button size="sm" variant="ghost" onClick={() => setExpanded(true)}>
-            Show panic stop
+          <Button size="sm" variant="ghost" onClick={() => setStep("confirm")}>
+            Freeze this share
           </Button>
         </div>
       </section>
     );
   }
-  if (!confirm) {
-    return (
-      <section className="rounded-md border border-amber-500/40 bg-amber-500/5 p-5">
-        <p className="text-sm font-semibold text-amber-200">
-          Sure you want a panic stop?
-        </p>
-        <p className="mt-1 text-xs text-amber-100/80">
-          Paying the next QR freezes this vault for 90 days. Your heir
-          cannot claim during that window.
-          {hasTrustedContact
-            ? " Your trusted contact will be alerted that you triggered a panic."
-            : ""}
-        </p>
-        <div className="mt-3 flex flex-wrap gap-2">
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => setConfirm(true)}
-          >
-            Yes, show me the QR
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => setExpanded(false)}>
-            Cancel
-          </Button>
-        </div>
-      </section>
-    );
-  }
-  const deepLink = `lightning:${lnurl}`;
+
   return (
     <section className="rounded-md border border-amber-500/40 bg-amber-500/5 p-5">
       <p className="text-sm font-semibold text-amber-200">
-        Panic stop: pay to freeze
+        Freeze this share for 90 days?
       </p>
       <p className="mt-1 text-xs text-amber-100/80">
-        Pay this from any Lightning wallet. The freeze takes effect the
-        moment the invoice settles.
+        Your heir cannot claim during that time, and it can&apos;t be undone
+        early. Your bitcoin doesn&apos;t move.
+        {hasTrustedContact
+          ? " Your trusted contact will be told you triggered an emergency freeze."
+          : ""}
       </p>
-      <div className="mt-3 break-all rounded bg-[var(--bg-elev)] p-3 font-mono text-xs">
-        {lnurl}
-      </div>
+      {error ? (
+        <p className="mt-2 text-xs text-alarm" role="alert">
+          {error}
+        </p>
+      ) : null}
       <div className="mt-3 flex flex-wrap gap-2">
         <Button
           size="sm"
-          variant="ghost"
-          onClick={() => {
-            void navigator.clipboard.writeText(lnurl).then(() => {
-              setCopied(true);
-              window.setTimeout(() => setCopied(false), 2000);
-            });
-          }}
+          onClick={() => void freeze()}
+          loading={step === "sending"}
         >
-          {copied ? "Copied ✓" : "Copy"}
+          Yes, freeze it
         </Button>
-        <a href={deepLink} className="inline-block">
-          <Button size="sm" variant="ghost">
-            Open in wallet
-          </Button>
-        </a>
-        <Button size="sm" variant="ghost" onClick={() => setExpanded(false)}>
-          Hide
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => setStep("closed")}
+          disabled={step === "sending"}
+        >
+          Cancel
         </Button>
       </div>
     </section>

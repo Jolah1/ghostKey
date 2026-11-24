@@ -4719,7 +4719,7 @@ mod tests {
         .await
         .expect("store trusted contact");
 
-        crate::lightning::notify_trusted_contact_of_panic(&pool, "vault-pa")
+        crate::panic::notify_trusted_contact_of_panic(&pool, "vault-pa")
             .await
             .expect("notify");
         let n: i64 = sqlx::query_scalar(
@@ -4732,7 +4732,7 @@ mod tests {
 
         // And a vault without a trusted contact alerts nobody.
         insert_vault(&pool, "vault-pb", "ok", "2026-04-01T00:00:00Z", None).await;
-        crate::lightning::notify_trusted_contact_of_panic(&pool, "vault-pb")
+        crate::panic::notify_trusted_contact_of_panic(&pool, "vault-pb")
             .await
             .expect("notify without contact");
         let n2: i64 = sqlx::query_scalar(

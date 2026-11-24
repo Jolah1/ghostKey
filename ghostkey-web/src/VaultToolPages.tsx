@@ -167,11 +167,11 @@ export function PracticeRunPage({ onNavigate }: PageProps) {
 }
 
 export function EmergencyPage({ onNavigate }: PageProps) {
-  const { vault, loading, meta } = useActiveVault();
+  const { vault, loading, meta, ownerToken } = useActiveVault();
   const isClaiming =
     vault?.status === "timelock_started" || vault?.status === "claiming";
   const ready = Boolean(
-    vault?.lnurl_panic &&
+    vault &&
       vault.status !== "frozen" &&
       vault.status !== "claimed" &&
       !isClaiming,
@@ -182,9 +182,10 @@ export function EmergencyPage({ onNavigate }: PageProps) {
       intro="If your wallet is ever compromised, freeze this share so no claim can proceed."
       onNavigate={onNavigate}
     >
-      {ready && vault?.lnurl_panic ? (
+      {ready && vault ? (
         <PanicCard
-          lnurl={vault.lnurl_panic}
+          vaultId={vault.id}
+          ownerToken={ownerToken}
           hasTrustedContact={Boolean(vault.has_trusted_contact)}
         />
       ) : (
@@ -251,7 +252,7 @@ export function ToolsPage({ onNavigate }: PageProps) {
       route: "reminders",
     });
   }
-  if (vault?.lnurl_panic && vault.status !== "frozen" && !isClosed && !isClaiming) {
+  if (vault && vault.status !== "frozen" && !isClosed && !isClaiming) {
     items.push({
       label: "Emergency options",
       desc: "Freeze this share if needed",

@@ -2202,16 +2202,16 @@ function StepPassword({
           </InlineAlert>
         </div>
 
-        {/* P3 (#120): lead with the outcome and tuck the Lightning
-            mechanics behind a disclosure — it's optional and dense. */}
+        {/* P3 (#120): optional and rarely needed, so it sits behind a
+            disclosure. */}
         <Disclosure
           summary={
-            <span>Advanced: freeze this vault for 90 days from any device</span>
+            <span>Advanced: someone to alert in an emergency</span>
           }
         >
           <Field
             label="Trusted contact (optional)"
-            hint="If your wallet is ever stolen, you can freeze this vault for 90 days from any device. Behind the scenes that's a tiny 'panic stop' payment from any wallet; this person is alerted that you triggered it. Leave blank to skip."
+            hint="If your password, phone or wallet is ever compromised, you can freeze this vault for 90 days from your dashboard. This person is told you triggered it, so they can check on you. Leave blank to skip."
           >
             <input
               type="email"

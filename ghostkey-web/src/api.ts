@@ -598,6 +598,13 @@ export interface PriceView {
   stale: boolean;
 }
 
+/** Response from `POST /vaults/:id/panic`. */
+export interface PanicResponse {
+  vault_id: string;
+  status: string;
+  frozen_until: string;
+}
+
 /** Response shape from `POST /vaults/:id/lightning-checkin/invoice`. */
 export interface LightningInvoiceView {
   bolt11: string;
@@ -932,6 +939,15 @@ export const api = {
   checkin: (id: string, ownerToken: string | null) =>
     request<CheckinResponse>(
       `/vaults/${id}/checkin`,
+      { method: "POST" },
+      ownerToken,
+    ),
+  /** Panic stop: freeze this vault for 90 days so no claim can
+   *  proceed, and alert the trusted contact if one is on file. Free and
+   *  signed-in. 409 when the vault is already frozen or claimed. */
+  panicStop: (id: string, ownerToken: string | null) =>
+    request<PanicResponse>(
+      `/vaults/${id}/panic`,
       { method: "POST" },
       ownerToken,
     ),

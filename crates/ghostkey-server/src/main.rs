@@ -35,6 +35,7 @@ mod lightning;
 mod lnurl;
 mod newsletter;
 mod notifier;
+mod panic;
 mod price;
 mod psbt_routes;
 mod push;
