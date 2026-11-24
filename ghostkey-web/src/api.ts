@@ -71,6 +71,10 @@ export interface VaultView {
    *  Absent when the heir isn't on email, because only email tells us
    *  a message arrived. Only on the owner `GET /vaults/:id`. */
   heir_reachability?: "unreachable" | "unconfirmed" | "confirmed" | null;
+  /** Guardian vaults only: how many guardians we couldn't reach today
+   *  (no contact, or a channel this server can't send). Above zero, a
+   *  claim would stall. Absent on standard vaults and older servers. */
+  guardians_unreachable?: number | null;
   /** Whether a trusted contact is on file. Gates the panic-stop
    *  copy's "your trusted contact will be alerted" promise — only
    *  rendered when true (issue #70). Absent on list/create

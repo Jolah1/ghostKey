@@ -664,6 +664,14 @@ pub struct VaultView {
     /// owner-authenticated `GET /vaults/:id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heir_reachability: Option<String>,
+    /// Guardian vaults only (#81): how many guardians we couldn't reach
+    /// today, because they have no contact or sit on a channel this server
+    /// can't deliver. A guardian vault can't be claimed until the
+    /// guardians get their links, so anything above zero means the claim
+    /// would stall. See [`count_unreachable_guardians`]. Only populated on
+    /// the owner-authenticated `GET /vaults/:id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guardians_unreachable: Option<i64>,
     /// The vault's descriptor pair (receive + change). Only populated
     /// on the owner-authenticated `GET /vaults/:id` — list/create
     /// responses leave them `None`. The dashboard embeds these in the
@@ -955,6 +963,7 @@ async fn create_vault(
                 owner_contact_verified: None,
                 activation_held: None,
                 heir_reachability: None,
+                guardians_unreachable: None,
                 descriptor_external: None,
                 descriptor_internal: None,
                 has_trusted_contact: None,
@@ -1662,6 +1671,7 @@ async fn create_vault_from_xpub(
                 // being held. The owner GET reports it from then on.
                 activation_held: None,
                 heir_reachability: None,
+                guardians_unreachable: None,
                 // Return the public descriptor pair so the setup browser
                 // can build the heir envelope (block A) immediately,
                 // without a second round-trip. Watch-only; no secrets.
@@ -2101,6 +2111,7 @@ async fn create_vault_guardian(
                 // being held. The owner GET reports it from then on.
                 activation_held: None,
                 heir_reachability: None,
+                guardians_unreachable: None,
                 descriptor_external: Some(pair.external.clone()),
                 descriptor_internal: Some(pair.internal.clone()),
                 has_trusted_contact: None,
@@ -2908,6 +2919,28 @@ pub(crate) fn heir_reachability(
     })
 }
 
+/// How many guardians we couldn't reach today: no contact on file, or a
+/// channel this server can't deliver (no channel means email, the setup
+/// default). Email bounces aren't tracked per guardian yet, so an email
+/// guardian counts as reachable.
+pub(crate) fn count_unreachable_guardians<'a>(
+    guardians: impl Iterator<Item = (bool, Option<&'a str>)>,
+    deliverable: impl Fn(crate::notifier::Channel) -> bool,
+) -> i64 {
+    use crate::notifier::Channel;
+    guardians
+        .filter(|&(has_contact, channel)| {
+            !has_contact
+                || match channel {
+                    None | Some("email") => false,
+                    Some("sms") => !deliverable(Channel::Sms),
+                    Some("whatsapp") => !deliverable(Channel::Whatsapp),
+                    Some(_) => true,
+                }
+        })
+        .count() as i64
+}
+
 async fn get_vault(
     auth: OwnerAuth,
     State(state): State<Arc<AppState>>,
@@ -2989,6 +3022,23 @@ async fn get_vault(
         crate::psbt_routes::UnlockEstimateView::from_estimate(&est, Utc::now()).unlock_eta
     });
 
+    // Guardian vaults: how many guardians we couldn't reach today.
+    let guardian_rows: Vec<(i64, Option<String>)> = sqlx::query_as(
+        "SELECT contact_ciphertext IS NOT NULL, contact_channel \
+           FROM vault_guardian_keys WHERE vault_id = ?",
+    )
+    .bind(&id)
+    .fetch_all(&state.db)
+    .await?;
+    let guardians_unreachable = (!guardian_rows.is_empty()).then(|| {
+        count_unreachable_guardians(
+            guardian_rows
+                .iter()
+                .map(|(has, ch)| (*has == 1, ch.as_deref())),
+            crate::notifier::channel_deliverable,
+        )
+    });
+
     // Before the struct literal takes ownership of the row's fields.
     let heir_reachability = heir_reachability(
         row.has_heir_contact == 1,
@@ -3033,6 +3083,7 @@ async fn get_vault(
         // vault nobody has funded yet.
         activation_held: Some(activation_held),
         heir_reachability: heir_reachability.map(str::to_string),
+        guardians_unreachable,
         descriptor_external: Some(row.descriptor_external),
         descriptor_internal: Some(row.descriptor_internal),
         has_trusted_contact: Some(row.has_trusted_contact == 1),
@@ -4695,6 +4746,30 @@ mod tests {
     /// in this binary pin it, so this asserts the value directly rather
     /// than trying to drive the flag — the point is that the result no
     /// longer depends on it at all.
+    #[test]
+    fn guardians_on_an_undeliverable_channel_count_as_unreachable() {
+        use crate::notifier::Channel;
+        let sms_off = |c: Channel| c == Channel::Email;
+        let gs = [
+            (true, Some("email")),
+            (true, None),           // no channel means email
+            (true, Some("sms")),    // SMS switched off: unreachable
+            (false, Some("email")), // no contact at all: unreachable
+        ];
+        assert_eq!(count_unreachable_guardians(gs.into_iter(), sms_off), 2);
+        // Once SMS can be delivered, an SMS guardian is reachable again.
+        let all_on = |_c: Channel| true;
+        assert_eq!(
+            count_unreachable_guardians([(true, Some("sms"))].into_iter(), all_on),
+            0
+        );
+        // An unknown channel is never assumed to work.
+        assert_eq!(
+            count_unreachable_guardians([(true, Some("pigeon"))].into_iter(), all_on),
+            1
+        );
+    }
+
     #[test]
     fn heir_reachability_reports_the_latest_verdict() {
         // Email heir, nothing confirmed yet.
