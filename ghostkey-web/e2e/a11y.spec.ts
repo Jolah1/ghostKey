@@ -284,6 +284,24 @@ test("guardian editor flags an SMS guardian and saves an email", async ({ page }
   await expect(page.getByText("Guardian 2 is set up for SMS")).toHaveCount(0);
 });
 
+test("dashboard flags unreachable guardians and links to the fix", async ({ page }) => {
+  await mockApi(page);
+  // Registered after mockApi, so it wins for this one URL.
+  await page.route(`**/api/vaults/${VAULT_ID}`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ...vaultView, guardians_unreachable: 2 }),
+    }),
+  );
+  await seedSignedIn(page);
+  await page.goto(`${base}/#/dashboard`);
+  await expect(page.getByText("We can't reach 2 of your guardians.")).toBeVisible();
+  await expectNoSeriousViolations(page);
+  await page.getByRole("button", { name: "Fix guardians" }).click();
+  await expect(page).toHaveURL(/#\/heir-contact/);
+});
+
 test("claim page (timelock wait state) has no serious a11y violations", async ({
   page,
 }) => {
