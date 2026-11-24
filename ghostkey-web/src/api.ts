@@ -65,6 +65,9 @@ export interface VaultView {
     *  things `status: "unfunded"` means: waiting for coins, and coins
     *  are here and waiting for you. */
   activation_held?: boolean | null;
+  /** No heir chosen yet: inheritance was skipped at setup. The check-in
+   *  clock stays off until the owner chooses one. Owner `GET` only. */
+  heir_pending?: boolean | null;
   /** Can we reach the heir (#327)? `unreachable`: the last message to
    *  them bounced or was marked as spam. `unconfirmed`: nothing sent to
    *  them has ever been confirmed delivered. `confirmed`: something was.
@@ -251,6 +254,10 @@ export interface SealedSetup {
   /** Absent for Door B — the scheduler mints a fresh claim token at
    *  trigger time, since no heir secret is bound to it. */
   claim_token_b64?: string;
+  /** Heir chosen later: the heir xprv sealed under the OWNER's password
+   *  KEK. Sent alone: no claim token, no heir contact. */
+  heir_xprv_owner_ct_b64?: string;
+  heir_xprv_owner_nonce_b64?: string;
 }
 
 /** One vault entry returned after one-time recovery-link exchange. */
@@ -290,6 +297,12 @@ export interface SealedBlobsView {
    *  an origin-tagged `owner.xpub` so the new sibling vault is built
    *  under the identical owner key. `null` on legacy rows. */
   owner_xpub_fragment_external?: string | null;
+  /** Heir chosen later: the heir key sealed under the owner's password,
+   *  plus the heir descriptor fragment to check it against before
+   *  re-sealing. Null once an heir is chosen. */
+  heir_xprv_owner_ct_b64?: string | null;
+  heir_xprv_owner_nonce_b64?: string | null;
+  heir_xpub_fragment_external?: string | null;
 }
 
 /** First external (receive) address derived from the vault descriptor.
@@ -1042,6 +1055,28 @@ export const api = {
   ) =>
     request<null>(
       `/vaults/${id}/seal-owner-token`,
+      { method: "POST", body: JSON.stringify(body) },
+      ownerToken,
+    ),
+  /** Owner-only: choose who inherits on a vault set up without an heir.
+   *  The heir key was opened with the password in this browser, checked
+   *  against the descriptor, and re-sealed under a fresh claim token. */
+  chooseHeir: (
+    id: string,
+    ownerToken: string | null,
+    body: {
+      name: string;
+      contact: string;
+      channel?: "email";
+      heir_xprv_ct_b64: string;
+      heir_xprv_nonce_b64: string;
+      claim_token_b64: string;
+      from_name?: string | null;
+      heir_note?: string | null;
+    },
+  ) =>
+    request<null>(
+      `/vaults/${id}/heir/choose`,
       { method: "POST", body: JSON.stringify(body) },
       ownerToken,
     ),

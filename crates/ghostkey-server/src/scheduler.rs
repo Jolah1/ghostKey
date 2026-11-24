@@ -1031,7 +1031,9 @@ async fn activate_funded_vaults(state: &AppState, _now_iso: &str) -> anyhow::Res
                   owner_contact_channel, owner_contact_verified_at,
                   owner_contact_ciphertext IS NOT NULL AS has_owner_contact
              FROM vaults
-            WHERE status = 'unfunded'"#,
+            WHERE status = 'unfunded'
+              -- No heir chosen yet: savings only, no check-in clock.
+              AND heir_pending = 0"#,
     )
     .fetch_all(&state.db)
     .await?;
@@ -2789,6 +2791,54 @@ mod tests {
             nd > now,
             "check-in clock must be (re)started into the future on activation, got {nd}"
         );
+    }
+
+    /// A vault with no heir chosen is savings only: coins arriving never
+    /// start a check-in clock, because there is nobody to protect yet.
+    #[tokio::test]
+    async fn a_funded_vault_with_no_heir_keeps_its_clock_off() {
+        let pool = fresh_db().await;
+        let state = AppState { db: pool.clone() };
+        let now = Utc::now();
+        sqlx::query(
+            r#"INSERT INTO vaults (
+                id, network, descriptor_external, descriptor_internal,
+                timelock_blocks, checkin_period_secs, grace_period_secs,
+                created_at, next_deadline_at, status, claim_eligible_at,
+                chain_unlock_height, chain_tip_height, chain_scanned_at,
+                chain_has_unspent, heir_pending
+            ) VALUES ('v-noheir','regtest','tr(fake/v-noheir/0/*)','tr(fake/v-noheir/1/*)',
+                144, 86400, 3600, '2026-01-01T00:00:00Z',
+                '2026-01-01T00:00:00Z', 'unfunded', '2026-01-01T00:00:00Z',
+                200, 150, ?, 1, 1)"#,
+        )
+        .bind(now.to_rfc3339())
+        .execute(&pool)
+        .await
+        .expect("insert");
+
+        activate_funded_vaults(&state, &now.to_rfc3339())
+            .await
+            .expect("activate");
+        let status: String = sqlx::query_scalar("SELECT status FROM vaults WHERE id = 'v-noheir'")
+            .fetch_one(&pool)
+            .await
+            .expect("status");
+        assert_eq!(status, "unfunded", "no heir, no clock");
+
+        // Choosing an heir lets the next pass start it.
+        sqlx::query("UPDATE vaults SET heir_pending = 0 WHERE id = 'v-noheir'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        activate_funded_vaults(&state, &now.to_rfc3339())
+            .await
+            .expect("activate");
+        let status: String = sqlx::query_scalar("SELECT status FROM vaults WHERE id = 'v-noheir'")
+            .fetch_one(&pool)
+            .await
+            .expect("status");
+        assert_eq!(status, "ok");
     }
 
     #[tokio::test]
