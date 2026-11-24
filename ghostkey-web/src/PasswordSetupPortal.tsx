@@ -129,7 +129,8 @@ import {
 } from "./crypto/sealing";
 import { randomBytes } from "@noble/hashes/utils.js";
 import { unlockYearToHeight, minUnlockYear } from "./unlockHeight";
-import { usePrice, btcAndUsd } from "./fiat";
+import { usePrice } from "./fiat";
+import { formatAmount, usdLine, useUnit } from "./units";
 import {
   DEFAULT_CADENCE_ID,
   DEFAULT_GRACE_ID,
@@ -2593,6 +2594,7 @@ function FundingBalanceLine({ vaultId }: { vaultId: string }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const usdPerBtc = usePrice();
+  const unit = useUnit();
 
   async function load() {
     setLoading(true);
@@ -2622,14 +2624,14 @@ function FundingBalanceLine({ vaultId }: { vaultId: string }) {
       <span className="text-muted">
         Balance:{" "}
         <span className="font-mono text-[var(--text)]">
-          {balance ? `${balance.total_sat.toLocaleString()} sat` : loading ? "…" : "—"}
+          {balance ? formatAmount(balance.total_sat, unit) : loading ? "…" : "—"}
         </span>
-        {balance && balance.total_sat > 0 ? (
-          <span className="ml-1 text-dim">{btcAndUsd(balance.total_sat, usdPerBtc)}</span>
+        {balance && balance.total_sat > 0 && usdLine(balance.total_sat, usdPerBtc) ? (
+          <span className="ml-1 text-dim">{usdLine(balance.total_sat, usdPerBtc)}</span>
         ) : null}
         {balance && balance.unconfirmed_sat > 0 ? (
           <span className="ml-1 text-dim">
-            ({balance.unconfirmed_sat.toLocaleString()} pending)
+            ({formatAmount(balance.unconfirmed_sat, unit)} pending)
           </span>
         ) : null}
       </span>

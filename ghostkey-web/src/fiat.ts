@@ -1,8 +1,8 @@
 /**
  * Fiat (USD) display helpers for sats amounts.
  *
- * Bitcoin amounts are always shown in sats first (the source of truth);
- * BTC and a USD estimate sit alongside as a convenience. The USD figure
+ * Which unit an amount is shown in (sats or BTC) is decided in units.ts;
+ * the USD estimate sits underneath as a convenience. The USD figure
  * comes from the server's cached `/price` endpoint, so it is an estimate
  * and can be briefly stale; never treat it as exact.
  */
@@ -35,14 +35,6 @@ export function formatBtc(sats: number): string {
   const btc = satsToBtc(sats);
   const trimmed = btc.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
   return `${trimmed} BTC`;
-}
-
-/** "BTC · ≈ $USD" line to sit under a sats figure. Returns just the BTC
- *  part when no price is available. */
-export function btcAndUsd(sats: number, usdPerBtc: number | null): string {
-  const btc = formatBtc(sats);
-  if (usdPerBtc == null) return btc;
-  return `${btc} · ≈ ${formatUsd(satsToUsd(sats, usdPerBtc))}`;
 }
 
 // Module-level cache so multiple components share one fetched rate within

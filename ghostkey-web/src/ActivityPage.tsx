@@ -18,7 +18,7 @@ import {
   getVaultsByGroup,
 } from "./vaultStore";
 import { Button, friendlyEventKind, shortAddr } from "./ui";
-import { formatBtc } from "./fiat";
+import { formatAmount, useUnit, type Unit } from "./units";
 
 /** A vault event tagged with which heir it belongs to, so a multi-heir
  *  account reads as one merged feed without hiding anything. */
@@ -71,23 +71,23 @@ function str(d: Record<string, unknown>, k: string): string | null {
 
 /** One plain-language line about the money/mechanics of an event, or null
  *  when the title already says everything. */
-function detailLine(e: ActivityEvent): string | null {
+function detailLine(e: ActivityEvent, unit: Unit): string | null {
   const d = detailOf(e);
   switch (e.kind) {
     case "received": {
       const amt = num(d, "amount_sat");
-      return amt != null ? `${formatBtc(amt)} in` : null;
+      return amt != null ? `${formatAmount(amt, unit)} in` : null;
     }
     case "funds_spent": {
       const amt = num(d, "amount_sat");
-      return amt != null ? `${formatBtc(amt)} out` : null;
+      return amt != null ? `${formatAmount(amt, unit)} out` : null;
     }
     case "owner_send": {
       const sent = num(d, "sent_sat");
       const left = num(d, "remaining_sat");
       if (sent != null && left != null)
-        return `Sent ${formatBtc(sent)} · ${formatBtc(left)} left`;
-      return sent != null ? `Sent ${formatBtc(sent)}` : null;
+        return `Sent ${formatAmount(sent, unit)} · ${formatAmount(left, unit)} left`;
+      return sent != null ? `Sent ${formatAmount(sent, unit)}` : null;
     }
     case "checkin":
       return str(d, "source") === "lightning" ? "via Lightning" : null;
@@ -96,7 +96,7 @@ function detailLine(e: ActivityEvent): string | null {
     case "claim_broadcast":
     case "claim_psbt_built": {
       const total = num(d, "total_input_sats");
-      return total != null ? `${formatBtc(total)} claimed` : null;
+      return total != null ? `${formatAmount(total, unit)} claimed` : null;
     }
     default:
       return null;
@@ -139,6 +139,7 @@ export function ActivityPage({
 }: {
   onNavigate: (r: Route) => void;
 }) {
+  const unit = useUnit();
   const activeId = useMemo(() => getActiveVaultId(), []);
   const meta = useMemo(
     () => (activeId ? getVaultMeta(activeId) : null),
@@ -231,7 +232,7 @@ export function ActivityPage({
             className="mt-8 divide-y divide-[var(--border)]"
           >
             {events.map((e) => {
-              const line = detailLine(e);
+              const line = detailLine(e, unit);
               const txid = txidOf(e);
               const links = txid ? explorerLinks(network, txid) : [];
               return (

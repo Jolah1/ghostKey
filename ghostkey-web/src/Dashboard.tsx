@@ -61,7 +61,9 @@ import {
   subscribeToPush,
 } from "./push";
 import { unsealOwner } from "./crypto/sealing";
-import { usePrice, btcAndUsd, satsToUsd, formatUsd } from "./fiat";
+import { usePrice, satsToUsd, formatUsd } from "./fiat";
+import { formatAmount, usdLine, useUnit } from "./units";
+import { UnitToggle } from "./UnitToggle";
 import { fanOutCheckin } from "./checkin";
 import { heirContactDue } from "./heirContact";
 import { useToolDoneState } from "./toolStatus";
@@ -792,6 +794,7 @@ function BalanceCard({
   const [slow, setSlow] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const usdPerBtc = usePrice();
+  const unit = useUnit();
   const [hidden, setHidden] = useState<boolean>(() => {
     try {
       return localStorage.getItem(BALANCE_HIDDEN_KEY) === "1";
@@ -855,6 +858,7 @@ function BalanceCard({
           {embedded ? "" : "Balance"}
         </p>
         <div className="flex items-center gap-3">
+          {!hidden ? <UnitToggle /> : null}
           {!hidden ? (
             <button
               type="button"
@@ -915,17 +919,17 @@ function BalanceCard({
       ) : (
         <>
           <div className="mt-2 font-display text-2xl font-bold tracking-tight">
-            {balance ? formatSats(balance.total_sat) : loading ? "…" : "—"}
+            {balance ? formatAmount(balance.total_sat, unit) : loading ? "…" : "—"}
           </div>
-          {balance ? (
+          {balance && usdLine(balance.total_sat, usdPerBtc) ? (
             <p className="mt-1 text-sm text-muted">
-              {btcAndUsd(balance.total_sat, usdPerBtc)}
+              {usdLine(balance.total_sat, usdPerBtc)}
             </p>
           ) : null}
           {balance && balance.unconfirmed_sat > 0 ? (
             <p className="mt-1.5 text-sm text-muted">
-              {formatSats(balance.confirmed_sat)} confirmed,{" "}
-              {formatSats(balance.unconfirmed_sat)} pending
+              {formatAmount(balance.confirmed_sat, unit)} confirmed,{" "}
+              {formatAmount(balance.unconfirmed_sat, unit)} pending
             </p>
           ) : null}
           {loading && slow && !error ? (
@@ -1062,15 +1066,6 @@ function HeirRow({
       </span>
     </div>
   );
-}
-
-function formatSats(sats: number): string {
-  if (sats === 0) return "0 sat";
-  if (sats >= 100_000_000) {
-    const btc = sats / 100_000_000;
-    return `${btc.toLocaleString(undefined, { maximumFractionDigits: 8 })} BTC`;
-  }
-  return `${sats.toLocaleString()} sat`;
 }
 
 /* ----------------------------- Receive card ------------------------------- */
@@ -1213,6 +1208,7 @@ function SendCard({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<OwnerSendResponse | null>(null);
   const usdPerBtc = usePrice();
+  const unit = useUnit();
 
   const busy = phase !== "idle";
   const amountSat = sendAll ? null : Number.parseInt(amountStr, 10);
@@ -1295,12 +1291,12 @@ function SendCard({
           </p>
         ) : null}
         <p className="mt-2 text-sm font-semibold text-ok">
-          Sent ✓ {formatSats(result.sent_sat)} is on its way.
+          Sent ✓ {formatAmount(result.sent_sat, unit)} is on its way.
         </p>
         <p className="mt-1.5 text-sm text-muted">
-          Network fee: {formatSats(result.fee_sat)}.{" "}
+          Network fee: {formatAmount(result.fee_sat, unit)}.{" "}
           {result.remaining_sat > 0
-            ? `The remaining ${formatSats(result.remaining_sat)} stays in this share, still covered by your inheritance plan. Your heir's waiting clock starts fresh from this move.`
+            ? `The remaining ${formatAmount(result.remaining_sat, unit)} stays in this share, still covered by your inheritance plan. Your heir's waiting clock starts fresh from this move.`
             : "This share is now empty; add Bitcoin any time to keep the plan going."}
         </p>
         <div className="mt-3 flex items-center gap-3">
@@ -1426,7 +1422,7 @@ function SendCard({
                 amountLabel={
                   sendAll
                     ? "Everything in this share"
-                    : `${formatSats(amountSat as number)}${amountUsd ? ` (≈ ${amountUsd})` : ""}`
+                    : `${formatAmount(amountSat as number, unit)}${amountUsd ? ` (≈ ${amountUsd})` : ""}`
                 }
                 networkLabel={network === "bitcoin" ? "Bitcoin" : `${network} network`}
                 busy={busy}
