@@ -78,7 +78,7 @@
  *     Strictly non-custodial; the residual above does not apply.
  */
 import { useEffect, useState } from "react";
-import { AddressQr } from "./AddressQr";
+import { DepositAddress } from "./DepositAddress";
 import {
   Button,
   Field,
@@ -2503,7 +2503,7 @@ function FundAddressCard({
           // card; render the address row directly without the Field
           // wrapper (which insists on a label).
           <div>
-            <AddressQr address={address} />
+            <DepositAddress vaultId={vaultId} address={address} network={network} />
           </div>
         ) : (
           <Field
@@ -2511,7 +2511,7 @@ function FundAddressCard({
             hint={fundingHint}
           >
             <div>
-              <AddressQr address={address} />
+              <DepositAddress vaultId={vaultId} address={address} network={network} />
             </div>
           </Field>
         )

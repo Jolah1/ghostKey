@@ -49,7 +49,7 @@ import {
 import { VideoMessageRecorder, type RecordedClip } from "./VideoMessageRecorder";
 import { isUnsealFailure } from "./unlockErrors";
 import { useChannelCapability } from "./useChannelCapability";
-import { AddressQr } from "./AddressQr";
+import { DepositAddress } from "./DepositAddress";
 
 const PLACEHOLDER_OWNER_TOKEN = "ghostkey-placeholder-owner-token-v1";
 
@@ -85,7 +85,13 @@ type Phase =
   | { kind: "form" }
   | { kind: "unlocking"; pct: number }
   | { kind: "creating" }
-  | { kind: "done"; heirName: string; address: string | null };
+  | {
+      kind: "done";
+      heirName: string;
+      address: string | null;
+      vaultId: string;
+      network: string;
+    };
 
 /** Strip the `/<chain>/*` receive-path suffix off a descriptor key
  *  fragment, leaving an origin-tagged xpub the server accepts as
@@ -318,13 +324,22 @@ export function AddHeirPortal({
       // (6) Fetch the receive address to show the owner where to fund
       // this heir's share. Best-effort.
       let address: string | null = null;
+      let addressNetwork: string = vault.network;
       try {
-        address = (await api.getVaultAddress(resp.id)).address;
+        const a = await api.getVaultAddress(resp.id);
+        address = a.address;
+        addressNetwork = a.network;
       } catch (e) {
         console.warn("address fetch failed for new heir", resp.id, e);
       }
 
-      setPhase({ kind: "done", heirName: heirName.trim(), address });
+      setPhase({
+        kind: "done",
+        heirName: heirName.trim(),
+        address,
+        vaultId: resp.id,
+        network: addressNetwork,
+      });
     } catch (e) {
       setPhase({ kind: "form" });
       setError(e instanceof ApiError ? e.message : String(e));
@@ -372,7 +387,11 @@ export function AddHeirPortal({
                   {phase.heirName}'s deposit address
                 </p>
                 <div className="mt-2">
-                  <AddressQr address={phase.address} />
+                  <DepositAddress
+                    vaultId={phase.vaultId}
+                    address={phase.address}
+                    network={phase.network}
+                  />
                 </div>
               </div>
             ) : (
