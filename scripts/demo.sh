@@ -18,16 +18,24 @@
 #   DEMO MODE claim link ...: http://127.0.0.1:5173/#/claim/<token>
 # Open that in a fresh tab to play the heir.
 #
-# What needs a real chain (optional): actually moving coins. The owner
-# kit's "find coins / sign / broadcast" and the heir sweep need a funded
-# UTXO. For that, run on signet and fund the address from a faucet (see
-# SIGNET_E2E_RUNBOOK.md), or use regtest with a local bitcoind. The demo
-# defaults to signet so the addresses it shows are fundable if you want
-# to go that far.
+# Moving real (test) coins: the demo defaults to signet on MUTINYNET,
+# a signet with 30-second blocks and a free faucet. Fund a vault address
+# from https://faucet.mutinynet.com and it confirms in about 30 seconds,
+# so deposits, the owner kit and the heir sweep can all be tried for
+# free in minutes. This replaces the hosted ghostkey-signet app, which
+# was shut down on 2026-11-24 to save cost. Regtest with a local
+# bitcoind also works (see SIGNET_E2E_RUNBOOK.md).
+#
+# Coins from other signet faucets (e.g. mempool.space/signet) are on a
+# different chain and won't show up here. Explorer links in the UI point
+# at mempool.space/signet and won't find Mutinynet transactions: use
+# https://mutinynet.com to look them up.
 #
 # Usage:
 #   ./scripts/demo.sh                 # signet, demo mode
 #   GHOSTKEY_DEFAULT_NETWORK=regtest ./scripts/demo.sh
+#   GHOSTKEY_ESPLORA_URL=https://mempool.space/signet/api ./scripts/demo.sh
+#                                     # signet, but a different explorer
 #
 # Prereqs: Rust 1.85+, Node 20+, and `npm install` already run once in
 # ghostkey-web (the script does it for you if node_modules is missing).
@@ -41,6 +49,17 @@ NETWORK="${GHOSTKEY_DEFAULT_NETWORK:-signet}"
 if [[ "$NETWORK" == "bitcoin" || "$NETWORK" == "mainnet" ]]; then
     echo "error: demo mode refuses mainnet. Use signet, testnet, or regtest." >&2
     exit 1
+fi
+
+# On signet, read the chain from Mutinynet (30s blocks, free faucet)
+# unless the caller picked an explorer. Other networks keep the
+# server's own default.
+ESPLORA_URL="${GHOSTKEY_ESPLORA_URL:-}"
+if [[ -z "$ESPLORA_URL" && "$NETWORK" == "signet" ]]; then
+    ESPLORA_URL="https://mutinynet.com/api"
+fi
+if [[ -n "$ESPLORA_URL" ]]; then
+    export GHOSTKEY_ESPLORA_URL="$ESPLORA_URL"
 fi
 
 # A throwaway master key for the local run. Persisted to a gitignored
@@ -113,6 +132,7 @@ GhostKey demo is starting up.
 
   Dashboard : http://127.0.0.1:5173
   Server    : http://127.0.0.1:8787  (network=$NETWORK, demo mode)
+  Chain     : ${ESPLORA_URL:-server default}
 
 Walk it as a user (see docs/e2e-runbook.md for the full script):
 
@@ -125,8 +145,9 @@ Walk it as a user (see docs/e2e-runbook.md for the full script):
   4. Open that link in a fresh tab to play the heir, then open
      "Advanced: save your own recovery file" to get the block-B kit.
 
-To actually move coins (owner kit / heir sweep), run on signet and
-fund the address from a faucet — see SIGNET_E2E_RUNBOOK.md.
+To move test coins: copy a vault's deposit address, get free coins at
+https://faucet.mutinynet.com, and they confirm in about 30 seconds.
+Look transactions up on https://mutinynet.com.
 
 Press Ctrl+C to stop both processes.
 ================================================================

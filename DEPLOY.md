@@ -959,8 +959,17 @@ to ship a hotfix without going through `main`. Pass the commit so
 `/health` can show what is live:
 
 ```sh
-fly deploy -a ghostkey-signet --build-arg GIT_SHA=$(git rev-parse HEAD)
+fly deploy -a <app> --build-arg GIT_SHA=$(git rev-parse HEAD)
 ```
+
+**The hosted signet app is shut down** (2026-11-24, to save cost).
+Its machine and volume are gone. Test on your own machine instead:
+`./scripts/demo.sh` runs the server and dashboard on signet against
+Mutinynet (30-second blocks, free coins at faucet.mutinynet.com).
+When a shared public test link is needed again, recreate
+`ghostkey-signet` with a fresh volume and let it scale to zero when
+idle (`auto_stop_machines = "stop"`, `min_machines_running = 0` in a
+signet-only fly config), then stop it when the test is done.
 
 **Check a deploy landed:** `curl -s https://ghostkey.fly.dev/health`
 and compare `commit` with `git rev-parse origin/main`. The deploy
@@ -1371,6 +1380,9 @@ wallet, regenerate the mnemonic, redeploy." Persist the volume's
 `/data/breez` content if you want to swap mnemonics without losing
 balance.
 ## Signet nightly smoke
+
+> Paused while the hosted signet app is shut down (see above). With no
+> `GHOSTKEY_SIGNET_URL` reachable, the job has nothing to probe.
 
 A scheduled GitHub Action (`.github/workflows/signet-nightly.yml`)
 exercises the deployed signet staging app every night at 06:00 UTC.
