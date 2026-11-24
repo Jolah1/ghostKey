@@ -1932,15 +1932,20 @@ const EXPLORER_BACKOFF_BASE_SECS: i64 = 60;
 /// vault would be scanned less often than a healthy one.
 const EXPLORER_BACKOFF_MAX_SECS: i64 = MATURITY_CACHE_TTL_SECS;
 
-/// Process-wide pause on maturity scans after the block explorer fails.
+/// Pause on maturity scans after a network's block explorer fails.
 ///
 /// A failed scan writes nothing to the vault's cache, so without this the
 /// next tick rescans the same vault 30 seconds later. When the explorer
 /// is rate limiting us, every waiting vault then retries every tick, and
-/// we answer a 429 by asking twenty times harder. The pause is global
-/// rather than per vault because a rate limit or an outage is about the
-/// explorer, not about any one vault: once one scan fails, the rest of
-/// the tick would fail the same way.
+/// we answer a 429 by asking twenty times harder. The pause covers every
+/// vault on that network rather than one vault, because a rate limit or
+/// an outage is about the explorer, not about any one vault: once one
+/// scan fails, the rest of the tick would fail the same way.
+///
+/// It is kept PER NETWORK because each network has its own explorers
+/// (see [`esplora_urls`]). A rate-limited public testnet explorer must
+/// never pause mainnet scans: when the pause was global, one 429 from
+/// a test vault's explorer stopped heir contact for every real vault.
 ///
 /// Only explorer errors trip it. A bad descriptor fails the same on every
 /// endpoint and must not stall every other vault.
@@ -1979,17 +1984,48 @@ fn trips_backoff(e: &BlockingErr) -> bool {
     matches!(e, BlockingErr::Esplora(_))
 }
 
-fn explorer_backoff() -> &'static std::sync::Mutex<ExplorerBackoff> {
-    static B: std::sync::OnceLock<std::sync::Mutex<ExplorerBackoff>> = std::sync::OnceLock::new();
+type BackoffByNetwork = std::collections::HashMap<Network, ExplorerBackoff>;
+
+fn explorer_backoff() -> &'static std::sync::Mutex<BackoffByNetwork> {
+    static B: std::sync::OnceLock<std::sync::Mutex<BackoffByNetwork>> = std::sync::OnceLock::new();
     B.get_or_init(Default::default)
 }
 
-/// When maturity scans may resume, or `None` if they aren't paused. For
-/// `/health`.
-pub(crate) fn explorer_retry_at(now: chrono::DateTime<Utc>) -> Option<chrono::DateTime<Utc>> {
-    let b = explorer_backoff()
+/// Seconds left in `network`'s explorer pause, or `None` when its scans
+/// may go ahead. Other networks' pauses don't count.
+fn backoff_remaining(network: Network, now: chrono::DateTime<Utc>) -> Option<i64> {
+    explorer_backoff()
+        .lock()
+        .expect("explorer backoff poisoned")
+        .get(&network)
+        .and_then(|b| b.remaining_secs(now))
+}
+
+/// Feed a scan's outcome into `network`'s pause.
+fn backoff_record<T>(
+    network: Network,
+    scanned: &Result<T, BlockingErr>,
+    now: chrono::DateTime<Utc>,
+) {
+    let mut all = explorer_backoff()
         .lock()
         .expect("explorer backoff poisoned");
+    let backoff = all.entry(network).or_default();
+    match scanned {
+        Ok(_) => backoff.record_success(),
+        Err(e) if trips_backoff(e) => backoff.record_failure(now),
+        Err(_) => {}
+    }
+}
+
+/// When maturity scans on the server's own network may resume, or `None`
+/// if they aren't paused. For `/health`.
+pub(crate) fn explorer_retry_at(now: chrono::DateTime<Utc>) -> Option<chrono::DateTime<Utc>> {
+    let net = crate::config::parse_network(crate::config::default_network()).ok()?;
+    let all = explorer_backoff()
+        .lock()
+        .expect("explorer backoff poisoned");
+    let b = all.get(&net)?;
     b.remaining_secs(now).and(b.retry_at)
 }
 
@@ -2043,11 +2079,7 @@ pub(crate) async fn unlock_estimate_with_cache(
     // The explorer failed recently. Fail this one without asking, the
     // same way a failed scan would, so nothing advances on a chain we
     // couldn't read.
-    if let Some(secs) = explorer_backoff()
-        .lock()
-        .expect("explorer backoff poisoned")
-        .remaining_secs(now)
-    {
+    if let Some(secs) = backoff_remaining(net, now) {
         return Err(BlockingErr::BackingOff(secs));
     }
 
@@ -2059,16 +2091,7 @@ pub(crate) async fn unlock_estimate_with_cache(
         None,
     )
     .await;
-    {
-        let mut backoff = explorer_backoff()
-            .lock()
-            .expect("explorer backoff poisoned");
-        match &scanned {
-            Ok(_) => backoff.record_success(),
-            Err(e) if trips_backoff(e) => backoff.record_failure(now),
-            Err(_) => {}
-        }
-    }
+    backoff_record(net, &scanned, now);
     let est = scanned?;
 
     if let Err(e) = sqlx::query(
@@ -2745,6 +2768,25 @@ mod tests {
     fn parse_esplora_urls_rejects_empty() {
         assert!(parse_esplora_urls("", Network::Signet).is_err());
         assert!(parse_esplora_urls(" , ,", Network::Signet).is_err());
+    }
+
+    #[test]
+    fn a_testnet_explorer_pause_never_pauses_mainnet() {
+        // Regression: one 429 from a public testnet explorer (scanning a
+        // test vault on the mainnet server) paused every mainnet scan,
+        // which stopped heir contact for real vaults.
+        let now = Utc::now();
+        let err: Result<(), BlockingErr> = Err(BlockingErr::Esplora("HTTP 429".into()));
+        backoff_record(Network::Testnet, &err, now);
+        assert!(backoff_remaining(Network::Testnet, now).is_some());
+        assert_eq!(
+            backoff_remaining(Network::Bitcoin, now),
+            None,
+            "mainnet must not inherit testnet's pause"
+        );
+        // A testnet success lifts only testnet's pause.
+        backoff_record::<()>(Network::Testnet, &Ok(()), now);
+        assert_eq!(backoff_remaining(Network::Testnet, now), None);
     }
 
     #[test]
