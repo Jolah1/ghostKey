@@ -46,7 +46,7 @@ function ToolPage({
           onClick={() => onNavigate("dashboard")}
           className="text-sm text-muted underline hover:text-[var(--text)]"
         >
-          ← Back to dashboard
+          ← Back to home
         </button>
         <h1 className="mt-4 font-serif text-3xl">{title}</h1>
         {intro ? <p className="mt-2 text-sm text-muted">{intro}</p> : null}
@@ -262,14 +262,14 @@ export function ToolsPage({ onNavigate }: PageProps) {
 
   return (
     <ToolPage
-      title="Vault tools"
-      intro="Everything you can set up or check for this vault, in one place."
+      title="Family"
+      intro="Who inherits your savings, how they're reached, and what to do in an emergency."
       onNavigate={onNavigate}
     >
       {items.length > 0 ? (
         <nav
           className="card-flat divide-y divide-[var(--border)] p-0"
-          aria-label="Vault tools"
+          aria-label="Family settings"
         >
           {items.map((it) => (
             <button

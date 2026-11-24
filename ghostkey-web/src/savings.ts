@@ -43,3 +43,22 @@ export function savePerPeriod(
     perMonth: months >= 2 ? Math.ceil(remainingSat / months) : null,
   };
 }
+
+/**
+ * What was put aside in the calendar month `now` falls in (local time),
+ * for the dashboard headline. Counts every deposit that landed this
+ * month, including ones since moved out: the saving still happened.
+ */
+export function addedThisMonth(
+  deposits: { amount_sat: number; seen_at: string }[],
+  now: Date,
+): number {
+  let total = 0;
+  for (const d of deposits) {
+    const t = new Date(d.seen_at);
+    if (t.getFullYear() === now.getFullYear() && t.getMonth() === now.getMonth()) {
+      total += d.amount_sat;
+    }
+  }
+  return total;
+}

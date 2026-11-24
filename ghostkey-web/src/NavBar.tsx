@@ -5,11 +5,17 @@
  * Mobile collapses to wordmark + CTA + hamburger; the sheet slides
  * under the bar with the same links.
  */
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { Brand } from "./Brand";
 import type { Route } from "./App";
 import { useTheme } from "./theme";
 import { LanguageToggle } from "./vocab";
+
+// Loaded on first tap: the deposit card checks the address with the
+// wasm signer, which the rest of the nav doesn't need.
+const AddMoneySheet = lazy(() =>
+  import("./AddMoneySheet").then((m) => ({ default: m.AddMoneySheet })),
+);
 
 interface NavItem {
   key: Route;
@@ -19,8 +25,8 @@ interface NavItem {
 /**
  * Signed out: the visitor's jobs are set up / sign in / inherit —
  * the dashboard would only bounce them to the password prompt.
- * Signed in: "Sign in" disappears (they already did) and the
- * dashboard takes its place. The trusted-device credential persists
+ * Signed in: "Sign in" disappears (they already did). Home is the
+ * savings dashboard; Family is the inheritance side (the tools page). The trusted-device credential persists
  * across visits; email recovery is reserved for browsers without it.
  */
 const SIGNED_OUT_ITEMS: NavItem[] = [
@@ -30,8 +36,9 @@ const SIGNED_OUT_ITEMS: NavItem[] = [
 ];
 
 const SIGNED_IN_ITEMS: NavItem[] = [
-  { key: "dashboard", label: "Dashboard" },
-  { key: "tools",     label: "Tools" },
+  { key: "dashboard", label: "Home" },
+  { key: "activity",  label: "Activity" },
+  { key: "tools",     label: "Family" },
   { key: "recovery",  label: "Recovery kit" },
   { key: "inherit",   label: "Inherit" },
 ];
@@ -40,10 +47,13 @@ interface Props {
   route: Route;
   onNavigate: (r: Route) => void;
   signedIn: boolean;
+  /** Signed in and unlocked: Add money is one tap from any page. */
+  canAddMoney?: boolean;
 }
 
-export function NavBar({ route, onNavigate, signedIn }: Props) {
+export function NavBar({ route, onNavigate, signedIn, canAddMoney = false }: Props) {
   const [open, setOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
   const { theme, toggle } = useTheme();
   const items = signedIn ? SIGNED_IN_ITEMS : SIGNED_OUT_ITEMS;
 
@@ -87,13 +97,15 @@ export function NavBar({ route, onNavigate, signedIn }: Props) {
               Set up
             </button>
           )}
-          {signedIn && route !== "dashboard" && (
+          {canAddMoney && (
             <button
               type="button"
-              onClick={() => onNavigate("dashboard")}
-              className="btn btn-ghost hidden md:inline-flex"
+              onClick={() => setAddOpen(true)}
+              aria-label="Add money"
+              className="btn btn-primary h-9 px-3 text-sm md:px-4"
             >
-              Dashboard
+              <span aria-hidden="true" className="text-base leading-none">+</span>
+              <span className="hidden md:inline">Add money</span>
             </button>
           )}
           <button
@@ -129,10 +141,16 @@ export function NavBar({ route, onNavigate, signedIn }: Props) {
               onClick={() => onNavigate(signedIn ? "dashboard" : "setup")}
               className="btn btn-primary mt-2"
             >
-              {signedIn ? "Open your dashboard" : "Start saving"}
+              {signedIn ? "Open your savings" : "Start saving"}
             </button>
           </nav>
         </div>
+      )}
+
+      {addOpen && (
+        <Suspense fallback={null}>
+          <AddMoneySheet onClose={() => setAddOpen(false)} />
+        </Suspense>
       )}
     </header>
   );
