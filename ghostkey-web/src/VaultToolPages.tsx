@@ -212,9 +212,12 @@ export function ToolsPage({ onNavigate }: PageProps) {
   const isClaiming =
     vault?.status === "timelock_started" || vault?.status === "claiming";
   const isClosed = vault?.status === "claimed";
+  // No heir chosen yet: there is nobody to message, reach or practise
+  // with, and no clock to remind about or freeze. Home offers the choice.
+  const heirPending = vault?.heir_pending === true;
 
   const items: Array<{ label: string; desc: string; route: Route }> = [];
-  if (vault && !isClosed) {
+  if (vault && !isClosed && !heirPending) {
     items.push({
       label: "Message for your heir",
       desc:
@@ -224,14 +227,14 @@ export function ToolsPage({ onNavigate }: PageProps) {
       route: "heir-message",
     });
   }
-  if (vault && !isClosed) {
+  if (vault && !isClosed && !heirPending) {
     items.push({
       label: "How your heir is reached",
       desc: "Change their contact or the way we reach them",
       route: "heir-contact",
     });
   }
-  if (vault && !isClosed && !isClaiming) {
+  if (vault && !isClosed && !isClaiming && !heirPending) {
     items.push({
       label: "Practice a claim",
       desc: vault.drill_completed_at
@@ -242,7 +245,7 @@ export function ToolsPage({ onNavigate }: PageProps) {
       route: "practice",
     });
   }
-  if (vault && ownerToken && pushKey && !isClosed) {
+  if (vault && ownerToken && pushKey && !isClosed && !heirPending) {
     items.push({
       label: "Reminders",
       desc:
@@ -252,7 +255,7 @@ export function ToolsPage({ onNavigate }: PageProps) {
       route: "reminders",
     });
   }
-  if (vault && vault.status !== "frozen" && !isClosed && !isClaiming) {
+  if (vault && vault.status !== "frozen" && !isClosed && !isClaiming && !heirPending) {
     items.push({
       label: "Emergency options",
       desc: "Freeze this share if needed",
@@ -296,7 +299,7 @@ export function ToolsPage({ onNavigate }: PageProps) {
         <Fallback
           loading={loading}
           hasVault={Boolean(meta)}
-          emptyText="No tools apply to this vault right now."
+          emptyText={heirPending ? "Choose who inherits from Home first. These tools are for your heir." : "No tools apply to this vault right now."}
           onNavigate={onNavigate}
         />
       )}
