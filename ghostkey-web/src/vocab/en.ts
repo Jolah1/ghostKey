@@ -8,7 +8,7 @@ export const en: Vocab = {
   langName: "English",
   tagline: "Bitcoin inheritance, without the lawyers.",
   longTagline:
-    "Set up once. Tap once a month to say you're here. If you ever stop, the people you chose can claim what's theirs.",
+    "Put sats aside whenever you can and watch them grow. You hold the key and can spend any time. If you ever stop showing up, your savings go to someone you chose instead of being lost.",
   status: makeStatus({
     unfunded: {
       label: "Awaiting funding",

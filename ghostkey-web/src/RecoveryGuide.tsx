@@ -181,7 +181,7 @@ export function RecoveryGuide({ onNavigate }: Props) {
                 }}
                 className="btn btn-primary"
               >
-                Set up your vault
+                Start saving
               </button>
             </div>
           </Section>

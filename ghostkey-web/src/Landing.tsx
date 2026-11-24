@@ -52,19 +52,18 @@ function Hero({ onNavigate }: Props) {
           on first paint without scroll. md: keeps the generous
           desktop spacing. */}
       <div className="mx-auto flex max-w-5xl flex-col items-center px-5 py-12 text-center md:px-8 md:py-28">
-        <Eyebrow>Bitcoin inheritance, without the lawyers</Eyebrow>
+        <Eyebrow>A bitcoin savings plan, on your own key</Eyebrow>
 
-        {/* Hero clamp floor was 44px which forces "lives on after you"
-            (~21ch) onto a single line of ~510px — wider than a 360px
-            phone, so the browser breaks awkwardly mid-word with the
-            title-gradient running through the break. 32px floor at
-            base keeps the line on two lines cleanly. The 7vw target
-            and 96px ceiling are unchanged. */}
+        {/* Two parts: the promise ("Save your bitcoin") and the safety
+            net. The second line is long, so it is set smaller than the
+            first and allowed to wrap; the 32px floor keeps the first line
+            whole on a 360px phone. */}
         <h1 className="word-in mt-7 max-w-3xl font-display text-[clamp(32px,7vw,96px)] font-bold leading-[1.04] tracking-tight">
-          <span className="title-gradient">Your </span>
-          <span className="text-accent">Bitcoin</span>
-          <br />
-          <span className="title-gradient">lives on after you</span>
+          <span className="title-gradient">Save your </span>
+          <span className="text-accent">bitcoin</span>
+          <span className="title-gradient mt-3 block text-[max(0.5em,22px)] leading-tight">
+            If you stop showing up, it isn&apos;t lost
+          </span>
         </h1>
 
         <p className="mt-6 max-w-xl text-base text-body md:mt-8 md:text-xl">
@@ -83,7 +82,7 @@ function Hero({ onNavigate }: Props) {
             }}
             className="btn btn-primary"
           >
-            Set up your vault
+            Start saving
             <ArrowRight />
           </button>
           <button
@@ -111,7 +110,7 @@ function Hero({ onNavigate }: Props) {
 
 function TrustRow() {
   const items = [
-    { strong: "0",        sub: "Third parties" },
+    { strong: "Free",     sub: "No cut, no subscription" },
     { strong: "Your key", sub: "Locked by your password" },
     { strong: "On-chain", sub: "No company can freeze it" },
   ];
@@ -141,20 +140,20 @@ interface Step {
 
 const STEPS: Step[] = [
   {
-    title: "You set up your vault",
-    body: "Connect a Bitcoin wallet and choose who inherits. About five minutes. No documents, no lawyers, nothing technical to install.",
+    title: "Name what you're saving for",
+    body: "School fees, a house, a rainy day. Set a goal if you like, and choose who should get it if you ever stop showing up. About five minutes, nothing to install.",
   },
   {
-    title: "You tap once a month",
-    body: "That's the whole job. One tap says you're still here and resets the clock. Miss it for long enough and the countdown begins.",
+    title: "Save whenever you can",
+    body: "Send sats from any wallet or exchange, as often as you like. Watch your total grow, and get a gentle reminder if you want one. It stays yours: you can spend it any time.",
   },
   {
-    title: "Your people get what you left them",
-    body: "When the time comes, the person you named gets a notification. They claim it themselves, from anywhere, without asking anyone's permission.",
+    title: "Tap once a month",
+    body: "One free tap says you're still here. Miss it for long enough and the countdown begins.",
   },
   {
-    title: "The rules live on Bitcoin, not on us",
-    body: "Your plan is written into Bitcoin itself, so the rules can't be blocked, deleted, or rewritten, not even by us. The timelock means nothing moves before your waiting period is over. GhostKey just keeps it running: reminders for you, a guided claim for them.",
+    title: "If you stop showing up, it isn't lost",
+    body: "The person you named gets a link and claims it themselves, from anywhere. The rules are written into Bitcoin itself, so they can't be blocked, deleted, or rewritten, not even by us. GhostKey just keeps it running: reminders for you, a guided claim for them.",
   },
 ];
 
@@ -223,7 +222,7 @@ function HowItWorks({ onNavigate }: Props) {
             }}
             className="btn btn-primary"
           >
-            Set up your vault
+            Start saving
             <ArrowRight />
           </button>
         </div>
@@ -254,7 +253,7 @@ const REASONS: Reason[] = [
   {
     tag: "Trustless",
     title: "Self-custodied keys",
-    body: "Your own key never sits on our servers, so no one can move your Bitcoin while you keep checking in. For the strictest setup, give your heir their own key too, and GhostKey holds nothing that can spend it.",
+    body: "Your own key never sits on our servers; it is locked by your password on your device. For the strictest setup, give your heir their own key too, and GhostKey holds nothing that can spend it.",
   },
 ];
 
@@ -498,7 +497,7 @@ const FAQS = [
   },
   {
     q: "What kinds of Bitcoin can I deposit?",
-    a: "Any Bitcoin you already hold. Each heir's share has its own Bitcoin address, with rules that already include them. You send from your own wallet to that address. We never hold it and can't spend it.",
+    a: "Any Bitcoin you already hold. Each heir's share has its own Bitcoin address, with rules that already include them. You send from your own wallet to that address, and your browser checks the address is really yours before showing it. We never hold your money, and your own key never leaves your device.",
   },
   {
     q: "Is this a legal will?",
@@ -556,12 +555,12 @@ function FinalCTA({ onNavigate }: Props) {
     <section ref={ref} className="border-t border-app bg-app">
       <div className="mx-auto max-w-3xl px-5 py-14 text-center md:px-8 md:py-28">
         <h2 className="font-display text-3xl font-bold leading-[1.05] tracking-tight md:text-6xl">
-          <span className="title-gradient">Don't let your Bitcoin </span>
-          <span className="text-accent">die with you</span>
+          <span className="title-gradient">Start your bitcoin </span>
+          <span className="text-accent">savings plan</span>
         </h2>
         <p className="mx-auto mt-4 max-w-md text-muted">
-          Set up your vault in minutes. The people you named will thank you,
-          even if they never have to use it.
+          Free, and set up in minutes. Save on your own key, and if you ever
+          stop showing up, your savings reach the people you chose.
         </p>
         <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
           <button
@@ -572,7 +571,7 @@ function FinalCTA({ onNavigate }: Props) {
             }}
             className="btn btn-primary"
           >
-            Set up your vault
+            Start saving
             <ArrowRight />
           </button>
           <button
