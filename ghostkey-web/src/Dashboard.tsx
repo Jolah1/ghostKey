@@ -27,6 +27,7 @@ import {
   usePolling,
 } from "./ui";
 import { ReceiveCard } from "./ReceiveCard";
+import { ChooseHeirCard } from "./ChooseHeir";
 import { SavingsCard } from "./SavingsCard";
 import { addedThisMonth } from "./savings";
 import {
@@ -427,10 +428,15 @@ export function Dashboard({ onNavigate }: Props) {
   const isClosed = vault?.status === "claimed";
   // Not funded yet: the check-in clock hasn't started, so no deadline
   // is "past" and none of the check-in affordances apply.
-  const isUnfunded = vault?.status === "unfunded";
+  // No heir chosen yet (inheritance skipped at setup): savings only.
+  // The server keeps such a vault `unfunded` so no clock runs, which is
+  // why "unfunded" alone no longer means "waiting for coins".
+  const heirPending = vault?.heir_pending === true;
+  const statusUnfunded = vault?.status === "unfunded";
+  const isUnfunded = statusUnfunded && !heirPending;
   const isPastDeadline =
     vault != null &&
-    !isUnfunded &&
+    !statusUnfunded &&
     (vault.status === "alarmed" ||
       isClaiming ||
       isClosed ||
@@ -579,7 +585,7 @@ export function Dashboard({ onNavigate }: Props) {
               />
             ) : null}
 
-            {vault && !isClosed && !isClaiming && !isUnfunded && !isPastDeadline ? (
+            {vault && !isClosed && !isClaiming && !statusUnfunded && !isPastDeadline ? (
               <div className="mt-5">
                 <CheckinRow
                   vault={vault}
@@ -605,7 +611,24 @@ export function Dashboard({ onNavigate }: Props) {
               choose. It is never lost.
             </p>
 
-            {vault ? (
+            {vault && heirPending && ownerToken ? (
+              <div className="mt-4">
+                <ChooseHeirCard
+                  vaultId={vault.id}
+                  ownerToken={ownerToken}
+                  waitLabel={
+                    demoMode
+                      ? prettySeconds(vault.grace_period_secs)
+                      : prettyBlocks(vault.timelock_blocks)
+                  }
+                  onChosen={() => {
+                    if (typeof window !== "undefined") window.location.reload();
+                  }}
+                />
+              </div>
+            ) : null}
+
+            {vault && !heirPending ? (
               <div className="mt-4">
                 <LegacySummary
                   heirNames={groupVaults.map((g) => g.heir.name).filter(Boolean)}
@@ -627,7 +650,7 @@ export function Dashboard({ onNavigate }: Props) {
             ) : null}
 
             {/* Heir management stays one tap away, not on show. */}
-            {vault && manageOpen ? (
+            {vault && !heirPending && manageOpen ? (
               <div className="mt-4 space-y-4" data-testid="manage-heirs">
                 <p className="text-xs text-muted">
                   Your heir can claim once your bitcoin has sat untouched for
@@ -700,18 +723,23 @@ export function Dashboard({ onNavigate }: Props) {
               onNavigate={onNavigate}
               showPractice={
                 Boolean(vault) &&
+                !heirPending &&
                 !isClosed &&
                 !isClaiming &&
                 !vault?.drill_started_at
               }
               showMessage={
-                Boolean(vault) && !isClosed && toolsDone.hasVideo !== true
+                Boolean(vault) &&
+                !heirPending &&
+                !isClosed &&
+                toolsDone.hasVideo !== true
               }
               showReminders={
                 Boolean(vault) &&
+                !heirPending &&
                 !isClosed &&
                 !isClaiming &&
-                !isUnfunded &&
+                !statusUnfunded &&
                 Boolean(pushKey) &&
                 Boolean(ownerToken) &&
                 toolsDone.remindersOn !== true

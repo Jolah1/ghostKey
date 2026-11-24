@@ -1,24 +1,21 @@
 /**
- * Password-vault setup wizard — three steps.
+ * Password-vault setup wizard: savings first, inheritance optional.
  *
- *   1. Heir       — name, contact channel + value, waiting period.
- *   2. Password   — owner email (for cross-device recovery) plus the
- *                   password the vault will unlock with. Argon2id +
- *                   in-browser BIP86 keygen happens here. The owner is
- *                   never shown a seed phrase: the password *is* the
- *                   only secret.
- *   3. Fund       — the freshly-derived first receive address, with a
- *                   copy button and a network-aware funding hint (a
- *                   test-network warning on testnet/signet, "start
- *                   small" guidance on mainnet).
- *
- * Why three steps, not four (like the legacy wallet-paste flow)?
- *
- *   The legacy flow asks for two xpubs (owner + heir). The whole point
- *   of the password-vault redesign is that the *browser* generates both
- *   xpubs locally, seals them, and ships only ciphertext. So those
- *   collection steps disappear. The remaining decisions reduce to:
- *   who inherits, what unlocks it, where the money goes.
+ *   1. Your plan     what you're saving for (quick picks or typed) and
+ *                    how long to wait if you stop showing up (3, 6 or 12
+ *                    months). The wait is written into the vault's
+ *                    address, so it is asked whether or not an heir is
+ *                    chosen today.
+ *   2. Password      owner email plus the password the vault unlocks
+ *                    with. The owner is never shown a seed phrase: the
+ *                    password *is* the only secret.
+ *   3. Who inherits  optional. Either name heirs now (the vault is created
+ *                    with them, as before), or "Do this later": the vault
+ *                    is created with a spare heir key sealed under the
+ *                    owner's password, no claim token and no heir contact,
+ *                    and the check-in clock stays off until the owner
+ *                    chooses someone from Home.
+ *   4. Add bitcoin   the vault's first receive address.
  *
  * What happens behind the scenes when the user clicks "Create vault":
  *
@@ -107,8 +104,6 @@ import {
   type HeirEnvelope,
 } from "./independenceProof";
 import { AssistChat } from "./AssistChat";
-import { VideoMessageRecorder, type RecordedClip } from "./VideoMessageRecorder";
-import { prepareVideo } from "./crypto/video";
 import {
   checkPassword,
   preloadStrengthChecker,
@@ -122,6 +117,7 @@ import {
 } from "./crypto/keygen";
 import {
   sealVaultSecrets,
+  sealVaultSecretsHeirLater,
   sealWithKey,
   deriveClaimKek,
   hashEmailForLookup,
@@ -136,8 +132,6 @@ import {
   DEFAULT_GRACE_ID,
   DEFAULT_DEMO_WAITING_ID,
   DEMO_WAITING_PRESETS,
-  cadencePresetsFor,
-  gracePresetsFor,
   defaultCadenceIdFor,
   defaultGraceIdFor,
   cadenceByIdAnywhere,
@@ -296,7 +290,23 @@ const EMPTY: Draft = {
   trustedContactChannel: "email",
 };
 
-const STEPS = ["Plan", "Password", "Fund"] as const;
+const STEPS = ["Your plan", "Password", "Who inherits", "Add bitcoin"] as const;
+
+/** Quick picks for "What are you saving for?". Anything else is typed. */
+const GOAL_PRESETS = [
+  "School fees",
+  "Rent",
+  "Emergency fund",
+  "House",
+  "Business",
+  "Wedding",
+  "Travel",
+  "Car",
+] as const;
+
+/** The waiting periods setup offers. It is written into the vault's
+ *  address, so it can only change later by moving the money. */
+const WAIT_CHOICES = [3, 6, 12] as const;
 
 /** Save the setup's "What are you saving for?" as a new share's goal.
  *  Best effort: setup must never fail because of it, and the owner can
@@ -345,14 +355,6 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
   const [emailTaken, setEmailTaken] = useState(false);
   const [busy, setBusy] = useState(false);
   const [kdfProgress, setKdfProgress] = useState<number>(0);
-  // Optional owner video message (#85), captured on the password step
-  // and uploaded silently during creation. Not in `draft` because a
-  // Blob isn't serialisable to localStorage.
-  const [videoClip, setVideoClip] = useState<RecordedClip | null>(null);
-  // The video upload is best-effort (a failure must not abort a good
-  // vault), but the owner still has to HEAR about it — silently losing
-  // the clip means the heir finds out at claim time (#222).
-  const [videoSaveFailed, setVideoSaveFailed] = useState(false);
   // Demo-mode flag from /health. See SetupPortal.tsx for the
   // rationale; both portals share the same gating logic so the
   // experience is consistent across the two creation paths.
@@ -419,6 +421,8 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
            *  best-effort build failure. */
           envelope?: HeirEnvelope;
         }>;
+        /** Made without an heir: the owner chooses one later. */
+        heirLater?: boolean;
       }
     | null
   >(null);
@@ -468,7 +472,9 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
   }, [draft.password, draft.ownerEmail, draft.heirs]);
 
   function validate(s: number): string | null {
-    if (s === 0) {
+    // Step 0 (the plan) has nothing required: the goal is optional and
+    // the wait always has a value.
+    if (s === 2) {
       // Validate every heir in turn. Empty array would be a UX bug
       // (the wizard always seeds one); guard against it anyway.
       if (draft.heirs.length === 0) {
@@ -558,11 +564,11 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
     setStep((s) => Math.max(0, s - 1));
   }
 
-  async function activate() {
-    // Final guard — UI calls validate(0) + validate(1) when stepping
-    // forward, but the user might mutate state via devtools. Belt
-    // and suspenders.
-    const err = validate(0) ?? validate(1);
+  async function activate(heirLater = false) {
+    // Final guard: the UI validates each step when moving forward, but
+    // the user might mutate state via devtools. The heir step only
+    // counts when an heir is being chosen now.
+    const err = validate(1) ?? (heirLater ? null : validate(2));
     if (err) {
       setError(err);
       return;
@@ -571,9 +577,9 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
     // Door B safety: if a heir is set to hold their own key, the xpub
     // must be valid. Otherwise `doorB` would be false and we'd silently
     // generate a key instead — the opposite of what the owner asked for.
-    const badHeir = draft.heirs.find(
-      (h) => h.ownKey && !isValidHeirXpub(h.heirXpub),
-    );
+    const badHeir = heirLater
+      ? undefined
+      : draft.heirs.find((h) => h.ownKey && !isValidHeirXpub(h.heirXpub));
     if (badHeir) {
       setError(
         `${badHeir.name.trim() || "Your heir"} is set to hold their own key, but the xpub is missing or isn't origin-tagged. Paste one that starts with [fingerprint/...].`,
@@ -610,6 +616,121 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
     let ownerKek: Uint8Array | null = null;
 
     try {
+      // ---- Heir chosen later ----------------------------------------
+      // Savings first: one vault, owner key as usual, and a spare heir
+      // key sealed under the owner's password. No claim token and no
+      // heir contact leave this browser, so nothing the server holds can
+      // reach the heir branch, and the check-in clock stays off until
+      // the owner chooses someone from Home (POST /heir/choose).
+      if (heirLater) {
+        ownerParty = generateParty(network);
+        const heirParty = generateParty(network);
+        heirParties.push(heirParty);
+        const checkinSecs = cadenceByIdAnywhere(draft.cadenceId).seconds;
+        const timelockBlocks = demoMode ? 1 : monthsToBlocks(draft.waitingMonths);
+        const graceSecs = demoMode
+          ? demoWaitingById(draft.demoWaitingId).seconds
+          : graceByIdAnywhere(draft.graceId).seconds;
+        const groupId = crypto.randomUUID();
+        const tokenPlaceholder = "ghostkey-placeholder-owner-token-v1";
+
+        setKdfProgress(0);
+        const sealed = await sealVaultSecretsHeirLater({
+          password: draft.password,
+          ownerXprv: ownerParty.xprv,
+          heirXprv: heirParty.xprv,
+          ownerToken: tokenPlaceholder,
+          onProgress: (p) => setKdfProgress(Math.round(p * 100)),
+        });
+        ownerKek = sealed._owner_kek;
+
+        const label = "Savings";
+        const resp = await api.createVaultFromXpub({
+          label,
+          network,
+          owner: { xpub: ownerParty.xpub, fingerprint: ownerParty.fingerprint },
+          heir: { xpub: heirParty.xpub, fingerprint: heirParty.fingerprint },
+          timelock_blocks: timelockBlocks,
+          checkin_period_secs: checkinSecs,
+          grace_period_secs: graceSecs,
+          owner_contact: draft.ownerEmail.trim(),
+          owner_contact_channel: "email",
+          heir_contact: null,
+          heir_contact_channel: null,
+          sealed: {
+            password_salt_b64: sealed.password_salt,
+            password_kdf_mem_kib: sealed.password_kdf_mem_kib,
+            password_kdf_iters: sealed.password_kdf_iters,
+            owner_xprv_ct_b64: sealed.owner_xprv.ct,
+            owner_xprv_nonce_b64: sealed.owner_xprv.nonce,
+            owner_token_ct_b64: sealed.owner_token.ct,
+            owner_token_nonce_b64: sealed.owner_token.nonce,
+            owner_email_hash: hashEmailForLookup(draft.ownerEmail),
+            heir_xprv_owner_ct_b64: sealed.heir_xprv_owner.ct,
+            heir_xprv_owner_nonce_b64: sealed.heir_xprv_owner.nonce,
+          },
+          heir_derivation: null,
+          trusted_contact: null,
+          trusted_contact_channel: null,
+          from_name: draft.ownerName.trim() || null,
+          heir_note: null,
+        });
+
+        // Re-seal the real owner token, as the other paths do.
+        let realOwnerTokenBlob: { v: 1; ct: string; nonce: string } | undefined;
+        try {
+          const realSealed = sealWithKey(ownerKek, new TextEncoder().encode(resp.owner_token));
+          await api.sealOwnerToken(resp.id, resp.owner_token, {
+            owner_token_ct_b64: realSealed.ct,
+            owner_token_nonce_b64: realSealed.nonce,
+          });
+          realOwnerTokenBlob = realSealed;
+        } catch (e) {
+          console.warn("owner-token re-seal failed for vault", resp.id, e);
+        }
+
+        saveVaultMeta({
+          id: resp.id,
+          label,
+          owner: { address: draft.ownerEmail.trim() },
+          heir: { name: "", email: "", address: "" },
+          createdAt: new Date().toISOString(),
+          ownerToken: resp.owner_token,
+          ownerTokenLock: realOwnerTokenBlob
+            ? {
+                passwordSalt: sealed.password_salt,
+                memKiB: sealed.password_kdf_mem_kib,
+                iters: sealed.password_kdf_iters,
+                ownerTokenBlob: realOwnerTokenBlob,
+                ownerEmailHash: hashEmailForLookup(draft.ownerEmail),
+                validated: true,
+              }
+            : undefined,
+          groupId,
+        });
+
+        let address: string | null = null;
+        try {
+          address = (await api.getVaultAddress(resp.id)).address;
+        } catch (e) {
+          console.warn("address fetch failed for vault", resp.id, e);
+        }
+        await saveInitialGoal(resp.id, resp.owner_token, draft.savingsGoal);
+        onCreated({
+          id: resp.id,
+          label: resp.label,
+          status: resp.status,
+          next_deadline_at: resp.next_deadline_at,
+        });
+        setCreated({
+          groupId,
+          vaults: [{ vaultId: resp.id, heirName: "", address }],
+          heirLater: true,
+        });
+        setStep(3);
+        return;
+      }
+
       // ---- Guardian vault (#81) -----------------------------------
       // A child heir plus two guardians, one of whom co-signs the claim.
       // Always browser-keygen (no Door B): we generate owner + heir + two
@@ -739,23 +860,6 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           }
         }
 
-        // Owner video message, sealed under the HEIR's claim token (the
-        // heir's link unlocks it). Best-effort.
-        if (videoClip) {
-          try {
-            const bytes = new Uint8Array(await videoClip.blob.arrayBuffer());
-            const prepared = prepareVideo(ownerParty.xprv, heirToken, bytes);
-            await api.uploadVideo(resp.id, resp.owner_token, {
-              ...prepared,
-              mime: videoClip.mime,
-              duration_ms: Math.round(videoClip.durationMs),
-            });
-          } catch (e) {
-            console.warn("video upload failed for guardian vault", resp.id, e);
-            setVideoSaveFailed(true);
-          }
-        }
-
         saveVaultMeta({
           id: resp.id,
           label,
@@ -825,7 +929,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
             { vaultId: resp.id, heirName: heir.name.trim(), address, envelope },
           ],
         });
-        setStep(2);
+        setStep(3);
         return;
       }
 
@@ -1005,32 +1109,6 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           }
         }
 
-        // (g2) Upload the owner's video message, if recorded (#85).
-        // Sealed under THIS heir's claim token (so their link unlocks
-        // it) and signed with the owner key (so a swapped clip fails
-        // the heir's verification). Best-effort: a failure here must
-        // not abort an otherwise-good vault — the message is a nicety,
-        // not the inheritance.
-        //
-        // Skipped for Door B: the video is sealed under `claimToken`, but
-        // a Door B vault has the scheduler mint a *different* token at
-        // trigger, so the heir could never decrypt it. Better to not
-        // store an undeliverable clip than to promise one.
-        if (videoClip && !doorB) {
-          try {
-            const bytes = new Uint8Array(await videoClip.blob.arrayBuffer());
-            const prepared = prepareVideo(ownerParty.xprv, claimToken, bytes);
-            await api.uploadVideo(resp.id, resp.owner_token, {
-              ...prepared,
-              mime: videoClip.mime,
-              duration_ms: Math.round(videoClip.durationMs),
-            });
-          } catch (e) {
-            console.warn("video upload failed for vault", resp.id, e);
-            setVideoSaveFailed(true);
-          }
-        }
-
         // (h) Persist local meta with the shared groupId so the
         // Dashboard groups this vault with its siblings.
         saveVaultMeta({
@@ -1120,7 +1198,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
       }
 
       setCreated({ groupId, vaults: createdEntries });
-      setStep(2);
+      setStep(3);
     } catch (e) {
       // Partial failure: any vaults already created above are real
       // on the server AND in localStorage; we leave them alone. The
@@ -1189,7 +1267,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
         </div>
 
         <div className="mt-8">
-          {step === 0 && <StepHeir draft={draft} patch={patch} demoMode={demoMode} />}
+          {step === 0 && <StepPlan draft={draft} patch={patch} demoMode={demoMode} />}
           {step === 1 && (
             <>
               <StepPassword
@@ -1199,51 +1277,41 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
                 kdfProgress={kdfProgress}
                 strength={strength}
               />
-              <div className="mt-6">
-                {/* P4 (#120): a face+voice clip is the most identifying
-                    data in the product; say where it lives before they
-                    record. */}
-                <p className="mb-2 text-xs text-dim">
-                  If you record a message, it's encrypted like the rest of
-                  your vault and stored that way. No one at GhostKey can play
-                  it. It's released only to the heir you named, only when
-                  they claim.
-                </p>
-                <VideoMessageRecorder
-                  heirName={
-                    draft.heirs.length === 1 ? draft.heirs[0]?.name : undefined
-                  }
-                  onChange={setVideoClip}
-                  disabled={busy}
-                />
-              </div>
-
               {/* P1 (#120): the save-password attestation is the one thing
-                  that prevents permanent loss — re-affirm it as the last
-                  thing before "Create vault" (the button is also disabled
-                  until the box above is ticked). */}
+                  that prevents permanent loss, so say it again before
+                  moving on (Continue is also disabled until it's ticked). */}
               <p className="mt-6 text-xs text-muted">
-                Last thing before you create the vault: make sure your
-                password is really saved. We can never reset it.
+                Make sure your password is really saved. We can never reset it.
               </p>
             </>
           )}
-          {step === 2 && created && (
+          {step === 2 && !created && (
+            <>
+              <StepHeir draft={draft} patch={patch} demoMode={demoMode} />
+              {/* Inheritance is optional: one big, honest way out. */}
+              <div className="mt-8 rounded-xl border border-app p-5">
+                <p className="font-medium">Not ready to choose?</p>
+                <p className="mt-1 text-sm text-muted">
+                  Start saving now and choose who inherits any time from
+                  Home. Until you do, it&apos;s savings only you can spend:
+                  no check-ins, no reminders.
+                </p>
+                <Button
+                  variant="ghost"
+                  className="mt-4 w-full"
+                  onClick={() => void activate(true)}
+                  loading={busy}
+                  disabled={gateReason !== null}
+                >
+                  Do this later
+                </Button>
+              </div>
+            </>
+          )}
+          {step === 3 && created && (
             <StepFund created={created} network={network} />
           )}
         </div>
-
-        {/* Best-effort video upload failed: the vault is real and safe,
-            but the clip was lost. Say so here, because nothing else
-            will (#222). */}
-        {step === 2 && created && videoSaveFailed ? (
-          <div className="mt-6">
-            <InlineAlert tone="warning">
-              Your video message didn't save. Your vault is fine. You can
-              record the video again anytime from your dashboard.
-            </InlineAlert>
-          </div>
-        ) : null}
 
         {error ? (
           <div className="mt-6">
@@ -1262,7 +1330,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
             no explanation is worse than the old guarded-click error. Only
             once the owner has started filling the step, so a pristine
             form doesn't shout. (#116 L2) */}
-        {step === 1 &&
+        {(step === 1 || step === 2) &&
         !created &&
         (draft.ownerEmail.trim() || draft.password) &&
         gateReason ? (
@@ -1288,16 +1356,21 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           )}
 
           {step < STEPS.length - 1 ? (
-            step === 1 ? (
+            step === 2 ? (
               <Button
-                onClick={activate}
+                onClick={() => void activate(false)}
                 loading={busy}
                 disabled={gateReason !== null}
               >
                 Create vault
               </Button>
             ) : (
-              <Button onClick={next}>Continue</Button>
+              <Button
+                onClick={next}
+                disabled={step === 1 && gateReason !== null}
+              >
+                Continue
+              </Button>
             )
           ) : created ? (
             <Button onClick={onCancel}>Done</Button>
@@ -1308,7 +1381,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
         <SetupRail step={step} draft={draft} demoMode={demoMode} />
       </div>
       <AssistChat
-        intro="Setting up a vault? Ask anything about who needs what, what your heir will see, or how the waiting period works."
+        intro="Setting up your savings? Ask anything about your password, the waiting period, or what an heir would see."
       />
     </main>
   );
@@ -1345,42 +1418,40 @@ function SetupRail({
           <p className="eyebrow-dim">Your plan so far</p>
           <dl className="mt-4 space-y-3 text-sm">
             <div className="flex items-baseline justify-between gap-3">
-              <dt className="text-muted">Who inherits</dt>
+              <dt className="text-muted">Saving for</dt>
               <dd className="text-right font-medium">
-                {namedHeirs.length > 0
-                  ? namedHeirs.join(", ")
-                  : draft.heirs.length > 1
-                    ? `${draft.heirs.length} heirs`
-                    : "Not named yet"}
+                {draft.savingsGoal.trim() || "Not named yet"}
               </dd>
             </div>
             <div className="flex items-baseline justify-between gap-3">
-              <dt className="text-muted">They can claim after</dt>
+              <dt className="text-muted">If you stop showing up</dt>
               <dd className="text-right font-medium">
+                wait{" "}
                 {demoMode
                   ? demoWaitingById(draft.demoWaitingId).label
-                  : monthsLabel(draft.waitingMonths)}{" "}
-                of silence
+                  : monthsLabel(draft.waitingMonths)}
               </dd>
             </div>
             <div className="flex items-baseline justify-between gap-3">
-              <dt className="text-muted">You check in</dt>
+              <dt className="text-muted">Who inherits</dt>
               <dd className="text-right font-medium">
-                {cadenceByIdAnywhere(draft.cadenceId).label.toLowerCase()}
+                {namedHeirs.length > 0 ? namedHeirs.join(", ") : "Choose now or later"}
               </dd>
             </div>
-            {!demoMode ? (
-              <div className="flex items-baseline justify-between gap-3">
-                <dt className="text-muted">Grace period</dt>
-                <dd className="text-right font-medium">
-                  {graceByIdAnywhere(draft.graceId).label}
-                </dd>
-              </div>
-            ) : null}
           </dl>
         </div>
 
         {step === 0 ? (
+          <div className="card-quiet p-5 text-sm text-muted">
+            <p className="font-medium text-[var(--text)]">Only you can spend it</p>
+            <p className="mt-2">
+              Your savings sit on your own key. GhostKey never holds your
+              money, and you can spend it any time.
+            </p>
+          </div>
+        ) : null}
+
+        {step === 2 ? (
           <div className="card-quiet p-5 text-sm text-muted">
             <p className="font-medium text-[var(--text)]">
               Nothing happens today
@@ -1411,7 +1482,7 @@ function SetupRail({
           </div>
         ) : null}
 
-        {step === 2 ? (
+        {step === 3 ? (
           <div className="card-quiet p-5 text-sm text-muted">
             <p className="font-medium text-[var(--text)]">What's next</p>
             <ul className="mt-2 space-y-2">
@@ -1467,6 +1538,87 @@ function monthsLabel(n: number): string {
   return `${n} month${n === 1 ? "" : "s"}`;
 }
 
+/* ============================================================ */
+/* Step 1: the plan                                               */
+/* ============================================================ */
+
+/**
+ * "What are you saving for?" and "how long should we wait?". Both have a
+ * default, so the step never blocks: the goal is optional and the wait
+ * starts at 3 months. The wait is asked here, not with the heir, because
+ * it is written into the vault's address whether or not an heir is
+ * chosen today; changing it later means moving the money.
+ */
+function StepPlan({
+  draft,
+  patch,
+  demoMode,
+}: {
+  draft: Draft;
+  patch: (p: Partial<Draft>) => void;
+  demoMode: boolean;
+}) {
+  const goal = draft.savingsGoal.trim();
+  const isPreset = (GOAL_PRESETS as readonly string[]).includes(goal);
+  return (
+    <div>
+      <h1 className="font-serif text-3xl md:text-4xl">What are you saving for?</h1>
+      <p className="mt-1 text-sm text-muted">Pick one or type your own. You can change it later.</p>
+      <div className="mt-5 flex flex-wrap gap-2" role="group" aria-label="Savings goal ideas">
+        {GOAL_PRESETS.map((g) => (
+          <button
+            key={g}
+            type="button"
+            aria-pressed={goal === g}
+            onClick={() => patch({ savingsGoal: goal === g ? "" : g })}
+            className={`rounded-full border px-4 py-2 text-sm transition-colors ${
+              goal === g
+                ? "border-[var(--accent)] bg-[color-mix(in_srgb,var(--accent)_18%,transparent)] font-medium text-[var(--text)]"
+                : "border-app text-[var(--text)] hover:bg-[var(--surface-2)]"
+            }`}
+          >
+            {g}
+          </button>
+        ))}
+      </div>
+      <input
+        className="input mt-4 w-full"
+        aria-label="Or type your own goal"
+        maxLength={60}
+        placeholder="Or type your own, e.g. Okada for my brother"
+        value={isPreset ? "" : draft.savingsGoal}
+        onChange={(e) => patch({ savingsGoal: e.target.value })}
+      />
+
+      <h2 className="mt-10 font-serif text-2xl">If you stop showing up, how long should we wait?</h2>
+      <p className="mt-1 text-sm text-muted">
+        After your bitcoin sits untouched this long, the person you choose
+        can claim it. Adding money starts the wait again.
+      </p>
+      <div className="mt-5 grid grid-cols-3 gap-2">
+        {demoMode
+          ? DEMO_WAITING_PRESETS.map((w) => (
+              <Tile
+                key={w.id}
+                title={w.label}
+                sub={w.sub}
+                selected={draft.demoWaitingId === w.id}
+                onClick={() => patch({ demoWaitingId: w.id })}
+              />
+            ))
+          : WAIT_CHOICES.map((m) => (
+              <Tile
+                key={m}
+                title={monthsLabel(m)}
+                selected={draft.waitingMonths === m}
+                onClick={() => patch({ waitingMonths: m })}
+              />
+            ))}
+      </div>
+    </div>
+  );
+}
+
 function StepHeir({
   draft,
   patch,
@@ -1476,8 +1628,6 @@ function StepHeir({
   patch: (p: Partial<Draft>) => void;
   demoMode: boolean;
 }) {
-  const cadenceList = cadencePresetsFor(demoMode);
-  const graceList = gracePresetsFor(demoMode);
 
   // Per-heir mutation helpers. Each heir is mutated by index; the
   // top-level Draft holds the heirs array.
@@ -1521,33 +1671,16 @@ function StepHeir({
 
   return (
     <div>
-      <h1 className="font-serif text-3xl md:text-4xl">What are you saving for?</h1>
-      <p className="mt-2 text-muted">
-        Give your savings a name. You can add an amount and a date later,
-        or skip this.
-      </p>
-      <div className="mt-4">
-        <input
-          className="input w-full"
-          aria-label="What are you saving for? (optional)"
-          maxLength={60}
-          placeholder="e.g. Rainy day, School fees, House 2028"
-          value={draft.savingsGoal}
-          onChange={(e) => patch({ savingsGoal: e.target.value })}
-        />
-      </div>
-
-      <h2 className="mt-10 font-serif text-2xl md:text-3xl">
+      <h1 className="font-serif text-3xl md:text-4xl">
         {guardian
-          ? "Who are you protecting"
+          ? "Who are you protecting?"
           : draft.heirs.length === 1
-            ? "If you stop showing up, who should get it?"
-            : `If you stop showing up, who should get it? (${draft.heirs.length} heirs)`}
-      </h2>
-      <p className="mt-2 text-muted">
-        They never have to know about this until the time comes. When it does,
-        we reach them the way you choose to reach them and they claim from a link.
-        No wallet install, no setup on their end.
+            ? "Who inherits?"
+            : `Who inherits? (${draft.heirs.length} heirs)`}
+      </h1>
+      <p className="mt-1 text-sm text-muted">
+        Optional. If you stop showing up, your savings go to them instead
+        of being lost.
       </p>
 
       {/* Vault type (#81). The default is a single adult heir who can
@@ -1682,104 +1815,6 @@ function StepHeir({
           </p>
         )}
 
-        <Field label="If you stop checking in, wait this long before they can claim">
-          {demoMode ? (
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-              {DEMO_WAITING_PRESETS.map((w) => (
-                <Tile
-                  key={w.id}
-                  title={w.label}
-                  sub={w.sub}
-                  selected={draft.demoWaitingId === w.id}
-                  onClick={() => patch({ demoWaitingId: w.id })}
-                />
-              ))}
-            </div>
-          ) : (
-            <select
-              className="input"
-              value={draft.waitingMonths}
-              onChange={(e) => patch({ waitingMonths: Number(e.target.value) })}
-              aria-label="Waiting period"
-            >
-              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-                <option key={m} value={m}>
-                  {monthsLabel(m)}
-                </option>
-              ))}
-            </select>
-          )}
-        </Field>
-
-        <Field label="Remind me to check in">
-          {demoMode && (
-            <div
-              role="note"
-              className="mb-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200"
-            >
-              Demo server: check-in timers run in seconds. Not for real funds.
-            </div>
-          )}
-          {demoMode ? (
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {cadenceList.map((c) => (
-                <Tile
-                  key={c.id}
-                  title={c.label}
-                  sub={c.sub}
-                  selected={draft.cadenceId === c.id}
-                  onClick={() => patch({ cadenceId: c.id })}
-                />
-              ))}
-            </div>
-          ) : (
-            <select
-              className="input"
-              value={draft.cadenceId}
-              onChange={(e) => patch({ cadenceId: e.target.value })}
-              aria-label="How often to remind me to check in"
-            >
-              {cadenceList.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.label}
-                  {c.sub ? `, ${c.sub.toLowerCase()}` : ""}
-                </option>
-              ))}
-            </select>
-          )}
-        </Field>
-
-        {demoMode ? null : (
-          <Field
-            label="Grace period after a missed reminder"
-            hint="Extra time before the countdown to inheritance begins. The heir still cannot claim for the full waiting period above."
-          >
-            <select
-              className="input"
-              value={draft.graceId}
-              onChange={(e) => patch({ graceId: e.target.value })}
-              aria-label="Grace period"
-            >
-              {graceList.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.label}
-                  {g.sub ? `, ${g.sub.toLowerCase()}` : ""}
-                </option>
-              ))}
-            </select>
-          </Field>
-        )}
-
-        <p className="mt-6 text-center text-xs text-muted">
-          Already have a Bitcoin wallet you'd rather keep?{" "}
-          <a
-            href="#/setup-legacy"
-            className="underline hover:text-[var(--text)]"
-          >
-            Use the advanced flow
-          </a>{" "}
-          to paste your own xpub instead.
-        </p>
       </div>
     </div>
   );
@@ -1844,29 +1879,33 @@ function HeirCard({
         />
       </Field>
 
-      <Field label="How should we reach them">
-        <div className="grid grid-cols-3 gap-2">
-          {CHANNELS.map((c) => (
-            <Tile
-              key={c.id}
-              title={c.title}
-              sub={cap[c.id] ? c.sub : CHANNEL_UNAVAILABLE_NOTE}
-              selected={heir.channel === c.id}
-              onClick={() => onChange({ channel: c.id })}
-              disabled={!cap[c.id]}
-            />
-          ))}
-        </div>
-        {/* #119 privacy line: SMS is the least private heir channel (the
-            nudge travels through phone carriers). Only surfaced when chosen,
-            so it informs without nagging. */}
-        {heir.channel === "sms" ? (
-          <p className="mt-2 text-xs text-dim">
-            SMS is the least private option. The reminder travels through phone
-            carriers. WhatsApp or email keep it more private.
-          </p>
-        ) : null}
-      </Field>
+      {/* Email is the only channel today (#414): no picker until
+          there is a real choice. */}
+      {cap.sms || cap.whatsapp ? (
+        <Field label="How should we reach them">
+          <div className="grid grid-cols-3 gap-2">
+            {CHANNELS.map((c) => (
+              <Tile
+                key={c.id}
+                title={c.title}
+                sub={cap[c.id] ? c.sub : CHANNEL_UNAVAILABLE_NOTE}
+                selected={heir.channel === c.id}
+                onClick={() => onChange({ channel: c.id })}
+                disabled={!cap[c.id]}
+              />
+            ))}
+          </div>
+          {/* #119 privacy line: SMS is the least private heir channel (the
+              nudge travels through phone carriers). Only surfaced when chosen,
+              so it informs without nagging. */}
+          {heir.channel === "sms" ? (
+            <p className="mt-2 text-xs text-dim">
+              SMS is the least private option. The reminder travels through phone
+              carriers. WhatsApp or email keep it more private.
+            </p>
+          ) : null}
+        </Field>
+      ) : null}
 
       <Field
         label={
@@ -1890,7 +1929,11 @@ function HeirCard({
           this browser and sealed under the claim link; GhostKey holds the
           locked pieces and, with its master key, could reconstruct it (see
           the Door A note in this file's header). Disclose that honestly. */}
-      <p className="text-xs text-dim">
+      <details className="rounded-lg border border-app px-3 py-2">
+        <summary className="cursor-pointer text-xs text-muted">
+          How your heir&apos;s key is kept
+        </summary>
+      <p className="mt-2 text-xs text-dim">
         By default, GhostKey makes a key for your heir right here in your
         browser and locks it so only their one-time claim link can open it,
         and only after the waiting period. Nothing can move it while you're
@@ -1906,6 +1949,7 @@ function HeirCard({
           ? ""
           : " For full self-custody, where GhostKey holds nothing that can ever spend, have your heir hold their own key (advanced option below)."}
       </p>
+      </details>
 
       <details
         className={`mt-1 rounded-lg border border-app px-3 py-2${hideOwnKey ? " hidden" : ""}`}
@@ -2007,26 +2051,30 @@ function GuardianCard({
         />
       </Field>
 
-      <Field label="How should we reach them">
-        <div className="grid grid-cols-3 gap-2">
-          {CHANNELS.map((c) => (
-            <Tile
-              key={c.id}
-              title={c.title}
-              sub={cap[c.id] ? c.sub : CHANNEL_UNAVAILABLE_NOTE}
-              selected={guardian.channel === c.id}
-              onClick={() => onChange({ channel: c.id })}
-              disabled={!cap[c.id]}
-            />
-          ))}
-        </div>
-        {guardian.channel === "sms" ? (
-          <p className="mt-2 text-xs text-dim">
-            SMS is the least private option. The message travels through phone
-            carriers. WhatsApp or email keep it more private.
-          </p>
-        ) : null}
-      </Field>
+      {/* Email is the only channel today (#414): no picker until
+          there is a real choice. */}
+      {cap.sms || cap.whatsapp ? (
+        <Field label="How should we reach them">
+          <div className="grid grid-cols-3 gap-2">
+            {CHANNELS.map((c) => (
+              <Tile
+                key={c.id}
+                title={c.title}
+                sub={cap[c.id] ? c.sub : CHANNEL_UNAVAILABLE_NOTE}
+                selected={guardian.channel === c.id}
+                onClick={() => onChange({ channel: c.id })}
+                disabled={!cap[c.id]}
+              />
+            ))}
+          </div>
+          {guardian.channel === "sms" ? (
+            <p className="mt-2 text-xs text-dim">
+              SMS is the least private option. The message travels through phone
+              carriers. WhatsApp or email keep it more private.
+            </p>
+          ) : null}
+        </Field>
+      ) : null}
 
       <Field
         label={
@@ -2336,6 +2384,7 @@ function StepFund({
       address: string | null;
       envelope?: HeirEnvelope;
     }>;
+    heirLater?: boolean;
   };
   network: Network;
 }) {
@@ -2354,6 +2403,11 @@ function StepFund({
             you batch all {created.vaults.length} sends into a single
             transaction (one fee, one signature). Sparrow and Bitcoin
             Core both do, most others do too.
+          </>
+        ) : created.heirLater ? (
+          <>
+            Send bitcoin to the address below. Only you can spend it.
+            Choose who inherits any time from Home.
           </>
         ) : (
           <>
@@ -2380,10 +2434,9 @@ function StepFund({
       </div>
 
       <p className="mt-3 px-1 text-xs text-dim">
-        Tip: send at least a few thousand sats so there's plenty left for
-        {isGroup ? " your heirs" : " your heir"} after the small network fee at
-        claim time. You can add more any time by sending again to the same
-        address.
+        {created.heirLater
+          ? "Tip: add any amount, as often as you like. You can always send more to the same address."
+          : `Tip: send at least a few thousand sats so there's plenty left for ${isGroup ? "your heirs" : "your heir"} after the small network fee at claim time. You can add more any time by sending again to the same address.`}
       </p>
 
       <div className="mt-6">

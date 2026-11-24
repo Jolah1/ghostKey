@@ -257,9 +257,10 @@ test("setup page has no serious a11y violations", async ({ page }) => {
   await page.goto(`${base}/#/setup`);
   await page.waitForSelector("main");
   await page.waitForLoadState("networkidle");
-  // Setup opens with the savings plan, then who gets it (#367).
+  // Setup opens with the savings plan: what for, and how long to wait.
   await expect(page.getByRole("heading", { name: "What are you saving for?" })).toBeVisible();
-  await expect(page.getByLabel("What are you saving for? (optional)")).toBeVisible();
+  await expect(page.getByLabel("Or type your own goal")).toBeVisible();
+  await expect(page.getByRole("button", { name: "School fees" })).toBeVisible();
   await expectNoSeriousViolations(page);
 });
 
