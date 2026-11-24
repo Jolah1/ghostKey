@@ -38,6 +38,77 @@ pub async fn run(state: Arc<AppState>, tick: Duration) {
     }
 }
 
+/// Background chain refresher: keeps every vault's cached on-chain
+/// estimate fresh, so the scheduler never has to call a block explorer.
+///
+/// The scheduler tick used to scan inline. With public explorers timing
+/// out (15s per request) and rate-limiting, one tick stretched to minutes,
+/// which delayed every reminder and alarm. Now scans happen here, on their
+/// own clock, and the tick only reads the cache
+/// (`psbt_routes::cached_unlock_estimate`). A slow explorer slows this
+/// loop and nothing else. If it can't keep up, caches go stale and the
+/// affected vaults wait, the same safe outcome as a failed scan.
+pub async fn run_chain_refresher(state: Arc<AppState>, tick: Duration) {
+    loop {
+        if let Err(e) = refresh_chain_caches(&state).await {
+            tracing::warn!(error = ?e, "chain refresher pass failed");
+        }
+        tokio::time::sleep(tick).await;
+    }
+}
+
+/// Rescan a vault once its cache is this old, well before the scheduler
+/// would see it as stale (`MATURITY_CACHE_TTL_SECS`).
+const REFRESH_AFTER_SECS: i64 = crate::psbt_routes::MATURITY_CACHE_TTL_SECS / 2;
+
+async fn refresh_chain_caches(state: &AppState) -> anyhow::Result<()> {
+    type Row = (
+        String,         // id
+        String,         // descriptor_external
+        String,         // descriptor_internal
+        String,         // network
+        i64,            // timelock_blocks
+        Option<String>, // chain_scanned_at
+    );
+    // Every vault the scheduler might act on. A claimed vault is done.
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT id, descriptor_external, descriptor_internal, network, timelock_blocks, \
+                chain_scanned_at \
+           FROM vaults WHERE status != 'claimed'",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    for (id, ext, int, network, timelock_blocks, scanned_at) in rows {
+        let now = Utc::now();
+        let fresh_enough = scanned_at
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| (now - t.with_timezone(&Utc)).num_seconds() < REFRESH_AFTER_SECS)
+            .unwrap_or(false);
+        if fresh_enough {
+            continue;
+        }
+        let input = crate::psbt_routes::EstimateInput {
+            vault_id: id,
+            descriptor_external: ext,
+            descriptor_internal: int,
+            network,
+            timelock_blocks,
+            // Force a scan: we're refreshing ahead of expiry.
+            cached_unlock_height: None,
+            cached_tip_height: None,
+            cached_scanned_at: None,
+            cached_has_unspent: None,
+        };
+        match crate::psbt_routes::unlock_estimate_with_cache(&state.db, &input, now).await {
+            Ok(_) => record_chain_scan(&input.network, true, None, now),
+            Err(e) => record_chain_scan_err(&input.network, &e, now),
+        }
+    }
+    Ok(())
+}
+
 /// Upsert the single-row scheduler heartbeat. Best-effort: a write
 /// failure is logged, not fatal -- losing a heartbeat must never stop
 /// the scheduler from doing its real work on the next tick.
@@ -156,7 +227,7 @@ async fn send_claim_ready_notices(state: &AppState) -> anyhow::Result<()> {
             cached_scanned_at: chain_scanned_at,
             cached_has_unspent: chain_has_unspent,
         };
-        if !onchain_funds_ready(state, &input, now).await {
+        if !onchain_funds_ready(&input, now) {
             continue;
         }
 
@@ -885,7 +956,7 @@ async fn activate_funded_vaults(state: &AppState, _now_iso: &str) -> anyhow::Res
         // Funded == the address scan finds at least one UTXO, including a
         // pending one. An empty successful scan is still "not funded";
         // an explorer error is "unknown" and fails safe the same way.
-        match crate::psbt_routes::unlock_estimate_with_cache(&state.db, &input, now).await {
+        match crate::psbt_routes::cached_unlock_estimate(&input, now) {
             Ok(est) if est.has_unspent => record_chain_scan(&input.network, true, None, now),
             Ok(_) => {
                 record_chain_scan(&input.network, true, None, now);
@@ -1095,7 +1166,7 @@ async fn retire_drained_vaults(state: &AppState) -> anyhow::Result<()> {
             cached_has_unspent: chain_has_unspent,
         };
 
-        match crate::psbt_routes::unlock_estimate_with_cache(&state.db, &input, now).await {
+        match crate::psbt_routes::cached_unlock_estimate(&input, now) {
             Ok(est) if est.has_unspent => {
                 record_chain_scan(&input.network, true, None, now);
                 continue;
@@ -1195,7 +1266,7 @@ async fn stand_down_never_funded_vaults(state: &AppState) -> anyhow::Result<()> 
             cached_has_unspent: chain_has_unspent,
         };
 
-        match crate::psbt_routes::unlock_estimate_with_cache(&state.db, &input, now).await {
+        match crate::psbt_routes::cached_unlock_estimate(&input, now) {
             // Holds coins after all: genuinely funded, leave the clock be.
             Ok(est) if est.has_unspent => {
                 record_chain_scan(&input.network, true, None, now);
@@ -1498,7 +1569,11 @@ fn record_chain_scan_err(
 /// every tick, and would replace the real error (the 429) in `/health`
 /// with our own note about pausing.
 fn counts_as_scan_failure(e: &crate::psbt_routes::BlockingErr) -> bool {
-    !matches!(e, crate::psbt_routes::BlockingErr::BackingOff(_))
+    !matches!(
+        e,
+        crate::psbt_routes::BlockingErr::BackingOff(_)
+            | crate::psbt_routes::BlockingErr::NotScannedYet
+    )
 }
 
 /// Snapshot the maturity-scan health for `/health`.
@@ -1621,8 +1696,7 @@ async fn return_empty_vault_to_unfunded_inner(
 /// bypassed for tests/demo). Used to hold the heir's "ready to collect"
 /// email until the funds can actually move. A chain we can't read is
 /// treated as not-ready, so the email waits rather than misleads.
-async fn onchain_funds_ready(
-    state: &AppState,
+fn onchain_funds_ready(
     input: &crate::psbt_routes::EstimateInput,
     now: chrono::DateTime<Utc>,
 ) -> bool {
@@ -1630,7 +1704,7 @@ async fn onchain_funds_ready(
     {
         return true;
     }
-    match crate::psbt_routes::unlock_estimate_with_cache(&state.db, input, now).await {
+    match crate::psbt_routes::cached_unlock_estimate(input, now) {
         // lead_blocks = 0: matured exactly when tip has reached the unlock.
         Ok(est) => {
             record_chain_scan(&input.network, true, None, now);
@@ -1649,14 +1723,10 @@ async fn onchain_funds_ready(
 /// is contacted near real maturity and the safety wait runs during the
 /// final approach (then the heir can spend the moment it matures).
 ///
-/// Reuses the cached estimate while fresh; otherwise rescans Esplora and
-/// refreshes the cache. Any failure to read the chain returns false — we
-/// never contact the heir on an unverified chain state.
-async fn heir_contact_ready(
-    state: &AppState,
-    row: &VaultChainRow,
-    now: chrono::DateTime<Utc>,
-) -> HeirContactGate {
+/// Reads the cache only (see `psbt_routes::cached_unlock_estimate`); the
+/// background chain refresher keeps it current. A missing or stale cache
+/// is Waiting: we never contact the heir on an unverified chain state.
+fn heir_contact_ready(row: &VaultChainRow, now: chrono::DateTime<Utc>) -> HeirContactGate {
     // Tests and live demos run the server-clock machine without a real
     // chain; let them through unchanged.
     if !ONCHAIN_GATE_ENABLED.load(std::sync::atomic::Ordering::Relaxed) || crate::demo::demo_mode()
@@ -1675,7 +1745,7 @@ async fn heir_contact_ready(
         cached_scanned_at: row.chain_scanned_at.clone(),
         cached_has_unspent: row.chain_has_unspent,
     };
-    match crate::psbt_routes::unlock_estimate_with_cache(&state.db, &input, now).await {
+    match crate::psbt_routes::cached_unlock_estimate(&input, now) {
         Ok(est) => {
             record_chain_scan(&input.network, true, None, now);
             let lead_blocks = (crate::config::claim_challenge_window_secs()
@@ -1792,7 +1862,7 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
             chain_scanned_at,
             chain_has_unspent,
         };
-        match heir_contact_ready(state, &chain_row, Utc::now()).await {
+        match heir_contact_ready(&chain_row, Utc::now()) {
             HeirContactGate::Ready => {}
             HeirContactGate::Waiting => continue,
             HeirContactGate::Empty => {
@@ -2297,6 +2367,9 @@ mod tests {
     fn skipped_scans_do_not_count_as_failures() {
         use crate::psbt_routes::BlockingErr;
         assert!(!counts_as_scan_failure(&BlockingErr::BackingOff(60)));
+        // A cache-only read that found no fresh data is waiting on the
+        // background refresher, not a failed scan.
+        assert!(!counts_as_scan_failure(&BlockingErr::NotScannedYet));
         assert!(counts_as_scan_failure(&BlockingErr::Esplora(
             "HTTP 429".into()
         )));

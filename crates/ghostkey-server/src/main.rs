@@ -171,6 +171,15 @@ async fn main() -> Result<()> {
         scheduler::run(sched_state, std::time::Duration::from_secs(sched_tick)).await;
     });
 
+    // Chain refresher: does all block-explorer scanning on its own clock,
+    // so a slow or rate-limited explorer can never delay the scheduler's
+    // reminders and alarms. See `scheduler::run_chain_refresher`.
+    let refresh_state = state.clone();
+    tokio::spawn(async move {
+        scheduler::run_chain_refresher(refresh_state, std::time::Duration::from_secs(sched_tick))
+            .await;
+    });
+
     // Background notification worker. Runs on the same DB pool as
     // the scheduler. Polls every `notif_tick_secs`. Configure SMTP
     // via SMTP_HOST / SMTP_PORT / SMTP_FROM (and SMTP_USER / SMTP_PASS
