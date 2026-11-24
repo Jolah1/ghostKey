@@ -143,9 +143,17 @@ fn verified_explorers() -> &'static std::sync::Mutex<std::collections::HashSet<(
 
 /// Confirm an endpoint serves `network` by comparing its block 0 with
 /// that network's genesis. bdk_esplora PANICS ("remote esplora should
-/// have same genesis block") when they differ, so this has to run before
-/// any scan. A mismatch is an explorer problem, so the caller fails over
-/// to the next endpoint.
+/// have same genesis block") when they differ, so this runs before any
+/// scan. A mismatch is an explorer problem, so the caller fails over to
+/// the next endpoint.
+///
+/// Only a definite mismatch refuses the endpoint. If the check itself
+/// can't get an answer (timeout, 429), the scan goes ahead: on
+/// 2026-11-24 blockstream.info served `block-height/0` in ~16s, past our
+/// 15s timeout, while serving the scan fine, so a strict check blocked
+/// every mainnet scan. The real guard is that [`esplora_urls`] never
+/// pairs a network with another network's explorer; this is a backstop,
+/// and a panic during the scan is still caught by the scan worker.
 fn explorer_on_network(
     client: &esplora_client::BlockingClient,
     url: &str,
@@ -159,9 +167,17 @@ fn explorer_on_network(
     {
         return Ok(());
     }
-    let remote = client
-        .get_block_hash(0)
-        .map_err(|e| clean_esplora_err("genesis check", &e))?;
+    let remote = match client.get_block_hash(0) {
+        Ok(hash) => hash,
+        Err(e) => {
+            tracing::debug!(
+                endpoint = %url,
+                error = %clean_esplora_err("genesis check", &e),
+                "genesis check got no answer; scanning anyway"
+            );
+            return Ok(());
+        }
+    };
     let expected = bitcoin::constants::genesis_block(network).block_hash();
     if remote != expected {
         return Err(BlockingErr::Esplora(format!(
@@ -2901,6 +2917,22 @@ mod tests {
         });
         assert_eq!(attempts, 1, "must not fail over on non-esplora errors");
         assert!(matches!(result, Err(BlockingErr::NoUtxos)));
+    }
+
+    #[test]
+    fn a_genesis_check_with_no_answer_does_not_block_the_scan() {
+        // Regression: blockstream answered block-height/0 slower than our
+        // timeout, and the strict check stopped every mainnet scan.
+        let url = "http://127.0.0.1:1/api";
+        let client = esplora_client::Builder::new(url)
+            .timeout(2)
+            .build_blocking();
+        assert!(explorer_on_network(&client, url, Network::Bitcoin).is_ok());
+        // ...and it is not cached as verified, so a later answer still counts.
+        assert!(!verified_explorers()
+            .lock()
+            .unwrap()
+            .contains(&(url.to_string(), Network::Bitcoin)));
     }
 
     #[test]
