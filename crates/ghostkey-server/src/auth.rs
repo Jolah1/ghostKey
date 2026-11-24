@@ -1059,6 +1059,296 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn several_goals_sort_move_and_spend() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-goals", Some(&issued.hash_hex)).await;
+        let other = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-other", Some(&other.hash_hex)).await;
+        let t = Some(issued.token.as_str());
+        let base = "/vaults/vault-goals/savings";
+
+        // Money from before any goal is never asked about.
+        sqlx::query(
+            "INSERT INTO vault_deposits (vault_id, outpoint, amount_sat, height, seen_at) \
+             VALUES ('vault-goals', 'old:0', 70000, 90, '2020-01-01T00:00:00Z')",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        // Two goals, one typed by the owner.
+        for title in ["School fees", "Okada for my brother"] {
+            let (code, _) = call(
+                state.clone(),
+                "POST",
+                &format!("{base}/goals"),
+                t,
+                Some(serde_json::json!({"title": title, "amount_sat": 1_000_000, "target_date": null})),
+            )
+            .await;
+            assert_eq!(code, StatusCode::OK, "{title}");
+        }
+        let (_, v) = call(state.clone(), "GET", base, t, None).await;
+        let goals = v["goals"].as_array().unwrap().clone();
+        assert_eq!(goals.len(), 2);
+        assert_eq!(goals[0]["title"], "School fees");
+        assert_eq!(
+            v["goal"]["title"], "School fees",
+            "first goal for one-goal clients"
+        );
+        assert_eq!(v["unsorted"].as_array().unwrap().len(), 0);
+        let school = goals[0]["id"].as_str().unwrap().to_string();
+        let okada = goals[1]["id"].as_str().unwrap().to_string();
+
+        // A new deposit waits to be sorted, then lands in the goal chosen.
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO vault_deposits (vault_id, outpoint, amount_sat, height, seen_at) \
+             VALUES ('vault-goals', 'new:0', 50000, 100, ?)",
+        )
+        .bind(&now)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let (_, v) = call(state.clone(), "GET", base, t, None).await;
+        assert_eq!(v["unsorted"][0]["outpoint"], "new:0");
+        assert_eq!(v["unsorted"].as_array().unwrap().len(), 1);
+        let (code, v) = call(
+            state.clone(),
+            "POST",
+            &format!("{base}/sort"),
+            t,
+            Some(serde_json::json!({"outpoint": "new:0", "goal_id": okada})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["unsorted"].as_array().unwrap().len(), 0);
+        assert_eq!(v["goals"][1]["saved_sat"], 50_000);
+        // Asked once only.
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            &format!("{base}/sort"),
+            t,
+            Some(serde_json::json!({"outpoint": "new:0", "goal_id": school})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::CONFLICT);
+
+        // Move 20k across; a goal can't give more than it holds.
+        let (code, v) = call(
+            state.clone(),
+            "POST",
+            &format!("{base}/move"),
+            t,
+            Some(serde_json::json!({"from_goal_id": okada, "to_goal_id": school, "amount_sat": 20_000})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["goals"][0]["saved_sat"], 20_000);
+        assert_eq!(v["goals"][1]["saved_sat"], 30_000);
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            &format!("{base}/move"),
+            t,
+            Some(serde_json::json!({"from_goal_id": okada, "to_goal_id": school, "amount_sat": 30_001})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        // Old money moves in from "not in a goal".
+        let (code, v) = call(
+            state.clone(),
+            "POST",
+            &format!("{base}/move"),
+            t,
+            Some(serde_json::json!({"from_goal_id": null, "to_goal_id": school, "amount_sat": 70_000})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["goals"][0]["saved_sat"], 90_000);
+
+        // A send from a goal never takes it below zero.
+        let (code, v) = call(
+            state.clone(),
+            "POST",
+            &format!("{base}/spend"),
+            t,
+            Some(serde_json::json!({"goal_id": okada, "amount_sat": 45_000})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["goals"][1]["saved_sat"], 0);
+
+        // Renaming keeps the money.
+        let (code, v) = call(
+            state.clone(),
+            "PUT",
+            &format!("{base}/goals"),
+            t,
+            Some(serde_json::json!({"id": school, "title": "University fees", "amount_sat": 2_000_000, "target_date": null})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["goals"][0]["title"], "University fees");
+        assert_eq!(v["goals"][0]["saved_sat"], 90_000);
+
+        // Another vault can't touch these goals, even with its own token.
+        let o = Some(other.token.as_str());
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            "/vaults/vault-other/savings/move",
+            o,
+            Some(serde_json::json!({"from_goal_id": null, "to_goal_id": school, "amount_sat": 1})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::NOT_FOUND);
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            "/vaults/vault-other/savings/goals/remove",
+            o,
+            Some(serde_json::json!({"id": school})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::NOT_FOUND);
+
+        // Removing a goal drops its ledger; the coins never moved.
+        let (code, v) = call(
+            state.clone(),
+            "POST",
+            &format!("{base}/goals/remove"),
+            t,
+            Some(serde_json::json!({"id": okada})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["goals"].as_array().unwrap().len(), 1);
+        let left: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM savings_goal_entries WHERE goal_id = ?")
+                .bind(&okada)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(left, 0);
+
+        // Up to MAX_GOALS at once.
+        for i in 1..crate::savings::MAX_GOALS {
+            let (code, _) = call(
+                state.clone(),
+                "POST",
+                &format!("{base}/goals"),
+                t,
+                Some(serde_json::json!({"title": format!("Goal {i}"), "amount_sat": null, "target_date": null})),
+            )
+            .await;
+            assert_eq!(code, StatusCode::OK, "goal {i}");
+        }
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            &format!("{base}/goals"),
+            t,
+            Some(serde_json::json!({"title": "One too many", "amount_sat": null, "target_date": null})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+    }
+
+    /// Goals keep the order they were made in, even when two share a
+    /// timestamp. Ordering by `datetime(created_at)` rounded to the second
+    /// and then fell back to the random id, so "the first goal" could flip.
+    #[tokio::test]
+    async fn goals_made_in_the_same_second_keep_their_order() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-order", Some(&issued.hash_hex)).await;
+        // Inserted "z" first, then "a": an id tie-break would reverse them.
+        for (gid, title) in [("z-goal", "School fees"), ("a-goal", "Rent")] {
+            let sealed = crate::crypto::seal_for_vault("vault-order", title.as_bytes()).unwrap();
+            sqlx::query(
+                "INSERT INTO savings_goals (id, vault_id, title_ct, title_nonce, created_at) \
+                 VALUES (?, 'vault-order', ?, ?, '2026-11-24T21:00:00.123+00:00')",
+            )
+            .bind(gid)
+            .bind(&sealed.ciphertext_b64)
+            .bind(&sealed.nonce_b64)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        }
+        let (_, v) = call(
+            state.clone(),
+            "GET",
+            "/vaults/vault-order/savings",
+            Some(issued.token.as_str()),
+            None,
+        )
+        .await;
+        assert_eq!(v["goals"][0]["title"], "School fees");
+        assert_eq!(v["goals"][1]["title"], "Rent");
+        assert_eq!(v["goal"]["title"], "School fees");
+    }
+
+    /// The migration turns a vault's single goal into its first goal and
+    /// gives it the deposits so far, and nobody is asked about old money.
+    #[tokio::test]
+    async fn the_single_goal_becomes_the_first_of_many() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-mig", Some(&issued.hash_hex)).await;
+        let sealed = crate::crypto::seal_for_vault("vault-mig", b"School fees").unwrap();
+        sqlx::query(
+            "UPDATE vaults SET savings_goal_title_ct = ?, savings_goal_title_nonce = ?, \
+                    savings_goal_sat = 500000 WHERE id = 'vault-mig'",
+        )
+        .bind(&sealed.ciphertext_b64)
+        .bind(&sealed.nonce_b64)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        for (op, amt) in [("m:0", 40_000), ("m:1", 60_000)] {
+            sqlx::query(
+                "INSERT INTO vault_deposits (vault_id, outpoint, amount_sat, height, seen_at) \
+                 VALUES ('vault-mig', ?, ?, 100, '2026-10-01T00:00:00Z')",
+            )
+            .bind(op)
+            .bind(amt)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        }
+        // Re-run the migration's data steps against this legacy row.
+        let sql = include_str!("../migrations/20261125000000_savings_goals.sql");
+        for stmt in sql.split(';') {
+            let body: String = stmt
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("--"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let body = body.trim();
+            if body.starts_with("INSERT") || body.starts_with("UPDATE") {
+                sqlx::query(body).execute(&state.db).await.unwrap();
+            }
+        }
+        let (code, v) = call(
+            state.clone(),
+            "GET",
+            "/vaults/vault-mig/savings",
+            Some(issued.token.as_str()),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["goals"][0]["title"], "School fees");
+        assert_eq!(v["goals"][0]["amount_sat"], 500_000);
+        assert_eq!(v["goals"][0]["saved_sat"], 100_000);
+        assert_eq!(v["unsorted"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
     async fn savings_totals_deposits_and_a_sealed_goal() {
         let state = fresh_state().await;
         let issued = crate::crypto::issue_owner_token();
@@ -1110,7 +1400,7 @@ mod http_tests {
         assert_eq!(v["goal"]["title"], "School fees");
         assert_eq!(v["goal"]["amount_sat"], 1_000_000);
         let ct: Option<String> =
-            sqlx::query_scalar("SELECT savings_goal_title_ct FROM vaults WHERE id = 'vault-save'")
+            sqlx::query_scalar("SELECT title_ct FROM savings_goals WHERE vault_id = 'vault-save'")
                 .fetch_one(&state.db)
                 .await
                 .unwrap();

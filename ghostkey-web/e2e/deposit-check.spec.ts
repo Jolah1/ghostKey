@@ -59,7 +59,7 @@ const someoneElses = (fixtures as Case[]).find((c) => c.name === "guardian" && c
 const VAULT_ID = "v-deposit";
 const FUTURE = new Date(Date.now() + 21 * 86400_000).toISOString();
 
-async function setup(page: Page, serverAddress: string) {
+async function setup(page: Page, serverAddress: string, via: "hero" | "nav" = "hero") {
   const json = (body: unknown) => ({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   await page.route("**/api/**", (route) => {
     const p = new URL(route.request().url()).pathname.replace(/^\/api/, "");
@@ -104,9 +104,14 @@ async function setup(page: Page, serverAddress: string) {
     window.localStorage.setItem("gk:activeVaultId", id);
     window.localStorage.setItem("gk:lastActivityAt", String(Date.now()));
   }, VAULT_ID);
-  await page.goto(`${base}/#/dashboard`);
-  await page.getByRole("tab", { name: "Add", exact: true }).click();
-  await page.getByRole("button", { name: "Show vault address" }).click();
+  if (via === "hero") {
+    await page.goto(`${base}/#/dashboard`);
+    await page.getByTestId("savings-hero").getByRole("button", { name: "Add money" }).click();
+  } else {
+    // Any page will do: the nav's Add money opens the same card in a popup.
+    await page.goto(`${base}/#/activity`);
+    await page.getByRole("banner").getByRole("button", { name: "Add money" }).click();
+  }
 }
 
 test("the vault's own address is checked in the browser and shown", async ({ page }) => {
@@ -120,4 +125,13 @@ test("an address that isn't this vault's is refused, never shown", async ({ page
   await expect(page.getByText("Don't send money to this vault right now.")).toBeVisible();
   await expect(page.getByText(someoneElses.external[0])).toHaveCount(0);
   await expect(page.getByRole("img", { name: /QR code/ })).toHaveCount(0);
+});
+
+test("Add money in the nav opens the same checked address on any page", async ({ page }) => {
+  await setup(page, mine.external[0], "nav");
+  const dialog = page.getByRole("dialog", { name: "Add money" });
+  await expect(dialog.getByTestId("deposit-check")).toHaveText(/Checked on this device/);
+  await expect(dialog.getByText(mine.external[0])).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
 });

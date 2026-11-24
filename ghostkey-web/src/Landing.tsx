@@ -54,15 +54,15 @@ function Hero({ onNavigate }: Props) {
       <div className="mx-auto flex max-w-5xl flex-col items-center px-5 py-12 text-center md:px-8 md:py-28">
         <Eyebrow>A bitcoin savings plan, on your own key</Eyebrow>
 
-        {/* Two parts: the promise ("Save your bitcoin") and the safety
-            net. The second line is long, so it is set smaller than the
-            first and allowed to wrap; the 32px floor keeps the first line
-            whole on a 360px phone. */}
+        {/* Two parts: the savings promise, and the legacy it becomes.
+            The second line is set smaller than the first and allowed to
+            wrap; the 32px floor keeps the first line whole on a 360px
+            phone. Same words as the signed-in Home screen. */}
         <h1 className="word-in mt-7 max-w-3xl font-display text-[clamp(32px,7vw,96px)] font-bold leading-[1.04] tracking-tight">
-          <span className="title-gradient">Save your </span>
-          <span className="text-accent">bitcoin</span>
+          <span className="title-gradient">Stack sats. </span>
+          <span className="text-accent">Build your future.</span>
           <span className="title-gradient mt-3 block text-[max(0.5em,22px)] leading-tight">
-            If you stop showing up, it isn&apos;t lost
+            Build wealth that outlives you
           </span>
         </h1>
 

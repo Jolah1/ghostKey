@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { goalProgress, savePerPeriod } from "./savings";
+import { addedThisMonth, goalProgress, savePerPeriod } from "./savings";
 
 describe("goalProgress", () => {
   it("measures the balance against the goal", () => {
@@ -31,5 +31,25 @@ describe("savePerPeriod", () => {
     expect(savePerPeriod(0, now, "2027-06-30")).toBeNull();
     expect(savePerPeriod(5_000, now, "2026-11-01")).toBeNull();
     expect(savePerPeriod(5_000, now, "garbage")).toBeNull();
+  });
+});
+
+describe("addedThisMonth", () => {
+  const now = new Date(2026, 10, 24, 12); // 24 Nov 2026, local
+  it("sums only this calendar month, moved-out deposits included", () => {
+    expect(
+      addedThisMonth(
+        [
+          { amount_sat: 50_000, seen_at: new Date(2026, 10, 3).toISOString() },
+          { amount_sat: 20_000, seen_at: new Date(2026, 10, 20).toISOString() },
+          { amount_sat: 99_000, seen_at: new Date(2026, 9, 31).toISOString() },
+          { amount_sat: 7_000, seen_at: new Date(2025, 10, 10).toISOString() },
+        ],
+        now,
+      ),
+    ).toBe(70_000);
+  });
+  it("is zero with nothing this month", () => {
+    expect(addedThisMonth([], now)).toBe(0);
   });
 });

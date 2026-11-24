@@ -604,6 +604,7 @@ export default function App() {
           route={location.kind === "route" ? location.route : "landing"}
           onNavigate={setRoute}
           signedIn={signedIn}
+          canAddMoney={signedIn && !locked}
         />
       )}
       {expiredNotice && !isClaim && !isOneTap && !lockScreen && (

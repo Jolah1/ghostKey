@@ -285,6 +285,23 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
             put(crate::savings::put_goal).delete(crate::savings::delete_goal),
         )
         .route(
+            "/vaults/:id/savings/goals",
+            post(crate::savings::create_goal).put(crate::savings::update_goal),
+        )
+        .route(
+            "/vaults/:id/savings/goals/remove",
+            post(crate::savings::remove_goal),
+        )
+        .route(
+            "/vaults/:id/savings/sort",
+            post(crate::savings::sort_deposit),
+        )
+        .route("/vaults/:id/savings/move", post(crate::savings::move_money))
+        .route(
+            "/vaults/:id/savings/spend",
+            post(crate::savings::spend_from_goal),
+        )
+        .route(
             "/vaults/:id/savings/reminder",
             put(crate::savings::put_reminder).delete(crate::savings::delete_reminder),
         )

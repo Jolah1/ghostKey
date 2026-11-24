@@ -201,7 +201,7 @@ export function ActivityPage({
           onClick={() => onNavigate("dashboard")}
           className="text-sm text-muted underline hover:text-[var(--text)]"
         >
-          ← Back to dashboard
+          ← Back to home
         </button>
 
         <h1 className="mt-4 font-serif text-3xl">Activity</h1>

@@ -53,8 +53,10 @@ test.afterAll(async () => {
 
 const VAULT_ID = "v-savings";
 const FUTURE = new Date(Date.now() + 21 * 86400_000).toISOString();
+// The newest deposit lands this month, whenever the test runs, so the
+// "added this month" headline has something to say.
 const deposits = [
-  { amount_sat: 150_000, height: 200, seen_at: "2026-11-01T10:00:00Z", spent: false },
+  { amount_sat: 150_000, height: 200, seen_at: new Date().toISOString(), spent: false },
   { amount_sat: 100_000, height: 150, seen_at: "2026-10-01T10:00:00Z", spent: false },
 ];
 const thisYear = new Date().getFullYear();
@@ -69,8 +71,80 @@ const baseView = {
 };
 
 test("savings card: totals, then a goal with progress and pace", async ({ page }) => {
-  let putBody: Record<string, unknown> | null = null;
-  let reminderBody: Record<string, unknown> | null = null;
+  await mockVault(page, { overdue: false });
+  await page.goto(`${base}/#/dashboard`);
+
+  // Savings lead: the headline, the balance, and one quiet check-in row.
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Stack sats. Build your future.");
+  await expect(page.getByText("You've added 150,000 sats this month.")).toBeVisible();
+  await expect(page.getByTestId("savings-balance")).toHaveText("250,000 sats");
+  await expect(page.getByTestId("checkin-row")).toContainText("Still here?");
+  await expect(page.getByRole("heading", { name: "Build wealth that outlives you" })).toBeVisible();
+
+  const card = page.getByTestId("savings-card");
+
+  await card.getByRole("button", { name: "What are you saving for?" }).click();
+  await card.getByLabel("What are you saving for?").fill("School fees");
+  await card.getByLabel(/Goal amount/).fill("1,000,000");
+  const nextYear = new Date().getFullYear() + 1;
+  await card.getByLabel(/By when/).fill(`${nextYear}-06-30`);
+  await card.getByRole("button", { name: "Save goal" }).click();
+
+  // The browser sent exactly what was typed, in sats.
+  expect(state.putBody).toEqual({ title: "School fees", amount_sat: 1_000_000, target_date: `${nextYear}-06-30` });
+  await expect(card).toContainText("School fees");
+  await expect(card).toContainText("250,000 sats of 1,000,000 sats");
+  await expect(card.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "25");
+  // Pace, the year, reminders and deposits sit behind one link.
+  await expect(page.getByTestId("savings-pace")).toHaveCount(0);
+  await card.getByRole("button", { name: "Savings details" }).click();
+  await expect(page.getByTestId("savings-pace")).toContainText(/Save about [\d,]+ sats a week/);
+
+  await expect(card).toContainText("put aside so far, in 2 deposits");
+  await expect(card).toContainText("+150,000 sats");
+
+  // Your year in savings.
+  await expect(page.getByTestId("savings-year")).toContainText(
+    `Your ${thisYear} in savings: 250,000 sats in 2 deposits. Best month: November.`,
+  );
+
+  // Remind me to save: weekly, 50,000 sats.
+  await card.getByRole("button", { name: "Remind me to save" }).click();
+  await card.getByLabel("Remind me to save").selectOption("weekly");
+  await card.getByLabel(/How much each time/).fill("50,000");
+  await card.getByRole("button", { name: "Save reminder" }).click();
+  expect(state.reminderBody).toEqual({ cadence: "weekly", amount_sat: 50_000 });
+  await expect(page.getByTestId("savings-reminder")).toContainText(
+    "We'll remind you to save every week (about 50,000 sats). Next on",
+  );
+
+  const results = await new AxeBuilder({ page }).include('[data-testid="savings-hero"]').analyze();
+  const serious = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
+  expect(serious.map((v) => v.id)).toEqual([]);
+});
+
+test("an overdue check-in takes the top of the page back from savings", async ({ page }) => {
+  await mockVault(page, { overdue: true });
+  await page.goto(`${base}/#/dashboard`);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Check-in overdue");
+  const checkin = page.getByRole("button", { name: "I'm still here" });
+  await expect(checkin).toBeVisible();
+  await expect(page.getByTestId("checkin-row")).toHaveCount(0);
+  // The full check-in card sits above the savings.
+  const checkinBox = await checkin.boundingBox();
+  const heroBox = await page.getByTestId("savings-hero").boundingBox();
+  expect(checkinBox!.y).toBeLessThan(heroBox!.y);
+});
+
+const state: { putBody: Record<string, unknown> | null; reminderBody: Record<string, unknown> | null } = {
+  putBody: null,
+  reminderBody: null,
+};
+
+async function mockVault(page: import("@playwright/test").Page, opts: { overdue: boolean }) {
+  state.putBody = null;
+  state.reminderBody = null;
+  const deadline = opts.overdue ? new Date(Date.now() - 2 * 86400_000).toISOString() : FUTURE;
   const json = (body: unknown, status = 200) => ({
     status,
     contentType: "application/json",
@@ -93,7 +167,7 @@ test("savings card: totals, then a goal with progress and pace", async ({ page }
           status: "ok",
           created_at: FUTURE,
           last_checkin_at: null,
-          next_deadline_at: FUTURE,
+          next_deadline_at: deadline,
           claim_eligible_at: FUTURE,
         }),
       );
@@ -102,16 +176,16 @@ test("savings card: totals, then a goal with progress and pace", async ({ page }
     if (p === `/vaults/${VAULT_ID}/events`) return route.fulfill(json([]));
     if (p === `/vaults/${VAULT_ID}/savings`) return route.fulfill(json(baseView));
     if (p === `/vaults/${VAULT_ID}/savings/goal` && req.method() === "PUT") {
-      putBody = req.postDataJSON();
-      return route.fulfill(json({ ...baseView, goal: putBody }));
+      state.putBody = req.postDataJSON();
+      return route.fulfill(json({ ...baseView, goal: state.putBody }));
     }
     if (p === `/vaults/${VAULT_ID}/savings/reminder` && req.method() === "PUT") {
-      reminderBody = req.postDataJSON();
+      state.reminderBody = req.postDataJSON();
       return route.fulfill(
         json({
           ...baseView,
-          goal: putBody,
-          reminder: { ...reminderBody, next_at: "2099-12-01T09:00:00Z" },
+          goal: state.putBody,
+          reminder: { ...state.reminderBody, next_at: "2099-12-01T09:00:00Z" },
         }),
       );
     }
@@ -132,41 +206,4 @@ test("savings card: totals, then a goal with progress and pace", async ({ page }
     window.localStorage.setItem("gk:lastActivityAt", String(Date.now()));
   }, VAULT_ID);
 
-  await page.goto(`${base}/#/dashboard`);
-  const card = page.getByTestId("savings-card");
-  await expect(card).toContainText("put aside so far, in 2 deposits");
-  await expect(card).toContainText("+150,000 sats");
-
-  await card.getByRole("button", { name: "What are you saving for?" }).click();
-  await card.getByLabel("What are you saving for?").fill("School fees");
-  await card.getByLabel(/Goal amount/).fill("1,000,000");
-  const nextYear = new Date().getFullYear() + 1;
-  await card.getByLabel(/By when/).fill(`${nextYear}-06-30`);
-  await card.getByRole("button", { name: "Save goal" }).click();
-
-  // The browser sent exactly what was typed, in sats.
-  expect(putBody).toEqual({ title: "School fees", amount_sat: 1_000_000, target_date: `${nextYear}-06-30` });
-  await expect(card).toContainText("School fees");
-  await expect(card).toContainText("250,000 sats of 1,000,000 sats");
-  await expect(card.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "25");
-  await expect(page.getByTestId("savings-pace")).toContainText(/Save about [\d,]+ sats a week/);
-
-  // Your year in savings.
-  await expect(page.getByTestId("savings-year")).toContainText(
-    `Your ${thisYear} in savings: 250,000 sats in 2 deposits. Best month: November.`,
-  );
-
-  // Remind me to save: weekly, 50,000 sats.
-  await card.getByRole("button", { name: "Remind me to save" }).click();
-  await card.getByLabel("Remind me to save").selectOption("weekly");
-  await card.getByLabel(/How much each time/).fill("50,000");
-  await card.getByRole("button", { name: "Save reminder" }).click();
-  expect(reminderBody).toEqual({ cadence: "weekly", amount_sat: 50_000 });
-  await expect(page.getByTestId("savings-reminder")).toContainText(
-    "We'll remind you to save every week (about 50,000 sats). Next on",
-  );
-
-  const results = await new AxeBuilder({ page }).include('[data-testid="savings-card"]').analyze();
-  const serious = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
-  expect(serious.map((v) => v.id)).toEqual([]);
-});
+}
