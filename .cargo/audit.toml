@@ -160,4 +160,37 @@ ignore = [
   #   #380 lands, or p256 publishes a 0.13.x that takes crypto-bigint
   #   >=0.7.6.
   "RUSTSEC-2026-0387",
+
+  # RUSTSEC-2026-0459: libsqlite3-sys bundles SQLite < 3.54.0, which can
+  # return uninitialized page-cache memory when opening a database whose
+  # sibling -wal file has a different page size (CVE-2026-119375).
+  #
+  # Why we can't fix this in a lockfile bump:
+  #   ghostkey-server -> sqlx 0.8.6 -> sqlx-sqlite 0.8.6, which pins
+  #   libsqlite3-sys ^0.30.1. The fix is libsqlite3-sys >=0.39, which
+  #   only sqlx 0.9.1 accepts. That is a major sqlx upgrade across the
+  #   whole database layer. libsqlite3-sys 0.39 also needs Rust 1.88,
+  #   and the Docker image builds with 1.86.
+  # Why the impact in our case is low:
+  #   The attack needs the process to open a database file and -wal
+  #   that a less trusted party wrote. The server only opens its own
+  #   /data/ghostkey.sqlite, written only by itself, or restored by
+  #   Litestream from our own backup bucket. No user-supplied database
+  #   file is ever opened.
+  # Revisit when:
+  #   The sqlx 0.9 migration lands (issue #406).
+  "RUSTSEC-2026-0459",
+
+  # RUSTSEC-2026-0543: chrono is unmaintained (informational, no fix).
+  #
+  # Why we can't fix this in a lockfile bump:
+  #   chrono is used for every date in the server, the CLI and the
+  #   sqlx column types. Replacing it with jiff or time is a refactor
+  #   of every timestamp, not a dependency bump.
+  # Why the impact in our case is low:
+  #   "Unmaintained" is not a vulnerability. No known flaw is open.
+  # Revisit when:
+  #   We plan the move to jiff or time (issue #406), or an advisory against
+  #   chrono itself is published.
+  "RUSTSEC-2026-0543",
 ]
