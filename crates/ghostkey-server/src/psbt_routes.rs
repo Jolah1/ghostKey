@@ -81,25 +81,97 @@ fn default_esplora_urls(network: Network) -> &'static [&'static str] {
     }
 }
 
+/// The Esplora endpoints for one network, in fallback order. Carries the
+/// network so [`try_each_esplora`] can refuse an endpoint that serves a
+/// different chain (see [`explorer_on_network`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Explorers {
+    pub urls: Vec<String>,
+    pub network: Network,
+}
+
 /// Resolve the ordered Esplora endpoint list for a network, refusing to
 /// start a request we can't service. `GHOSTKEY_ESPLORA_URL` accepts a
 /// single URL or a comma-separated fallback list, tried left to right.
 /// Mainnet requires the env var to be set and every entry to be HTTPS —
 /// anything else would leak descriptors or expose requests to a passive
 /// attacker.
-fn esplora_urls(network: Network) -> Result<Vec<String>, ApiError> {
-    match std::env::var("GHOSTKEY_ESPLORA_URL") {
-        Ok(raw) => parse_esplora_urls(&raw, network),
-        Err(_) => {
+///
+/// `GHOSTKEY_ESPLORA_URL` describes ONE chain, so it applies only to the
+/// server's own network (`GHOSTKEY_DEFAULT_NETWORK`) and to mainnet,
+/// which has no public default. A test-network vault on a mainnet
+/// server uses that network's public explorers. Before this, the mainnet
+/// indexer was used for every vault, and scanning a testnet vault
+/// against it made bdk_esplora panic on the genesis mismatch, on every
+/// scheduler tick, forever.
+fn esplora_urls(network: Network) -> Result<Explorers, ApiError> {
+    let env = std::env::var("GHOSTKEY_ESPLORA_URL").ok();
+    let server_network = crate::config::parse_network(crate::config::default_network()).ok();
+    esplora_urls_for(network, env.as_deref(), server_network)
+}
+
+/// Env-independent core of [`esplora_urls`].
+fn esplora_urls_for(
+    network: Network,
+    env: Option<&str>,
+    server_network: Option<Network>,
+) -> Result<Explorers, ApiError> {
+    let env_applies = network == Network::Bitcoin || server_network == Some(network);
+    let urls = match env {
+        Some(raw) if env_applies => parse_esplora_urls(raw, network)?,
+        _ => {
             let defaults = default_esplora_urls(network);
             if defaults.is_empty() {
                 return Err(ApiError::Validation(
                     "mainnet requires GHOSTKEY_ESPLORA_URL to be set explicitly".into(),
                 ));
             }
-            Ok(defaults.iter().map(|s| s.to_string()).collect())
+            defaults.iter().map(|s| s.to_string()).collect()
         }
+    };
+    Ok(Explorers { urls, network })
+}
+
+/// Endpoints already confirmed to serve a given network's chain, so the
+/// genesis check costs one request per endpoint per process, not one per
+/// scan.
+fn verified_explorers() -> &'static std::sync::Mutex<std::collections::HashSet<(String, Network)>> {
+    static V: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<(String, Network)>>> =
+        std::sync::OnceLock::new();
+    V.get_or_init(Default::default)
+}
+
+/// Confirm an endpoint serves `network` by comparing its block 0 with
+/// that network's genesis. bdk_esplora PANICS ("remote esplora should
+/// have same genesis block") when they differ, so this has to run before
+/// any scan. A mismatch is an explorer problem, so the caller fails over
+/// to the next endpoint.
+fn explorer_on_network(
+    client: &esplora_client::BlockingClient,
+    url: &str,
+    network: Network,
+) -> Result<(), BlockingErr> {
+    let key = (url.to_string(), network);
+    if verified_explorers()
+        .lock()
+        .map(|v| v.contains(&key))
+        .unwrap_or(false)
+    {
+        return Ok(());
     }
+    let remote = client
+        .get_block_hash(0)
+        .map_err(|e| clean_esplora_err("genesis check", &e))?;
+    let expected = bitcoin::constants::genesis_block(network).block_hash();
+    if remote != expected {
+        return Err(BlockingErr::Esplora(format!(
+            "{url} serves a different chain than {network}"
+        )));
+    }
+    if let Ok(mut v) = verified_explorers().lock() {
+        v.insert(key);
+    }
+    Ok(())
 }
 
 /// Env-independent core of [`esplora_urls`], split out so tests don't
@@ -135,10 +207,11 @@ fn parse_esplora_urls(raw: &str, network: Network) -> Result<Vec<String>, ApiErr
 /// The closure is handed a freshly built client per attempt; anything it
 /// needs mutable access to (the BDK wallet, the PSBT) is captured by the
 /// `FnMut`.
-fn try_each_esplora<T, F>(urls: &[String], mut op: F) -> Result<T, BlockingErr>
+fn try_each_esplora<T, F>(explorers: &Explorers, mut op: F) -> Result<T, BlockingErr>
 where
     F: FnMut(&esplora_client::BlockingClient) -> Result<T, BlockingErr>,
 {
+    let urls = &explorers.urls;
     let mut last_err = BlockingErr::Esplora("no esplora endpoints configured".into());
     for (i, url) in urls.iter().enumerate() {
         // Per-request socket timeout. The default is unbounded, so a
@@ -149,7 +222,7 @@ where
         let client = esplora_client::Builder::new(url)
             .timeout(15)
             .build_blocking();
-        match op(&client) {
+        match explorer_on_network(&client, url, explorers.network).and_then(|()| op(&client)) {
             Ok(v) => return Ok(v),
             Err(e @ BlockingErr::Esplora(_)) => {
                 if i + 1 < urls.len() {
@@ -2620,7 +2693,7 @@ mod tests {
             std::env::set_var("GHOSTKEY_ESPLORA_URL", "https://my.indexer/api");
         }
         assert_eq!(
-            esplora_urls(Network::Bitcoin).unwrap(),
+            esplora_urls(Network::Bitcoin).unwrap().urls,
             vec!["https://my.indexer/api".to_string()]
         );
         unsafe {
@@ -2735,10 +2808,21 @@ mod tests {
 
     #[test]
     fn try_each_esplora_fails_over_only_on_esplora_errors() {
-        let urls = vec![
-            "http://127.0.0.1:1/api".to_string(),
-            "http://127.0.0.1:2/api".to_string(),
-        ];
+        let urls = Explorers {
+            urls: vec![
+                "http://127.0.0.1:1/api".to_string(),
+                "http://127.0.0.1:2/api".to_string(),
+            ],
+            network: Network::Regtest,
+        };
+        // These endpoints don't exist; mark them as already on the right
+        // chain so the genesis check doesn't stop the test before `op`.
+        for u in &urls.urls {
+            verified_explorers()
+                .lock()
+                .unwrap()
+                .insert((u.clone(), Network::Regtest));
+        }
 
         // Esplora errors fall through to the next endpoint; the helper
         // returns the last one when every endpoint fails.
@@ -2775,6 +2859,89 @@ mod tests {
         });
         assert_eq!(attempts, 1, "must not fail over on non-esplora errors");
         assert!(matches!(result, Err(BlockingErr::NoUtxos)));
+    }
+
+    #[test]
+    fn the_configured_explorer_only_serves_its_own_network() {
+        let env = Some("https://mainnet.indexer/api");
+        // Mainnet server: the indexer serves mainnet vaults...
+        assert_eq!(
+            esplora_urls_for(Network::Bitcoin, env, Some(Network::Bitcoin))
+                .unwrap()
+                .urls,
+            vec!["https://mainnet.indexer/api".to_string()]
+        );
+        // ...but a testnet vault on it gets the public testnet explorers,
+        // never the mainnet indexer (the bug: bdk panicked on the genesis
+        // mismatch every tick).
+        let t = esplora_urls_for(Network::Testnet, env, Some(Network::Bitcoin)).unwrap();
+        assert_eq!(t.network, Network::Testnet);
+        assert!(t.urls.iter().all(|u| u.contains("testnet")), "{:?}", t.urls);
+        // A signet server (Mutinynet) still uses its indexer for signet.
+        let m = Some("https://mutinynet.com/api");
+        assert_eq!(
+            esplora_urls_for(Network::Signet, m, Some(Network::Signet))
+                .unwrap()
+                .urls,
+            vec!["https://mutinynet.com/api".to_string()]
+        );
+        // Mainnet with no indexer still refuses rather than leak to a
+        // public one.
+        assert!(esplora_urls_for(Network::Bitcoin, None, Some(Network::Testnet)).is_err());
+    }
+
+    /// Serve one fixed genesis hash at `/block-height/0`, the endpoint
+    /// `get_block_hash(0)` calls, and return the base URL.
+    fn fake_explorer(genesis: bitcoin::BlockHash) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut stream = stream;
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let body = genesis.to_string();
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[test]
+    fn an_explorer_on_another_chain_is_refused_not_panicked_on() {
+        let testnet_genesis = bitcoin::constants::genesis_block(Network::Testnet).block_hash();
+        let url = fake_explorer(testnet_genesis);
+        let client = esplora_client::Builder::new(&url)
+            .timeout(5)
+            .build_blocking();
+
+        // Asked to serve mainnet, a testnet explorer is a clean, failover-
+        // able Esplora error, not a bdk panic.
+        match explorer_on_network(&client, &url, Network::Bitcoin) {
+            Err(BlockingErr::Esplora(msg)) => assert!(msg.contains("different chain"), "{msg}"),
+            other => panic!("expected an Esplora error, got {other:?}"),
+        }
+        // The same explorer is fine for testnet, and the scan runs.
+        assert!(explorer_on_network(&client, &url, Network::Testnet).is_ok());
+        let explorers = Explorers {
+            urls: vec![url.clone()],
+            network: Network::Bitcoin,
+        };
+        let mut ran = false;
+        let r: Result<(), _> = try_each_esplora(&explorers, |_c| {
+            ran = true;
+            Ok(())
+        });
+        assert!(
+            r.is_err() && !ran,
+            "a wrong-chain explorer must never reach the scan"
+        );
     }
 
     #[test]
