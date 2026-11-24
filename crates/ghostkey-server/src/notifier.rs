@@ -128,7 +128,7 @@ pub enum NotificationKind {
     ClaimOpened,
     /// Trusted-contact-side, when the owner triggers a panic stop:
     /// "someone you know froze their account — check on them." Fired
-    /// from [`crate::lightning::mark_panic_paid`]. This is the alert
+    /// from [`crate::panic::after_freeze`]. This is the alert
     /// the dashboard has promised since F4; see issue #70.
     PanicAlert,
     /// Heir-side, once the claim-challenge window has elapsed without

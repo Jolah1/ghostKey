@@ -287,6 +287,7 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
         .route("/vaults/:id/send", post(crate::psbt_routes::owner_send))
         .route("/vaults/:id/seal-owner-token", post(seal_owner_token))
         .route("/vaults/:id/checkin", post(checkin))
+        .route("/vaults/:id/panic", post(crate::panic::panic_stop))
         .route(
             "/vaults/:id/checkin-from-link/:token",
             post(checkin_from_link),

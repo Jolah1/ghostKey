@@ -958,6 +958,132 @@ mod http_tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
+    /* ----------------------------------------------------------------- *
+     *  Panic stop: POST /vaults/:id/panic                               *
+     *                                                                   *
+     *  A free, signed-in freeze. It used to need a Lightning payment.   *
+     * ----------------------------------------------------------------- */
+
+    async fn post_panic(
+        state: std::sync::Arc<crate::AppState>,
+        id: &str,
+        token: Option<&str>,
+    ) -> axum::response::Response {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri(format!("/vaults/{id}/panic"));
+        if let Some(t) = token {
+            req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        routes::router(state)
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn panic_stop_freezes_for_90_days_and_revokes_claim_links() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-panic-A", Some(&issued.hash_hex)).await;
+        // A claim link in flight must be revoked by the freeze.
+        sqlx::query(
+            "UPDATE vaults SET claim_token_hash = 'h', claim_token_issued_at = '2026-01-01T00:00:00Z' \
+              WHERE id = 'vault-panic-A'",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let resp = post_panic(state.clone(), "vault-panic-A", Some(&issued.token)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let (status, until, claim_hash): (String, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT status, panic_frozen_until, claim_token_hash FROM vaults WHERE id = 'vault-panic-A'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(status, "frozen");
+        assert!(claim_hash.is_none(), "claim link must be revoked");
+        let until =
+            chrono::DateTime::parse_from_rfc3339(&until.expect("frozen_until set")).unwrap();
+        let days = (until.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_days();
+        assert!(
+            (89..=90).contains(&days),
+            "freeze should last 90 days, got {days}"
+        );
+
+        let events: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE vault_id = 'vault-panic-A' AND kind = 'panic_activated'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(events, 1);
+    }
+
+    #[tokio::test]
+    async fn panic_stop_twice_is_refused() {
+        // A second tap must not extend the window or re-alert anyone.
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-panic-B", Some(&issued.hash_hex)).await;
+        assert_eq!(
+            post_panic(state.clone(), "vault-panic-B", Some(&issued.token))
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_panic(state.clone(), "vault-panic-B", Some(&issued.token))
+                .await
+                .status(),
+            StatusCode::CONFLICT
+        );
+        let events: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE vault_id = 'vault-panic-B' AND kind = 'panic_activated'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(events, 1);
+    }
+
+    #[tokio::test]
+    async fn panic_stop_on_a_claimed_vault_is_refused_and_keeps_the_claim() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-panic-C", Some(&issued.hash_hex)).await;
+        sqlx::query("UPDATE vaults SET status = 'claimed' WHERE id = 'vault-panic-C'")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let resp = post_panic(state.clone(), "vault-panic-C", Some(&issued.token)).await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM vaults WHERE id = 'vault-panic-C'")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(status, "claimed");
+    }
+
+    #[tokio::test]
+    async fn panic_stop_needs_the_owner_token() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-panic-D", Some(&issued.hash_hex)).await;
+        let resp = post_panic(state.clone(), "vault-panic-D", None).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM vaults WHERE id = 'vault-panic-D'")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(status, "ok");
+    }
+
     #[tokio::test]
     async fn checkin_without_lightning_stays_free() {
         // Servers without a Lightning provider (local dev, demo,
