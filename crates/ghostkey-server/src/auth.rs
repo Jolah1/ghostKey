@@ -1152,6 +1152,41 @@ mod http_tests {
         assert_eq!(code, StatusCode::BAD_REQUEST);
     }
 
+    /// Goals keep the order they were made in, even when two share a
+    /// timestamp. Ordering by `datetime(created_at)` rounded to the second
+    /// and then fell back to the random id, so "the first goal" could flip.
+    #[tokio::test]
+    async fn goals_made_in_the_same_second_keep_their_order() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-order", Some(&issued.hash_hex)).await;
+        // Inserted "z" first, then "a": an id tie-break would reverse them.
+        for (gid, title) in [("z-goal", "School fees"), ("a-goal", "Rent")] {
+            let sealed = crate::crypto::seal_for_vault("vault-order", title.as_bytes()).unwrap();
+            sqlx::query(
+                "INSERT INTO savings_goals (id, vault_id, title_ct, title_nonce, created_at) \
+                 VALUES (?, 'vault-order', ?, ?, '2026-11-24T21:00:00.123+00:00')",
+            )
+            .bind(gid)
+            .bind(&sealed.ciphertext_b64)
+            .bind(&sealed.nonce_b64)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        }
+        let (_, v) = call(
+            state.clone(),
+            "GET",
+            "/vaults/vault-order/savings",
+            Some(issued.token.as_str()),
+            None,
+        )
+        .await;
+        assert_eq!(v["goals"][0]["title"], "School fees");
+        assert_eq!(v["goals"][1]["title"], "Rent");
+        assert_eq!(v["goal"]["title"], "School fees");
+    }
+
     /// The migration turns a vault's single goal into its first goal and
     /// gives it the deposits so far, and nobody is asked about old money.
     #[tokio::test]

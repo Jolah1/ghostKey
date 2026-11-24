@@ -234,7 +234,9 @@ async fn read_savings(db: &sqlx::SqlitePool, id: &str) -> Result<SavingsView, Ap
 }
 
 /// Every goal on a vault, oldest first, with its title opened and its
-/// ledger summed.
+/// ledger summed. Oldest first means insertion order (`rowid`), never the
+/// timestamp: `datetime()` rounds to the second, so two goals made in the
+/// same second came back in random order and "the first goal" could flip.
 async fn read_goals(db: &sqlx::SqlitePool, id: &str) -> Result<Vec<GoalOut>, ApiError> {
     type Row = (
         String,
@@ -250,7 +252,7 @@ async fn read_goals(db: &sqlx::SqlitePool, id: &str) -> Result<Vec<GoalOut>, Api
                 COALESCE((SELECT SUM(e.amount_sat) FROM savings_goal_entries e \
                            WHERE e.goal_id = g.id AND e.vault_id = g.vault_id), 0) \
            FROM savings_goals g WHERE g.vault_id = ? \
-          ORDER BY datetime(g.created_at), g.id",
+          ORDER BY g.rowid",
     )
     .bind(id)
     .fetch_all(db)
@@ -403,7 +405,7 @@ fn validate_goal(req: GoalView, today: NaiveDate) -> Result<GoalView, ApiError> 
 async fn first_goal_id(db: &sqlx::SqlitePool, vault_id: &str) -> Result<Option<String>, ApiError> {
     Ok(sqlx::query_scalar(
         "SELECT id FROM savings_goals WHERE vault_id = ? \
-          ORDER BY datetime(created_at), id LIMIT 1",
+          ORDER BY rowid LIMIT 1",
     )
     .bind(vault_id)
     .fetch_optional(db)
