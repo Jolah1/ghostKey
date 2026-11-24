@@ -25,6 +25,7 @@ import {
   usePolling,
 } from "./ui";
 import { DepositAddress } from "./DepositAddress";
+import { SavingsCard } from "./SavingsCard";
 import {
   ApiError,
   api,
@@ -557,6 +558,12 @@ export function Dashboard({ onNavigate }: Props) {
                   heirLabel={groupVaults.length > 1 ? meta.heir.name : null}
                   onNavigate={onNavigate}
                 />
+              </div>
+            ) : null}
+
+            {vault && ownerToken && !isClosed && !isClaiming ? (
+              <div className="mt-5">
+                <SavingsCard vaultId={vault.id} ownerToken={ownerToken} />
               </div>
             ) : null}
 

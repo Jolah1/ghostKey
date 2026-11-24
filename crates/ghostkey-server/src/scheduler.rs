@@ -143,6 +143,114 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
 
     transition_alarmed_to_claimable(state, &now).await?;
     send_claim_ready_notices(state).await?;
+    send_savings_reminders(state, Utc::now()).await?;
+    Ok(())
+}
+
+/// The savings reminders owners asked for (#367), the honest version of
+/// PiggyVest's autosave: we can't pull bitcoin from anyone, so we remind
+/// instead.
+///
+/// - Only to a confirmed owner email (`enqueue_owner_email`).
+/// - Never escalates, never repeats, and has nothing to do with the
+///   check-in clock: skipping one changes nothing.
+/// - Not for a vault being claimed, already claimed, or frozen.
+/// - The date advances BEFORE the email is queued, with a compare-and-set
+///   on the old date, so a crash in between costs at most one reminder
+///   and can never send two. It catches up past `now` in one step, so a
+///   server that was down for weeks sends one reminder, not a burst.
+async fn send_savings_reminders(
+    state: &AppState,
+    now: chrono::DateTime<Utc>,
+) -> anyhow::Result<()> {
+    type Row = (
+        String,         // id
+        String,         // cadence
+        Option<i64>,    // planned amount
+        String,         // next_at
+        Option<String>, // goal title ciphertext
+        Option<String>, // goal title nonce
+    );
+    let due: Vec<Row> = sqlx::query_as(
+        "SELECT id, savings_reminder_cadence, savings_reminder_sat, savings_reminder_next_at, \
+                savings_goal_title_ct, savings_goal_title_nonce \
+           FROM vaults \
+          WHERE savings_reminder_cadence IS NOT NULL \
+            AND savings_reminder_next_at IS NOT NULL \
+            AND savings_reminder_next_at <= ? \
+            AND status NOT IN ('claimed', 'timelock_started', 'claiming', 'frozen')",
+    )
+    .bind(now.to_rfc3339())
+    .fetch_all(&state.db)
+    .await?;
+
+    for (id, cadence, amount, next_at, ct, nn) in due {
+        // Work out the next date strictly after now.
+        let mut next = chrono::DateTime::parse_from_rfc3339(&next_at)
+            .map(|t| t.with_timezone(&Utc))
+            .unwrap_or(now);
+        let mut guard = 0;
+        while next <= now && guard < 10_000 {
+            match crate::savings::next_reminder_after(&cadence, next) {
+                Some(n) => next = n,
+                None => break,
+            }
+            guard += 1;
+        }
+        if next <= now {
+            // Unknown cadence: stop rather than retry every tick.
+            sqlx::query(
+                "UPDATE vaults SET savings_reminder_cadence = NULL, savings_reminder_sat = NULL, \
+                                   savings_reminder_next_at = NULL WHERE id = ?",
+            )
+            .bind(&id)
+            .execute(&state.db)
+            .await?;
+            continue;
+        }
+        let claimed = sqlx::query(
+            "UPDATE vaults SET savings_reminder_next_at = ? \
+              WHERE id = ? AND savings_reminder_next_at = ?",
+        )
+        .bind(next.to_rfc3339())
+        .bind(&id)
+        .bind(&next_at)
+        .execute(&state.db)
+        .await?;
+        if claimed.rows_affected() == 0 {
+            continue; // someone else moved it; not ours to send
+        }
+
+        let title = match (ct, nn) {
+            (Some(ct), Some(nn)) => crate::crypto::open_for_vault(
+                &id,
+                &crate::crypto::SealedContact {
+                    ciphertext_b64: ct,
+                    nonce_b64: nn,
+                },
+            )
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok()),
+            _ => None,
+        };
+        let (subject, body) =
+            crate::savings::reminder_email(title.as_deref(), amount, &public_base_url());
+        match notifier::enqueue_owner_email(
+            &state.db,
+            &id,
+            NotificationKind::SavingsReminder,
+            &subject,
+            &body,
+        )
+        .await
+        {
+            Ok(true) => tracing::info!(vault_id = %id, "savings reminder enqueued"),
+            Ok(false) => {
+                tracing::info!(vault_id = %id, "savings reminder skipped: no confirmed owner email")
+            }
+            Err(e) => tracing::warn!(vault_id = %id, error = ?e, "savings reminder not enqueued"),
+        }
+    }
     Ok(())
 }
 
@@ -3817,6 +3925,92 @@ mod tests {
         .execute(pool)
         .await
         .expect("insert vault with sealed owner contact");
+    }
+
+    /// Savings reminders (#367): sent once when due, the date moves past
+    /// now so it isn't sent again, nothing goes to an unconfirmed email,
+    /// and a frozen vault gets nothing.
+    #[tokio::test]
+    async fn savings_reminders_send_once_and_only_to_a_confirmed_owner() {
+        ensure_test_master_key();
+        let pool = fresh_db().await;
+        let state = AppState { db: pool.clone() };
+        let far = "2099-01-01T00:00:00Z";
+        for (id, status) in [
+            ("v-rem-ok", "ok"),
+            ("v-rem-unconf", "ok"),
+            ("v-rem-frozen", "frozen"),
+        ] {
+            insert_vault_with_sealed_owner(&pool, id, status, far, far, "owner@example.com").await;
+        }
+        let past = (Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+        sqlx::query(
+            "UPDATE vaults SET savings_reminder_cadence = 'weekly', savings_reminder_sat = 50000, \
+                               savings_reminder_next_at = ?",
+        )
+        .bind(&past)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE vaults SET owner_contact_verified_at = ? WHERE id IN ('v-rem-ok', 'v-rem-frozen')",
+        )
+        .bind(&past)
+        .execute(&pool)
+        .await
+        .unwrap();
+        // A goal title on the confirmed vault, sealed like the real thing.
+        let sealed = crate::crypto::seal_for_vault("v-rem-ok", b"School fees").unwrap();
+        sqlx::query(
+            "UPDATE vaults SET savings_goal_title_ct = ?, savings_goal_title_nonce = ? WHERE id = 'v-rem-ok'",
+        )
+        .bind(&sealed.ciphertext_b64)
+        .bind(&sealed.nonce_b64)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let count = |id: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM notifications WHERE vault_id = ? AND kind = 'savings_reminder'",
+                )
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+
+        send_savings_reminders(&state, Utc::now()).await.unwrap();
+        assert_eq!(count("v-rem-ok").await, 1, "due + confirmed: sent");
+        assert_eq!(
+            count("v-rem-unconf").await,
+            0,
+            "unconfirmed email: not sent"
+        );
+        assert_eq!(count("v-rem-frozen").await, 0, "frozen: not sent");
+
+        // The next date moved a week out, for the unconfirmed one too, so
+        // neither is retried every tick.
+        for id in ["v-rem-ok", "v-rem-unconf"] {
+            let next: String =
+                sqlx::query_scalar("SELECT savings_reminder_next_at FROM vaults WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            let next = chrono::DateTime::parse_from_rfc3339(&next).unwrap();
+            assert!(
+                next.with_timezone(&Utc) > Utc::now() + chrono::Duration::days(6),
+                "{id}"
+            );
+        }
+
+        // A second pass sends nothing more.
+        send_savings_reminders(&state, Utc::now()).await.unwrap();
+        assert_eq!(count("v-rem-ok").await, 1, "never twice");
     }
 
     /// Vault with sealed owner contact: alarm enqueues exactly one

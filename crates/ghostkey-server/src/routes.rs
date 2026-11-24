@@ -278,6 +278,15 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
             "/vaults/:id/heir",
             get(get_vault_heir).put(update_vault_heir),
         )
+        .route("/vaults/:id/savings", get(crate::savings::get_savings))
+        .route(
+            "/vaults/:id/savings/goal",
+            put(crate::savings::put_goal).delete(crate::savings::delete_goal),
+        )
+        .route(
+            "/vaults/:id/savings/reminder",
+            put(crate::savings::put_reminder).delete(crate::savings::delete_reminder),
+        )
         .route("/vaults/:id/guardians", get(list_vault_guardians))
         .route("/vaults/:id/guardians/:slot", put(update_vault_guardian))
         .route(

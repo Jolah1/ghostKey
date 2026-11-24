@@ -215,6 +215,9 @@ function isValidHeirXpub(s: string | undefined): boolean {
 }
 
 interface Draft {
+  /** "What are you saving for?" (#367). Optional. Saved as each new
+   *  share's savings goal title once the vaults exist. */
+  savingsGoal: string;
   // Step 1 — heirs + timing
   /** "standard" = the default single/multi adult-heir flow. "guardian"
    *  = #81: one heir who is a child or otherwise needs help, plus two
@@ -275,6 +278,7 @@ const EMPTY_GUARDIAN: GuardianDraft = {
 };
 
 const EMPTY: Draft = {
+  savingsGoal: "",
   vaultKind: "standard",
   heirs: [{ ...EMPTY_HEIR }],
   guardians: [{ ...EMPTY_GUARDIAN }, { ...EMPTY_GUARDIAN }],
@@ -292,7 +296,28 @@ const EMPTY: Draft = {
   trustedContactChannel: "email",
 };
 
-const STEPS = ["Heir", "Password", "Fund"] as const;
+const STEPS = ["Plan", "Password", "Fund"] as const;
+
+/** Save the setup's "What are you saving for?" as a new share's goal.
+ *  Best effort: setup must never fail because of it, and the owner can
+ *  always add or change the goal from the dashboard. */
+async function saveInitialGoal(
+  vaultId: string,
+  ownerToken: string,
+  title: string | undefined,
+): Promise<void> {
+  const t = (title ?? "").trim();
+  if (!t) return;
+  try {
+    await api.setSavingsGoal(vaultId, ownerToken, {
+      title: t,
+      amount_sat: null,
+      target_date: null,
+    });
+  } catch {
+    /* not fatal: the dashboard offers it again */
+  }
+}
 
 // Default Bitcoin network for new vaults on this server. Overridden
 // at runtime from the server's `/health.default_network` value if it
@@ -787,6 +812,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           }
         }
 
+        await saveInitialGoal(resp.id, resp.owner_token, draft.savingsGoal);
         onCreated({
           id: resp.id,
           label: resp.label,
@@ -1082,6 +1108,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           envelope,
         });
 
+        await saveInitialGoal(resp.id, resp.owner_token, draft.savingsGoal);
         // Notify the parent once per vault. The parent uses this to
         // update its own state but doesn't navigate.
         onCreated({
@@ -1494,13 +1521,29 @@ function StepHeir({
 
   return (
     <div>
-      <h1 className="font-serif text-3xl md:text-4xl">
+      <h1 className="font-serif text-3xl md:text-4xl">What are you saving for?</h1>
+      <p className="mt-2 text-muted">
+        Give your savings a name. You can add an amount and a date later,
+        or skip this.
+      </p>
+      <div className="mt-4">
+        <input
+          className="input w-full"
+          aria-label="What are you saving for? (optional)"
+          maxLength={60}
+          placeholder="e.g. Rainy day, School fees, House 2028"
+          value={draft.savingsGoal}
+          onChange={(e) => patch({ savingsGoal: e.target.value })}
+        />
+      </div>
+
+      <h2 className="mt-10 font-serif text-2xl md:text-3xl">
         {guardian
           ? "Who are you protecting"
           : draft.heirs.length === 1
-            ? "Who should receive this"
-            : `Who should receive this (${draft.heirs.length} heirs)`}
-      </h1>
+            ? "If you stop showing up, who should get it?"
+            : `If you stop showing up, who should get it? (${draft.heirs.length} heirs)`}
+      </h2>
       <p className="mt-2 text-muted">
         They never have to know about this until the time comes. When it does,
         we reach them the way you choose to reach them and they claim from a link.
