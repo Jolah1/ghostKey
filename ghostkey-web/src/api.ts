@@ -605,6 +605,22 @@ export interface SavingsGoal {
   target_date: string | null;
 }
 
+/** One of several goals, with what has been put into it. */
+export interface SavingsGoalView extends SavingsGoal {
+  id: string;
+  /** The goal's ledger total. Can exceed the vault balance after a send
+   *  made outside GhostKey, so show min(saved, balance). */
+  saved_sat: number;
+  created_at: string;
+}
+
+/** A deposit waiting for "which goal is this for?". */
+export interface UnsortedDeposit {
+  outpoint: string;
+  amount_sat: number;
+  seen_at: string;
+}
+
 /** `GET /vaults/:id/savings` (owner). */
 export interface SavingsView {
   /** Everything ever put aside. Only goes up. */
@@ -612,7 +628,12 @@ export interface SavingsView {
   deposit_count: number;
   /** Most recent first, up to 50. */
   deposits: { amount_sat: number; height: number; seen_at: string; spent: boolean }[];
+  /** The first goal, for screens that only show one. */
   goal: SavingsGoal | null;
+  /** Every goal, oldest first (up to 10). */
+  goals: SavingsGoalView[];
+  /** Deposits since the first goal that haven't been sorted yet. */
+  unsorted: UnsortedDeposit[];
   /** "Your year in savings": this calendar year (UTC) so far. */
   this_year: {
     year: number;
@@ -818,6 +839,67 @@ export const api = {
   /** Owner-only: stop the savings reminders. */
   clearSavingsReminder: (id: string, ownerToken: string | null) =>
     request<null>(`/vaults/${id}/savings/reminder`, { method: "DELETE" }, ownerToken),
+  /** Owner-only: add a goal (up to 10). */
+  addSavingsGoal: (id: string, ownerToken: string | null, goal: SavingsGoal) =>
+    request<SavingsView>(
+      `/vaults/${id}/savings/goals`,
+      { method: "POST", body: JSON.stringify(goal) },
+      ownerToken,
+    ),
+  /** Owner-only: change one goal; its money stays. */
+  updateSavingsGoal: (
+    id: string,
+    ownerToken: string | null,
+    goalId: string,
+    goal: SavingsGoal,
+  ) =>
+    request<SavingsView>(
+      `/vaults/${id}/savings/goals`,
+      { method: "PUT", body: JSON.stringify({ id: goalId, ...goal }) },
+      ownerToken,
+    ),
+  /** Owner-only: remove one goal. Its money becomes "not in a goal". */
+  removeSavingsGoal: (id: string, ownerToken: string | null, goalId: string) =>
+    request<SavingsView>(
+      `/vaults/${id}/savings/goals/remove`,
+      { method: "POST", body: JSON.stringify({ id: goalId }) },
+      ownerToken,
+    ),
+  /** Owner-only: "which goal is this for?" (null: not for a goal). */
+  sortDeposit: (
+    id: string,
+    ownerToken: string | null,
+    outpoint: string,
+    goalId: string | null,
+  ) =>
+    request<SavingsView>(
+      `/vaults/${id}/savings/sort`,
+      { method: "POST", body: JSON.stringify({ outpoint, goal_id: goalId }) },
+      ownerToken,
+    ),
+  /** Owner-only: move money between goals (null: "not in a goal"). */
+  moveSavings: (
+    id: string,
+    ownerToken: string | null,
+    body: { from_goal_id: string | null; to_goal_id: string | null; amount_sat: number },
+  ) =>
+    request<SavingsView>(
+      `/vaults/${id}/savings/move`,
+      { method: "POST", body: JSON.stringify(body) },
+      ownerToken,
+    ),
+  /** Owner-only: after a send, take it off the goal it was for. */
+  spendFromGoal: (
+    id: string,
+    ownerToken: string | null,
+    goalId: string,
+    amountSat: number,
+  ) =>
+    request<SavingsView>(
+      `/vaults/${id}/savings/spend`,
+      { method: "POST", body: JSON.stringify({ goal_id: goalId, amount_sat: amountSat }) },
+      ownerToken,
+    ),
   /** Owner-only: remove the goal. Saving carries on exactly as before. */
   clearSavingsGoal: (id: string, ownerToken: string | null) =>
     request<null>(`/vaults/${id}/savings/goal`, { method: "DELETE" }, ownerToken),

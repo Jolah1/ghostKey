@@ -15,6 +15,15 @@
 //! The goal title is personal ("School fees for Ada"), so it is sealed
 //! with the vault key like the contacts. Amount and date are plain: the
 //! server already knows the balance.
+//!
+//! Several goals (step 2): a vault can save for up to [`MAX_GOALS`]
+//! things at once. They share one deposit address, so each goal's money
+//! is a ledger (`savings_goal_entries`), not a set of coins: a new deposit
+//! is sorted into a goal with one tap, money can be moved between goals,
+//! and a send can say which goal it came from. Nothing here touches the
+//! chain, so the heir's claim and the recovery kit are unaffected. The
+//! web client caps what it shows at the real balance, since a send made
+//! outside GhostKey (the kit, Bitcoin Core) never reaches this ledger.
 
 use std::sync::Arc;
 
@@ -33,6 +42,10 @@ const MAX_SATS: i64 = 21_000_000 * 100_000_000;
 const MAX_TITLE_CHARS: usize = 60;
 /// How many recent deposits the view lists.
 const DEPOSITS_LISTED: i64 = 50;
+/// How many goals one vault can have at once.
+pub const MAX_GOALS: i64 = 10;
+/// How many unsorted deposits the view offers to sort at a time.
+const UNSORTED_LISTED: i64 = 20;
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct DepositView {
@@ -52,13 +65,42 @@ pub struct GoalView {
     pub target_date: Option<String>,
 }
 
+/// One goal as the owner sees it, with what has been put into it.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct GoalOut {
+    pub id: String,
+    pub title: String,
+    pub amount_sat: Option<i64>,
+    /// `YYYY-MM-DD`.
+    pub target_date: Option<String>,
+    /// Sum of this goal's ledger entries. Can exceed the vault balance
+    /// after a send made outside GhostKey; the client caps it.
+    pub saved_sat: i64,
+    pub created_at: String,
+}
+
+/// A deposit nobody has said a goal for yet.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct UnsortedDeposit {
+    pub outpoint: String,
+    pub amount_sat: i64,
+    pub seen_at: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct SavingsView {
     pub total_saved_sat: i64,
     pub deposit_count: i64,
     /// Most recent first, at most 50.
     pub deposits: Vec<DepositView>,
+    /// The first goal, for clients that only know about one. Kept until
+    /// every client reads `goals`.
     pub goal: Option<GoalView>,
+    /// Every goal, oldest first.
+    pub goals: Vec<GoalOut>,
+    /// Deposits that arrived since the first goal was made and haven't
+    /// been sorted yet, newest first. Empty when there are no goals.
+    pub unsorted: Vec<UnsortedDeposit>,
     /// "Your year in savings": this calendar year (UTC) so far.
     pub this_year: YearView,
     pub reminder: Option<ReminderView>,
@@ -87,33 +129,43 @@ pub struct ReminderView {
 }
 
 async fn read_savings(db: &sqlx::SqlitePool, id: &str) -> Result<SavingsView, ApiError> {
-    type GoalRow = (Option<String>, Option<String>, Option<i64>, Option<String>);
-    let goal_row: Option<GoalRow> = sqlx::query_as(
-        "SELECT savings_goal_title_ct, savings_goal_title_nonce, savings_goal_sat, \
-                savings_goal_date \
-           FROM vaults WHERE id = ?",
-    )
-    .bind(id)
-    .fetch_optional(db)
-    .await?;
-    let (ct, nn, goal_sat, goal_date) = goal_row.ok_or(ApiError::NotFound)?;
-    let goal = match (ct, nn) {
-        (Some(ct), Some(nn)) => {
-            let title = String::from_utf8(open_for_vault(
-                id,
-                &SealedContact {
-                    ciphertext_b64: ct,
-                    nonce_b64: nn,
-                },
-            )?)
-            .map_err(|_| ApiError::Validation("stored goal is not valid UTF-8".into()))?;
-            Some(GoalView {
-                title,
-                amount_sat: goal_sat,
-                target_date: goal_date,
+    let exists: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM vaults WHERE id = ?")
+        .bind(id)
+        .fetch_optional(db)
+        .await?;
+    if exists.is_none() {
+        return Err(ApiError::NotFound);
+    }
+    let goals = read_goals(db, id).await?;
+    let goal = goals.first().map(|g| GoalView {
+        title: g.title.clone(),
+        amount_sat: g.amount_sat,
+        target_date: g.target_date.clone(),
+    });
+    let unsorted = if goals.is_empty() {
+        Vec::new()
+    } else {
+        // Only deposits since the first goal: nobody is asked about money
+        // from before they had anything to sort it into.
+        let rows: Vec<(String, i64, String)> = sqlx::query_as(
+            "SELECT outpoint, amount_sat, seen_at FROM vault_deposits \
+              WHERE vault_id = ? AND sorted_at IS NULL \
+                AND datetime(seen_at) >= \
+                    (SELECT MIN(datetime(created_at)) FROM savings_goals WHERE vault_id = ?) \
+              ORDER BY datetime(seen_at) DESC LIMIT ?",
+        )
+        .bind(id)
+        .bind(id)
+        .bind(UNSORTED_LISTED)
+        .fetch_all(db)
+        .await?;
+        rows.into_iter()
+            .map(|(outpoint, amount_sat, seen_at)| UnsortedDeposit {
+                outpoint,
+                amount_sat,
+                seen_at,
             })
-        }
-        _ => None,
+            .collect()
     };
 
     let (total, count): (i64, i64) = sqlx::query_as(
@@ -173,10 +225,97 @@ async fn read_savings(db: &sqlx::SqlitePool, id: &str) -> Result<SavingsView, Ap
             })
             .collect(),
         goal,
+        goals,
+        unsorted,
         this_year,
         reminder,
         owner_email_confirmed,
     })
+}
+
+/// Every goal on a vault, oldest first, with its title opened and its
+/// ledger summed.
+async fn read_goals(db: &sqlx::SqlitePool, id: &str) -> Result<Vec<GoalOut>, ApiError> {
+    type Row = (
+        String,
+        String,
+        String,
+        Option<i64>,
+        Option<String>,
+        String,
+        i64,
+    );
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT g.id, g.title_ct, g.title_nonce, g.amount_sat, g.target_date, g.created_at, \
+                COALESCE((SELECT SUM(e.amount_sat) FROM savings_goal_entries e \
+                           WHERE e.goal_id = g.id AND e.vault_id = g.vault_id), 0) \
+           FROM savings_goals g WHERE g.vault_id = ? \
+          ORDER BY datetime(g.created_at), g.id",
+    )
+    .bind(id)
+    .fetch_all(db)
+    .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (gid, ct, nn, amount_sat, target_date, created_at, saved_sat) in rows {
+        let title = String::from_utf8(open_for_vault(
+            id,
+            &SealedContact {
+                ciphertext_b64: ct,
+                nonce_b64: nn,
+            },
+        )?)
+        .map_err(|_| ApiError::Validation("stored goal is not valid UTF-8".into()))?;
+        out.push(GoalOut {
+            id: gid,
+            title,
+            amount_sat,
+            target_date,
+            saved_sat,
+            created_at,
+        });
+    }
+    Ok(out)
+}
+
+/// A goal's ledger total, or NotFound when it isn't this vault's goal.
+async fn goal_saved(
+    tx: &mut sqlx::SqliteConnection,
+    vault_id: &str,
+    goal_id: &str,
+) -> Result<i64, ApiError> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT COALESCE((SELECT SUM(amount_sat) FROM savings_goal_entries \
+                           WHERE goal_id = g.id AND vault_id = g.vault_id), 0) \
+           FROM savings_goals g WHERE g.id = ? AND g.vault_id = ?",
+    )
+    .bind(goal_id)
+    .bind(vault_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    row.map(|(s,)| s).ok_or(ApiError::NotFound)
+}
+
+async fn insert_entry(
+    tx: &mut sqlx::SqliteConnection,
+    vault_id: &str,
+    goal_id: &str,
+    amount_sat: i64,
+    kind: &str,
+    outpoint: Option<&str>,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        "INSERT INTO savings_goal_entries (vault_id, goal_id, amount_sat, kind, outpoint, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(vault_id)
+    .bind(goal_id)
+    .bind(amount_sat)
+    .bind(kind)
+    .bind(outpoint)
+    .bind(Utc::now().to_rfc3339())
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
 }
 
 /// Totals for one calendar year, by when our scanner first saw each
@@ -260,7 +399,100 @@ fn validate_goal(req: GoalView, today: NaiveDate) -> Result<GoalView, ApiError> 
     })
 }
 
-/// `PUT /vaults/:id/savings/goal` (owner): set or replace the goal.
+/// The oldest goal's id, if any. The single-goal endpoints act on it.
+async fn first_goal_id(db: &sqlx::SqlitePool, vault_id: &str) -> Result<Option<String>, ApiError> {
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM savings_goals WHERE vault_id = ? \
+          ORDER BY datetime(created_at), id LIMIT 1",
+    )
+    .bind(vault_id)
+    .fetch_optional(db)
+    .await?)
+}
+
+async fn insert_goal(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+    goal: &GoalView,
+) -> Result<(), ApiError> {
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM savings_goals WHERE vault_id = ?")
+        .bind(vault_id)
+        .fetch_one(db)
+        .await?;
+    if count >= MAX_GOALS {
+        return Err(ApiError::Validation(format!(
+            "You can save for up to {MAX_GOALS} things at once. Finish or remove one first."
+        )));
+    }
+    let sealed = seal_for_vault(vault_id, goal.title.as_bytes())?;
+    sqlx::query(
+        "INSERT INTO savings_goals (id, vault_id, title_ct, title_nonce, amount_sat, target_date, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(vault_id)
+    .bind(&sealed.ciphertext_b64)
+    .bind(&sealed.nonce_b64)
+    .bind(goal.amount_sat)
+    .bind(&goal.target_date)
+    .bind(Utc::now().to_rfc3339())
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+async fn update_goal_row(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+    goal_id: &str,
+    goal: &GoalView,
+) -> Result<(), ApiError> {
+    let sealed = seal_for_vault(vault_id, goal.title.as_bytes())?;
+    let updated = sqlx::query(
+        "UPDATE savings_goals SET title_ct = ?, title_nonce = ?, amount_sat = ?, target_date = ? \
+          WHERE id = ? AND vault_id = ?",
+    )
+    .bind(&sealed.ciphertext_b64)
+    .bind(&sealed.nonce_b64)
+    .bind(goal.amount_sat)
+    .bind(&goal.target_date)
+    .bind(goal_id)
+    .bind(vault_id)
+    .execute(db)
+    .await?;
+    if updated.rows_affected() == 0 {
+        return Err(ApiError::NotFound);
+    }
+    Ok(())
+}
+
+/// Removes a goal and its ledger. Its money is then simply "not in a
+/// goal"; the coins never moved.
+async fn delete_goal_row(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+    goal_id: &str,
+) -> Result<(), ApiError> {
+    let mut tx = db.begin().await?;
+    sqlx::query("DELETE FROM savings_goal_entries WHERE goal_id = ? AND vault_id = ?")
+        .bind(goal_id)
+        .bind(vault_id)
+        .execute(&mut *tx)
+        .await?;
+    let deleted = sqlx::query("DELETE FROM savings_goals WHERE id = ? AND vault_id = ?")
+        .bind(goal_id)
+        .bind(vault_id)
+        .execute(&mut *tx)
+        .await?;
+    if deleted.rows_affected() == 0 {
+        return Err(ApiError::NotFound);
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// `PUT /vaults/:id/savings/goal` (owner): set or replace the first goal.
+/// Kept for clients that only know about one goal.
 pub async fn put_goal(
     auth: OwnerAuth,
     State(state): State<Arc<AppState>>,
@@ -268,43 +500,209 @@ pub async fn put_goal(
 ) -> Result<Json<SavingsView>, ApiError> {
     let id = auth.vault_id;
     let goal = validate_goal(req, Utc::now().date_naive())?;
-    let sealed = seal_for_vault(&id, goal.title.as_bytes())?;
-    let updated = sqlx::query(
-        "UPDATE vaults SET savings_goal_title_ct = ?, savings_goal_title_nonce = ?, \
-                           savings_goal_sat = ?, savings_goal_date = ? \
-          WHERE id = ?",
-    )
-    .bind(&sealed.ciphertext_b64)
-    .bind(&sealed.nonce_b64)
-    .bind(goal.amount_sat)
-    .bind(&goal.target_date)
-    .bind(&id)
-    .execute(&state.db)
-    .await?;
-    if updated.rows_affected() == 0 {
-        return Err(ApiError::NotFound);
+    // Surface a missing vault as 404 before touching goals.
+    read_savings(&state.db, &id).await?;
+    match first_goal_id(&state.db, &id).await? {
+        Some(gid) => update_goal_row(&state.db, &id, &gid, &goal).await?,
+        None => insert_goal(&state.db, &id, &goal).await?,
     }
     Ok(Json(read_savings(&state.db, &id).await?))
 }
 
-/// `DELETE /vaults/:id/savings/goal` (owner): remove the goal. Saving goes
-/// on exactly as before; a goal is only ever a view.
+/// `DELETE /vaults/:id/savings/goal` (owner): remove the first goal.
+/// Saving goes on exactly as before; a goal is only ever a view.
 pub async fn delete_goal(
     auth: OwnerAuth,
     State(state): State<Arc<AppState>>,
 ) -> Result<StatusCode, ApiError> {
-    let updated = sqlx::query(
-        "UPDATE vaults SET savings_goal_title_ct = NULL, savings_goal_title_nonce = NULL, \
-                           savings_goal_sat = NULL, savings_goal_date = NULL \
-          WHERE id = ?",
-    )
-    .bind(&auth.vault_id)
-    .execute(&state.db)
-    .await?;
-    if updated.rows_affected() == 0 {
-        return Err(ApiError::NotFound);
+    read_savings(&state.db, &auth.vault_id).await?;
+    if let Some(gid) = first_goal_id(&state.db, &auth.vault_id).await? {
+        delete_goal_row(&state.db, &auth.vault_id, &gid).await?;
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /vaults/:id/savings/goals` (owner): add a goal.
+pub async fn create_goal(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<GoalView>,
+) -> Result<Json<SavingsView>, ApiError> {
+    let id = auth.vault_id;
+    let goal = validate_goal(req, Utc::now().date_naive())?;
+    read_savings(&state.db, &id).await?;
+    insert_goal(&state.db, &id, &goal).await?;
+    Ok(Json(read_savings(&state.db, &id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GoalUpdate {
+    pub id: String,
+    #[serde(flatten)]
+    pub goal: GoalView,
+}
+
+/// `PUT /vaults/:id/savings/goals` (owner): change one goal. The goal id
+/// is in the body because owner auth reads the single `:id` path segment.
+pub async fn update_goal(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<GoalUpdate>,
+) -> Result<Json<SavingsView>, ApiError> {
+    let goal = validate_goal(req.goal, Utc::now().date_naive())?;
+    update_goal_row(&state.db, &auth.vault_id, &req.id, &goal).await?;
+    Ok(Json(read_savings(&state.db, &auth.vault_id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GoalRef {
+    pub id: String,
+}
+
+/// `POST /vaults/:id/savings/goals/remove` (owner): remove one goal.
+pub async fn remove_goal(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<GoalRef>,
+) -> Result<Json<SavingsView>, ApiError> {
+    delete_goal_row(&state.db, &auth.vault_id, &req.id).await?;
+    Ok(Json(read_savings(&state.db, &auth.vault_id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SortRequest {
+    pub outpoint: String,
+    /// None: "not for a goal". The deposit stops being asked about.
+    pub goal_id: Option<String>,
+}
+
+/// `POST /vaults/:id/savings/sort` (owner): "which goal is this for?"
+/// One answer per deposit; a second one is refused, and money already
+/// sorted is changed with a move instead.
+pub async fn sort_deposit(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SortRequest>,
+) -> Result<Json<SavingsView>, ApiError> {
+    let id = auth.vault_id;
+    let mut tx = state.db.begin().await?;
+    let row: Option<(i64, Option<String>)> = sqlx::query_as(
+        "SELECT amount_sat, sorted_at FROM vault_deposits WHERE vault_id = ? AND outpoint = ?",
+    )
+    .bind(&id)
+    .bind(&req.outpoint)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (amount, sorted_at) = row.ok_or(ApiError::NotFound)?;
+    if sorted_at.is_some() {
+        return Err(ApiError::Conflict(
+            "This deposit is already sorted. Move money between goals instead.".into(),
+        ));
+    }
+    if let Some(gid) = req.goal_id.as_deref() {
+        goal_saved(&mut tx, &id, gid).await?;
+        insert_entry(&mut tx, &id, gid, amount, "deposit", Some(&req.outpoint)).await?;
+    }
+    sqlx::query("UPDATE vault_deposits SET sorted_at = ? WHERE vault_id = ? AND outpoint = ?")
+        .bind(Utc::now().to_rfc3339())
+        .bind(&id)
+        .bind(&req.outpoint)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Json(read_savings(&state.db, &id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MoveRequest {
+    /// None: from money that isn't in a goal.
+    pub from_goal_id: Option<String>,
+    /// None: out of goals, back to "not in a goal".
+    pub to_goal_id: Option<String>,
+    pub amount_sat: i64,
+}
+
+/// Checks a move before any database work: a real amount, two different
+/// ends, and at least one of them a goal.
+fn validate_move(req: &MoveRequest) -> Result<(), ApiError> {
+    if req.amount_sat <= 0 || req.amount_sat > MAX_SATS {
+        return Err(ApiError::Validation(
+            "The amount must be more than zero.".into(),
+        ));
+    }
+    if req.from_goal_id.is_none() && req.to_goal_id.is_none() {
+        return Err(ApiError::Validation(
+            "Choose a goal to move money to or from.".into(),
+        ));
+    }
+    if req.from_goal_id == req.to_goal_id {
+        return Err(ApiError::Validation("Choose two different goals.".into()));
+    }
+    Ok(())
+}
+
+/// `POST /vaults/:id/savings/move` (owner): move money between goals, or
+/// in and out of "not in a goal". A goal can't give more than it holds.
+/// Moving in from "not in a goal" is checked by the client against the
+/// live balance, which the server doesn't keep.
+pub async fn move_money(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<MoveRequest>,
+) -> Result<Json<SavingsView>, ApiError> {
+    validate_move(&req)?;
+    let id = auth.vault_id;
+    let mut tx = state.db.begin().await?;
+    if let Some(from) = req.from_goal_id.as_deref() {
+        let saved = goal_saved(&mut tx, &id, from).await?;
+        if saved < req.amount_sat {
+            return Err(ApiError::Validation(format!(
+                "That goal only has {} sats.",
+                group_thousands(saved.max(0))
+            )));
+        }
+    }
+    if let Some(to) = req.to_goal_id.as_deref() {
+        goal_saved(&mut tx, &id, to).await?;
+    }
+    if let Some(from) = req.from_goal_id.as_deref() {
+        insert_entry(&mut tx, &id, from, -req.amount_sat, "move", None).await?;
+    }
+    if let Some(to) = req.to_goal_id.as_deref() {
+        insert_entry(&mut tx, &id, to, req.amount_sat, "move", None).await?;
+    }
+    tx.commit().await?;
+    Ok(Json(read_savings(&state.db, &id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SpendRequest {
+    pub goal_id: String,
+    pub amount_sat: i64,
+}
+
+/// `POST /vaults/:id/savings/spend` (owner): after a send, take it off
+/// the goal it was for. A goal never goes below zero: anything above what
+/// it held came from money that wasn't in a goal.
+pub async fn spend_from_goal(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SpendRequest>,
+) -> Result<Json<SavingsView>, ApiError> {
+    if req.amount_sat <= 0 || req.amount_sat > MAX_SATS {
+        return Err(ApiError::Validation(
+            "The amount must be more than zero.".into(),
+        ));
+    }
+    let id = auth.vault_id;
+    let mut tx = state.db.begin().await?;
+    let saved = goal_saved(&mut tx, &id, &req.goal_id).await?;
+    let take = req.amount_sat.min(saved.max(0));
+    if take > 0 {
+        insert_entry(&mut tx, &id, &req.goal_id, -take, "spend", None).await?;
+    }
+    tx.commit().await?;
+    Ok(Json(read_savings(&state.db, &id).await?))
 }
 
 #[derive(Debug, Deserialize)]
