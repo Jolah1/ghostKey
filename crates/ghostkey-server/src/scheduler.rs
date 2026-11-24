@@ -464,11 +464,9 @@ async fn enqueue_alarm_escalation(
     let base = public_base_url();
     let display_label = label.unwrap_or("your GhostKey vault");
 
-    let amount_sat = crate::lightning::heartbeat_amount_sat();
     let one_tap_block = match mint_or_reuse_one_tap_token(state, vault_id, now_iso).await? {
         Some(token) => format!(
-            "Tap this link and pay {amount_sat} sats from any Lightning \
-             wallet to check in:\n\n\
+            "Tap this link to check in. It's free:\n\n\
              {base}/#/checkin-link/{vault_id}/{token}\n\n"
         ),
         None => String::new(),
@@ -783,7 +781,6 @@ async fn enqueue_pre_deadline_reminder(
     let base = public_base_url();
     let one_tap_url = format!("{base}/#/checkin-link/{vault_id}/{token}");
     let display_label = label.unwrap_or("your GhostKey vault");
-    let amount_sat = crate::lightning::heartbeat_amount_sat();
 
     if let Some(contact) = &owner_contact {
         let subject = format!("Reminder: {display_label} check-in due {deadline_friendly}");
@@ -791,12 +788,10 @@ async fn enqueue_pre_deadline_reminder(
             "Hello,\n\n\
              A quick reminder that {display_label} needs a check-in by \
              {deadline_friendly}. That's about 24 hours from now.\n\n\
-             Tap this link and pay {amount_sat} sats from any Lightning \
-             wallet. The payment is your proof you're still here, and it \
-             resets the countdown.\n\n\
+             Tap this link, then the button, to check in. It's free, \
+             and it resets the countdown.\n\n\
              {one_tap_url}\n\n\
-             If you'd rather not pay from this email, open the dashboard \
-             on any device and check in there:\n\n\
+             Or open the dashboard on any device and check in there:\n\n\
              {base}/#/checkin\n\n\
              If we don't hear from you by the deadline, we'll keep \
              reminding you every day through the grace period. Only after \
@@ -823,7 +818,7 @@ async fn enqueue_pre_deadline_reminder(
             "title": title,
             "body": format!(
                 "{display_label} needs a check-in by {deadline_friendly}. \
-                 Pay {amount_sat} sats from any Lightning wallet to check in."
+                 Tap to check in."
             ),
             "url": one_tap_url,
         })
@@ -1450,12 +1445,10 @@ async fn enqueue_alarm_owner(
         .map(|token| format!("{base}/#/checkin-link/{vault_id}/{token}"));
 
     if let Some(contact) = &owner_contact {
-        let amount_sat = crate::lightning::heartbeat_amount_sat();
         let one_tap_block = match &one_tap_url {
             Some(url) => format!(
-                "Tap this link and pay {amount_sat} sats from any Lightning \
-                 wallet to check in. The payment is your proof you're still \
-                 here and resets the clock.\n\n\
+                "Tap this link, then the button, to check in. It's free, \
+                 and it resets the clock.\n\n\
                  {url}\n\n"
             ),
             None => String::new(),

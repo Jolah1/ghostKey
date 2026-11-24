@@ -670,11 +670,10 @@ mod http_tests {
     }
 
     #[tokio::test]
-    async fn one_tap_free_checkin_outside_last_resort_window_is_409() {
-        // The free link check-in is a last resort: only allowed inside the
-        // final 24h before the heir would be contacted. With
-        // claim_eligible_at far in the future it must be refused, and the
-        // token must survive so Lightning can still be used.
+    async fn one_tap_checkin_is_free_long_before_the_deadline() {
+        // Checking in is free. The link works at any point in the cycle,
+        // not only in the final 24h (the old Lightning last-resort rule),
+        // so claim_eligible_at far in the future must not refuse it.
         let state = fresh_state().await;
         let issued = crate::crypto::issue_claim_token();
         sqlx::query(
@@ -707,16 +706,16 @@ mod http_tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(resp.status(), StatusCode::OK);
 
-        // A refused attempt must not consume the token.
+        // A successful check-in scrubs the single-use token.
         let hash: Option<String> = sqlx::query_scalar(
             "SELECT checkin_link_token_hash FROM vaults WHERE id = 'vault-link-W'",
         )
         .fetch_one(&state.db)
         .await
         .unwrap();
-        assert_eq!(hash.as_deref(), Some(issued.hash_hex.as_str()));
+        assert!(hash.is_none(), "token hash must be scrubbed after use");
     }
 
     #[tokio::test]
@@ -843,18 +842,16 @@ mod http_tests {
     }
 
     /* ----------------------------------------------------------------- *
-     *  Lightning last-resort gate on POST /vaults/:id/checkin           *
+     *  Check-in is free on POST /vaults/:id/checkin                     *
      *                                                                   *
-     *  Lightning is THE check-in. With a Lightning provider enabled,    *
-     *  the free owner-token path must refuse outside the final 24h      *
-     *  before the heir would be contacted -- the same server-side rule  *
-     *  checkin_from_link already enforces. These tests pin that the     *
-     *  rule holds at the API, not just in the dashboard UI.             *
+     *  Check-ins used to require a Lightning payment outside the final  *
+     *  24h before the heir would be contacted. That gate is gone. These *
+     *  tests pin that a configured Lightning provider can never bring   *
+     *  it back: the owner's session alone is enough, at any time.       *
      * ----------------------------------------------------------------- */
 
-    /// A Lightning provider that reports enabled but can't mint --
-    /// exactly enough to flip the gate on. The gate only consults
-    /// `is_enabled()`; minting stays on the real provider's routes.
+    /// A Lightning provider that reports enabled but can't mint. Used
+    /// to prove an enabled provider does not gate the free check-in.
     struct EnabledStubLightning;
 
     #[async_trait::async_trait]
@@ -877,7 +874,7 @@ mod http_tests {
         }
     }
 
-    /// `fresh_state`, but with the Lightning gate armed.
+    /// `fresh_state`, but with a Lightning provider that reports enabled.
     async fn fresh_state_lightning_enabled() -> std::sync::Arc<crate::AppState> {
         let state = fresh_state().await;
         std::sync::Arc::new(crate::AppState {
@@ -887,11 +884,11 @@ mod http_tests {
     }
 
     #[tokio::test]
-    async fn checkin_with_lightning_enabled_outside_window_is_409() {
+    async fn checkin_with_lightning_enabled_is_free_long_before_the_deadline() {
         let state = fresh_state_lightning_enabled().await;
         let issued = crate::crypto::issue_owner_token();
-        // insert_vault pins claim_eligible_at to 2099 -- far outside
-        // the 24h last-resort window.
+        // insert_vault pins claim_eligible_at to 2099, far outside the
+        // old 24h last-resort window.
         insert_vault(&state.db, "vault-ln-A", Some(&issued.hash_hex)).await;
 
         let resp = routes::router(state)
@@ -905,16 +902,7 @@ mod http_tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
-        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
-            .await
-            .unwrap();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        let msg = v["error"].as_str().unwrap_or_default();
-        assert!(
-            msg.contains("Lightning"),
-            "409 body should point at Lightning, got: {msg}"
-        );
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -945,9 +933,9 @@ mod http_tests {
     }
 
     #[tokio::test]
-    async fn checkin_with_lightning_enabled_null_eligible_is_409() {
-        // No claim_eligible_at (legacy row): fail toward Lightning,
-        // mirroring the from-link gate's unwrap_or(false).
+    async fn checkin_with_lightning_enabled_null_eligible_is_free() {
+        // No claim_eligible_at (legacy row): this used to fail toward
+        // Lightning. Check-in is free now, so it must succeed.
         let state = fresh_state_lightning_enabled().await;
         let issued = crate::crypto::issue_owner_token();
         insert_vault(&state.db, "vault-ln-C", Some(&issued.hash_hex)).await;
@@ -967,7 +955,7 @@ mod http_tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

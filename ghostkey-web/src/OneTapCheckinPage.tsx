@@ -1,21 +1,21 @@
 /**
- * One-tap check-in page (Lightning).
+ * One-tap check-in page.
  *
  * The owner gets here by tapping the link in a pre-deadline reminder or an
- * alarm email. The URL carries a per-cycle link token. Lightning is the
- * check-in: this page shows a tiny BOLT11 invoice (minted with the link
- * token, no sign-in needed) and paying it resets the countdown.
+ * alarm email. The URL carries a per-cycle link token. Checking in is free:
+ * one button, and the token is the only credential needed.
  *
- * The free "check in without paying" fallback only appears inside the
- * Lightning modal's error state, and the server only honours it in the
- * final 24h before the heir would be contacted (see `checkin_from_link`).
- * So the free path is a true last resort, not a way around Lightning.
+ * The check-in happens on the button press, NEVER on page load. Mail
+ * security scanners (Outlook Safe Links, Gmail and others) open links
+ * automatically, and a dead owner's inbox would otherwise keep checking in
+ * forever, so the heir would never be contacted. A person has to tap.
  *
  * States, in display order:
- *   - "paying"  — the Lightning modal is the whole page (first paint).
- *   - "ok"      — checked in, via a paid invoice or the last-resort tap.
- *   - "error"   — the last-resort tap was refused (e.g. outside the 24h
- *                 window) or otherwise failed.
+ *   - "ready"   - asks "Still here?" with one button (first paint).
+ *   - "sending" - the button is busy.
+ *   - "ok"      - checked in.
+ *   - "error"   - refused (already used, already checked in this period,
+ *                 claimed) or failed.
  *
  * No GhostKey navbar on this page (App hides it): the link arrived in an
  * email and the owner came here to do one thing.
@@ -25,11 +25,11 @@ import { Button } from "./ui";
 import { ApiError, api, type CheckinResponse } from "./api";
 import type { Route } from "./App";
 import { parseRfc } from "./time";
-import { LightningCheckin } from "./LightningCheckin";
 
 type State =
-  | { kind: "paying" }
-  | { kind: "ok"; resp: CheckinResponse | null }
+  | { kind: "ready" }
+  | { kind: "sending" }
+  | { kind: "ok"; resp: CheckinResponse }
   | { kind: "error"; message: string };
 
 interface Props {
@@ -39,12 +39,10 @@ interface Props {
 }
 
 export function OneTapCheckinPage({ vaultId, token, onNavigate }: Props) {
-  const [state, setState] = useState<State>({ kind: "paying" });
+  const [state, setState] = useState<State>({ kind: "ready" });
 
-  // Last-resort free check-in, only offered inside the Lightning modal's
-  // error state. The server refuses it outside the final 24h window, which
-  // surfaces here as an error message.
-  async function freeCheckin() {
+  async function checkin() {
+    setState({ kind: "sending" });
     try {
       const resp = await api.checkinFromLink(vaultId, token);
       setState({ kind: "ok", resp });
@@ -75,16 +73,22 @@ export function OneTapCheckinPage({ vaultId, token, onNavigate }: Props) {
     );
   }
 
-  // Paying: the Lightning modal renders as the whole page.
   return (
-    <LightningCheckin
-      vaultId={vaultId}
-      ownerToken={null}
-      linkToken={token}
-      onPaid={() => setState({ kind: "ok", resp: null })}
-      onClose={() => onNavigate("dashboard")}
-      onFreeCheckin={freeCheckin}
-    />
+    <Shell>
+      <h1 className="font-serif text-3xl md:text-4xl">Still here?</h1>
+      <p className="mt-3 max-w-md text-muted">
+        Tap the button to check in. It&apos;s free and resets your countdown.
+      </p>
+      <div className="mt-10 flex gap-3">
+        <Button
+          onClick={() => void checkin()}
+          loading={state.kind === "sending"}
+          size="lg"
+        >
+          Yes, I&apos;m still here
+        </Button>
+      </div>
+    </Shell>
   );
 }
 
@@ -102,21 +106,17 @@ function Success({
   resp,
   onNavigate,
 }: {
-  resp: CheckinResponse | null;
+  resp: CheckinResponse;
   onNavigate: (r: Route) => void;
 }) {
-  // When the check-in came from a paid invoice we don't have the new
-  // deadline to hand (the poller did it), so fall back to generic copy.
-  const dateLine = resp
-    ? parseRfc(resp.next_deadline_at).toLocaleString(undefined, {
-        weekday: "long",
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      })
-    : null;
+  const dateLine = parseRfc(resp.next_deadline_at).toLocaleString(undefined, {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
   return (
     <>
       <div
@@ -141,15 +141,8 @@ function Success({
       </div>
       <h1 className="mt-6 font-serif text-3xl md:text-4xl">You&apos;re checked in</h1>
       <p className="mt-3 max-w-md text-muted">
-        Thanks.{" "}
-        {dateLine ? (
-          <>
-            Your next reminder is on{" "}
-            <span className="font-medium text-[var(--text)]">{dateLine}</span>.{" "}
-          </>
-        ) : (
-          <>Your countdown is reset. </>
-        )}
+        Thanks. Your next reminder is on{" "}
+        <span className="font-medium text-[var(--text)]">{dateLine}</span>.
         Nothing else to do.
       </p>
       <div className="mt-10 flex gap-3">

@@ -3421,11 +3421,10 @@ async fn checkin(
 ) -> Result<Json<CheckinResponse>, ApiError> {
     let id = auth.vault_id;
     // Fetch the cadence + last_checkin so we can both recompute the
-    // deadline and enforce once-per-period, plus claim_eligible_at for
-    // the Lightning last-resort gate below.
-    let row = sqlx::query_as::<_, (i64, i64, Option<String>, String, Option<String>)>(
-        "SELECT checkin_period_secs, grace_period_secs, last_checkin_at, status, \
-                claim_eligible_at \
+    // deadline and enforce once-per-period. Checking in is free: the
+    // owner's signed-in session is the proof of life.
+    let row = sqlx::query_as::<_, (i64, i64, Option<String>, String)>(
+        "SELECT checkin_period_secs, grace_period_secs, last_checkin_at, status \
            FROM vaults WHERE id = ?",
     )
     .bind(&id)
@@ -3450,9 +3449,7 @@ async fn checkin(
     let now = Utc::now();
     // Once-per-period guard: if the owner already checked in inside
     // the current cycle, refuse the duplicate so the deadline doesn't
-    // keep getting pushed forward by repeated taps. Checked before the
-    // Lightning gate so a duplicate tap hears "already checked in"
-    // (accurate, calming) rather than "pay with Lightning".
+    // keep getting pushed forward by repeated taps.
     if let Some(last_s) = row.2.as_deref() {
         if let Ok(last) = DateTime::parse_from_rfc3339(last_s) {
             let last_utc = last.with_timezone(&Utc);
@@ -3463,33 +3460,6 @@ async fn checkin(
                     next_open.to_rfc3339()
                 )));
             }
-        }
-    }
-
-    // Lightning is THE check-in (ghostkey-web/src/checkin.ts states the
-    // policy; checkin_from_link enforces the same gate on the one-tap
-    // path). When this server has a Lightning provider, the free path
-    // is a last resort: only inside the final 24h before the heir would
-    // be contacted. The dashboard already routes taps to the invoice
-    // modal — this makes the rule hold at the server too, so an owner
-    // token can't curl around it. Servers without Lightning (local
-    // dev, demo, self-hosters who skipped the sidecar) keep the free
-    // button; a vault with no claim_eligible_at yet is treated as
-    // outside the window, mirroring the from-link gate.
-    if state.lightning.is_enabled() {
-        let last_resort_window = Duration::seconds(24 * 60 * 60);
-        let in_last_resort_window = row
-            .4
-            .as_deref()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|eligible| eligible.with_timezone(&Utc) - now <= last_resort_window)
-            .unwrap_or(false);
-        if !in_last_resort_window {
-            return Err(ApiError::Conflict(
-                "free check-in is only available in the final 24 hours; \
-                 check in with Lightning instead"
-                    .into(),
-            ));
         }
     }
 
@@ -3579,13 +3549,12 @@ async fn checkin_from_link(
         i64,            // checkin_period_secs
         i64,            // grace_period_secs
         Option<String>, // last_checkin_at
-        Option<String>, // claim_eligible_at
         String,         // status
     );
     let row: Option<Row> = sqlx::query_as(
         r#"SELECT checkin_link_token_hash, checkin_link_token_used_at,
                   checkin_period_secs, grace_period_secs, last_checkin_at,
-                  claim_eligible_at, status
+                  status
              FROM vaults
             WHERE id = ?
               AND checkin_link_token_hash = ?"#,
@@ -3601,7 +3570,6 @@ async fn checkin_from_link(
         checkin_secs,
         grace_secs,
         last_checkin_at,
-        claim_eligible_at,
         status,
     ) = row.ok_or(ApiError::NotFound)?;
     let stored_hash = stored_hash.ok_or(ApiError::NotFound)?;
@@ -3621,25 +3589,6 @@ async fn checkin_from_link(
         return Err(claimed_checkin_conflict());
     }
 
-    // Free check-in via the link is a last resort: only allowed inside the
-    // final 24h before the heir would be contacted (claim_eligible_at).
-    // Outside that window Lightning is the only way to check in, so the
-    // free path is refused (the Lightning-from-link route has no gate).
-    // The matching UI only surfaces the free option after a Lightning
-    // payment has actually failed, so both halves of the rule hold.
-    let last_resort_window = Duration::seconds(24 * 60 * 60);
-    let in_last_resort_window = claim_eligible_at
-        .as_deref()
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|eligible| eligible.with_timezone(&Utc) - Utc::now() <= last_resort_window)
-        .unwrap_or(false);
-    if !in_last_resort_window {
-        return Err(ApiError::Conflict(
-            "free check-in is only available in the final 24 hours; \
-             check in with Lightning instead"
-                .into(),
-        ));
-    }
     // Once-per-period guard mirrors the button check-in path.
     if let Some(last_s) = last_checkin_at.as_deref() {
         if let Ok(last) = DateTime::parse_from_rfc3339(last_s) {

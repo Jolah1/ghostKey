@@ -99,8 +99,8 @@ function Hero({ onNavigate }: Props) {
         </div>
 
         <p className="mt-5 text-xs text-muted">
-          Free and open source. No subscription. You only pay tiny network fees
-          in sats and your own check-ins.
+          Free and open source. No subscription. Check-ins are free. You only
+          pay normal Bitcoin network fees when you move money.
         </p>
 
         <TrustRow />
