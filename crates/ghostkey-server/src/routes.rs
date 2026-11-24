@@ -278,6 +278,7 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
             "/vaults/:id/heir",
             get(get_vault_heir).put(update_vault_heir),
         )
+        .route("/vaults/:id/heir/choose", post(choose_heir))
         .route("/vaults/:id/savings", get(crate::savings::get_savings))
         .route(
             "/vaults/:id/savings/goal",
@@ -668,6 +669,11 @@ pub struct VaultView {
     /// owner-authenticated `GET /vaults/:id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activation_held: Option<bool>,
+    /// No heir chosen yet: the owner skipped inheritance at setup. The
+    /// check-in clock stays off until they choose one. Only populated on
+    /// the owner-authenticated `GET /vaults/:id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heir_pending: Option<bool>,
     /// Can we reach the heir (#327)? `"unreachable"`, `"unconfirmed"` or
     /// `"confirmed"`; see [`heir_reachability`]. Only populated on the
     /// owner-authenticated `GET /vaults/:id`.
@@ -971,6 +977,7 @@ async fn create_vault(
                 // doesn't participate in email verification.
                 owner_contact_verified: None,
                 activation_held: None,
+                heir_pending: None,
                 heir_reachability: None,
                 guardians_unreachable: None,
                 descriptor_external: None,
@@ -1119,6 +1126,15 @@ pub struct SealedSetup {
     /// scheduler mints a fresh claim token at trigger time, exactly like
     /// a legacy vault, since no heir secret is bound to it.
     pub claim_token_b64: Option<String>,
+
+    /// Heir chosen later: the heir's xprv sealed under the OWNER's
+    /// password KEK instead of a claim token. Present only on a vault
+    /// created without an heir; then no claim token and no heir contact
+    /// may be sent, so the server holds nothing that reaches the heir
+    /// branch. `POST /vaults/:id/heir/choose` swaps it for the Door A
+    /// seal once the owner picks someone.
+    pub heir_xprv_owner_ct_b64: Option<String>,
+    pub heir_xprv_owner_nonce_b64: Option<String>,
 }
 
 /// One *verified owner* per email — but an owner may have several heirs, each
@@ -1455,6 +1471,21 @@ async fn create_vault_from_xpub(
                 "sealed heir xprv and claim token must be both present or both absent".into(),
             ));
         }
+        // Heir chosen later: the heir key is sealed for the owner only.
+        // Nothing that could reach the heir branch may come with it.
+        let heir_later =
+            s.heir_xprv_owner_ct_b64.is_some() || s.heir_xprv_owner_nonce_b64.is_some();
+        if heir_later
+            && (s.heir_xprv_owner_ct_b64.is_none()
+                || s.heir_xprv_owner_nonce_b64.is_none()
+                || heir_present
+                || effective_heir_contact.is_some()
+                || req.heir_derivation.is_some())
+        {
+            return Err(ApiError::Validation(
+                "a vault with its heir chosen later carries only the owner-sealed heir key".into(),
+            ));
+        }
         // Door B: no heir secret, no at-rest claim token. The scheduler
         // mints a fresh token at trigger time (legacy path).
         //
@@ -1584,6 +1615,22 @@ async fn create_vault_from_xpub(
     .execute(&state.db)
     .await?;
 
+    // Heir chosen later: keep the owner-sealed heir key and hold the
+    // check-in clock off until an heir is chosen.
+    if let Some(s) = req.sealed.as_ref() {
+        if let (Some(ct), Some(nn)) = (&s.heir_xprv_owner_ct_b64, &s.heir_xprv_owner_nonce_b64) {
+            sqlx::query(
+                "UPDATE vaults SET heir_pending = 1, heir_xprv_owner_sealed_ct_b64 = ?, \
+                                   heir_xprv_owner_sealed_nonce = ? WHERE id = ?",
+            )
+            .bind(ct)
+            .bind(nn)
+            .bind(&id)
+            .execute(&state.db)
+            .await?;
+        }
+    }
+
     // Hold the clock until the vault is funded.
     let initial_status = initial_vault_status();
     if initial_status != "ok" {
@@ -1679,6 +1726,7 @@ async fn create_vault_from_xpub(
                 // A brand-new vault has no coins yet, so nothing is
                 // being held. The owner GET reports it from then on.
                 activation_held: None,
+                heir_pending: None,
                 heir_reachability: None,
                 guardians_unreachable: None,
                 // Return the public descriptor pair so the setup browser
@@ -2119,6 +2167,7 @@ async fn create_vault_guardian(
                 // A brand-new vault has no coins yet, so nothing is
                 // being held. The owner GET reports it from then on.
                 activation_held: None,
+                heir_pending: None,
                 heir_reachability: None,
                 guardians_unreachable: None,
                 descriptor_external: Some(pair.external.clone()),
@@ -2777,6 +2826,162 @@ async fn update_vault_guardian(
     Ok(Json(read_guardian_contacts(&state.db, &id).await?))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ChooseHeirRequest {
+    pub name: String,
+    pub contact: String,
+    /// Defaults to email, the only channel delivered today.
+    pub channel: Option<String>,
+    /// The heir key, opened in the browser with the owner's password and
+    /// re-sealed under a fresh claim token (Door A).
+    pub heir_xprv_ct_b64: String,
+    pub heir_xprv_nonce_b64: String,
+    pub claim_token_b64: String,
+    pub from_name: Option<String>,
+    pub heir_note: Option<String>,
+}
+
+/// Choose who inherits, on a vault set up without an heir (OwnerAuth).
+///
+/// The browser opened the heir key with the owner's password, checked it
+/// against the heir branch in the descriptor, and re-sealed it under a
+/// new claim token. From here the vault is exactly like one set up with
+/// its heir at the start: the owner-sealed copy is dropped, and the next
+/// scheduler pass starts the check-in clock once the vault is funded and
+/// the owner's email is confirmed.
+///
+/// Refused once an heir is chosen: changing who inherits later is a new
+/// share (Add heir), and changing how they're reached is `PUT /heir`.
+async fn choose_heir(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ChooseHeirRequest>,
+) -> Result<StatusCode, ApiError> {
+    let id = auth.vault_id;
+    let name = req.name.trim();
+    if name.is_empty() {
+        return Err(ApiError::Validation("Say who inherits.".into()));
+    }
+    if name.chars().count() > 80 {
+        return Err(ApiError::Validation(
+            "Keep the name under 80 characters.".into(),
+        ));
+    }
+    let channel = req.channel.as_deref().unwrap_or("email");
+    validate_contact_channel("channel", Some(channel))?;
+    let contact = req.contact.trim();
+    if contact.is_empty() {
+        return Err(ApiError::Validation("contact must not be empty".into()));
+    }
+    validate_contact_shape(channel, contact)?;
+    for (field, v) in [
+        ("heir_xprv_ct_b64", &req.heir_xprv_ct_b64),
+        ("heir_xprv_nonce_b64", &req.heir_xprv_nonce_b64),
+        ("claim_token_b64", &req.claim_token_b64),
+    ] {
+        if v.trim().is_empty() || v.len() > 4096 {
+            return Err(ApiError::Validation(format!(
+                "{field} is missing or too long"
+            )));
+        }
+    }
+    let from_name = req
+        .from_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let note = req
+        .heir_note
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if from_name.is_some_and(|s| s.chars().count() > 80) {
+        return Err(ApiError::Validation("from_name too long (max 80)".into()));
+    }
+    if note.is_some_and(|s| s.chars().count() > 500) {
+        return Err(ApiError::Validation("heir_note too long (max 500)".into()));
+    }
+
+    let pending: Option<i64> = sqlx::query_scalar("SELECT heir_pending FROM vaults WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await?;
+    match pending {
+        None => return Err(ApiError::NotFound),
+        Some(1) => {}
+        Some(_) => {
+            return Err(ApiError::Conflict(
+                "This vault already has an heir. Use Add heir for someone else.".into(),
+            ))
+        }
+    }
+
+    let contact_blob = serde_json::json!({
+        "name": name,
+        "contact": contact,
+        "channel": channel,
+    })
+    .to_string();
+    let sealed_contact = seal_for_vault(&id, contact_blob.as_bytes())?;
+    let at_rest = crypto::seal_claim_token_at_rest(&id, &req.claim_token_b64)?;
+    let token_hash = crypto::hash_claim_token(&req.claim_token_b64);
+    let intro = if from_name.is_some() || note.is_some() {
+        let blob = serde_json::json!({ "from_name": from_name, "note": note }).to_string();
+        Some(seal_for_vault(&id, blob.as_bytes())?)
+    } else {
+        None
+    };
+    let now_s = Utc::now().to_rfc3339();
+
+    // `AND heir_pending = 1` makes this a compare-and-swap: two tabs
+    // choosing at once can't both write.
+    let updated = sqlx::query(
+        r#"UPDATE vaults
+              SET heir_pending = 0,
+                  heir_xprv_owner_sealed_ct_b64 = NULL,
+                  heir_xprv_owner_sealed_nonce = NULL,
+                  heir_xprv_sealed_ct_b64 = ?,
+                  heir_xprv_sealed_nonce = ?,
+                  claim_token_at_rest_b64 = ?,
+                  claim_token_hash = ?,
+                  claim_token_issued_at = ?,
+                  heir_contact_ciphertext = ?,
+                  heir_contact_nonce = ?,
+                  heir_contact_channel = ?,
+                  heir_intro_ciphertext = ?,
+                  heir_intro_nonce = ?,
+                  label = ?
+            WHERE id = ? AND heir_pending = 1"#,
+    )
+    .bind(&req.heir_xprv_ct_b64)
+    .bind(&req.heir_xprv_nonce_b64)
+    .bind(&at_rest)
+    .bind(&token_hash)
+    .bind(&now_s)
+    .bind(&sealed_contact.ciphertext_b64)
+    .bind(&sealed_contact.nonce_b64)
+    .bind(channel)
+    .bind(intro.as_ref().map(|s| s.ciphertext_b64.clone()))
+    .bind(intro.as_ref().map(|s| s.nonce_b64.clone()))
+    .bind(format!("{name}'s inheritance"))
+    .bind(&id)
+    .execute(&state.db)
+    .await?;
+    if updated.rows_affected() == 0 {
+        return Err(ApiError::Conflict(
+            "This vault already has an heir. Use Add heir for someone else.".into(),
+        ));
+    }
+    record_event(
+        &state.db,
+        &id,
+        "heir_chosen",
+        Some(serde_json::json!({ "channel": channel })),
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Change the heir's contact address and channel on an existing vault
 /// (OwnerAuth). This is the only way to fix a heir who was set up on a
 /// channel we can't deliver to (e.g. WhatsApp before it's approved) or
@@ -2994,6 +3199,8 @@ async fn get_vault(
         heir_contact_channel: Option<String>,
         heir_contact_verified_at: Option<String>,
         heir_unreachable_alerted_at: Option<String>,
+        /// No heir chosen yet (0/1).
+        heir_pending: i64,
     }
     let row = sqlx::query_as::<_, VaultRow>(
         r#"SELECT id, label, network, timelock_blocks,
@@ -3009,7 +3216,7 @@ async fn get_vault(
                   drill_started_at, drill_opened_at, drill_completed_at,
                   heir_contact_ciphertext IS NOT NULL AS has_heir_contact,
                   heir_contact_channel, heir_contact_verified_at,
-                  heir_unreachable_alerted_at
+                  heir_unreachable_alerted_at, heir_pending
            FROM vaults WHERE id = ?"#,
     )
     .bind(&id)
@@ -3091,6 +3298,7 @@ async fn get_vault(
         // last scan saw coins. Anything else reads `false`, including a
         // vault nobody has funded yet.
         activation_held: Some(activation_held),
+        heir_pending: Some(row.heir_pending == 1),
         heir_reachability: heir_reachability.map(str::to_string),
         guardians_unreachable,
         descriptor_external: Some(row.descriptor_external),
@@ -4517,6 +4725,13 @@ pub struct SealedBlobsView {
     /// origin-tagged `owner.xpub`, so the server rebuilds an identical
     /// owner branch. `None` for legacy rows that predate this column.
     pub owner_xpub_fragment_external: Option<String>,
+    /// Heir chosen later: the heir key sealed under the owner's password,
+    /// and the heir's descriptor fragment so the browser can check it
+    /// opened the right key before re-sealing it for a claim. `None`
+    /// once an heir is chosen, and on every other vault.
+    pub heir_xprv_owner_ct_b64: Option<String>,
+    pub heir_xprv_owner_nonce_b64: Option<String>,
+    pub heir_xpub_fragment_external: Option<String>,
 }
 
 async fn load_sealed_blobs(pool: &sqlx::SqlitePool, id: &str) -> Result<SealedBlobsView, ApiError> {
@@ -4532,12 +4747,18 @@ async fn load_sealed_blobs(pool: &sqlx::SqlitePool, id: &str) -> Result<SealedBl
         String,         // network
         i64,            // timelock
         Option<String>, // owner_xpub_fragment_external
+        Option<String>, // heir_xprv_owner_sealed_ct_b64
+        Option<String>, // heir_xprv_owner_sealed_nonce
+        Option<String>, // heir_xpub_fragment_external
+        i64,            // heir_pending
     );
     let row: Option<Row> = sqlx::query_as(
         r#"SELECT id, password_salt_b64, password_kdf_mem_kib, password_kdf_iters,
                   owner_xprv_sealed_ct_b64, owner_xprv_sealed_nonce,
                   owner_token_sealed_ct_b64, owner_token_sealed_nonce,
-                  network, timelock_blocks, owner_xpub_fragment_external
+                  network, timelock_blocks, owner_xpub_fragment_external,
+                  heir_xprv_owner_sealed_ct_b64, heir_xprv_owner_sealed_nonce,
+                  heir_xpub_fragment_external, heir_pending
              FROM vaults WHERE id = ?"#,
     )
     .bind(id)
@@ -4570,6 +4791,9 @@ async fn load_sealed_blobs(pool: &sqlx::SqlitePool, id: &str) -> Result<SealedBl
         network: row.8,
         timelock_blocks: row.9,
         owner_xpub_fragment_external: row.10,
+        heir_xprv_owner_ct_b64: row.11,
+        heir_xprv_owner_nonce_b64: row.12,
+        heir_xpub_fragment_external: if row.14 == 1 { row.13 } else { None },
     })
 }
 
@@ -5822,6 +6046,95 @@ mod tests {
             heir_xprv_nonce_b64,
             owner_email_hash: owner_email_hash.into(),
             claim_token_b64,
+            heir_xprv_owner_ct_b64: None,
+            heir_xprv_owner_nonce_b64: None,
+        }
+    }
+
+    /// A request for a vault whose heir is chosen later: only the
+    /// owner-sealed heir key, no claim token, no heir contact.
+    fn heir_later_request() -> CreateVaultFromXpubRequest {
+        let mut sealed = sealed_setup(&"c".repeat(64), None, None, None);
+        sealed.heir_xprv_owner_ct_b64 = Some("aGVpcmN0".into());
+        sealed.heir_xprv_owner_nonce_b64 = Some("aGVpcm5u".into());
+        let mut req = door_b_request(sealed);
+        req.label = Some("Savings".into());
+        req.heir_contact = None;
+        req.heir_contact_channel = None;
+        req
+    }
+
+    #[tokio::test]
+    async fn a_vault_can_be_created_with_its_heir_chosen_later() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let (_, created) = create_vault_from_xpub(State(state.clone()), Json(heir_later_request()))
+            .await
+            .expect("create without an heir");
+        let id = created.vault.id.clone();
+        type Row = (
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+        );
+        let row: Row = sqlx::query_as(
+            "SELECT heir_pending, heir_xprv_owner_sealed_ct_b64, heir_xprv_sealed_ct_b64, \
+                    claim_token_hash, heir_contact_ciphertext, status FROM vaults WHERE id = ?",
+        )
+        .bind(&id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(row.0, 1);
+        assert_eq!(row.1.as_deref(), Some("aGVpcmN0"));
+        // Nothing the server holds can reach the heir branch.
+        assert!(row.2.is_none() && row.3.is_none() && row.4.is_none());
+        assert_eq!(row.5, "unfunded");
+
+        // The owner gets the sealed key and the heir branch back to re-seal.
+        let blobs = load_sealed_blobs(&state.db, &id).await.unwrap();
+        assert_eq!(blobs.heir_xprv_owner_ct_b64.as_deref(), Some("aGVpcmN0"));
+        assert!(blobs.heir_xpub_fragment_external.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_heir_later_vault_carries_nothing_that_reaches_the_heir() {
+        ensure_test_master_key();
+        for (label, mangle) in [
+            (
+                "a claim token alongside",
+                Box::new(|r: &mut CreateVaultFromXpubRequest| {
+                    let s = r.sealed.as_mut().unwrap();
+                    s.heir_xprv_ct_b64 = Some("eA".into());
+                    s.heir_xprv_nonce_b64 = Some("eQ".into());
+                    s.claim_token_b64 = Some("dG9r".into());
+                }) as Box<dyn Fn(&mut CreateVaultFromXpubRequest)>,
+            ),
+            (
+                "an heir contact alongside",
+                Box::new(|r: &mut CreateVaultFromXpubRequest| {
+                    r.heir_contact = Some("heir@example.com".into());
+                    r.heir_contact_channel = Some("email".into());
+                }),
+            ),
+            (
+                "half the owner-sealed key",
+                Box::new(|r: &mut CreateVaultFromXpubRequest| {
+                    r.sealed.as_mut().unwrap().heir_xprv_owner_nonce_b64 = None;
+                }),
+            ),
+        ] {
+            let state = fresh_state().await;
+            let mut req = heir_later_request();
+            mangle(&mut req);
+            let result = create_vault_from_xpub(State(state.clone()), Json(req)).await;
+            assert!(
+                matches!(result, Err(ApiError::Validation(_))),
+                "{label} must be refused"
+            );
         }
     }
 

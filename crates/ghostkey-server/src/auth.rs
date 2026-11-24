@@ -954,6 +954,111 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn choosing_an_heir_later_arms_the_vault_once() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-later", Some(&issued.hash_hex)).await;
+        sqlx::query(
+            "UPDATE vaults SET heir_pending = 1, status = 'unfunded', \
+                    heir_xprv_owner_sealed_ct_b64 = 'b3duZXI', heir_xprv_owner_sealed_nonce = 'bm4', \
+                    heir_contact_ciphertext = NULL, heir_contact_nonce = NULL, \
+                    claim_token_hash = NULL WHERE id = 'vault-later'",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let t = Some(issued.token.as_str());
+
+        let (_, v) = call(state.clone(), "GET", "/vaults/vault-later", t, None).await;
+        assert_eq!(v["heir_pending"], true);
+
+        let body = serde_json::json!({
+            "name": "Ada",
+            "contact": "ada@example.com",
+            "heir_xprv_ct_b64": "aGVpcg",
+            "heir_xprv_nonce_b64": "bm9uY2U",
+            "claim_token_b64": "Y2xhaW0tdG9rZW4",
+        });
+        // Owner only.
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            "/vaults/vault-later/heir/choose",
+            None,
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
+        // A bad address is refused before anything changes.
+        let mut bad = body.clone();
+        bad["contact"] = serde_json::json!("ada-at-example");
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            "/vaults/vault-later/heir/choose",
+            t,
+            Some(bad),
+        )
+        .await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            "/vaults/vault-later/heir/choose",
+            t,
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(code, StatusCode::NO_CONTENT);
+        type Row = (
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+        let row: Row = sqlx::query_as(
+            "SELECT heir_pending, heir_xprv_owner_sealed_ct_b64, heir_xprv_sealed_ct_b64, \
+                    claim_token_hash, claim_token_at_rest_b64, heir_contact_ciphertext, label \
+               FROM vaults WHERE id = 'vault-later'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(row.0, 0);
+        assert!(row.1.is_none(), "the owner-sealed copy is dropped");
+        assert_eq!(row.2.as_deref(), Some("aGVpcg"));
+        assert_eq!(
+            row.3.as_deref(),
+            Some(crate::crypto::hash_claim_token("Y2xhaW0tdG9rZW4").as_str())
+        );
+        let at_rest = row.4.expect("token kept at rest");
+        assert!(
+            !at_rest.contains("Y2xhaW0tdG9rZW4"),
+            "the token is sealed at rest, not stored verbatim"
+        );
+        let contact = row.5.expect("heir contact sealed");
+        assert!(!contact.contains("ada@"), "the heir contact is sealed");
+        assert_eq!(row.6.as_deref(), Some("Ada's inheritance"));
+
+        // Once only: a second heir is a new share.
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            "/vaults/vault-later/heir/choose",
+            t,
+            Some(body),
+        )
+        .await;
+        assert_eq!(code, StatusCode::CONFLICT);
+        let (_, v) = call(state.clone(), "GET", "/vaults/vault-later", t, None).await;
+        assert_eq!(v["heir_pending"], false);
+    }
+
+    #[tokio::test]
     async fn savings_totals_deposits_and_a_sealed_goal() {
         let state = fresh_state().await;
         let issued = crate::crypto::issue_owner_token();
