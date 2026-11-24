@@ -371,10 +371,7 @@ mod http_tests {
             .run(&pool)
             .await
             .expect("run migrations");
-        std::sync::Arc::new(crate::AppState {
-            db: pool,
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        })
+        std::sync::Arc::new(crate::AppState { db: pool })
     }
 
     /// Insert a vault directly so we can pin its id + token hash for
@@ -845,47 +842,14 @@ mod http_tests {
      *  Check-in is free on POST /vaults/:id/checkin                     *
      *                                                                   *
      *  Check-ins used to require a Lightning payment outside the final  *
-     *  24h before the heir would be contacted. That gate is gone. These *
-     *  tests pin that a configured Lightning provider can never bring   *
-     *  it back: the owner's session alone is enough, at any time.       *
+     *  24h before the heir would be contacted. That gate is gone, and   *
+     *  so is Lightning. The owner's session alone is enough, at any     *
+     *  point in the cycle.                                              *
      * ----------------------------------------------------------------- */
 
-    /// A Lightning provider that reports enabled but can't mint. Used
-    /// to prove an enabled provider does not gate the free check-in.
-    struct EnabledStubLightning;
-
-    #[async_trait::async_trait]
-    impl crate::lightning::LightningProvider for EnabledStubLightning {
-        fn is_enabled(&self) -> bool {
-            true
-        }
-        async fn create_invoice(
-            &self,
-            _amount_sat: u64,
-            _description: &str,
-        ) -> Result<crate::lightning::CreatedInvoice, crate::lightning::LightningError> {
-            Err(crate::lightning::LightningError::NotConfigured)
-        }
-        async fn invoice_status(
-            &self,
-            _payment_hash: &str,
-        ) -> Result<crate::lightning::InvoiceStatus, crate::lightning::LightningError> {
-            Err(crate::lightning::LightningError::NotConfigured)
-        }
-    }
-
-    /// `fresh_state`, but with a Lightning provider that reports enabled.
-    async fn fresh_state_lightning_enabled() -> std::sync::Arc<crate::AppState> {
-        let state = fresh_state().await;
-        std::sync::Arc::new(crate::AppState {
-            db: state.db.clone(),
-            lightning: std::sync::Arc::new(EnabledStubLightning),
-        })
-    }
-
     #[tokio::test]
-    async fn checkin_with_lightning_enabled_is_free_long_before_the_deadline() {
-        let state = fresh_state_lightning_enabled().await;
+    async fn checkin_is_free_long_before_the_deadline() {
+        let state = fresh_state().await;
         let issued = crate::crypto::issue_owner_token();
         // insert_vault pins claim_eligible_at to 2099, far outside the
         // old 24h last-resort window.
@@ -906,8 +870,8 @@ mod http_tests {
     }
 
     #[tokio::test]
-    async fn checkin_with_lightning_enabled_inside_window_succeeds() {
-        let state = fresh_state_lightning_enabled().await;
+    async fn checkin_inside_the_final_day_succeeds() {
+        let state = fresh_state().await;
         let issued = crate::crypto::issue_owner_token();
         insert_vault(&state.db, "vault-ln-B", Some(&issued.hash_hex)).await;
         // Pull claim_eligible_at inside the final 24h.
@@ -933,10 +897,10 @@ mod http_tests {
     }
 
     #[tokio::test]
-    async fn checkin_with_lightning_enabled_null_eligible_is_free() {
+    async fn checkin_on_a_row_without_claim_eligible_is_free() {
         // No claim_eligible_at (legacy row): this used to fail toward
         // Lightning. Check-in is free now, so it must succeed.
-        let state = fresh_state_lightning_enabled().await;
+        let state = fresh_state().await;
         let issued = crate::crypto::issue_owner_token();
         insert_vault(&state.db, "vault-ln-C", Some(&issued.hash_hex)).await;
         sqlx::query("UPDATE vaults SET claim_eligible_at = NULL WHERE id = 'vault-ln-C'")
@@ -1085,9 +1049,8 @@ mod http_tests {
     }
 
     #[tokio::test]
-    async fn checkin_without_lightning_stays_free() {
-        // Servers without a Lightning provider (local dev, demo,
-        // self-hosters) keep the free button working at any time.
+    async fn checkin_works_at_any_time() {
+        // The plain button works with a normal far-off deadline.
         let state = fresh_state().await;
         let issued = crate::crypto::issue_owner_token();
         insert_vault(&state.db, "vault-ln-D", Some(&issued.hash_hex)).await;

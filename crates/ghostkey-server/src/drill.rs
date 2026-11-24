@@ -480,10 +480,7 @@ mod http_tests {
             .run(&pool)
             .await
             .expect("run migrations");
-        std::sync::Arc::new(crate::AppState {
-            db: pool,
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        })
+        std::sync::Arc::new(crate::AppState { db: pool })
     }
 
     /// A vault with an owner token and a sealed heir email contact —

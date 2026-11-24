@@ -350,10 +350,7 @@ mod claim_token_http_tests {
             .run(&pool)
             .await
             .expect("run migrations");
-        std::sync::Arc::new(crate::AppState {
-            db: pool,
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        })
+        std::sync::Arc::new(crate::AppState { db: pool })
     }
 
     /// Insert a vault with an owner token hash and (optionally) a claim

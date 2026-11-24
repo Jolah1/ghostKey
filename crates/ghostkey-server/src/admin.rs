@@ -253,10 +253,7 @@ mod tests {
             .run(&pool)
             .await
             .expect("run migrations");
-        Arc::new(AppState {
-            db: pool,
-            lightning: Arc::new(crate::lightning::NoopProvider),
-        })
+        Arc::new(AppState { db: pool })
     }
 
     #[tokio::test]

@@ -255,7 +255,7 @@ interface Draft {
   savedPassword: boolean;
 
   /** F4: optional trusted contact who is alerted if the owner ever
-   *  pays the panic-stop LNURL. Same channel vocabulary as heirs;
+   *  triggers the panic stop. Same channel vocabulary as heirs;
    *  the dashboard surfaces this field as "Trusted contact (panic-stop)". */
   trustedContact: string;
   trustedContactChannel: ContactChannel;

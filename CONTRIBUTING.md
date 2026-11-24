@@ -112,7 +112,7 @@ label. The current taxonomy:
   - `area:cli`: `crates/ghostkey-cli`
   - `area:server`: `crates/ghostkey-server`
   - `area:web`: `ghostkey-web/` (React frontend)
-  - `area:lightning`: Lightning sidecars + check-in flow
+  - `area:lightning`: Lightning deposits and withdrawals (swaps), when they land
   - `area:ci`: GitHub Actions, cargo audit, runners
   - `area:ops`: runbooks, deploys, infra
   - `area:docs`: Markdown under `docs/` and at the repo root
@@ -290,9 +290,6 @@ on GitHub for bite-sized work that's already scoped out.
 - **Address-only setup.** A wizard mode that accepts a bare Bitcoin
   address instead of an xpub, for users who can't easily export an
   xpub. Requires backend work to track a single address as a vault.
-- **Lightning check-in.** A `/lnurlp/<vault-id>` endpoint that
-  generates a 1-sat invoice, with payment received recorded as a
-  check-in.
 - **k-of-n heirs.** The descriptor builder hard-codes one heir. The
   miniscript already supports a `thresh(k, ...)` over multiple heirs;
   this is a generalisation of the existing builder.

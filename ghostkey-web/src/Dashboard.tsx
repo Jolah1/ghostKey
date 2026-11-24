@@ -281,7 +281,7 @@ export function Dashboard({ onNavigate }: Props) {
   }
 
   // Owner-initiated heir removal. Deletes the server-side vault row
-  // (cascading events/notifications/lightning_invoices) and the local
+  // (cascading events and notifications) and the local
   // metadata. For a multi-heir group, picks a remaining sibling as
   // the next active vault and reloads so the dashboard re-renders
   // against it. For a single-heir vault, routes back to landing.

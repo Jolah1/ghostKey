@@ -182,8 +182,8 @@ export function TermsPage() {
         <p>
           GhostKey is early software. We aim for high availability, but we
           do not guarantee uptime, and reminders depend on third-party
-          delivery (email providers, spam filters, Lightning
-          infrastructure) that we don't control. We may change, add, or
+          delivery (email providers, spam filters) that we don't
+          control. We may change, add, or
           remove features. If we ever discontinue the service, your
           bitcoin remains accessible without us (that is the point of the
           recovery file), and we will give reasonable notice.
@@ -319,9 +319,8 @@ export function PrivacyPage() {
             The heir-controlled-key option sends us no heir private key.
           </li>
           <li>
-            <strong>Activity records</strong>: check-ins, reminders sent,
-            and Lightning check-in invoices, so your dashboard can show
-            history.
+            <strong>Activity records</strong>: check-ins, deposits and
+            reminders sent, so your dashboard can show history.
           </li>
         </ul>
       </Section>
@@ -369,10 +368,9 @@ export function PrivacyPage() {
             passwords or keys into the chat. It will tell you the same.
           </li>
           <li>
-            <strong>Bitcoin and Lightning infrastructure</strong>: our
-            server queries public block explorers about vault addresses
-            and processes Lightning check-in payments. Bitcoin itself is a
-            public network: anyone can see transactions on it.
+            <strong>Bitcoin infrastructure</strong>: our server queries
+            public block explorers about vault addresses. Bitcoin itself
+            is a public network: anyone can see transactions on it.
           </li>
         </ul>
       </Section>

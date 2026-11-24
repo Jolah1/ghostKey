@@ -55,63 +55,6 @@ async fn record_heartbeat(db: &sqlx::SqlitePool) {
     }
 }
 
-/// Cap on the recovery grace granted after a Lightning outage ends. A long
-/// outage shouldn't postpone every heir forever; 24h is enough for an owner
-/// to notice Lightning is back and check in.
-const MAX_RECOVERY_GRACE_SECS: i64 = 24 * 60 * 60;
-
-/// Process-level tracker for Lightning availability. Lets the scheduler
-/// pause the heir-contact transitions during our own Lightning outage (an
-/// owner who can't pay a check-in must never be treated as gone) and grant
-/// a short grace once Lightning recovers. In-memory only: a restart loses
-/// the recovery grace but never the core "don't contact during an outage"
-/// guarantee, which is recomputed from a live probe every tick.
-#[derive(Default)]
-struct LnGate {
-    unhealthy_since: Option<chrono::DateTime<Utc>>,
-    suppress_until: Option<chrono::DateTime<Utc>>,
-}
-
-fn ln_gate() -> &'static Mutex<LnGate> {
-    static G: OnceLock<Mutex<LnGate>> = OnceLock::new();
-    G.get_or_init(|| Mutex::new(LnGate::default()))
-}
-
-/// Decide whether the heir-contact transitions should be paused this tick,
-/// updating the gate. Returns true to suppress. Time is injected so this is
-/// unit-testable without a real clock or Lightning provider.
-fn update_ln_gate(
-    gate: &mut LnGate,
-    ln_healthy: bool,
-    now: chrono::DateTime<Utc>,
-    max_grace: chrono::Duration,
-) -> bool {
-    if !ln_healthy {
-        if gate.unhealthy_since.is_none() {
-            gate.unhealthy_since = Some(now);
-        }
-        return true;
-    }
-    // Healthy. Coming out of an outage, grant a recovery grace equal to the
-    // outage length (capped) before any heir can be contacted.
-    if let Some(since) = gate.unhealthy_since.take() {
-        let outage = now - since;
-        let grace = if outage < max_grace {
-            outage
-        } else {
-            max_grace
-        };
-        gate.suppress_until = Some(now + grace);
-    }
-    match gate.suppress_until {
-        Some(until) if now < until => true,
-        _ => {
-            gate.suppress_until = None;
-            false
-        }
-    }
-}
-
 async fn tick_once(state: &AppState) -> anyhow::Result<()> {
     let now = Utc::now().to_rfc3339();
     unfreeze_expired_panics(state, &now).await?;
@@ -127,39 +70,8 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
     transition_ok_to_alarmed(state, &now).await?;
     send_alarm_escalations(state, &now).await?;
 
-    // Fail-safe: if Lightning is the check-in but our provider is down, an
-    // owner can't prove liveness, so we must not advance any vault to
-    // claimable (which contacts the heir). Probe with a short timeout and
-    // treat a timeout or error as unhealthy. With no Lightning provider
-    // (NoopProvider) we're always "healthy" here, because the free
-    // check-in still works.
-    let ln_healthy = if state.lightning.is_enabled() {
-        matches!(
-            tokio::time::timeout(Duration::from_secs(5), state.lightning.probe()).await,
-            Ok(Ok(true))
-        )
-    } else {
-        true
-    };
-    let suppress_heir_contact = {
-        let mut gate = ln_gate().lock().expect("ln gate poisoned");
-        update_ln_gate(
-            &mut gate,
-            ln_healthy,
-            Utc::now(),
-            chrono::Duration::seconds(MAX_RECOVERY_GRACE_SECS),
-        )
-    };
-
-    if suppress_heir_contact {
-        tracing::warn!(
-            "lightning unavailable or recently recovered; pausing heir-contact \
-             transitions this tick"
-        );
-    } else {
-        transition_alarmed_to_claimable(state, &now).await?;
-        send_claim_ready_notices(state).await?;
-    }
+    transition_alarmed_to_claimable(state, &now).await?;
+    send_claim_ready_notices(state).await?;
     Ok(())
 }
 
@@ -837,7 +749,7 @@ async fn enqueue_pre_deadline_reminder(
 
     // Set the per-cycle marker so we don't re-send on the next tick.
     // Cleared on every successful check-in (see routes::checkin,
-    // psbt_routes, lightning::mark_paid_and_checkin).
+    // routes::checkin_from_link, psbt_routes).
     sqlx::query("UPDATE vaults SET pre_deadline_reminder_sent_at = ? WHERE id = ?")
         .bind(now_iso)
         .bind(vault_id)
@@ -2397,56 +2309,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn ln_gate_pauses_during_outage_and_grants_capped_recovery_grace() {
-        let mut gate = LnGate::default();
-        let t0 = Utc::now();
-        let cap = chrono::Duration::seconds(MAX_RECOVERY_GRACE_SECS);
-        let at = |secs: i64| t0 + chrono::Duration::seconds(secs);
-
-        // Healthy from the start: never suppress.
-        assert!(!update_ln_gate(&mut gate, true, at(0), cap));
-
-        // Outage: suppress immediately and keep suppressing.
-        assert!(update_ln_gate(&mut gate, false, at(10), cap));
-        assert!(update_ln_gate(&mut gate, false, at(70), cap));
-
-        // Recovers after a 60s outage (started at t+10): grace ~60s, so
-        // heir contact stays paused through the grace window.
-        assert!(update_ln_gate(&mut gate, true, at(70), cap));
-        assert!(update_ln_gate(&mut gate, true, at(100), cap));
-
-        // Past the grace: resume normal heir-contact transitions.
-        assert!(!update_ln_gate(&mut gate, true, at(200), cap));
-    }
-
-    #[test]
-    fn ln_gate_recovery_grace_is_capped() {
-        let mut gate = LnGate::default();
-        let t0 = Utc::now();
-        let cap = chrono::Duration::seconds(MAX_RECOVERY_GRACE_SECS);
-        let at = |secs: i64| t0 + chrono::Duration::seconds(secs);
-
-        // A very long outage (2 days), then recovery.
-        assert!(update_ln_gate(&mut gate, false, at(0), cap));
-        let recover = at(2 * 24 * 60 * 60);
-        assert!(update_ln_gate(&mut gate, true, recover, cap));
-        // Still paused 23h after recovery (within the 24h cap)...
-        assert!(update_ln_gate(
-            &mut gate,
-            true,
-            recover + chrono::Duration::seconds(23 * 60 * 60),
-            cap
-        ));
-        // ...but resumed 25h after recovery (cap is 24h, not 2 days).
-        assert!(!update_ln_gate(
-            &mut gate,
-            true,
-            recover + chrono::Duration::seconds(25 * 60 * 60),
-            cap
-        ));
-    }
-
     /// Bring up a fresh SQLite in memory with all migrations applied.
     ///
     /// Also disables the Fix-A on-chain maturity gate: these tests drive
@@ -2557,10 +2419,7 @@ mod tests {
     #[tokio::test]
     async fn scheduler_never_touches_a_claimed_vault() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
 
         let long_past = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
         insert_vault(
@@ -2620,10 +2479,7 @@ mod tests {
     #[tokio::test]
     async fn ok_past_deadline_transitions_to_alarmed() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         // Deadline 1 hour in the past.
         insert_vault(
             &pool,
@@ -2641,10 +2497,7 @@ mod tests {
     #[tokio::test]
     async fn unfunded_past_deadline_never_alarms() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         // An unfunded vault whose placeholder deadline is long past must
         // NOT start the alarm / heir-contact machinery: the check-in
         // clock only runs once coins are on-chain. We drive the transition
@@ -2672,10 +2525,7 @@ mod tests {
     #[tokio::test]
     async fn funded_unfunded_vault_activates_and_starts_clock() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         // Seed an unfunded vault whose maturity cache is fresh and records
         // a tip. That's exactly the state right after a scan finds coins:
         // `unlock_estimate_with_cache` answers Ok straight from cache (no
@@ -2724,10 +2574,7 @@ mod tests {
     #[tokio::test]
     async fn empty_cached_scan_does_not_reactivate_unfunded_vault() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         let now = Utc::now();
         sqlx::query(
             r#"INSERT INTO vaults (
@@ -2788,10 +2635,7 @@ mod tests {
     #[tokio::test]
     async fn funded_vault_with_unverified_owner_email_is_held() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         let now = Utc::now();
         insert_vault_with_sealed_owner(
             &pool,
@@ -2833,10 +2677,7 @@ mod tests {
     #[tokio::test]
     async fn funded_vault_with_verified_owner_email_activates() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         let now = Utc::now();
         insert_vault_with_sealed_owner(
             &pool,
@@ -2876,10 +2717,7 @@ mod tests {
     #[tokio::test]
     async fn activation_hold_is_recorded_once_not_every_tick() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         let now = Utc::now();
         insert_vault_with_sealed_owner(
             &pool,
@@ -2907,10 +2745,7 @@ mod tests {
     #[tokio::test]
     async fn funded_vault_with_no_owner_contact_still_activates() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         let now = Utc::now();
         insert_vault(
             &pool,
@@ -3008,10 +2843,7 @@ mod tests {
     #[tokio::test]
     async fn drained_ok_vault_stops_its_checkin_clock() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         let now = Utc::now();
         sqlx::query(
             r#"INSERT INTO vaults (
@@ -3073,10 +2905,7 @@ mod tests {
     #[tokio::test]
     async fn funded_ok_vault_survives_the_drain_sweep() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         let now = Utc::now();
         sqlx::query(
             r#"INSERT INTO vaults (
@@ -3113,10 +2942,7 @@ mod tests {
     #[tokio::test]
     async fn never_funded_ok_vault_is_not_reported_as_drained() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         let now = Utc::now();
         // Same shape as the drained vault above — status `ok`, scan found
         // nothing — differing only in having no deposit on record.
@@ -3160,10 +2986,7 @@ mod tests {
     #[tokio::test]
     async fn never_funded_ok_vault_stands_down_without_a_drain_story() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         let now = Utc::now();
         sqlx::query(
             r#"INSERT INTO vaults (
@@ -3210,10 +3033,7 @@ mod tests {
     #[tokio::test]
     async fn never_funded_alarmed_vault_also_stands_down() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         let now = Utc::now();
         sqlx::query(
             r#"INSERT INTO vaults (
@@ -3262,10 +3082,7 @@ mod tests {
     #[tokio::test]
     async fn stand_down_leaves_a_funded_vault_alone() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         let now = Utc::now();
         sqlx::query(
             r#"INSERT INTO vaults (
@@ -3303,10 +3120,7 @@ mod tests {
     #[tokio::test]
     async fn a_fully_spent_deposit_still_retires_the_vault() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         let now = Utc::now();
         sqlx::query(
             r#"INSERT INTO vaults (
@@ -3343,10 +3157,7 @@ mod tests {
     #[tokio::test]
     async fn alarmed_past_eligibility_transitions_and_issues_token() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         // Already alarmed; eligibility in the past.
         insert_vault(
             &pool,
@@ -3365,10 +3176,7 @@ mod tests {
     #[tokio::test]
     async fn alarmed_before_eligibility_does_not_transition() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         // Eligibility in the far future.
         insert_vault(
             &pool,
@@ -3387,10 +3195,7 @@ mod tests {
     #[tokio::test]
     async fn does_not_reissue_token_for_vault_with_existing_hash() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         insert_vault(
             &pool,
             "vault-d",
@@ -3422,10 +3227,7 @@ mod tests {
     #[tokio::test]
     async fn claim_issued_event_does_not_contain_raw_token() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         insert_vault(
             &pool,
             "vault-e",
@@ -3468,10 +3270,7 @@ mod tests {
     #[tokio::test]
     async fn password_vault_reuses_at_rest_token_on_trigger() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         insert_vault(
             &pool,
             "vault-pw",
@@ -3542,10 +3341,7 @@ mod tests {
     async fn password_vault_reuses_at_rest_token_after_checkin_cleared_hash() {
         ensure_test_master_key();
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
 
         let raw_token = "browser-minted-token-bound-to-the-heir-seal";
         let sealed_at_rest =
@@ -3609,10 +3405,7 @@ mod tests {
     async fn password_vault_decrypts_sealed_at_rest_token_into_heir_link() {
         ensure_test_master_key();
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
 
         let raw_token = "the-real-bearer-token-1234567890ABCdef";
         let sealed_at_rest =
@@ -3688,10 +3481,7 @@ mod tests {
     async fn guardian_vault_trigger_enqueues_heir_plus_two_guardian_links() {
         ensure_test_master_key();
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         let vid = "vault-guardian";
 
         // Heir uses the existing inline sealed columns, exactly like a
@@ -3929,10 +3719,7 @@ mod tests {
     async fn alarm_enqueues_owner_notification_when_sealed_contact_present() {
         ensure_test_master_key();
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         insert_vault_with_sealed_owner(
             &pool,
             "vault-ow1",
@@ -4021,10 +3808,7 @@ mod tests {
     async fn claim_link_enqueued_for_whatsapp_heir() {
         ensure_test_master_key();
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         insert_vault_with_sealed_heir(
             &pool,
             "vault-wa",
@@ -4060,10 +3844,7 @@ mod tests {
     async fn claim_link_includes_owner_name_and_note() {
         ensure_test_master_key();
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         insert_vault_with_sealed_heir(
             &pool,
             "vault-intro",
@@ -4163,10 +3944,7 @@ mod tests {
     async fn alarm_skips_owner_notification_when_no_sealed_contact() {
         ensure_test_master_key();
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         // Use the existing helper (no sealed columns populated).
         insert_vault(
             &pool,
@@ -4202,10 +3980,7 @@ mod tests {
     async fn alarm_does_not_re_enqueue_on_subsequent_ticks() {
         ensure_test_master_key();
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         insert_vault_with_sealed_owner(
             &pool,
             "vault-ow3",
@@ -4254,10 +4029,7 @@ mod tests {
     async fn pre_deadline_reminder_fires_within_lead_window() {
         ensure_test_master_key();
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         // Deadline 1 hour from now — well inside the 24h lead.
         let deadline = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
         insert_vault_with_sealed_owner(
@@ -4322,10 +4094,7 @@ mod tests {
     async fn pre_deadline_reminder_does_not_fire_outside_lead_window() {
         ensure_test_master_key();
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         // Deadline 7 days from now — well outside the 24h lead.
         let deadline = (Utc::now() + chrono::Duration::days(7)).to_rfc3339();
         insert_vault_with_sealed_owner(
@@ -4365,10 +4134,7 @@ mod tests {
     async fn pre_deadline_reminder_is_single_shot_per_cycle() {
         ensure_test_master_key();
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         let deadline = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
         insert_vault_with_sealed_owner(
             &pool,
@@ -4399,10 +4165,7 @@ mod tests {
     async fn pre_deadline_reminder_skips_when_no_sealed_contact() {
         ensure_test_master_key();
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         // Insert a vault directly with no owner contact at all.
         let deadline = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
         sqlx::query(
@@ -4437,8 +4200,8 @@ mod tests {
     /// A successful (button) check-in must clear both the
     /// per-cycle reminder marker AND the one-tap token columns, so
     /// the NEXT cycle is fully eligible for a fresh reminder and
-    /// link. The SQL that does this lives in `routes::checkin` and
-    /// `lightning::mark_paid_and_checkin`; we exercise the routes
+    /// link. The SQL that does this lives in `routes::checkin`; we
+    /// exercise the routes
     /// SQL by issuing a direct UPDATE here (we don't have a Router
     /// in the scheduler tests). The point of the test is that the
     /// scheduler's SECOND-cycle behaviour does the right thing
@@ -4447,10 +4210,7 @@ mod tests {
     async fn checkin_clears_markers_so_next_cycle_re_eligible() {
         ensure_test_master_key();
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         let deadline = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
         insert_vault_with_sealed_owner(
             &pool,
@@ -4516,10 +4276,7 @@ mod tests {
     async fn one_tap_token_is_reused_across_reminder_and_alarm() {
         ensure_test_master_key();
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         // Deadline already past: alarm will fire this tick. The
         // pre-deadline step also matches the row (next_deadline_at
         // <= window_end) but its `next_deadline_at > now` guard
@@ -4595,10 +4352,7 @@ mod tests {
     #[tokio::test]
     async fn claim_challenge_stamps_then_gates_then_opens() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         insert_vault(
             &pool,
             "vault-cc",
@@ -4660,10 +4414,7 @@ mod tests {
     #[tokio::test]
     async fn claim_ready_notice_marks_row_once() {
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         insert_vault(
             &pool,
             "vault-cr",
@@ -4768,10 +4519,7 @@ mod tests {
     async fn alarm_owner_reaches_an_owner_on_whatsapp() {
         ensure_test_master_key();
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         insert_vault_with_sealed_owner_on_channel(
             &pool,
             "vault-ow-wa",
@@ -4815,10 +4563,7 @@ mod tests {
     async fn alarm_escalation_reaches_an_owner_on_sms() {
         ensure_test_master_key();
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         // Already alarmed, still inside the grace window, never
         // escalated: exactly what the escalation query selects.
         insert_vault_with_sealed_owner_on_channel(
@@ -4849,10 +4594,7 @@ mod tests {
     async fn pre_deadline_reminder_reaches_an_owner_on_sms() {
         ensure_test_master_key();
         let pool = fresh_db().await;
-        let state = AppState {
-            db: pool.clone(),
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        };
+        let state = AppState { db: pool.clone() };
         // Deadline inside the reminder window but not yet passed.
         let soon = (Utc::now() + chrono::Duration::hours(12)).to_rfc3339();
         insert_vault_with_sealed_owner_on_channel(

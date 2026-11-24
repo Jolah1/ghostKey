@@ -82,7 +82,7 @@ test("opening the link does not check in; tapping the button does", async ({ pag
       });
     }
     if (p === "/health") {
-      return json({ ok: true, version: "e2e", lightning_enabled: false, demo_mode: false });
+      return json({ ok: true, version: "e2e", demo_mode: false });
     }
     // Anything else the shell asks for (analytics and so on) is harmless.
     return json({}, 404);

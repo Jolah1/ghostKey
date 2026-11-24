@@ -55,11 +55,6 @@ export interface VaultView {
   /** Present only when `status === "frozen"`: when the panic freeze
    *  auto-releases (90 days after activation). */
   panic_frozen_until?: string | null;
-  /** Bech32 `lnurl1...` for the static check-in QR code. `null` when
-   *  the server's Lightning sidecar isn't configured. */
-  lnurl_checkin?: string | null;
-  /** Bech32 `lnurl1...` for the panic-stop QR code. */
-  lnurl_panic?: string | null;
   /** Whether the owner's reminder email has been confirmed via the
    *  verification link. Absent/null when the vault has no email on
    *  file; `false` drives the dashboard's "confirm your email" card. */
@@ -605,24 +600,6 @@ export interface PanicResponse {
   frozen_until: string;
 }
 
-/** Response shape from `POST /vaults/:id/lightning-checkin/invoice`. */
-export interface LightningInvoiceView {
-  bolt11: string;
-  payment_hash: string;
-  amount_sat: number;
-  expires_at: string;
-  status: string;
-}
-
-/** Response shape from
- *  `GET /vaults/:id/lightning-checkin/status/:payment_hash`. */
-export interface LightningInvoiceStatusView {
-  payment_hash: string;
-  status: string;
-  paid_at: string | null;
-  expires_at: string;
-}
-
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -713,7 +690,8 @@ export const api = {
     request<{
       ok: boolean;
       version: string;
-      lightning_enabled: boolean;
+      /** The git commit the server was built from, or "unknown". */
+      commit?: string;
       demo_mode: boolean;
       /** Which Bitcoin network the server wants the UI to default
        *  new vaults to. Mirrors GHOSTKEY_DEFAULT_NETWORK on the
@@ -735,18 +713,6 @@ export const api = {
       sms_enabled?: boolean;
       whatsapp_enabled?: boolean;
     }>("/health"),
-  /** Deep probe of the Lightning sidecar. `/health` only tells us
-   *  whether the operator wired up env vars; this issues the
-   *  sidecar's `/v1/health` and reports the result. Server caches
-   *  the underlying call for 5s so this can be polled cheaply.
-   *  Older servers without this endpoint return 404 — callers must
-   *  treat that as "unknown" and skip the badge. */
-  healthLightning: () =>
-    request<{
-      enabled: boolean;
-      ready: boolean;
-      error?: string;
-    }>("/health/lightning"),
   getVault: (id: string, ownerToken: string | null) =>
     request<VaultView>(`/vaults/${id}`, {}, ownerToken),
   /** Owner-only: the heir's decrypted details (name, contact, channel,
@@ -779,7 +745,7 @@ export const api = {
       ownerToken,
     ),
   /** Owner-initiated vault deletion. The server clears its metadata
-   *  (vault row + cascaded events/notifications/lightning invoices).
+   *  (vault row + cascaded events and notifications).
    *  On-chain funds remain spendable by the owner — GhostKey never
    *  held the keys. Returns 204; we return null. */
   deleteVault: (id: string, ownerToken: string) =>
@@ -980,48 +946,6 @@ export const api = {
       `/vaults/${id}/resend-verification`,
       { method: "POST" },
       ownerToken,
-    ),
-  /** Lightning check-in: mint a 1-sat BOLT11 invoice. Paying it from
-   *  any Lightning wallet resets the vault's check-in deadline,
-   *  identical semantics to the regular HTTP `checkin` above.
-   *  Returns 4xx with `error: "lightning provider not configured..."`
-   *  if the server has no Breez backend wired up — call `health()`
-   *  first and hide the option when `lightning_enabled === false`. */
-  lightningCreateInvoice: (id: string, ownerToken: string | null) =>
-    request<LightningInvoiceView>(
-      `/vaults/${id}/lightning-checkin/invoice`,
-      { method: "POST" },
-      ownerToken,
-    ),
-  /** Poll an invoice's status while the user is paying. The server's
-   *  background poller updates the row on a ~3s tick; this just
-   *  surfaces whatever is in the DB. */
-  lightningInvoiceStatus: (
-    id: string,
-    paymentHash: string,
-    ownerToken: string | null,
-  ) =>
-    request<LightningInvoiceStatusView>(
-      `/vaults/${id}/lightning-checkin/status/${encodeURIComponent(paymentHash)}`,
-      {},
-      ownerToken,
-    ),
-  /** Same as lightningCreateInvoice, but authenticated by a one-tap
-   *  check-in link token instead of the owner bearer, so the owner can
-   *  pay the check-in straight from a reminder email without signing in.
-   *  Mirrors `lightning_create_invoice_from_link`. */
-  lightningCreateInvoiceFromLink: (id: string, token: string) =>
-    request<LightningInvoiceView>(
-      `/vaults/${id}/checkin-link/${encodeURIComponent(token)}/lightning-invoice`,
-      { method: "POST" },
-      null,
-    ),
-  /** Poll a link-minted invoice's status (token-gated, no owner auth). */
-  lightningInvoiceStatusFromLink: (id: string, token: string, paymentHash: string) =>
-    request<LightningInvoiceStatusView>(
-      `/vaults/${id}/checkin-link/${encodeURIComponent(token)}/lightning-status/${encodeURIComponent(paymentHash)}`,
-      {},
-      null,
     ),
   listEvents: (id: string, ownerToken: string | null) =>
     request<VaultEvent[]>(`/vaults/${id}/events`, {}, ownerToken),
