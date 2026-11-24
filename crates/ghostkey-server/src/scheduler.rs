@@ -172,8 +172,13 @@ async fn send_savings_reminders(
         Option<String>, // goal title nonce
     );
     let due: Vec<Row> = sqlx::query_as(
+        // The email names the first goal (oldest), the one a single-goal
+        // vault always had.
         "SELECT id, savings_reminder_cadence, savings_reminder_sat, savings_reminder_next_at, \
-                savings_goal_title_ct, savings_goal_title_nonce \
+                (SELECT g.title_ct FROM savings_goals g WHERE g.vault_id = vaults.id \
+                  ORDER BY datetime(g.created_at), g.id LIMIT 1), \
+                (SELECT g.title_nonce FROM savings_goals g WHERE g.vault_id = vaults.id \
+                  ORDER BY datetime(g.created_at), g.id LIMIT 1) \
            FROM vaults \
           WHERE savings_reminder_cadence IS NOT NULL \
             AND savings_reminder_next_at IS NOT NULL \
@@ -3962,7 +3967,8 @@ mod tests {
         // A goal title on the confirmed vault, sealed like the real thing.
         let sealed = crate::crypto::seal_for_vault("v-rem-ok", b"School fees").unwrap();
         sqlx::query(
-            "UPDATE vaults SET savings_goal_title_ct = ?, savings_goal_title_nonce = ? WHERE id = 'v-rem-ok'",
+            "INSERT INTO savings_goals (id, vault_id, title_ct, title_nonce, created_at) \
+             VALUES ('g-1', 'v-rem-ok', ?, ?, '2026-01-01T00:00:00Z')",
         )
         .bind(&sealed.ciphertext_b64)
         .bind(&sealed.nonce_b64)
