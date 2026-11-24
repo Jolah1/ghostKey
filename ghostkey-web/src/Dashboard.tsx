@@ -24,7 +24,7 @@ import {
   useTicker,
   usePolling,
 } from "./ui";
-import { AddressQr } from "./AddressQr";
+import { DepositAddress } from "./DepositAddress";
 import {
   ApiError,
   api,
@@ -1157,7 +1157,7 @@ function ReceiveCard({
         <p className="mt-3 text-xs text-muted">Loading address…</p>
       ) : view ? (
         <div className="mt-3 max-w-sm">
-          <AddressQr address={view.address} />
+          <DepositAddress vaultId={vaultId} address={view.address} network={view.network} />
           {view.network !== "bitcoin" ? (
             <p className="mt-2 text-xs text-dim">
               This vault is on {view.network}. Only send {view.network}{" "}
