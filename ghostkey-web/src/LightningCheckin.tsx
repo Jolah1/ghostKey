@@ -260,11 +260,11 @@ function InvoicePanel({
   // Rendered locally to a data: URL — the CSP only allows
   // `img-src 'self' data: blob:`, so an external QR service would be
   // blocked, and this way the BOLT11 never round-trips through a
-  // third party. Type 0 = auto-size; uppercase bech32 keeps the QR
-  // in the denser alphanumeric-friendly form wallets expect.
+  // third party. Type 0 = auto-size. The invoice is encoded exactly as
+  // the copy button gives it (#399).
   const qrUrl = useMemo(() => {
     const qr = qrcode(0, "M");
-    qr.addData(invoice.bolt11.toUpperCase());
+    qr.addData(invoice.bolt11);
     qr.make();
     return qr.createDataURL(6, 8);
   }, [invoice.bolt11]);

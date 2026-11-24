@@ -1159,12 +1159,12 @@ function ReceiveCard({
     }
   }
 
-  // Uppercase bech32 packs into the QR's alphanumeric mode, giving a
-  // sparser, easier-to-scan code. Wallets accept either case.
+  // Encode the address exactly as the copy button gives it. Uppercase
+  // bech32 is valid but some wallets reject it (#399).
   const qrUrl = useMemo(() => {
     if (!view) return null;
     const qr = qrcode(0, "M");
-    qr.addData(view.address.toUpperCase());
+    qr.addData(view.address);
     qr.make();
     return qr.createDataURL(5, 8);
   }, [view]);
