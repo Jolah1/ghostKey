@@ -4,7 +4,7 @@ use axum::extract::{Path, State};
 use axum::http::header;
 use axum::http::{Method, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use bitcoin::bip32::Fingerprint;
 use chrono::{DateTime, Duration, Utc};
@@ -278,6 +278,8 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
             "/vaults/:id/heir",
             get(get_vault_heir).put(update_vault_heir),
         )
+        .route("/vaults/:id/guardians", get(list_vault_guardians))
+        .route("/vaults/:id/guardians/:slot", put(update_vault_guardian))
         .route(
             "/vaults/:id/balance",
             get(crate::psbt_routes::get_vault_balance),
@@ -2634,6 +2636,125 @@ pub struct UpdateHeirRequest {
     pub contact: String,
     /// New channel: `email`, `sms`, or `whatsapp`.
     pub channel: String,
+}
+
+/// One guardian's contact, as the owner sees it (guardian vaults, #81).
+#[derive(Debug, Serialize)]
+pub struct GuardianContactView {
+    pub slot: i64,
+    pub contact: Option<String>,
+    pub channel: Option<String>,
+}
+
+async fn read_guardian_contacts(
+    db: &sqlx::SqlitePool,
+    id: &str,
+) -> Result<Vec<GuardianContactView>, ApiError> {
+    // slot, contact ciphertext, contact nonce, channel
+    type GuardianRow = (i64, Option<String>, Option<String>, Option<String>);
+    let rows: Vec<GuardianRow> = sqlx::query_as(
+        "SELECT slot, contact_ciphertext, contact_nonce, contact_channel \
+           FROM vault_guardian_keys WHERE vault_id = ? ORDER BY slot",
+    )
+    .bind(id)
+    .fetch_all(db)
+    .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (slot, ct, nn, channel) in rows {
+        let contact = match (ct, nn) {
+            (Some(ct), Some(nn)) => Some(
+                String::from_utf8(open_for_vault(
+                    id,
+                    &SealedContact {
+                        ciphertext_b64: ct,
+                        nonce_b64: nn,
+                    },
+                )?)
+                .map_err(|_| ApiError::Validation("stored contact is not valid UTF-8".into()))?,
+            ),
+            _ => None,
+        };
+        out.push(GuardianContactView {
+            slot,
+            contact,
+            channel,
+        });
+    }
+    Ok(out)
+}
+
+/// `GET /vaults/:id/guardians` (OwnerAuth): both guardians' contacts.
+/// Empty for a standard vault, which has no guardians.
+async fn list_vault_guardians(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<GuardianContactView>>, ApiError> {
+    Ok(Json(
+        read_guardian_contacts(&state.db, &auth.vault_id).await?,
+    ))
+}
+
+/// `PUT /vaults/:id/guardians/:slot` (OwnerAuth): change how one guardian
+/// is reached.
+///
+/// A guardian's key is sealed under their own claim token, not their
+/// contact, so the contact only decides where the link is delivered and
+/// can change safely at any time before the claim. This is the only way
+/// to fix a guardian set up on a channel we can't deliver: without it, a
+/// guardian vault whose guardians are unreachable can never be claimed.
+/// The channel goes through `validate_contact_channel`, so it must be one
+/// this server can deliver (email today).
+async fn update_vault_guardian(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+    Path((_id, slot)): Path<(String, i64)>,
+    Json(req): Json<UpdateHeirRequest>,
+) -> Result<Json<Vec<GuardianContactView>>, ApiError> {
+    let id = auth.vault_id;
+    validate_contact_channel("channel", Some(&req.channel))?;
+    let contact = req.contact.trim().to_string();
+    if contact.is_empty() {
+        return Err(ApiError::Validation("contact must not be empty".into()));
+    }
+    validate_contact_shape(&req.channel, &contact)?;
+
+    let status: String = sqlx::query_scalar("SELECT status FROM vaults WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    if status == "claimed" {
+        return Err(ApiError::Conflict(
+            "This share has already been claimed, so its guardians can't be changed.".into(),
+        ));
+    }
+
+    let sealed = seal_for_vault(&id, contact.as_bytes())?;
+    let updated = sqlx::query(
+        "UPDATE vault_guardian_keys \
+            SET contact_ciphertext = ?, contact_nonce = ?, contact_channel = ? \
+          WHERE vault_id = ? AND slot = ?",
+    )
+    .bind(&sealed.ciphertext_b64)
+    .bind(&sealed.nonce_b64)
+    .bind(&req.channel)
+    .bind(&id)
+    .bind(slot)
+    .execute(&state.db)
+    .await?;
+    if updated.rows_affected() == 0 {
+        // Not a guardian vault, or no such slot.
+        return Err(ApiError::NotFound);
+    }
+    record_event(
+        &state.db,
+        &id,
+        "guardian_contact_updated",
+        Some(serde_json::json!({ "slot": slot, "channel": req.channel })),
+    )
+    .await?;
+
+    Ok(Json(read_guardian_contacts(&state.db, &id).await?))
 }
 
 /// Change the heir's contact address and channel on an existing vault
@@ -6138,6 +6259,136 @@ mod tests {
             contact: Some(format!("guardian{seed}@example.com")),
             contact_channel: Some("email".into()),
         }
+    }
+
+    /// The production case behind this route: a guardian vault whose
+    /// guardians were set up on SMS, which never delivered. The owner can
+    /// move a guardian to email; SMS stays refused while undeliverable; an
+    /// unknown slot is NotFound; a claimed vault can't be changed.
+    #[tokio::test]
+    async fn owner_can_move_a_guardian_from_sms_to_email() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let (owner_xpub, owner_fp) = xpub_for(0x31);
+        let (heir_xpub, heir_fp) = xpub_for(0x32);
+        let req = CreateGuardianVaultRequest {
+            label: Some("guardian-edit".into()),
+            network: "regtest".into(),
+            owner: PartyXpub {
+                xpub: owner_xpub,
+                fingerprint: Some(owner_fp),
+            },
+            heir: PartyXpub {
+                xpub: heir_xpub,
+                fingerprint: Some(heir_fp),
+            },
+            guardian1: guardian_party(0x33, "g1-edit"),
+            guardian2: guardian_party(0x34, "g2-edit"),
+            timelock_blocks: 144,
+            unlock_height: None,
+            checkin_period_secs: 86_400,
+            grace_period_secs: 3_600,
+            owner_contact: None,
+            owner_contact_channel: None,
+            heir_contact: Some("heir@example.com".into()),
+            heir_contact_channel: Some("email".into()),
+            sealed: sealed_setup(
+                &"f".repeat(64),
+                Some("aGVpcmN0".into()),
+                Some("aGVpcm5u".into()),
+                Some("heir-edit".into()),
+            ),
+            from_name: None,
+            heir_note: None,
+        };
+        let (_, created) = create_vault_guardian(State(state.clone()), Json(req))
+            .await
+            .expect("guardian create");
+        let id = created.vault.id.clone();
+        // Put guardian 2 on SMS, the way the stranded production vault is.
+        sqlx::query(
+            "UPDATE vault_guardian_keys SET contact_channel = 'sms' WHERE vault_id = ? AND slot = 2",
+        )
+        .bind(&id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let auth = || OwnerAuth {
+            vault_id: id.clone(),
+        };
+
+        let listed = list_vault_guardians(auth(), State(state.clone()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[1].channel.as_deref(), Some("sms"));
+
+        let after = update_vault_guardian(
+            auth(),
+            State(state.clone()),
+            Path((id.clone(), 2)),
+            Json(UpdateHeirRequest {
+                contact: "new-guardian@example.com".into(),
+                channel: "email".into(),
+            }),
+        )
+        .await
+        .expect("move guardian 2 to email")
+        .0;
+        assert_eq!(after[1].channel.as_deref(), Some("email"));
+        assert_eq!(
+            after[1].contact.as_deref(),
+            Some("new-guardian@example.com")
+        );
+        // Guardian 1 untouched.
+        assert_eq!(after[0].contact.as_deref(), Some("guardian51@example.com"));
+
+        if !crate::notifier::channel_deliverable(crate::notifier::Channel::Sms) {
+            let err = update_vault_guardian(
+                auth(),
+                State(state.clone()),
+                Path((id.clone(), 1)),
+                Json(UpdateHeirRequest {
+                    contact: "+2348111111111".into(),
+                    channel: "sms".into(),
+                }),
+            )
+            .await
+            .expect_err("sms refused while undeliverable");
+            assert!(matches!(err, ApiError::Validation(_)), "{err:?}");
+        }
+
+        let err = update_vault_guardian(
+            auth(),
+            State(state.clone()),
+            Path((id.clone(), 3)),
+            Json(UpdateHeirRequest {
+                contact: "x@example.com".into(),
+                channel: "email".into(),
+            }),
+        )
+        .await
+        .expect_err("no slot 3");
+        assert!(matches!(err, ApiError::NotFound), "{err:?}");
+
+        sqlx::query("UPDATE vaults SET status = 'claimed' WHERE id = ?")
+            .bind(&id)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let err = update_vault_guardian(
+            auth(),
+            State(state.clone()),
+            Path((id.clone(), 1)),
+            Json(UpdateHeirRequest {
+                contact: "late@example.com".into(),
+                channel: "email".into(),
+            }),
+        )
+        .await
+        .expect_err("claimed vault");
+        assert!(matches!(err, ApiError::Conflict(_)), "{err:?}");
     }
 
     /// A guardian vault (#81 P2) persists the heir inline plus two guardian

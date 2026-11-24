@@ -593,6 +593,14 @@ export interface PriceView {
   stale: boolean;
 }
 
+/** One guardian's contact as the owner sees it
+ *  (`GET /vaults/:id/guardians`). */
+export interface GuardianContactView {
+  slot: number;
+  contact: string | null;
+  channel: string | null;
+}
+
 /** Response from `POST /vaults/:id/panic`. */
 export interface PanicResponse {
   vault_id: string;
@@ -741,6 +749,25 @@ export const api = {
   ) =>
     request<HeirProfileView>(
       `/vaults/${id}/heir`,
+      { method: "PUT", body: JSON.stringify(body) },
+      ownerToken,
+    ),
+  /** Owner-only: both guardians' contacts on a guardian vault (#81).
+   *  Empty for a standard vault. */
+  listVaultGuardians: (id: string, ownerToken: string | null) =>
+    request<GuardianContactView[]>(`/vaults/${id}/guardians`, {}, ownerToken),
+  /** Owner-only: change how one guardian is reached. A guardian's key is
+   *  sealed under their own claim token, not their contact, so this is
+   *  always safe before the claim. The server only accepts channels it
+   *  can deliver (email today). Returns both guardians. */
+  updateVaultGuardian: (
+    id: string,
+    ownerToken: string | null,
+    slot: number,
+    body: { contact: string; channel: "sms" | "email" | "whatsapp" },
+  ) =>
+    request<GuardianContactView[]>(
+      `/vaults/${id}/guardians/${slot}`,
       { method: "PUT", body: JSON.stringify(body) },
       ownerToken,
     ),
