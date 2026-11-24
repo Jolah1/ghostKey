@@ -24,7 +24,7 @@ import {
   useTicker,
   usePolling,
 } from "./ui";
-import qrcode from "qrcode-generator";
+import { AddressQr } from "./AddressQr";
 import {
   ApiError,
   api,
@@ -1088,7 +1088,6 @@ function ReceiveCard({
   const [view, setView] = useState<VaultAddressView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
 
   async function onExpand() {
     setExpanded(true);
@@ -1110,24 +1109,6 @@ function ReceiveCard({
     }
   }
 
-  // Encode the address exactly as the copy button gives it. Uppercase
-  // bech32 is valid but some wallets reject it (#399).
-  const qrUrl = useMemo(() => {
-    if (!view) return null;
-    const qr = qrcode(0, "M");
-    qr.addData(view.address);
-    qr.make();
-    return qr.createDataURL(5, 8);
-  }, [view]);
-
-  function onCopy() {
-    if (!view) return;
-    void navigator.clipboard.writeText(view.address).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    });
-  }
-
   return (
     <section className={embedded ? "" : "card-flat p-5"}>
       {!embedded ? (
@@ -1146,28 +1127,14 @@ function ReceiveCard({
       ) : loading ? (
         <p className="mt-3 text-xs text-muted">Loading address…</p>
       ) : view ? (
-        <div className="mt-3 flex flex-col items-start gap-3 sm:flex-row sm:items-center">
-          {qrUrl ? (
-            <img
-              src={qrUrl}
-              alt={`QR code for the share address ${view.address}`}
-              className="h-36 w-36 rounded-lg bg-white p-1"
-            />
+        <div className="mt-3 max-w-sm">
+          <AddressQr address={view.address} />
+          {view.network !== "bitcoin" ? (
+            <p className="mt-2 text-xs text-dim">
+              This vault is on {view.network}. Only send {view.network}{" "}
+              coins here.
+            </p>
           ) : null}
-          <div className="min-w-0">
-            <p className="break-all font-mono text-xs">{view.address}</p>
-            <div className="mt-2 flex items-center gap-2">
-              <Button size="sm" variant="ghost" onClick={onCopy}>
-                {copied ? "Copied ✓" : "Copy address"}
-              </Button>
-            </div>
-            {view.network !== "bitcoin" ? (
-              <p className="mt-2 text-xs text-dim">
-                This vault is on {view.network}. Only send {view.network}{" "}
-                coins here.
-              </p>
-            ) : null}
-          </div>
         </div>
       ) : null}
       {error ? <p className="mt-2 text-sm text-alarm">{error}</p> : null}
