@@ -48,6 +48,7 @@ import {
 } from "./vaultStore";
 import { VideoMessageRecorder, type RecordedClip } from "./VideoMessageRecorder";
 import { isUnsealFailure } from "./unlockErrors";
+import { useChannelCapability } from "./useChannelCapability";
 
 const PLACEHOLDER_OWNER_TOKEN = "ghostkey-placeholder-owner-token-v1";
 
@@ -103,6 +104,9 @@ export function AddHeirPortal({
   const [heirName, setHeirName] = useState("");
   const [contact, setContact] = useState("");
   const [channel, setChannel] = useState<Channel>("email");
+  // Channels this server can't deliver are disabled, like every other
+  // contact picker (#277). Email is the only working channel today.
+  const cap = useChannelCapability();
   const [password, setPassword] = useState("");
   const [videoClip, setVideoClip] = useState<RecordedClip | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "form" });
@@ -410,8 +414,12 @@ export function AddHeirPortal({
                     aria-label="Contact method"
                   >
                     <option value="email">Email</option>
-                    <option value="sms">SMS</option>
-                    <option value="whatsapp">WhatsApp</option>
+                    <option value="sms" disabled={!cap.sms}>
+                      {cap.sms ? "SMS" : "SMS (not available yet)"}
+                    </option>
+                    <option value="whatsapp" disabled={!cap.whatsapp}>
+                      {cap.whatsapp ? "WhatsApp" : "WhatsApp (not available yet)"}
+                    </option>
                   </select>
                   <input
                     className="input flex-1"

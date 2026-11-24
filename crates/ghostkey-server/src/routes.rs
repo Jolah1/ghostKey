@@ -771,15 +771,30 @@ impl IntoResponse for ApiError {
 /// we don't deliver to yet; we'd rather fail loudly at creation
 /// than enqueue a notification with `channel = "telegram"` that
 /// the worker will then skip forever.
+///
+/// SMS and WhatsApp are also refused while this server can't deliver
+/// them (no usable Twilio sender, see `notifier::channel_deliverable`).
+/// The setup screens hide those options, but the API has to hold the
+/// line too: a contact we can't reach is an heir who never hears from
+/// us. Email is always accepted; it is the default channel, and a local
+/// dev server without SMTP logs email instead of sending it.
 fn validate_contact_channel(field: &str, ch: Option<&str>) -> Result<(), ApiError> {
     if let Some(c) = ch {
-        match c {
-            "email" | "sms" | "whatsapp" => {}
+        let channel = match c {
+            "email" => return Ok(()),
+            "sms" => crate::notifier::Channel::Sms,
+            "whatsapp" => crate::notifier::Channel::Whatsapp,
             _ => {
                 return Err(ApiError::Validation(format!(
                     "unknown {field} {c:?}; expected email, sms, or whatsapp"
                 )));
             }
+        };
+        if !crate::notifier::channel_deliverable(channel) {
+            let name = if c == "sms" { "SMS" } else { "WhatsApp" };
+            return Err(ApiError::Validation(format!(
+                "{name} isn't available yet, so we couldn't reach this contact. Please use an email address."
+            )));
         }
     }
     Ok(())
@@ -6823,7 +6838,10 @@ mod tests {
             "got {mismatch:?}"
         );
 
-        // A real phone number on a phone channel is fine.
+        // A real phone number on a phone channel is accepted only when
+        // this server can deliver SMS. Tests run without Twilio, so it is
+        // refused with a pointer to email: an heir we can't reach must
+        // never be saved as if they could be.
         let sms = update_vault_heir(
             OwnerAuth {
                 vault_id: id.to_string(),
@@ -6834,11 +6852,18 @@ mod tests {
                 channel: "sms".to_string(),
             }),
         )
-        .await
-        .expect("phone on sms channel")
-        .0;
-        assert_eq!(sms.channel.as_deref(), Some("sms"));
-        assert_eq!(sms.contact.as_deref(), Some("+2348111111111"));
+        .await;
+        if crate::notifier::channel_deliverable(crate::notifier::Channel::Sms) {
+            let sms = sms.expect("phone on sms channel").0;
+            assert_eq!(sms.channel.as_deref(), Some("sms"));
+        } else {
+            match sms {
+                Err(ApiError::Validation(m)) => {
+                    assert!(m.contains("isn't available") && m.contains("email"), "{m}")
+                }
+                other => panic!("SMS must be refused while undeliverable, got {other:?}"),
+            }
+        }
 
         // Put the vault back on email so the F2 lock below starts from a
         // consistent {email contact, email channel} state.
