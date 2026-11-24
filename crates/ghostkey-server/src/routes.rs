@@ -3564,14 +3564,8 @@ async fn checkin_from_link(
     .fetch_optional(&state.db)
     .await?;
 
-    let (
-        stored_hash,
-        used_at,
-        checkin_secs,
-        grace_secs,
-        last_checkin_at,
-        status,
-    ) = row.ok_or(ApiError::NotFound)?;
+    let (stored_hash, used_at, checkin_secs, grace_secs, last_checkin_at, status) =
+        row.ok_or(ApiError::NotFound)?;
     let stored_hash = stored_hash.ok_or(ApiError::NotFound)?;
     if !crypto::claim_token_matches(&token, &stored_hash) {
         return Err(ApiError::NotFound);
