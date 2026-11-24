@@ -49,6 +49,7 @@ import {
 import { VideoMessageRecorder, type RecordedClip } from "./VideoMessageRecorder";
 import { isUnsealFailure } from "./unlockErrors";
 import { useChannelCapability } from "./useChannelCapability";
+import { AddressQr } from "./AddressQr";
 
 const PLACEHOLDER_OWNER_TOKEN = "ghostkey-placeholder-owner-token-v1";
 
@@ -370,9 +371,9 @@ export function AddHeirPortal({
                 <p className="text-xs uppercase tracking-wider text-dim">
                   {phase.heirName}'s deposit address
                 </p>
-                <p className="mt-1 break-all font-mono text-sm text-[var(--text)]">
-                  {phase.address}
-                </p>
+                <div className="mt-2">
+                  <AddressQr address={phase.address} />
+                </div>
               </div>
             ) : (
               <p className="mt-4 text-sm text-muted">
