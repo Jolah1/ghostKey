@@ -129,7 +129,7 @@ export function NavBar({ route, onNavigate, signedIn }: Props) {
               onClick={() => onNavigate(signedIn ? "dashboard" : "setup")}
               className="btn btn-primary mt-2"
             >
-              {signedIn ? "Open your dashboard" : "Set up your vault"}
+              {signedIn ? "Open your dashboard" : "Start saving"}
             </button>
           </nav>
         </div>

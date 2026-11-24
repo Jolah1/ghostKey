@@ -13,7 +13,8 @@ export const pcm: Vocab = {
   langName: "Pidgin",
   tagline: "Make your Bitcoin reach your people, no lawyer wahala.",
   longTagline:
-    "Set am once. Every month, tap to show say you dey. If you ever stop, the people wey you choose fit collect wetin be their own.",
+    // NOT YET REVIEWED by a native Pidgin speaker (2026-11-24 rewrite).
+    "Dey save your sats small small anytime you fit, and watch am grow. Na you hold the key, you fit spend am anytime. If you ever stop to show face, your savings go reach the person wey you choose, e no go loss.",
   status: makeStatus({
     unfunded: {
       label: "Dey wait for money",
