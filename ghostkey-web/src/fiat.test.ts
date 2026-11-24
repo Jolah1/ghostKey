@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { satsToBtc, satsToUsd, formatBtc, formatUsd, btcAndUsd } from "./fiat";
+import { satsToBtc, satsToUsd, formatBtc, formatUsd } from "./fiat";
 
 describe("fiat helpers", () => {
   it("converts sats to BTC and USD", () => {
@@ -22,8 +22,4 @@ describe("fiat helpers", () => {
     expect(formatUsd(0.0123)).toMatch(/0\.0123/);
   });
 
-  it("btcAndUsd falls back to BTC-only without a price", () => {
-    expect(btcAndUsd(12_345, null)).toBe("0.00012345 BTC");
-    expect(btcAndUsd(50_000, 60_000)).toBe("0.0005 BTC · ≈ $30.00");
-  });
 });

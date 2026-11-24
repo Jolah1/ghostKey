@@ -63,7 +63,8 @@ import {
   type UnlockEstimateView,
   type VaultBalanceView,
 } from "./api";
-import { usePrice, btcAndUsd } from "./fiat";
+import { usePrice } from "./fiat";
+import { formatAmount, usdLine, useUnit } from "./units";
 import { countdown, parseRfc } from "./time";
 import { useVocab, LanguageToggle } from "./vocab";
 import type { ClaimCommonVocab } from "./vocab/types";
@@ -1945,6 +1946,7 @@ function ManualPsbtClaim({
 
 function PsbtSummary({ build }: { build: BuildClaimPsbtResponse }) {
   const v = useVocab();
+  const unit = useUnit();
   const m = v.manualClaim;
   return (
     <div className="mt-5 card-flat p-4">
@@ -1952,9 +1954,9 @@ function PsbtSummary({ build }: { build: BuildClaimPsbtResponse }) {
         {m.psbtSummary}
       </p>
       <dl className="mt-2 grid grid-cols-1 gap-1 text-sm">
-        <Row k={m.amountBeingMoved} v={`${formatSats(build.total_input_sats)} sats`} />
-        <Row k={m.youllReceive} v={`${formatSats(build.output_sats)} sats`} />
-        <Row k={m.networkFee} v={`${formatSats(build.fee_sats)} sats`} />
+        <Row k={m.amountBeingMoved} v={formatAmount(build.total_input_sats, unit)} />
+        <Row k={m.youllReceive} v={formatAmount(build.output_sats, unit)} />
+        <Row k={m.networkFee} v={formatAmount(build.fee_sats, unit)} />
         <Row k={m.networkLabel} v={build.network} />
       </dl>
       <p className="mt-3 text-xs text-muted">
@@ -2362,6 +2364,7 @@ function parseFeeRate(s: string): number | null | undefined {
 function VaultValueLine({ vaultId }: { vaultId: string }) {
   const [balance, setBalance] = useState<VaultBalanceView | null>(null);
   const usdPerBtc = usePrice();
+  const unit = useUnit();
   useEffect(() => {
     let cancelled = false;
     api
@@ -2379,11 +2382,9 @@ function VaultValueLine({ vaultId }: { vaultId: string }) {
   if (!balance || balance.total_sat <= 0) return null;
   return (
     <p className="mt-2 text-sm text-soft">
-      {formatSats(balance.total_sat)} sat · {btcAndUsd(balance.total_sat, usdPerBtc)}
+      {formatAmount(balance.total_sat, unit)}
+      {usdLine(balance.total_sat, usdPerBtc) ? ` · ${usdLine(balance.total_sat, usdPerBtc)}` : ""}
     </p>
   );
 }
 
-function formatSats(n: number): string {
-  return n.toLocaleString();
-}
