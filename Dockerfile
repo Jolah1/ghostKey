@@ -55,6 +55,12 @@ RUN cargo fetch --locked
 # Now bring in the real source and build.
 COPY crates ./crates
 RUN touch crates/*/src/*.rs
+# The commit being built, shown on /health so a deploy can be checked
+# against main. Declared here, after the dependency layers, so a new
+# commit only rebuilds our own code. Deploys pass it with
+# `--build-arg GIT_SHA=$(git rev-parse HEAD)`.
+ARG GIT_SHA=unknown
+ENV GHOSTKEY_GIT_SHA=${GIT_SHA}
 RUN cargo build --release -p ghostkey-server --locked
 
 # ---- litestream ------------------------------------------------------

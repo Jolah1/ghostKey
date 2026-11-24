@@ -388,6 +388,10 @@ fn redact_credential_path(raw_path: &str) -> &str {
 struct Health {
     ok: bool,
     version: &'static str,
+    /// The git commit this binary was built from, so anyone can check
+    /// that what is live matches main. Set by the deploy at build time
+    /// (`--build-arg GIT_SHA=...`); "unknown" for local builds.
+    commit: &'static str,
     /// Whether this server has a configured Lightning provider. The
     /// web client uses this to decide whether to show the "check in
     /// with Lightning" button next to the existing tap-to-checkin
@@ -495,6 +499,16 @@ struct Health {
 /// this old is not just normal backoff).
 const NOTIFIER_STUCK_SECS: i64 = 15 * 60;
 
+/// The commit baked in at build time, or "unknown". An empty value counts
+/// as unknown so a deploy that forgets the build arg can't pass for one
+/// that set it.
+fn build_commit() -> &'static str {
+    match option_env!("GHOSTKEY_GIT_SHA") {
+        Some(sha) if !sha.trim().is_empty() => sha,
+        _ => "unknown",
+    }
+}
+
 async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
     let assist_enabled = std::env::var("ANTHROPIC_API_KEY")
         .map(|v| !v.trim().is_empty())
@@ -589,6 +603,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
     Json(Health {
         ok: true,
         version: env!("CARGO_PKG_VERSION"),
+        commit: build_commit(),
         lightning_enabled: state.lightning.is_enabled(),
         demo_mode: crate::demo::demo_mode(),
         default_network: crate::config::default_network(),

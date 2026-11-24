@@ -561,6 +561,12 @@ mod http_tests {
             .unwrap();
         let body: Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(body["ok"], true);
+        // The build commit is always present so a deploy can be checked
+        // against main; local and test builds report "unknown".
+        assert!(
+            body["commit"].as_str().is_some_and(|c| !c.is_empty()),
+            "health must report the build commit, got {body}"
+        );
     }
 
     /* ---------------------------------------------------------------- *
