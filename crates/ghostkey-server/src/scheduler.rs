@@ -176,9 +176,9 @@ async fn send_savings_reminders(
         // vault always had.
         "SELECT id, savings_reminder_cadence, savings_reminder_sat, savings_reminder_next_at, \
                 (SELECT g.title_ct FROM savings_goals g WHERE g.vault_id = vaults.id \
-                  ORDER BY datetime(g.created_at), g.id LIMIT 1), \
+                  ORDER BY g.rowid LIMIT 1), \
                 (SELECT g.title_nonce FROM savings_goals g WHERE g.vault_id = vaults.id \
-                  ORDER BY datetime(g.created_at), g.id LIMIT 1) \
+                  ORDER BY g.rowid LIMIT 1) \
            FROM vaults \
           WHERE savings_reminder_cadence IS NOT NULL \
             AND savings_reminder_next_at IS NOT NULL \
