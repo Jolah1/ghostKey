@@ -177,6 +177,10 @@ pub enum NotificationKind {
     /// it at most once per address, and that column is cleared when the
     /// address changes or when something is actually delivered to it.
     HeirUnreachable,
+    /// The optional savings reminder the owner asked for (#367): weekly
+    /// or monthly, to their confirmed email only. Never escalates and has
+    /// nothing to do with check-ins.
+    SavingsReminder,
 }
 
 impl NotificationKind {
@@ -198,6 +202,7 @@ impl NotificationKind {
             NotificationKind::OwnerSend => "owner_send",
             NotificationKind::OwnerRecovery => "owner_recovery",
             NotificationKind::HeirUnreachable => "heir_unreachable",
+            NotificationKind::SavingsReminder => "savings_reminder",
         }
     }
 }

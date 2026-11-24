@@ -613,6 +613,26 @@ export interface SavingsView {
   /** Most recent first, up to 50. */
   deposits: { amount_sat: number; height: number; seen_at: string; spent: boolean }[];
   goal: SavingsGoal | null;
+  /** "Your year in savings": this calendar year (UTC) so far. */
+  this_year: {
+    year: number;
+    total_sat: number;
+    deposit_count: number;
+    /** 1 to 12, or null with no deposits this year. */
+    best_month: number | null;
+    best_month_sat: number;
+  };
+  reminder: SavingsReminder | null;
+  /** Reminders only go to a confirmed email. */
+  owner_email_confirmed: boolean;
+}
+
+/** The optional savings reminder (#367). */
+export interface SavingsReminder {
+  cadence: "weekly" | "monthly";
+  amount_sat: number | null;
+  /** RFC 3339 */
+  next_at: string;
 }
 
 /** One guardian's contact as the owner sees it
@@ -784,6 +804,20 @@ export const api = {
       { method: "PUT", body: JSON.stringify(goal) },
       ownerToken,
     ),
+  /** Owner-only: remind me to save, weekly or monthly, by email. */
+  setSavingsReminder: (
+    id: string,
+    ownerToken: string | null,
+    body: { cadence: "weekly" | "monthly"; amount_sat: number | null },
+  ) =>
+    request<SavingsView>(
+      `/vaults/${id}/savings/reminder`,
+      { method: "PUT", body: JSON.stringify(body) },
+      ownerToken,
+    ),
+  /** Owner-only: stop the savings reminders. */
+  clearSavingsReminder: (id: string, ownerToken: string | null) =>
+    request<null>(`/vaults/${id}/savings/reminder`, { method: "DELETE" }, ownerToken),
   /** Owner-only: remove the goal. Saving carries on exactly as before. */
   clearSavingsGoal: (id: string, ownerToken: string | null) =>
     request<null>(`/vaults/${id}/savings/goal`, { method: "DELETE" }, ownerToken),

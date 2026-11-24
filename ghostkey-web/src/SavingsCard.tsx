@@ -51,6 +51,12 @@ export function SavingsCard({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const cadenceId = useId();
+  const remAmountId = useId();
+  const [remEditing, setRemEditing] = useState(false);
+  const [cadence, setCadence] = useState<"weekly" | "monthly">("weekly");
+  const [remAmount, setRemAmount] = useState("");
+  const [remError, setRemError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -117,7 +123,48 @@ export function SavingsCard({
     }
   }
 
+  function startReminder() {
+    setCadence(view?.reminder?.cadence ?? "weekly");
+    const a = view?.reminder?.amount_sat;
+    setRemAmount(a ? (unit === "btc" ? satsToBip21Btc(a) : String(a)) : "");
+    setRemError(null);
+    setRemEditing(true);
+  }
+
+  async function saveReminder() {
+    const parsed = parseAmount(remAmount, unit);
+    if (parsed === "invalid") {
+      setRemError(unit === "btc" ? "Enter an amount like 0.001." : "Enter a whole number of sats.");
+      return;
+    }
+    setSaving(true);
+    setRemError(null);
+    try {
+      setView(await api.setSavingsReminder(vaultId, ownerToken, { cadence, amount_sat: parsed }));
+      setRemEditing(false);
+    } catch (e) {
+      setRemError(e instanceof ApiError && e.message ? e.message : "Couldn't save that. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function stopReminder() {
+    setSaving(true);
+    try {
+      await api.clearSavingsReminder(vaultId, ownerToken);
+      setView({ ...view!, reminder: null });
+      setRemEditing(false);
+    } catch (e) {
+      setRemError(e instanceof ApiError && e.message ? e.message : "Couldn't stop it. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const goal = view.goal;
+  const year = view.this_year;
+  const reminder = view.reminder;
   const progress = goal?.amount_sat && balance != null ? goalProgress(balance, goal.amount_sat) : null;
   const pace =
     progress && goal?.target_date ? savePerPeriod(progress.remainingSat, new Date(), goal.target_date) : null;
@@ -246,6 +293,108 @@ export function SavingsCard({
           </div>
         </div>
       )}
+
+      {/* Your year in savings: only shown once there's something to say. */}
+      {year && year.deposit_count > 0 ? (
+        <p className="mt-5 text-sm" data-testid="savings-year">
+          <span className="font-semibold">Your {year.year} in savings:</span>{" "}
+          <span className="text-muted">
+            {formatAmount(year.total_sat, unit)} in {year.deposit_count} deposit
+            {year.deposit_count === 1 ? "" : "s"}
+            {year.best_month
+              ? `. Best month: ${new Date(year.year, year.best_month - 1, 1).toLocaleDateString(undefined, { month: "long" })}`
+              : ""}
+            .
+          </span>
+        </p>
+      ) : null}
+
+      {/* Save reminders: the honest version of autosave. We can't pull
+          bitcoin, so we remind, by email, on the owner's schedule. */}
+      <div className="mt-5 border-t border-app pt-4" data-testid="savings-reminder">
+        {remEditing ? (
+          <div className="space-y-3">
+            <div>
+              <label htmlFor={cadenceId} className="block text-sm font-medium">
+                Remind me to save
+              </label>
+              <select
+                id={cadenceId}
+                className="input mt-1 w-full"
+                value={cadence}
+                onChange={(e) => setCadence(e.target.value as "weekly" | "monthly")}
+              >
+                <option value="weekly">Every week</option>
+                <option value="monthly">Every month</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor={remAmountId} className="block text-sm font-medium">
+                How much each time (optional, in {unit === "btc" ? "BTC" : "sats"})
+              </label>
+              <input
+                id={remAmountId}
+                className="input mt-1 w-full"
+                inputMode="decimal"
+                placeholder={unit === "btc" ? "e.g. 0.001" : "e.g. 50,000"}
+                value={remAmount}
+                onChange={(e) => setRemAmount(e.target.value)}
+              />
+            </div>
+            {remError ? (
+              <p className="text-sm text-alarm" role="alert">
+                {remError}
+              </p>
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" onClick={() => void saveReminder()} loading={saving}>
+                Save reminder
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setRemEditing(false)} disabled={saving}>
+                Cancel
+              </Button>
+              {reminder ? (
+                <Button size="sm" variant="ghost" onClick={() => void stopReminder()} disabled={saving}>
+                  Stop reminders
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        ) : reminder ? (
+          <div className="flex items-baseline justify-between gap-3">
+            <p className="text-sm text-muted">
+              We&apos;ll remind you to save {reminder.cadence === "weekly" ? "every week" : "every month"}
+              {reminder.amount_sat ? ` (about ${formatAmount(reminder.amount_sat, unit)})` : ""}. Next on{" "}
+              {longDate(reminder.next_at)}.
+            </p>
+            <button
+              type="button"
+              onClick={startReminder}
+              className="shrink-0 text-xs text-muted underline-offset-2 hover:underline"
+            >
+              Change
+            </button>
+          </div>
+        ) : (
+          <div>
+            <p className="text-sm text-muted">
+              Want a nudge? We can email you a reminder to save, weekly or
+              monthly. Skipping one is fine: nothing happens.
+            </p>
+            <div className="mt-2">
+              <Button size="sm" variant="ghost" onClick={startReminder}>
+                Remind me to save
+              </Button>
+            </div>
+          </div>
+        )}
+        {reminder && !view.owner_email_confirmed ? (
+          <p className="mt-2 text-xs text-dim">
+            Reminders go to your email once you&apos;ve confirmed it. Check your
+            inbox for our confirmation link.
+          </p>
+        ) : null}
+      </div>
 
       <div className="mt-5 border-t border-app pt-4">
         <p className="text-sm">

@@ -1049,6 +1049,77 @@ mod http_tests {
         )
         .await;
         assert_eq!(code, StatusCode::UNAUTHORIZED);
+
+        // Year in savings: only this calendar year's deposits count.
+        let year = chrono::Utc::now().format("%Y").to_string();
+        for (op, amt, month) in [
+            ("c:0", 10_000, "02"),
+            ("d:0", 30_000, "02"),
+            ("e:0", 20_000, "05"),
+        ] {
+            sqlx::query(
+                "INSERT INTO vault_deposits (vault_id, outpoint, amount_sat, height, seen_at) \
+                 VALUES ('vault-save', ?, ?, 300, ?)",
+            )
+            .bind(op)
+            .bind(amt)
+            .bind(format!("{year}-{month}-10T00:00:00Z"))
+            .execute(&state.db)
+            .await
+            .unwrap();
+        }
+        let (_, v) = call(state.clone(), "GET", "/vaults/vault-save/savings", t, None).await;
+        // The two rows inserted above are dated 2026-10-01, so they count
+        // toward this year only when the test runs in 2026.
+        let earlier = if year == "2026" { 75_000 } else { 0 };
+        assert_eq!(v["this_year"]["total_sat"], 60_000 + earlier);
+        assert_eq!(
+            v["this_year"]["deposit_count"],
+            if year == "2026" { 5 } else { 3 }
+        );
+        if year != "2026" {
+            assert_eq!(v["this_year"]["best_month"], 2);
+            assert_eq!(v["this_year"]["best_month_sat"], 40_000);
+        } else {
+            // October's 75,000 beats February's 40,000.
+            assert_eq!(v["this_year"]["best_month"], 10);
+            assert_eq!(v["this_year"]["best_month_sat"], 75_000);
+        }
+
+        // Reminders: weekly with an amount; junk cadence refused; stop.
+        assert!(v["reminder"].is_null());
+        assert_eq!(v["owner_email_confirmed"], false);
+        let (code, v) = call(
+            state.clone(),
+            "PUT",
+            "/vaults/vault-save/savings/reminder",
+            t,
+            Some(serde_json::json!({"cadence": "weekly", "amount_sat": 50_000})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["reminder"]["cadence"], "weekly");
+        assert_eq!(v["reminder"]["amount_sat"], 50_000);
+        let (code, _) = call(
+            state.clone(),
+            "PUT",
+            "/vaults/vault-save/savings/reminder",
+            t,
+            Some(serde_json::json!({"cadence": "hourly", "amount_sat": null})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        let (code, _) = call(
+            state.clone(),
+            "DELETE",
+            "/vaults/vault-save/savings/reminder",
+            t,
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::NO_CONTENT);
+        let (_, v) = call(state.clone(), "GET", "/vaults/vault-save/savings", t, None).await;
+        assert!(v["reminder"].is_null());
     }
 
     /* ----------------------------------------------------------------- *

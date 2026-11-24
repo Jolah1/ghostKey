@@ -57,10 +57,20 @@ const deposits = [
   { amount_sat: 150_000, height: 200, seen_at: "2026-11-01T10:00:00Z", spent: false },
   { amount_sat: 100_000, height: 150, seen_at: "2026-10-01T10:00:00Z", spent: false },
 ];
-const baseView = { total_saved_sat: 250_000, deposit_count: 2, deposits, goal: null };
+const thisYear = new Date().getFullYear();
+const baseView = {
+  total_saved_sat: 250_000,
+  deposit_count: 2,
+  deposits,
+  goal: null,
+  this_year: { year: thisYear, total_sat: 250_000, deposit_count: 2, best_month: 11, best_month_sat: 150_000 },
+  reminder: null,
+  owner_email_confirmed: true,
+};
 
 test("savings card: totals, then a goal with progress and pace", async ({ page }) => {
   let putBody: Record<string, unknown> | null = null;
+  let reminderBody: Record<string, unknown> | null = null;
   const json = (body: unknown, status = 200) => ({
     status,
     contentType: "application/json",
@@ -94,6 +104,16 @@ test("savings card: totals, then a goal with progress and pace", async ({ page }
     if (p === `/vaults/${VAULT_ID}/savings/goal` && req.method() === "PUT") {
       putBody = req.postDataJSON();
       return route.fulfill(json({ ...baseView, goal: putBody }));
+    }
+    if (p === `/vaults/${VAULT_ID}/savings/reminder` && req.method() === "PUT") {
+      reminderBody = req.postDataJSON();
+      return route.fulfill(
+        json({
+          ...baseView,
+          goal: putBody,
+          reminder: { ...reminderBody, next_at: "2099-12-01T09:00:00Z" },
+        }),
+      );
     }
     return route.fulfill(json({}, 404));
   });
@@ -130,6 +150,21 @@ test("savings card: totals, then a goal with progress and pace", async ({ page }
   await expect(card).toContainText("250,000 sats of 1,000,000 sats");
   await expect(card.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "25");
   await expect(page.getByTestId("savings-pace")).toContainText(/Save about [\d,]+ sats a week/);
+
+  // Your year in savings.
+  await expect(page.getByTestId("savings-year")).toContainText(
+    `Your ${thisYear} in savings: 250,000 sats in 2 deposits. Best month: November.`,
+  );
+
+  // Remind me to save: weekly, 50,000 sats.
+  await card.getByRole("button", { name: "Remind me to save" }).click();
+  await card.getByLabel("Remind me to save").selectOption("weekly");
+  await card.getByLabel(/How much each time/).fill("50,000");
+  await card.getByRole("button", { name: "Save reminder" }).click();
+  expect(reminderBody).toEqual({ cadence: "weekly", amount_sat: 50_000 });
+  await expect(page.getByTestId("savings-reminder")).toContainText(
+    "We'll remind you to save every week (about 50,000 sats). Next on",
+  );
 
   const results = await new AxeBuilder({ page }).include('[data-testid="savings-card"]').analyze();
   const serious = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
