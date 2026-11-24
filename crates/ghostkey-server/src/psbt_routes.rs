@@ -1773,6 +1773,12 @@ pub(crate) enum BlockingErr {
     /// waiting out the pause before asking again. See [`ExplorerBackoff`].
     #[error("block explorer is busy; trying again in {0}s")]
     BackingOff(i64),
+    /// The scheduler reads chain data from the cache only, and this
+    /// vault's cache is missing or stale. The background chain refresher
+    /// (`scheduler::run_chain_refresher`) will fill it; until then the
+    /// vault waits, exactly as it would after a failed scan.
+    #[error("waiting for the background chain scan")]
+    NotScannedYet,
     #[error("build: {0}")]
     Build(String),
     #[error("no UTXOs found at vault addresses")]
@@ -1785,6 +1791,7 @@ impl From<BlockingErr> for ApiError {
             BlockingErr::Vault(s) => ApiError::Validation(s),
             BlockingErr::Esplora(s) => ApiError::Validation(s),
             e @ BlockingErr::BackingOff(_) => ApiError::Validation(e.to_string()),
+            e @ BlockingErr::NotScannedYet => ApiError::Validation(e.to_string()),
             BlockingErr::Build(s) => ApiError::Validation(s),
             BlockingErr::NoUtxos => {
                 ApiError::Validation("no UTXOs found at vault addresses".into())
@@ -2064,29 +2071,51 @@ pub(crate) struct EstimateInput {
 /// is fresh and otherwise rescanning Esplora and writing the cache back.
 /// Shared by the scheduler's heir-contact gate and the heir-facing
 /// `/claim/:token/unlock-estimate` endpoint so both see one source.
-pub(crate) async fn unlock_estimate_with_cache(
-    db: &sqlx::SqlitePool,
+/// The cached estimate, if it is fresh (younger than
+/// [`MATURITY_CACHE_TTL_SECS`]) and complete. A fresh row with no tip
+/// means we have never scanned, so it doesn't count.
+fn fresh_cached_estimate(
     input: &EstimateInput,
     now: chrono::DateTime<Utc>,
-) -> Result<UnlockEstimate, BlockingErr> {
-    let cache_fresh = input
+) -> Option<UnlockEstimate> {
+    let fresh = input
         .cached_scanned_at
         .as_deref()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .map(|t| (now - t.with_timezone(&Utc)).num_seconds() < MATURITY_CACHE_TTL_SECS)
         .unwrap_or(false);
+    if !fresh {
+        return None;
+    }
+    match (input.cached_tip_height, input.cached_has_unspent) {
+        (Some(tip), Some(has_unspent)) => Some(UnlockEstimate {
+            tip_height: tip as u32,
+            unlock_height: input.cached_unlock_height.map(|h| h as u32),
+            has_unspent: has_unspent != 0,
+        }),
+        _ => None,
+    }
+}
 
-    // A fresh cache with a recorded tip answers directly. A fresh row
-    // with no tip means we have never scanned; fall through and do so.
-    if cache_fresh {
-        if let (Some(tip), Some(has_unspent)) = (input.cached_tip_height, input.cached_has_unspent)
-        {
-            return Ok(UnlockEstimate {
-                tip_height: tip as u32,
-                unlock_height: input.cached_unlock_height.map(|h| h as u32),
-                has_unspent: has_unspent != 0,
-            });
-        }
+/// The scheduler's read: the fresh cached estimate, never a network
+/// call. Slow or rate-limited explorers used to stretch one scheduler
+/// tick to minutes, delaying reminders and alarms for every vault. Now
+/// the background refresher does the scanning, and a vault without a
+/// fresh estimate simply waits (`NotScannedYet`).
+pub(crate) fn cached_unlock_estimate(
+    input: &EstimateInput,
+    now: chrono::DateTime<Utc>,
+) -> Result<UnlockEstimate, BlockingErr> {
+    fresh_cached_estimate(input, now).ok_or(BlockingErr::NotScannedYet)
+}
+
+pub(crate) async fn unlock_estimate_with_cache(
+    db: &sqlx::SqlitePool,
+    input: &EstimateInput,
+    now: chrono::DateTime<Utc>,
+) -> Result<UnlockEstimate, BlockingErr> {
+    if let Some(est) = fresh_cached_estimate(input, now) {
+        return Ok(est);
     }
 
     let net = crate::config::parse_network(&input.network)
@@ -2784,6 +2813,41 @@ mod tests {
     fn parse_esplora_urls_rejects_empty() {
         assert!(parse_esplora_urls("", Network::Signet).is_err());
         assert!(parse_esplora_urls(" , ,", Network::Signet).is_err());
+    }
+
+    fn estimate_input(scanned_secs_ago: Option<i64>, tip: Option<i64>) -> EstimateInput {
+        EstimateInput {
+            vault_id: "v".into(),
+            descriptor_external: "tr(x)".into(),
+            descriptor_internal: "tr(y)".into(),
+            network: "bitcoin".into(),
+            timelock_blocks: 144,
+            cached_unlock_height: Some(1_000),
+            cached_tip_height: tip,
+            cached_scanned_at: scanned_secs_ago
+                .map(|s| (Utc::now() - chrono::Duration::seconds(s)).to_rfc3339()),
+            cached_has_unspent: Some(1),
+        }
+    }
+
+    #[test]
+    fn the_scheduler_reads_the_cache_and_never_the_network() {
+        let now = Utc::now();
+        // Fresh and complete: answered from the cache.
+        let est = cached_unlock_estimate(&estimate_input(Some(60), Some(900)), now).unwrap();
+        assert_eq!((est.tip_height, est.unlock_height), (900, Some(1_000)));
+        // Stale, never scanned, or scanned without a tip: the vault waits
+        // for the background refresher instead of calling an explorer.
+        for input in [
+            estimate_input(Some(MATURITY_CACHE_TTL_SECS + 5), Some(900)),
+            estimate_input(None, None),
+            estimate_input(Some(60), None),
+        ] {
+            assert!(matches!(
+                cached_unlock_estimate(&input, now),
+                Err(BlockingErr::NotScannedYet)
+            ));
+        }
     }
 
     #[test]
