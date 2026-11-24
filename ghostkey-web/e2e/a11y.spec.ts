@@ -76,7 +76,6 @@ const PAST = new Date(Date.now() - 7 * 86400_000).toISOString();
 const health = {
   ok: true,
   version: "e2e",
-  lightning_enabled: false,
   demo_mode: false,
   default_network: "signet",
   assist_enabled: false,
@@ -97,8 +96,6 @@ const vaultView = {
   claim_eligible_at: FUTURE,
   owner_contact_verified: true,
   has_trusted_contact: false,
-  lnurl_checkin: null,
-  lnurl_panic: null,
 };
 
 const claimView = {
@@ -137,8 +134,6 @@ async function mockApi(page: Page) {
     const method = route.request().method();
 
     if (p === "/health") return route.fulfill(json(health));
-    if (p === "/health/lightning")
-      return route.fulfill(json({ enabled: false, ready: false }));
     if (p === "/price")
       return route.fulfill(
         json({ usd_per_btc: 100_000, fetched_at: PAST, stale: false }),

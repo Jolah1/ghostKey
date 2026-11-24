@@ -106,12 +106,10 @@ const _: () = assert!(DEMO_MIN_TIMELOCK_BLOCKS >= 1);
 const _: () = assert!(MIN_TIMELOCK_BLOCKS <= MAX_TIMELOCK_BLOCKS);
 
 /// When demo mode is on, the scheduler ticks every second instead of
-/// the production default (30 s). The Lightning poller likewise
-/// drops to one second. Both override the CLI / env values so a
+/// the production default (30 s). It overrides the CLI / env value so a
 /// stale `GHOSTKEY_TICK_SECS=30` carried over from production doesn't
 /// silently kill the demo.
 pub const DEMO_SCHEDULER_TICK_SECS: u64 = 1;
-pub const DEMO_LIGHTNING_TICK_SECS: u64 = 1;
 
 /// True if `GHOSTKEY_DEMO_MODE` is set to a truthy value. Read once
 /// at first call and cached for the process lifetime.

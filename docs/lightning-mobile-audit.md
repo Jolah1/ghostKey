@@ -1,5 +1,7 @@
 # Lightning + QR + deep-link mobile audit checklist
 
+> **Retired.** Lightning was removed on 2026-11-24: check-ins and the panic stop are free signed-in actions, and the server has no Lightning code, poller or sidecar. Kept for history.
+
 A reusable test plan for the Lightning surfaces in the dashboard.
 Use this when validating a Lightning sidecar deploy, after a major
 change to `LightningCheckin.tsx` / `Dashboard.tsx`, or quarterly as

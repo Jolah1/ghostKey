@@ -505,12 +505,8 @@ still intact).
 - Tracked: GitHub issue (encrypted off-host backups, README "still
   being built").
 
-### R8. The Lightning sidecar is excluded from the main workspace
-By design (`Cargo.toml` workspace excludes
-`crates/ghostkey-lightning-breez`). Operators who deploy with
-Lightning enabled are responsible for running the sidecar and
-auditing its dependency tree separately. `ghostkey-server` falls
-back to `NoopProvider` when the sidecar is not configured.
+### R8. (Retired) The Lightning sidecar
+Lightning was removed on 2026-11-24: check-ins and the panic stop are free signed-in actions, and the server has no Lightning code, poller or sidecar. This risk no longer applies.
 
 ### R9. The CLI does not yet support hardware-wallet PSBTs
 Owners signing check-ins must run the CLI on a machine with the

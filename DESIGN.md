@@ -211,6 +211,8 @@ The notifier's data fits comfortably in one file on one disk. A busy deployment 
 
 ### Lightning check-ins vs button heartbeat vs on-chain re-vault
 
+> **Superseded.** Lightning was removed on 2026-11-24: check-ins and the panic stop are free signed-in actions, and the server has no Lightning code, poller or sidecar. This section is kept as the record of why Lightning was tried.
+
 The owner can confirm liveness three ways, each with different guarantees and costs:
 
 | Method | What it proves | What it does to state | Cost |

@@ -55,32 +55,6 @@ lettre = { workspace = true }
 p256    = { version = "0.13", features = ["ecdh", "ecdsa"] }
 aes-gcm = "0.10"
 
-# NOTE on Lightning support:
-#
-# The Breez SDK Liquid crate (breez-sdk-liquid) is the production
-# backend for the LightningProvider trait in src/lightning.rs. It is
-# NOT a direct dependency of this crate, because:
-#
-#   * It is only distributed via git (not crates.io).
-#   * It pins reqwest =0.12.18 exactly, which conflicts with the
-#     reqwest version every other workspace crate uses.
-#   * It transitively forks esplora-client, lwk, rusqlite, rusqlite_migration,
-#     sqlite-wasm-rs, and breez-sdk itself; pulling those into this
-#     workspace would balloon the build matrix and tie our CI to
-#     Breez's release cadence.
-#
-# Instead, Breez lives in the sibling crate `crates/ghostkey-lightning-breez`
-# (excluded from the root workspace; see ../../Cargo.toml). That crate
-# builds a small HTTP sidecar binary. This server talks to the sidecar
-# over localhost via `HttpProvider` (src/lightning.rs); the wire
-# protocol is the small JSON surface documented in the sidecar's
-# README.md. Selection is env-driven: set GHOSTKEY_LN_BREEZ_URL and
-# GHOSTKEY_LN_BREEZ_SHARED_SECRET to enable, leave them unset to fall
-# back to NoopProvider (in which case `/lightning-checkin/*` returns
-# 503 and the web UI hides the button).
-#
-# See DESIGN.md "Lightning check-ins" for the full rationale.
-
 [dev-dependencies]
 # tower::ServiceExt::oneshot is the idiomatic way to drive an Axum
 # Router with a Request<Body> in a unit test without binding a TCP
