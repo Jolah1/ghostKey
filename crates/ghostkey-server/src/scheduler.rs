@@ -2087,14 +2087,17 @@ async fn enqueue_guardian_claim_links(state: &AppState, vault_id: &str) -> anyho
                  to help:\n\n\
                  {claim_url}\n\n\
                  The link works once. You don't need an account.\n\n\
+                 {never_ask}\
                  If this reached you by mistake, you can ignore it.\n\n\
-                 From GhostKey\n"
+                 From GhostKey\n",
+                never_ask = notifier::NEVER_ASK_EMAIL,
             ),
             _ => format!(
                 "Hello, {opener} and asked us to reach you to help when the \
                  time came. A message like this can look like a scam, so \
                  please check GhostKey is genuine first. When you're \
-                 ready:\n\n{claim_url}\n\nThe link works once."
+                 ready:\n\n{claim_url}\n\nThe link works once. {never_ask}",
+                never_ask = notifier::NEVER_ASK_SHORT,
             ),
         };
 
@@ -2240,16 +2243,19 @@ async fn enqueue_claim_link(
              see what they left you and the next steps:\n\n\
              {claim_url}\n\n\
              The link works once. You don't need an account.\n\n\
+             {never_ask}\
              If this message reached you by mistake, you can ignore it. \
              Nothing happens until you open the link.\n\n\
-             From GhostKey\n"
+             From GhostKey\n",
+            never_ask = notifier::NEVER_ASK_EMAIL,
         ),
         _ => format!(
             "Hello {heir_name}, {sms_opener} and asked us to reach you if \
              they ever stopped checking in. A message like this can look \
              like a scam, so please check GhostKey is genuine before you \
              open anything. When you're ready:\n\n{claim_url}\n\nThe link \
-             works once. You don't need an account."
+             works once. You don't need an account. {never_ask}",
+            never_ask = notifier::NEVER_ASK_SHORT,
         ),
     };
 
@@ -4121,6 +4127,15 @@ mod tests {
         assert!(
             !body.contains("Someone you knew set up"),
             "generic opener should be replaced when a name is present: {body}"
+        );
+        // #392: the heir is told what GhostKey will never ask for.
+        assert!(
+            body.contains(crate::notifier::NEVER_ASK_EMAIL),
+            "never-ask list missing from claim email: {body}"
+        );
+        assert!(
+            body.contains("your 12 or 24 words") && body.contains("money or a fee"),
+            "never-ask list lost its items: {body}"
         );
     }
 

@@ -67,6 +67,22 @@ const MAX_ATTEMPTS: i64 = 6;
 const BACKOFF_BASE_SECS: i64 = 30;
 const BACKOFF_CAP_SECS: i64 = 3_600;
 
+/// What GhostKey will never ask an heir or guardian for (#392). A fake
+/// message or page only works if it gets one of these, so every message
+/// that hands someone a claim says so plainly. The web claim page shows
+/// the same list (`vocab` `claim.neverAsk`); keep the two in step.
+pub const NEVER_ASK_EMAIL: &str = "GhostKey will never ask you for:\n\
+  - your 12 or 24 words\n\
+  - a password for your wallet\n\
+  - money or a fee\n\
+  - to let anyone see or control your phone or computer\n\
+If anyone asks you for these, it is not us.\n\n";
+
+/// The SMS/WhatsApp form of [`NEVER_ASK_EMAIL`]. It always goes after
+/// the link, so a lock-screen preview still shows nothing about Bitcoin
+/// (C2, #123).
+pub const NEVER_ASK_SHORT: &str = "GhostKey will never ask for your 12 words, a password or money.";
+
 /// What we're notifying about. Drives the subject + body template.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationKind {

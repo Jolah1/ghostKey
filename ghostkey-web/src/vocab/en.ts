@@ -46,6 +46,16 @@ export const en: Vocab = {
   claim: {
     header: "A message for you",
     loading: "Opening your link…",
+    neverAsk: {
+      title: "GhostKey will never ask you for",
+      items: [
+        "your 12 or 24 words",
+        "a password for your wallet",
+        "money or a fee",
+        "to let anyone see or control your phone or computer",
+      ],
+      closing: "If anyone asks you for these, it is not us.",
+    },
     notFound: {
       eyebrow: "This link doesn't work",
       title: "We couldn't find anything for this link",

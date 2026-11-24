@@ -68,6 +68,7 @@ import { countdown, parseRfc } from "./time";
 import { useVocab, LanguageToggle } from "./vocab";
 import type { ClaimCommonVocab } from "./vocab/types";
 import { HeirVideoMessage } from "./HeirVideoMessage";
+import { NeverAskNotice } from "./NeverAskNotice";
 import { ConfirmSend } from "./ConfirmSend";
 import {
   addressMatchesNetwork,
@@ -336,6 +337,9 @@ function DrillFlow({ view, token }: { view: ClaimView; token: string }) {
           <p className="mt-4 text-muted">{d.introBody1}</p>
           <p className="mt-3 text-muted">{d.introBody2}</p>
           <div className="mt-6">
+            <NeverAskNotice />
+          </div>
+          <div className="mt-6">
             <Button onClick={() => setStep("walkthrough")}>{d.introCta}</Button>
           </div>
         </div>
@@ -436,10 +440,12 @@ function Resolved({ view, token }: { view: ClaimView; token: string }) {
 
   // The owner's video message (if any) sits above every state — it's the
   // heir's first reassurance the link is genuine, shown whether they're
-  // waiting out the safety window or claiming right now.
+  // waiting out the safety window or claiming right now. What we never
+  // ask for (#392) comes next, before any step can ask for anything.
   return (
     <>
       <HeirVideoMessage token={token} />
+      <NeverAskNotice />
       {body}
     </>
   );
