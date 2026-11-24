@@ -955,7 +955,18 @@ for weeks until someone notices a 4xx.
    the Actions tab) will deploy.
 
 Manual `fly deploy` from your laptop still works any time you want
-to ship a hotfix without going through `main`.
+to ship a hotfix without going through `main`. Pass the commit so
+`/health` can show what is live:
+
+```sh
+fly deploy -a ghostkey-signet --build-arg GIT_SHA=$(git rev-parse HEAD)
+```
+
+**Check a deploy landed:** `curl -s https://ghostkey.fly.dev/health`
+and compare `commit` with `git rev-parse origin/main`. The deploy
+workflow only runs when server files change, so after a web-only or
+docs-only merge `commit` is older than main, and that is expected.
+`unknown` means the image was built without `--build-arg GIT_SHA`.
 
 **If the deploy starts failing:** the workflow probes
 `flyctl auth whoami` before attempting `flyctl deploy`, so an
