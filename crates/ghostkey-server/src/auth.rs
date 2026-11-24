@@ -923,6 +923,135 @@ mod http_tests {
     }
 
     /* ----------------------------------------------------------------- *
+     *  Savings: GET /vaults/:id/savings, PUT|DELETE .../savings/goal    *
+     * ----------------------------------------------------------------- */
+
+    async fn call(
+        state: std::sync::Arc<crate::AppState>,
+        method: &str,
+        uri: &str,
+        token: Option<&str>,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let mut req = Request::builder().method(method).uri(uri);
+        if let Some(t) = token {
+            req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        let req = match body {
+            Some(b) => req
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(b.to_string()))
+                .unwrap(),
+            None => req.body(Body::empty()).unwrap(),
+        };
+        let resp = routes::router(state).oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, v)
+    }
+
+    #[tokio::test]
+    async fn savings_totals_deposits_and_a_sealed_goal() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-save", Some(&issued.hash_hex)).await;
+        let t = Some(issued.token.as_str());
+
+        // No deposits, no goal.
+        let (code, v) = call(state.clone(), "GET", "/vaults/vault-save/savings", t, None).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["total_saved_sat"], 0);
+        assert_eq!(v["deposit_count"], 0);
+        assert!(v["goal"].is_null());
+
+        // Two deposits, one since spent. The total counts both: it is
+        // everything ever put aside, and never goes down.
+        for (op, amt, h, spent) in [
+            ("a:0", 50_000, 100, None),
+            ("b:1", 25_000, 120, Some("2026-11-01T00:00:00Z")),
+        ] {
+            sqlx::query(
+                "INSERT INTO vault_deposits (vault_id, outpoint, amount_sat, height, seen_at, spent_at) \
+                 VALUES ('vault-save', ?, ?, ?, '2026-10-01T00:00:00Z', ?)",
+            )
+            .bind(op)
+            .bind(amt)
+            .bind(h)
+            .bind(spent)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        }
+        let (_, v) = call(state.clone(), "GET", "/vaults/vault-save/savings", t, None).await;
+        assert_eq!(v["total_saved_sat"], 75_000);
+        assert_eq!(v["deposit_count"], 2);
+        assert_eq!(v["deposits"][0]["amount_sat"], 25_000, "most recent first");
+        assert_eq!(v["deposits"][0]["spent"], true);
+
+        // Set a goal; the title is stored sealed, not in plain text.
+        let goal = serde_json::json!({"title": "School fees", "amount_sat": 1_000_000, "target_date": "2099-06-30"});
+        let (code, v) = call(
+            state.clone(),
+            "PUT",
+            "/vaults/vault-save/savings/goal",
+            t,
+            Some(goal),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["goal"]["title"], "School fees");
+        assert_eq!(v["goal"]["amount_sat"], 1_000_000);
+        let ct: Option<String> =
+            sqlx::query_scalar("SELECT savings_goal_title_ct FROM vaults WHERE id = 'vault-save'")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        let ct = ct.expect("title stored");
+        assert!(!ct.contains("School"), "goal title must be sealed at rest");
+
+        // A bad goal is refused and leaves the old one alone.
+        let bad = serde_json::json!({"title": "", "amount_sat": null, "target_date": null});
+        let (code, _) = call(
+            state.clone(),
+            "PUT",
+            "/vaults/vault-save/savings/goal",
+            t,
+            Some(bad),
+        )
+        .await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        let (_, v) = call(state.clone(), "GET", "/vaults/vault-save/savings", t, None).await;
+        assert_eq!(v["goal"]["title"], "School fees");
+
+        // Clearing the goal.
+        let (code, _) = call(
+            state.clone(),
+            "DELETE",
+            "/vaults/vault-save/savings/goal",
+            t,
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::NO_CONTENT);
+        let (_, v) = call(state.clone(), "GET", "/vaults/vault-save/savings", t, None).await;
+        assert!(v["goal"].is_null());
+
+        // Owner only.
+        let (code, _) = call(
+            state.clone(),
+            "GET",
+            "/vaults/vault-save/savings",
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
+    }
+
+    /* ----------------------------------------------------------------- *
      *  Panic stop: POST /vaults/:id/panic                               *
      *                                                                   *
      *  A free, signed-in freeze. It used to need a Lightning payment.   *

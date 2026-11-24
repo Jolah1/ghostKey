@@ -597,6 +597,24 @@ export interface PriceView {
   stale: boolean;
 }
 
+/** A savings goal (#367). Only the title is required. */
+export interface SavingsGoal {
+  title: string;
+  amount_sat: number | null;
+  /** YYYY-MM-DD */
+  target_date: string | null;
+}
+
+/** `GET /vaults/:id/savings` (owner). */
+export interface SavingsView {
+  /** Everything ever put aside. Only goes up. */
+  total_saved_sat: number;
+  deposit_count: number;
+  /** Most recent first, up to 50. */
+  deposits: { amount_sat: number; height: number; seen_at: string; spent: boolean }[];
+  goal: SavingsGoal | null;
+}
+
 /** One guardian's contact as the owner sees it
  *  (`GET /vaults/:id/guardians`). */
 export interface GuardianContactView {
@@ -756,6 +774,19 @@ export const api = {
       { method: "PUT", body: JSON.stringify(body) },
       ownerToken,
     ),
+  /** Owner-only: what's been put aside, recent deposits, and the goal. */
+  getSavings: (id: string, ownerToken: string | null) =>
+    request<SavingsView>(`/vaults/${id}/savings`, {}, ownerToken),
+  /** Owner-only: set or replace the savings goal. */
+  setSavingsGoal: (id: string, ownerToken: string | null, goal: SavingsGoal) =>
+    request<SavingsView>(
+      `/vaults/${id}/savings/goal`,
+      { method: "PUT", body: JSON.stringify(goal) },
+      ownerToken,
+    ),
+  /** Owner-only: remove the goal. Saving carries on exactly as before. */
+  clearSavingsGoal: (id: string, ownerToken: string | null) =>
+    request<null>(`/vaults/${id}/savings/goal`, { method: "DELETE" }, ownerToken),
   /** Owner-only: both guardians' contacts on a guardian vault (#81).
    *  Empty for a standard vault. */
   listVaultGuardians: (id: string, ownerToken: string | null) =>
