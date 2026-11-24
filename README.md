@@ -89,7 +89,7 @@ What works today:
 - Configurable check-in cadence (weekly / 2-weekly / monthly / quarterly) and grace period (3 days / 1 week / 2 weeks / 1 month)
 - Scheduler with pre-deadline reminders, daily alarm escalation, panic-stop freeze, and per-cycle one-tap tokens
 - Encrypted heir / owner / trusted-contact storage. Owner-key blobs require the owner's password; the simple Door A heir-key blob is server-assisted as described below.
-- Email notifications (SMTP via `lettre` + STARTTLS); SMS + WhatsApp via Twilio (optional, off by default)
+- Email notifications (SMTP via `lettre` + STARTTLS). Email is the only live channel; SMS and WhatsApp via Twilio exist in code but are switched off until a sender is registered, and the server refuses contacts it can't reach
 - Owners can change how an heir is reached after setup (contact + channel), so a vault set up on an undeliverable channel can be fixed without re-doing setup. The address must match the channel, and easy-setup (F2) heirs stay locked to their email since their key is derived from it.
 - One-time claim link and two heir-claim flows:
   - **Password-vault flow** (default): heir pastes a receive address, server signs in-memory with the just-unwrapped heir xprv, broadcasts in one call.
