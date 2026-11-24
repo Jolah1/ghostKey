@@ -64,6 +64,7 @@ import {
 import { unsealOwner } from "./crypto/sealing";
 import { usePrice, btcAndUsd, satsToUsd, formatUsd } from "./fiat";
 import { fanOutCheckin, lastResortCheckinOpen } from "./checkin";
+import { heirContactDue } from "./heirContact";
 import { useToolDoneState } from "./toolStatus";
 import type { Route } from "./App";
 import { unlockErrorMessage } from "./unlockErrors";
@@ -2915,18 +2916,26 @@ function EmptyState({
 /* ----------------------------- Alarm banner ------------------------------- */
 
 function AlarmBanner({ vault, now }: { vault: VaultView; now: Date }) {
-  // claim_eligible_at is when the heir gets emailed if the owner does
-  // nothing. "Days remaining" is the number the user reads first; we
-  // round up to whole days (12.1 hours left → "1 day") so the copy
+  // The heir is contacted only once BOTH the server deadline and the
+  // on-chain waiting period have run out; show whichever ends later.
+  const { due, waitingOnChain } = heirContactDue(
+    vault.claim_eligible_at,
+    vault.unlock_eta,
+  );
+  // Round up to whole days (12.1 hours left reads "1 day") so the copy
   // never under-counts how urgent things are.
-  const due = vault.claim_eligible_at
-    ? parseRfc(vault.claim_eligible_at)
-    : null;
   const daysLeft = due
     ? Math.max(
         0,
         Math.ceil((due.getTime() - now.getTime()) / (24 * 3600 * 1000)),
       )
+    : null;
+  const dateText = due
+    ? due.toLocaleDateString(undefined, {
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+      })
     : null;
   return (
     <section className="rounded-md border border-red-500/40 bg-red-500/10 p-4">
@@ -2934,9 +2943,13 @@ function AlarmBanner({ vault, now }: { vault: VaultView; now: Date }) {
         You missed a check-in.
       </p>
       <p className="mt-1 text-xs text-red-200/80">
-        {daysLeft != null
-          ? `${daysLeft} day${daysLeft === 1 ? "" : "s"} left before your heir is notified. Check in to reset the clock.`
-          : "Check in to reset the clock."}
+        {waitingOnChain && dateText
+          ? `Your heir can't claim until your coins have sat untouched for the waiting period, around ${dateText}. We'll contact them shortly before then. Check in to cancel.`
+          : daysLeft != null && daysLeft > 0
+            ? `${daysLeft} day${daysLeft === 1 ? "" : "s"} left before your heir is notified. Check in to reset the clock.`
+            : daysLeft != null
+              ? "Your heir is about to be notified. Check in now to cancel."
+              : "Check in to reset the clock."}
       </p>
     </section>
   );
