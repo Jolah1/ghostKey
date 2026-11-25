@@ -30,7 +30,7 @@ import { ReceiveCard } from "./ReceiveCard";
 import { ChooseHeirCard } from "./ChooseHeir";
 import { SpendFromGoal } from "./Goals";
 import { SavingsCard } from "./SavingsCard";
-import { addedThisMonth } from "./savings";
+import { addedThisMonth, streakLine } from "./savings";
 import {
   ApiError,
   api,
@@ -867,6 +867,8 @@ function SavingsHero({
         />
       </div>
 
+      {savings?.streak ? <StreakLine savings={savings} /> : null}
+
       {panel === "add" ? (
         <div className="mt-5 border-t border-app pt-5">
           <ReceiveCard vaultId={vaultId} embedded autoShow />
@@ -907,6 +909,19 @@ function SavingsHero({
         </div>
       ) : null}
     </section>
+  );
+}
+
+/** "3 weeks in a row · saved this week": one quiet line under the
+ *  buttons. See `streakLine`. */
+function StreakLine({ savings }: { savings: SavingsView }) {
+  const line = savings.streak ? streakLine(savings.streak, savings.deposit_count) : null;
+  if (!line) return null;
+  return (
+    <p className="mt-5 text-sm" data-testid="savings-streak">
+      <span className="font-medium">{line.main}</span>
+      <span className="text-muted"> · {line.sub}</span>
+    </p>
   );
 }
 

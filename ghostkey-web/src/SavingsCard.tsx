@@ -139,6 +139,12 @@ export function SavingsCard({
         </p>
       ) : null}
 
+      {view.streak && view.streak.best >= 2 ? (
+        <p className="mt-2 text-sm text-muted" data-testid="savings-best-streak">
+          Best streak: {view.streak.best} {view.streak.cadence === "weekly" ? "weeks" : "months"} in a row
+        </p>
+      ) : null}
+
       {/* Save reminders: the honest version of autosave. We can't pull
           bitcoin, so we remind, by email, on the owner's schedule. */}
       <div className="mt-5 border-t border-app pt-4" data-testid="savings-reminder">

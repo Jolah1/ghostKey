@@ -103,10 +103,119 @@ pub struct SavingsView {
     pub unsorted: Vec<UnsortedDeposit>,
     /// "Your year in savings": this calendar year (UTC) so far.
     pub this_year: YearView,
+    /// Periods in a row with something added. See [`streak`].
+    pub streak: StreakView,
     pub reminder: Option<ReminderView>,
     /// Reminders only go to a confirmed email, so the card says so when
     /// it isn't.
     pub owner_email_confirmed: bool,
+}
+
+/// A savings streak: how many weeks (or months) in a row the owner added
+/// bitcoin. Any amount counts, several deposits in one period count once,
+/// and spending never undoes a deposit. Missing a period only restarts the
+/// count; nothing is lost and nobody is told.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct StreakView {
+    /// "weekly" or "monthly": the owner's reminder cadence, monthly when
+    /// no reminder is set.
+    pub cadence: String,
+    /// Periods in a row with a deposit, ending with this one, or with the
+    /// last one while this one is still open and empty.
+    pub current: u32,
+    /// The longest run ever.
+    pub best: u32,
+    /// Whether anything was added in the current period yet.
+    pub saved_this_period: bool,
+    /// When the current period ends (RFC3339, UTC). Adding anything before
+    /// then keeps the streak going.
+    pub period_ends_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cadence {
+    Weekly,
+    Monthly,
+}
+
+impl Cadence {
+    fn from_reminder(cadence: Option<&str>) -> Self {
+        match cadence {
+            Some("weekly") => Cadence::Weekly,
+            _ => Cadence::Monthly,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Cadence::Weekly => "weekly",
+            Cadence::Monthly => "monthly",
+        }
+    }
+
+    /// A number per period that goes up by one each period. Weeks start
+    /// on Monday and months on the 1st, in UTC like "your year in
+    /// savings".
+    fn index(self, t: DateTime<Utc>) -> i64 {
+        match self {
+            // 1970-01-01 was a Thursday; shift so weeks start on Monday.
+            Cadence::Weekly => (t.date_naive() - NaiveDate::from_ymd_opt(1970, 1, 1).unwrap())
+                .num_days()
+                .saturating_add(3)
+                .div_euclid(7),
+            Cadence::Monthly => i64::from(t.year()) * 12 + i64::from(t.month0()),
+        }
+    }
+
+    /// When the period holding `t` ends (the start of the next one).
+    fn period_end(self, t: DateTime<Utc>) -> DateTime<Utc> {
+        let d = t.date_naive();
+        let next = match self {
+            Cadence::Weekly => {
+                d + chrono::Duration::days(7 - i64::from(d.weekday().num_days_from_monday()))
+            }
+            Cadence::Monthly => {
+                let first = d.with_day(1).unwrap();
+                first.checked_add_months(Months::new(1)).unwrap_or(first)
+            }
+        };
+        next.and_hms_opt(0, 0, 0).unwrap().and_utc()
+    }
+}
+
+/// Work out the streak from when each deposit was seen.
+fn streak(seen: &[DateTime<Utc>], cadence: Cadence, now: DateTime<Utc>) -> StreakView {
+    let this = cadence.index(now);
+    let mut periods: Vec<i64> = seen
+        .iter()
+        .map(|t| cadence.index(*t))
+        .filter(|p| *p <= this)
+        .collect();
+    periods.sort_unstable();
+    periods.dedup();
+
+    let mut best = 0u32;
+    let mut run = 0u32;
+    let mut prev: Option<i64> = None;
+    for p in &periods {
+        run = if prev == Some(p - 1) { run + 1 } else { 1 };
+        best = best.max(run);
+        prev = Some(*p);
+    }
+    let saved_this_period = prev == Some(this);
+    // `run` is the run ending at the newest period. It is still going if
+    // that period is this one, or the one before (this one isn't over).
+    let current = match prev {
+        Some(last) if last == this || last == this - 1 => run,
+        _ => 0,
+    };
+    StreakView {
+        cadence: cadence.name().to_string(),
+        current,
+        best,
+        saved_this_period,
+        period_ends_at: cadence.period_end(now).to_rfc3339(),
+    }
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -212,6 +321,22 @@ async fn read_savings(db: &sqlx::SqlitePool, id: &str) -> Result<SavingsView, Ap
     let owner_email_confirmed =
         owner_channel.as_deref() == Some("email") && owner_verified.is_some();
 
+    let seen: Vec<(String,)> =
+        sqlx::query_as("SELECT seen_at FROM vault_deposits WHERE vault_id = ?")
+            .bind(id)
+            .fetch_all(db)
+            .await?;
+    let seen: Vec<DateTime<Utc>> = seen
+        .iter()
+        .filter_map(|(t,)| DateTime::parse_from_rfc3339(t).ok())
+        .map(|t| t.with_timezone(&Utc))
+        .collect();
+    let streak = streak(
+        &seen,
+        Cadence::from_reminder(reminder.as_ref().map(|r| r.cadence.as_str())),
+        Utc::now(),
+    );
+
     Ok(SavingsView {
         total_saved_sat: total,
         deposit_count: count,
@@ -228,6 +353,7 @@ async fn read_savings(db: &sqlx::SqlitePool, id: &str) -> Result<SavingsView, Ap
         goals,
         unsorted,
         this_year,
+        streak,
         reminder,
         owner_email_confirmed,
     })
@@ -847,6 +973,80 @@ mod tests {
 
     fn today() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 11, 24).unwrap()
+    }
+
+    fn at(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    // 2026-11-25 is a Wednesday. Its week runs Mon 23 to Sun 29 Nov.
+    const NOW: &str = "2026-11-25T12:00:00Z";
+
+    #[test]
+    fn no_deposits_no_streak() {
+        let s = streak(&[], Cadence::Weekly, at(NOW));
+        assert_eq!((s.current, s.best, s.saved_this_period), (0, 0, false));
+        assert_eq!(s.cadence, "weekly");
+        assert_eq!(s.period_ends_at, "2026-11-30T00:00:00+00:00");
+    }
+
+    #[test]
+    fn weeks_in_a_row_including_this_one() {
+        let seen = [
+            at("2026-11-10T08:00:00Z"), // week of 9 Nov
+            at("2026-11-16T00:00:00Z"), // Monday midnight: week of 16 Nov
+            at("2026-11-22T23:59:59Z"), // Sunday night: still week of 16 Nov
+            at("2026-11-23T00:00:00Z"), // this week
+        ];
+        let s = streak(&seen, Cadence::Weekly, at(NOW));
+        assert_eq!((s.current, s.best, s.saved_this_period), (3, 3, true));
+    }
+
+    #[test]
+    fn an_open_period_does_not_break_the_streak_yet() {
+        // Saved the last two weeks, nothing yet this week: still 2, and
+        // the owner has until Sunday night.
+        let seen = [at("2026-11-12T08:00:00Z"), at("2026-11-20T08:00:00Z")];
+        let s = streak(&seen, Cadence::Weekly, at(NOW));
+        assert_eq!((s.current, s.best, s.saved_this_period), (2, 2, false));
+    }
+
+    #[test]
+    fn a_missed_period_restarts_the_count_but_best_remembers() {
+        let seen = [
+            at("2026-10-01T08:00:00Z"),
+            at("2026-10-08T08:00:00Z"),
+            at("2026-10-15T08:00:00Z"), // three weeks in a row
+            // nothing the week of 19 Oct
+            at("2026-10-29T08:00:00Z"),
+            at("2026-11-05T08:00:00Z"),
+        ];
+        // Last deposit was the week of 2 Nov; the week of 16 Nov was
+        // missed too, so nothing is running now.
+        let s = streak(&seen, Cadence::Weekly, at(NOW));
+        assert_eq!((s.current, s.best), (0, 3));
+    }
+
+    #[test]
+    fn monthly_streaks_cross_the_new_year() {
+        let seen = [
+            at("2026-11-03T08:00:00Z"),
+            at("2026-12-31T23:00:00Z"),
+            at("2026-12-01T00:00:00Z"),
+            at("2027-01-15T08:00:00Z"),
+        ];
+        let now = at("2027-02-10T08:00:00Z");
+        let s = streak(&seen, Cadence::Monthly, now);
+        // Nov, Dec, Jan; February is open and empty.
+        assert_eq!((s.current, s.best, s.saved_this_period), (3, 3, false));
+        assert_eq!(s.period_ends_at, "2027-03-01T00:00:00+00:00");
+    }
+
+    #[test]
+    fn the_cadence_follows_the_reminder() {
+        assert_eq!(Cadence::from_reminder(Some("weekly")), Cadence::Weekly);
+        assert_eq!(Cadence::from_reminder(Some("monthly")), Cadence::Monthly);
+        assert_eq!(Cadence::from_reminder(None), Cadence::Monthly);
     }
 
     #[test]
