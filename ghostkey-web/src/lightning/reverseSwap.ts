@@ -165,6 +165,18 @@ export function expectedReceive(amountSat: number, pair: ReversePair): number {
   return Math.max(0, expectedLockup(amountSat, pair) - pair.claimFeeSat);
 }
 
+/** The whole Lightning fee for a deposit (swap service plus network),
+ *  in sats and as a percent of the amount, for showing before paying. */
+export function lightningFee(amountSat: number, pair: ReversePair): { sat: number; percent: number } {
+  const sat = amountSat - expectedReceive(amountSat, pair);
+  return { sat, percent: amountSat > 0 ? (sat / amountSat) * 100 : 0 };
+}
+
+/** "4.4%", "0.8%", "19%": one decimal under 10%, whole above. */
+export function percentWords(p: number): string {
+  return p < 10 ? `${(Math.round(p * 10) / 10).toFixed(1).replace(/\.0$/, "")}%` : `${Math.round(p)}%`;
+}
+
 interface ReverseResponse {
   id: string;
   invoice: string;

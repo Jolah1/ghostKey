@@ -59,8 +59,9 @@ export function ReceiveCard({
         <p className="text-xs uppercase tracking-wider text-dim">Add Bitcoin</p>
       ) : null}
       <p className={`text-sm text-muted ${embedded ? "" : "mt-1.5"}`}>
-        Send any amount from any wallet or exchange, as often as you like. New
-        funds join the same plan automatically.
+        Send any amount from any wallet or exchange, as often as you like. Each
+        deposit starts its own waiting period before the person you choose
+        could ever claim it.
       </p>
       {!expanded ? (
         <div className="mt-3">

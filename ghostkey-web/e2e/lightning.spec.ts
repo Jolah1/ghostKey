@@ -241,7 +241,14 @@ test("a Lightning deposit is claimed into the vault only after our server sees i
 
   await expect(page.getByTestId("ln-terms")).toHaveText("2,000 sats to 2,000,000 sats.");
   await page.getByLabel("How much? (sats)").fill("50,000");
-  await expect(page.getByTestId("ln-terms")).toContainText("About 49,435 sats lands in your vault after fees.");
+  await expect(page.getByTestId("ln-fee")).toContainText(
+    "Fee about 565 sats (1.1%). About 49,435 sats lands in your vault.",
+  );
+  // A small deposit says plainly that it costs more as a share.
+  await page.getByLabel("How much? (sats)").fill("2,000");
+  await expect(page.getByTestId("ln-fee")).toContainText("Fee about 277 sats (14%).");
+  await expect(page.getByTestId("ln-fee")).toContainText("small Lightning deposits cost more as a share");
+  await page.getByLabel("How much? (sats)").fill("50,000");
   await expectNoSerious(page);
   await page.getByRole("button", { name: "Get Lightning invoice" }).click();
 

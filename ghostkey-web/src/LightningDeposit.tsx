@@ -20,6 +20,8 @@ import {
   createReverseSwap,
   expectedReceive,
   getReversePair,
+  lightningFee,
+  percentWords,
   swapStatus,
   type ReversePair,
   type SavedSwap,
@@ -133,8 +135,19 @@ export function LightningDeposit({
         />
         <p className="mt-1 text-xs text-dim" data-testid="ln-terms">
           {formatAmount(pair.minimalSat, unit)} to {formatAmount(pair.maximalSat, unit)}.
-          {inRange && sats != null ? ` About ${formatAmount(expectedReceive(sats, pair), unit)} lands in your vault after fees.` : ""}
         </p>
+        {inRange && sats != null ? (
+          <p className="mt-1 text-sm" data-testid="ln-fee">
+            Fee about {formatAmount(lightningFee(sats, pair).sat, unit)} ({percentWords(lightningFee(sats, pair).percent)}).
+            {" "}About {formatAmount(expectedReceive(sats, pair), unit)} lands in your vault.
+            {lightningFee(sats, pair).percent >= 4 ? (
+              <span className="mt-1 block text-xs text-muted">
+                Part of the fee is fixed, so small Lightning deposits cost more as a share. Adding bitcoin directly can be
+                cheaper for small amounts.
+              </span>
+            ) : null}
+          </p>
+        ) : null}
       </div>
       <p className="text-xs text-muted">
         Swapped by {provider.name}, an independent service. GhostKey never holds your money, and neither can they: if
