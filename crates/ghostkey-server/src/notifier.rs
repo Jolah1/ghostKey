@@ -184,6 +184,10 @@ pub enum NotificationKind {
     /// Owner-side, once per finished savings challenge: a short
     /// congratulations, no amounts. Confirmed email only.
     ChallengeDone,
+    /// Owner-side, once per owner: signing in now replaces the monthly
+    /// check-in, and the time before the heir is contacted is the
+    /// vault's own waiting period. Confirmed email only.
+    CheckinRhythm,
 }
 
 impl NotificationKind {
@@ -207,6 +211,7 @@ impl NotificationKind {
             NotificationKind::HeirUnreachable => "heir_unreachable",
             NotificationKind::SavingsReminder => "savings_reminder",
             NotificationKind::ChallengeDone => "challenge_done",
+            NotificationKind::CheckinRhythm => "checkin_rhythm",
         }
     }
 }

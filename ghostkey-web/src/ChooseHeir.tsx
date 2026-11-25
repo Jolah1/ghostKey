@@ -110,8 +110,8 @@ export function ChooseHeirCard({
       <p className="font-medium">No one chosen yet</p>
       <p className="mt-1 text-sm text-muted">
         Choose who gets your savings if you stop showing up. They hear
-        nothing from us until then. Once you choose, a free monthly
-        check-in keeps it that way.
+        nothing from us until then. Once you choose, simply signing in
+        now and then keeps it that way.
       </p>
       {!open ? (
         <Button className="mt-4" onClick={() => setOpen(true)}>

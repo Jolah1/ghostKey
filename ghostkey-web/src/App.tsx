@@ -895,7 +895,7 @@ function Success({ onNavigate }: { onNavigate: (r: Route) => void }) {
         <h1 className="mt-6 font-serif text-4xl md:text-5xl">Your vault is live</h1>
         <p className="mt-3 max-w-md text-muted">
           The person you named will receive your Bitcoin when the time comes.
-          Tap once a month. Nothing changes until you stop.
+          Signing in now and then keeps it that way. Nothing changes until you stop.
         </p>
         <div className="mt-10">
           <Button onClick={() => onNavigate("dashboard")} size="lg">

@@ -135,6 +135,8 @@ test("setup: 'Do this later' creates savings with nothing that reaches an heir",
   const body = created!;
   expect(body.heir_contact).toBeNull();
   expect(body.timelock_blocks).toBe(6 * 30 * 144);
+  // One choice sets both: no sign-in for 6 months before anyone is contacted.
+  expect(body.checkin_period_secs).toBe(6 * 30 * 86_400);
   expect(body.sealed.claim_token_b64).toBeUndefined();
   expect(body.sealed.heir_xprv_ct_b64).toBeUndefined();
   expect(body.sealed.heir_xprv_owner_ct_b64).toBeTruthy();

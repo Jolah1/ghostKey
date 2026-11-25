@@ -71,7 +71,7 @@ import { usePrices } from "./fiat";
 import { fiatAmount, formatAmount, useFiat, useFiatLine, useUnit } from "./units";
 import { UnitToggle } from "./UnitToggle";
 import { useLightningEngine } from "./lightning/engine";
-import { fanOutCheckin } from "./checkin";
+import { checkInVaults } from "./checkin";
 import { heirContactDue } from "./heirContact";
 import { useToolDoneState } from "./toolStatus";
 import type { Route } from "./App";
@@ -262,18 +262,7 @@ export function Dashboard({ onNavigate }: Props) {
       // `fanOutCheckin`. A 409 is the normal answer for a sibling that
       // can't be checked in right now (already checked in this period,
       // or already claimed), so we skip it and keep going.
-      const { checkedIn, skipped, hardError } = await fanOutCheckin(
-        groupVaults.map((g) => g.id),
-        async (id) => {
-          try {
-            await api.checkin(id, getVaultOwnerToken(id));
-            return "checked-in";
-          } catch (e) {
-            if (e instanceof ApiError && e.status === 409) return "skipped";
-            return { error: e instanceof ApiError ? e.message : String(e) };
-          }
-        },
-      );
+      const { checkedIn, skipped, hardError } = await checkInVaults(groupVaults.map((g) => g.id));
       await refresh();
       if (checkedIn > 0) {
         // At least one heir's clock moved. Any 409s alongside it are
@@ -283,9 +272,7 @@ export function Dashboard({ onNavigate }: Props) {
       } else if (hardError) {
         setError(hardError);
       } else if (skipped > 0) {
-        setError(
-          "Already checked in this period. Your next check-in opens when the current cycle ends.",
-        );
+        setError("There's nothing to check in yet. Check-ins start once your vault is funded and has an heir.");
       }
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
@@ -594,11 +581,8 @@ export function Dashboard({ onNavigate }: Props) {
               <div className="mt-5">
                 <CheckinRow
                   vault={vault}
-                  now={now}
-                  busy={busy}
                   justChecked={justChecked}
                   error={error}
-                  onCheckin={onCheckin}
                 />
               </div>
             ) : null}
@@ -1892,7 +1876,7 @@ function AwaitingFundingCard({
           starts until the funds arrive: no check-in clock, no reminders, and
           {" "}
           {meta.heir.name || "your heir"} can't be contacted. Once it's funded,
-          your monthly check-ins begin.
+          signing in to GhostKey keeps it active.
         </p>
       </div>
     </section>
@@ -2011,44 +1995,24 @@ function HeartbeatCard({
     ? countdown(parseRfc(vault.next_deadline_at), now)
     : null;
 
-  // Once-per-period lockout. The server refuses a second check-in
-  // inside the same cycle, so we mirror that here: the next allowable
-  // tap is `last_checkin_at + checkin_period_secs`. While that's in
-  // the future, we lock the buttons and show a countdown to when the
-  // gate reopens. Alarmed vaults are exempt — by definition the
-  // period has already elapsed if status flipped to 'alarmed'.
-  const nextOpen =
-    vault && vault.last_checkin_at && vault.status !== "alarmed"
-      ? new Date(
-          parseRfc(vault.last_checkin_at).getTime() +
-            vault.checkin_period_secs * 1000,
-        )
-      : null;
-  const locked = nextOpen !== null && nextOpen > now;
-  const lockedCd = locked && nextOpen ? countdown(nextOpen, now) : null;
+  // A check-in works any time (signing in counts too), so there's no
+  // "next check-in opens" lock any more.
 
   return (
     <section className="card relative overflow-hidden p-5 text-center md:p-8">
       <div className="flex flex-col items-center">
         <Heartbeat
-          onTap={busy || locked ? undefined : onCheckin}
-          disabled={busy || locked}
+          onTap={busy ? undefined : onCheckin}
+          disabled={busy}
         />
 
         <h2 className="mt-6 font-serif text-2xl">
-          {justChecked
-            ? "Thanks, you're safe"
-            : locked
-              ? "You're all set"
-              : "Time to check in"}
+          {justChecked ? "Thanks, you're safe" : "Time to check in"}
         </h2>
         <p className="mt-1 text-sm text-muted">
           {justChecked
             ? `${meta.heir.name}'s countdown starts again.`
-            : locked
-              ? // `friendly` already starts with "in" (T3, T7).
-                `You're covered for this period. Your next check-in opens ${lockedCd?.friendly ?? "shortly"}.`
-              : `Let ${meta.heir.name} know the clock is reset.`}
+            : `Tap below, or just sign in, to reset the clock for ${meta.heir.name}.`}
         </p>
 
         {/* Checking in is free: being signed in on this device is the
@@ -2057,14 +2021,10 @@ function HeartbeatCard({
           <Button
             onClick={onCheckin}
             loading={busy}
-            disabled={justChecked || locked}
+            disabled={justChecked}
             size="lg"
           >
-            {justChecked
-              ? "Checked in ✓"
-              : locked
-                ? "Checked in for this period"
-                : "I'm still here"}
+            {justChecked ? "Checked in ✓" : "I'm still here"}
           </Button>
         </div>
 
@@ -2092,57 +2052,35 @@ function HeartbeatCard({
  */
 function CheckinRow({
   vault,
-  now,
-  busy,
   justChecked,
   error,
-  onCheckin,
 }: {
   vault: VaultView;
-  now: Date;
-  busy: boolean;
   justChecked: boolean;
   error: string | null;
-  onCheckin: () => void;
 }) {
-  const cd = countdown(parseRfc(vault.next_deadline_at), now);
-  // Same once-per-period lockout as the HeartbeatCard.
-  const nextOpen = vault.last_checkin_at
-    ? new Date(
-        parseRfc(vault.last_checkin_at).getTime() +
-          vault.checkin_period_secs * 1000,
-      )
-    : null;
-  const locked = nextOpen !== null && nextOpen > now;
-  const lockedCd = locked && nextOpen ? countdown(nextOpen, now) : null;
+  // Signing in is the check-in, so on Home you're always checked in.
+  // This just says until when, quietly.
+  const until = parseRfc(vault.next_deadline_at).toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
 
   return (
     <section className="card-flat p-4" data-testid="checkin-row">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-medium text-[var(--text)]">
-            {justChecked
-              ? "Thanks, you're checked in"
-              : locked
-                ? "You're checked in"
-                : "Still here?"}
+            {justChecked ? "Thanks, you're checked in" : "You're checked in"}
           </p>
           <p className="text-xs text-muted" aria-live="polite">
-            {locked
-              ? // `friendly` already starts with "in".
-                `Next check-in opens ${lockedCd?.friendly ?? "shortly"}.`
-              : `Check in ${cd.friendly}. It's free and takes one tap.`}
+            Signing in keeps it that way, until {until}.
           </p>
         </div>
-        {locked || justChecked ? (
-          <span className="shrink-0 text-sm text-muted" aria-hidden="true">
-            ✓
-          </span>
-        ) : (
-          <Button size="sm" onClick={onCheckin} loading={busy} className="shrink-0">
-            I&apos;m still here
-          </Button>
-        )}
+        <span className="shrink-0 text-sm text-muted" aria-hidden="true">
+          ✓
+        </span>
       </div>
       {error ? <p className="mt-2 text-sm text-alarm">{error}</p> : null}
     </section>

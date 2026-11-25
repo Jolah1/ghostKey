@@ -78,7 +78,8 @@ test("savings card: totals, then a goal with progress and pace", async ({ page }
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Stack sats. Build your future.");
   await expect(page.getByText("You've added 150,000 sats this month.")).toBeVisible();
   await expect(page.getByTestId("savings-balance")).toHaveText("250,000 sats");
-  await expect(page.getByTestId("checkin-row")).toContainText("Still here?");
+  await expect(page.getByTestId("checkin-row")).toContainText("You're checked in");
+  await expect(page.getByTestId("checkin-row")).toContainText("Signing in keeps it that way");
   await expect(page.getByRole("heading", { name: "Build wealth that outlives you" })).toBeVisible();
 
   const card = page.getByTestId("savings-card");

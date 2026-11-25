@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { fanOutCheckin } from "./checkin";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError, api } from "./api";
+import { checkInAfterSignIn, fanOutCheckin } from "./checkin";
 
 describe("fanOutCheckin", () => {
   it("keeps going after a heir refuses, and reports the tally", async () => {
@@ -32,5 +33,58 @@ describe("fanOutCheckin", () => {
   it("tallies a single-heir vault that had nothing to do", async () => {
     const tally = await fanOutCheckin(["only"], async () => "skipped");
     expect(tally).toEqual({ checkedIn: 0, skipped: 1, hardError: null });
+  });
+});
+
+function memoryStorage(): Storage {
+  const values = new Map<string, string>();
+  return {
+    get length() {
+      return values.size;
+    },
+    clear: () => values.clear(),
+    getItem: (key) => values.get(key) ?? null,
+    key: (index) => [...values.keys()][index] ?? null,
+    removeItem: (key) => void values.delete(key),
+    setItem: (key, value) => values.set(key, value),
+  };
+}
+
+describe("checkInAfterSignIn", () => {
+  beforeEach(() => {
+    // Node test run: give vaultStore the browser storage it expects.
+    for (const name of ["localStorage", "sessionStorage"]) {
+      Object.defineProperty(globalThis, name, { configurable: true, value: memoryStorage() });
+    }
+    Object.defineProperty(globalThis, "window", { configurable: true, value: globalThis });
+    vi.restoreAllMocks();
+  });
+
+  it("checks in every vault this device has an owner key for, and shrugs off refusals", async () => {
+    const meta = (id: string, ownerToken?: string) => ({
+      id,
+      label: "Savings",
+      owner: { address: "o@example.com" },
+      heir: { name: "Ada", email: "", address: "" },
+      createdAt: "2026-01-01T00:00:00Z",
+      ownerToken,
+      groupId: null,
+    });
+    localStorage.setItem(
+      "gk:vaults",
+      JSON.stringify({ a: meta("a", "tok-a"), b: meta("b", "tok-b"), c: meta("c") }),
+    );
+    const calls: [string, string | null][] = [];
+    vi.spyOn(api, "checkin").mockImplementation(async (id, token) => {
+      calls.push([id, token]);
+      if (id === "b") throw new ApiError(409, null, "fund your vault first");
+      return {} as never;
+    });
+    await expect(checkInAfterSignIn()).resolves.toBeUndefined();
+    // "c" has no owner key on this device, so it isn't tried.
+    expect(calls).toEqual([
+      ["a", "tok-a"],
+      ["b", "tok-b"],
+    ]);
   });
 });

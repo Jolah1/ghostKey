@@ -149,6 +149,98 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
     if let Err(e) = crate::challenges::send_completion_emails(state, Utc::now()).await {
         tracing::warn!(error = ?e, "savings challenge step failed");
     }
+    if let Err(e) = send_rhythm_notices(state).await {
+        tracing::warn!(error = ?e, "sign-in rhythm notice step failed");
+    }
+    Ok(())
+}
+
+/// "3 months", "9 months", "12 months"; days when it isn't whole months.
+fn period_words(secs: i64) -> String {
+    let days = secs / 86_400;
+    if days > 0 && days % 30 == 0 {
+        let m = days / 30;
+        format!("{m} month{}", if m == 1 { "" } else { "s" })
+    } else {
+        format!("{days} days")
+    }
+}
+
+/// The one-time note to existing owners when signing in replaced the
+/// monthly check-in. `period` is None for an owner with several shares,
+/// each with its own waiting period.
+pub(crate) fn rhythm_notice_email(period_secs: Option<i64>, base: &str) -> (String, String) {
+    let how_long = match period_secs {
+        Some(p) => format!(
+            "if you don't sign in for {}, the waiting period you chose",
+            period_words(p)
+        ),
+        None => "if you don't sign in for the waiting period you chose for each share".into(),
+    };
+    let subject = "No more monthly check-ins".to_string();
+    let body = format!(
+        "Hi,\n\n\
+         Good news: you no longer need to check in every month.\n\n\
+         From now on, simply signing in to GhostKey with your password \
+         counts. We only contact the person you chose {how_long}.\n\n\
+         Before that, we email you 7 days, 3 days and 1 day ahead, each \
+         with a one-tap link to say you're still here.\n\n\
+         Nothing about your savings has changed, and nothing moved.\n\n\
+         {base}\n\n\
+         From GhostKey\n"
+    );
+    (subject, body)
+}
+
+/// Send each owner the note above once. Rows are claimed before the
+/// email is queued, so it can never go twice; an owner with several
+/// shares (same email) gets one email.
+async fn send_rhythm_notices(state: &AppState) -> anyhow::Result<()> {
+    type Row = (String, Option<String>, i64);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT id, owner_email_hash, checkin_period_secs FROM vaults \
+          WHERE rhythm_notice_pending = 1 ORDER BY created_at",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    let mut per_owner: std::collections::HashMap<String, Vec<i64>> = Default::default();
+    for (id, hash, period) in &rows {
+        per_owner
+            .entry(hash.clone().unwrap_or_else(|| id.clone()))
+            .or_default()
+            .push(*period);
+    }
+    let mut emailed: std::collections::HashSet<String> = Default::default();
+    let base = public_base_url();
+    for (id, hash, period) in rows {
+        let claimed = sqlx::query(
+            "UPDATE vaults SET rhythm_notice_pending = 0 WHERE id = ? AND rhythm_notice_pending = 1",
+        )
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
+        if claimed.rows_affected() == 0 {
+            continue;
+        }
+        let owner = hash.unwrap_or_else(|| id.clone());
+        if !emailed.insert(owner.clone()) {
+            continue; // this owner's note already went with another share
+        }
+        let periods = &per_owner[&owner];
+        let single = (periods.iter().all(|p| *p == period)).then_some(period);
+        let (subject, body) = rhythm_notice_email(single, &base);
+        if let Err(e) = notifier::enqueue_owner_email(
+            &state.db,
+            &id,
+            NotificationKind::CheckinRhythm,
+            &subject,
+            &body,
+        )
+        .await
+        {
+            tracing::warn!(vault_id = %id, error = ?e, "rhythm notice not enqueued");
+        }
+    }
     Ok(())
 }
 
@@ -672,7 +764,30 @@ async fn unfreeze_expired_panics(state: &AppState, now_iso: &str) -> anyhow::Res
 /// cadence is 10 seconds, the lead-time check fires immediately, so
 /// the reminder shows up in the same demo as the alarm. That's the
 /// behaviour we want: the demo demonstrates BOTH emails fire.
-const PRE_DEADLINE_REMINDER_LEAD_SECS: i64 = 24 * 3600;
+const PRE_DEADLINE_REMINDER_LEAD_SECS: i64 = 7 * 24 * 3600;
+
+/// Reminders go out this long before the deadline: 7, 3 and 1 day. A
+/// vault gets the next one once its deadline is within that lead.
+const REMINDER_LEADS_SECS: [i64; 3] = [7 * 24 * 3600, 3 * 24 * 3600, 24 * 3600];
+
+/// How many reminders should have gone out by now, for a deadline this
+/// many seconds away: 0 more than 7 days out, then 1, 2, 3.
+fn reminders_due(secs_left: i64) -> i64 {
+    REMINDER_LEADS_SECS
+        .iter()
+        .filter(|lead| secs_left <= **lead)
+        .count() as i64
+}
+
+/// "about 3 days from now" / "about a day from now".
+fn time_left_words(secs_left: i64) -> String {
+    let days = (secs_left + 86_399) / 86_400;
+    if days <= 1 {
+        "about a day from now".into()
+    } else {
+        format!("about {days} days from now")
+    }
+}
 
 /// Mint a one-tap check-in token for `vault_id` if the row doesn't
 /// already have one for the current cycle, otherwise reuse the
@@ -780,16 +895,21 @@ async fn issue_pre_deadline_reminders(state: &AppState, now_iso: &str) -> anyhow
             Option<String>, // owner_contact_nonce
             Option<String>, // owner_contact_channel
             String,         // next_deadline_at
+            i64,            // reminders already sent this cycle
         ),
     >(
+        // The stage only counts while sent_at is set: every check-in
+        // clears sent_at, so it starts again from 0 each cycle.
         r#"SELECT id, label,
                   owner_contact_ciphertext, owner_contact_nonce, owner_contact_channel,
-                  next_deadline_at
+                  next_deadline_at,
+                  CASE WHEN pre_deadline_reminder_sent_at IS NULL THEN 0
+                       ELSE pre_deadline_reminder_stage END
              FROM vaults v
             WHERE status = 'ok'
               AND next_deadline_at > ?
               AND next_deadline_at <= ?
-              AND pre_deadline_reminder_sent_at IS NULL
+              AND (pre_deadline_reminder_sent_at IS NULL OR pre_deadline_reminder_stage < 3)
               AND (owner_contact_ciphertext IS NOT NULL
                    OR EXISTS (SELECT 1 FROM push_subscriptions ps
                                WHERE ps.vault_id = v.id))"#,
@@ -799,7 +919,14 @@ async fn issue_pre_deadline_reminders(state: &AppState, now_iso: &str) -> anyhow
     .fetch_all(&state.db)
     .await?;
 
-    for (id, label, ow_ct, ow_nn, ow_ch, next_deadline_at) in due {
+    for (id, label, ow_ct, ow_nn, ow_ch, next_deadline_at, sent) in due {
+        let secs_left = chrono::DateTime::parse_from_rfc3339(&next_deadline_at)
+            .map(|d| (d.with_timezone(&Utc) - now_dt).num_seconds())
+            .unwrap_or(0);
+        let want = reminders_due(secs_left);
+        if want <= sent {
+            continue; // the next one isn't due yet
+        }
         if let Err(e) = enqueue_pre_deadline_reminder(
             state,
             &id,
@@ -809,8 +936,12 @@ async fn issue_pre_deadline_reminders(state: &AppState, now_iso: &str) -> anyhow
                 nonce_b64: ow_nn.as_deref(),
                 channel: ow_ch.as_deref(),
             },
-            &next_deadline_at,
-            now_iso,
+            ReminderTiming {
+                next_deadline_at_iso: &next_deadline_at,
+                now_iso,
+                secs_left,
+                stage: want,
+            },
         )
         .await
         {
@@ -824,6 +955,15 @@ async fn issue_pre_deadline_reminders(state: &AppState, now_iso: &str) -> anyhow
 /// `vaults`. Grouped so the helpers that take them don't trip the
 /// `clippy::too_many_arguments` lint and so a future addition (e.g.
 /// a per-vault TTL) lives in one place.
+/// When a pre-deadline reminder is for, and which one of the cycle it is.
+struct ReminderTiming<'a> {
+    next_deadline_at_iso: &'a str,
+    now_iso: &'a str,
+    secs_left: i64,
+    /// 1, 2 or 3: the 7-day, 3-day or last-day reminder.
+    stage: i64,
+}
+
 struct SealedOwnerContactRow<'a> {
     ciphertext_b64: Option<&'a str>,
     nonce_b64: Option<&'a str>,
@@ -837,9 +977,14 @@ async fn enqueue_pre_deadline_reminder(
     vault_id: &str,
     label: Option<&str>,
     owner: SealedOwnerContactRow<'_>,
-    next_deadline_at_iso: &str,
-    now_iso: &str,
+    when: ReminderTiming<'_>,
 ) -> anyhow::Result<()> {
+    let ReminderTiming {
+        next_deadline_at_iso,
+        now_iso,
+        secs_left,
+        stage,
+    } = when;
     // The reminder can go out over two independent channels: the
     // sealed owner email and/or web push to every browser that opted
     // in. Resolve both up front; if neither is deliverable, leave the
@@ -865,10 +1010,10 @@ async fn enqueue_pre_deadline_reminder(
         return Ok(());
     }
 
-    let token = match mint_or_reuse_one_tap_token(state, vault_id, now_iso).await? {
-        Some(t) => t,
-        None => return Ok(()), // race with concurrent tick; see helper
-    };
+    // The first reminder of a cycle mints the one-tap link. Later ones
+    // can't print it again (only its hash is kept), so they point at
+    // signing in, and the first email's link still works.
+    let token = mint_or_reuse_one_tap_token(state, vault_id, now_iso).await?;
 
     let deadline_friendly = chrono::DateTime::parse_from_rfc3339(next_deadline_at_iso)
         .ok()
@@ -880,23 +1025,32 @@ async fn enqueue_pre_deadline_reminder(
         .unwrap_or_else(|| next_deadline_at_iso.to_string());
 
     let base = public_base_url();
-    let one_tap_url = format!("{base}/#/checkin-link/{vault_id}/{token}");
+    let one_tap_url = token
+        .as_ref()
+        .map(|t| format!("{base}/#/checkin-link/{vault_id}/{t}"));
     let display_label = label.unwrap_or("your GhostKey vault");
 
     if let Some(contact) = &owner_contact {
-        let subject = format!("Reminder: {display_label} check-in due {deadline_friendly}");
+        let when = time_left_words(secs_left);
+        let tap_block = match &one_tap_url {
+            Some(url) => format!(
+                "Tap this link to say you're still here. It's free and \
+                 takes one tap:\n\n{url}\n\n"
+            ),
+            None => "The one-tap link in our earlier reminder still works.\n\n".to_string(),
+        };
+        let subject = format!("Reminder: sign in to GhostKey by {deadline_friendly}");
         let body = format!(
             "Hello,\n\n\
-             A quick reminder that {display_label} needs a check-in by \
-             {deadline_friendly}. That's about 24 hours from now.\n\n\
-             Tap this link, then the button, to check in. It's free, \
-             and it resets the countdown.\n\n\
-             {one_tap_url}\n\n\
-             Or open the dashboard on any device and check in there:\n\n\
+             You haven't signed in to GhostKey for a while. To keep \
+             {display_label} as it is, sign in by {deadline_friendly}, \
+             {when}.\n\n\
+             {tap_block}\
+             Or just open GhostKey and sign in with your password:\n\n\
              {base}/#/checkin\n\n\
-             If we don't hear from you by the deadline, we'll keep \
-             reminding you every day through the grace period. Only after \
-             that would your heir be contacted.\n\n\
+             If we don't hear from you by then, we'll keep reminding you \
+             every day for a week. Only after that would the person you \
+             chose be contacted.\n\n\
              If this email reached you by mistake, you can ignore it.\n\n\
              From GhostKey\n"
         );
@@ -914,14 +1068,14 @@ async fn enqueue_pre_deadline_reminder(
     }
 
     if has_push {
-        let title = "Time to check in".to_string();
+        let title = "Still there?".to_string();
         let push_body = serde_json::json!({
             "title": title,
             "body": format!(
-                "{display_label} needs a check-in by {deadline_friendly}. \
-                 Tap to check in."
+                "Sign in to GhostKey by {deadline_friendly} to keep \
+                 {display_label} as it is. Tap to say you're still here."
             ),
-            "url": one_tap_url,
+            "url": one_tap_url.clone().unwrap_or_else(|| format!("{base}/#/checkin")),
         })
         .to_string();
         notifier::enqueue(
@@ -939,11 +1093,15 @@ async fn enqueue_pre_deadline_reminder(
     // Set the per-cycle marker so we don't re-send on the next tick.
     // Cleared on every successful check-in (see routes::checkin,
     // routes::checkin_from_link, psbt_routes).
-    sqlx::query("UPDATE vaults SET pre_deadline_reminder_sent_at = ? WHERE id = ?")
-        .bind(now_iso)
-        .bind(vault_id)
-        .execute(&state.db)
-        .await?;
+    sqlx::query(
+        "UPDATE vaults SET pre_deadline_reminder_sent_at = ?, pre_deadline_reminder_stage = ? \
+          WHERE id = ?",
+    )
+    .bind(now_iso)
+    .bind(stage)
+    .bind(vault_id)
+    .execute(&state.db)
+    .await?;
 
     tracing::info!(vault_id = %vault_id, "pre-deadline reminder enqueued");
     Ok(())
@@ -4449,6 +4607,226 @@ mod tests {
         assert!(token_hash.is_some(), "checkin_link_token_hash must be set");
     }
 
+    /// The switch from 30-day check-ins to "the waiting period", on rows
+    /// shaped like production's just before it shipped.
+    #[tokio::test]
+    async fn existing_vaults_move_to_their_waiting_period_once() {
+        const VERSION: i64 = 20261125000004;
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let migrator = sqlx::migrate!("./migrations");
+        for m in migrator.migrations.iter().filter(|m| m.version < VERSION) {
+            sqlx::raw_sql(&m.sql).execute(&pool).await.unwrap();
+        }
+        // Checked in 10 days ago on a 30-day rhythm, 3-month (12,960
+        // block) wait. Timestamps exactly as chrono writes them.
+        let last = Utc::now() - chrono::Duration::days(10);
+        let old_deadline = last + chrono::Duration::days(37);
+        for (id, status, reminded) in [
+            ("ok-vault", "ok", None),
+            ("reminded", "ok", Some(Utc::now().to_rfc3339())),
+            ("alarmed", "alarmed", None),
+            ("claimed", "claimed", None),
+        ] {
+            sqlx::query(
+                "INSERT INTO vaults (id, network, descriptor_external, descriptor_internal, \
+                     timelock_blocks, checkin_period_secs, grace_period_secs, created_at, \
+                     next_deadline_at, claim_eligible_at, last_checkin_at, status, \
+                     pre_deadline_reminder_sent_at) \
+                 VALUES (?, 'bitcoin', ?, ?, 12960, 2592000, 604800, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(format!("e-{id}"))
+            .bind(format!("i-{id}"))
+            .bind((last - chrono::Duration::days(60)).to_rfc3339())
+            .bind(old_deadline.to_rfc3339())
+            .bind((old_deadline + chrono::Duration::days(7)).to_rfc3339())
+            .bind(last.to_rfc3339())
+            .bind(status)
+            .bind(reminded)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let m = migrator
+            .migrations
+            .iter()
+            .find(|m| m.version == VERSION)
+            .unwrap();
+        sqlx::raw_sql(&m.sql).execute(&pool).await.unwrap();
+
+        type Row = (i64, String, String, String, i64, i64);
+        let row = |id: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_as::<_, Row>(
+                    "SELECT checkin_period_secs, next_deadline_at, claim_eligible_at, status, \
+                            rhythm_notice_pending, pre_deadline_reminder_stage \
+                       FROM vaults WHERE id = ?",
+                )
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        let parse = |s: &str| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&Utc)
+        };
+
+        // Running clock: 90 days, deadline a full period + grace from the
+        // last check-in, in a form the scheduler compares and parses.
+        let (period, deadline, eligible, status, notice, _) = row("ok-vault").await;
+        assert_eq!(period, 12_960 * 600);
+        assert_eq!(status, "ok");
+        assert_eq!(notice, 1);
+        let want = last + chrono::Duration::seconds(12_960 * 600 + 604_800);
+        assert!(
+            (parse(&deadline) - want).num_seconds().abs() <= 1,
+            "{deadline}"
+        );
+        assert!(parse(&deadline) > old_deadline);
+        assert_eq!((parse(&eligible) - parse(&deadline)).num_seconds(), 604_800);
+        assert!(deadline.ends_with("+00:00") && deadline.contains('T'));
+
+        // The old single 24h reminder counts as all of this cycle's.
+        assert_eq!(row("reminded").await.5, 3);
+
+        // Alarmed: new rhythm for the next check-in, alarm left as it is.
+        let (period, deadline, _, status, notice, _) = row("alarmed").await;
+        assert_eq!(
+            (period, status.as_str(), notice),
+            (12_960 * 600, "alarmed", 1)
+        );
+        assert_eq!(parse(&deadline), parse(&old_deadline.to_rfc3339()));
+
+        // Finished vaults are untouched.
+        let (period, _, _, status, notice, _) = row("claimed").await;
+        assert_eq!((period, status.as_str(), notice), (2_592_000, "claimed", 0));
+    }
+
+    #[test]
+    fn reminders_go_seven_three_and_one_day_before() {
+        let day = 86_400;
+        assert_eq!(reminders_due(10 * day), 0);
+        assert_eq!(reminders_due(7 * day), 1);
+        assert_eq!(reminders_due(4 * day), 1);
+        assert_eq!(reminders_due(3 * day), 2);
+        assert_eq!(reminders_due(day + 1), 2);
+        assert_eq!(reminders_due(day), 3);
+        assert_eq!(reminders_due(60), 3);
+        assert_eq!(time_left_words(7 * day), "about 7 days from now");
+        assert_eq!(time_left_words(2 * day + 5), "about 3 days from now");
+        assert_eq!(time_left_words(3_600), "about a day from now");
+        assert_eq!(period_words(90 * day), "3 months");
+        assert_eq!(period_words(270 * day), "9 months");
+        assert_eq!(period_words(10 * day), "10 days");
+    }
+
+    /// Three reminders a cycle (7, 3 and 1 day before), each once, and
+    /// a check-in starts the count again.
+    #[tokio::test]
+    async fn pre_deadline_reminders_go_once_at_each_stage() {
+        ensure_test_master_key();
+        let pool = fresh_db().await;
+        let state = AppState { db: pool.clone() };
+        let deadline = Utc::now() + chrono::Duration::days(10);
+        insert_vault_with_sealed_owner(
+            &pool,
+            "vault-stages",
+            "ok",
+            &deadline.to_rfc3339(),
+            "2030-01-01T00:00:00Z",
+            "dana@example.test",
+        )
+        .await;
+        let sent = || async {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM notifications \
+                  WHERE vault_id = 'vault-stages' AND kind = 'pre_deadline_reminder'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+        let at = |days_before: f64| {
+            (deadline - chrono::Duration::seconds((days_before * 86_400.0) as i64)).to_rfc3339()
+        };
+        let step = |now: String| {
+            let state = &state;
+            async move { issue_pre_deadline_reminders(state, &now).await.unwrap() }
+        };
+
+        step(at(8.0)).await;
+        assert_eq!(sent().await, 0, "more than 7 days out: nothing yet");
+        step(at(6.5)).await;
+        step(at(6.0)).await;
+        assert_eq!(sent().await, 1, "the 7-day reminder, once");
+        step(at(2.5)).await;
+        step(at(2.0)).await;
+        assert_eq!(sent().await, 2, "the 3-day reminder, once");
+        step(at(0.5)).await;
+        step(at(0.2)).await;
+        assert_eq!(sent().await, 3, "the last-day reminder, once");
+
+        // A check-in clears the marker; the next cycle starts from 0.
+        sqlx::query(
+            "UPDATE vaults SET pre_deadline_reminder_sent_at = NULL WHERE id = 'vault-stages'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        step(at(0.5)).await;
+        assert_eq!(sent().await, 4);
+    }
+
+    #[tokio::test]
+    async fn a_late_start_sends_one_reminder_not_three() {
+        // Deadline already 12 hours away when reminders first run (e.g.
+        // right after this shipped): one email, not a burst.
+        ensure_test_master_key();
+        let pool = fresh_db().await;
+        let state = AppState { db: pool.clone() };
+        let deadline = (Utc::now() + chrono::Duration::hours(12)).to_rfc3339();
+        insert_vault_with_sealed_owner(
+            &pool,
+            "vault-late",
+            "ok",
+            &deadline,
+            "2030-01-01T00:00:00Z",
+            "eve@example.test",
+        )
+        .await;
+        issue_pre_deadline_reminders(&state, &Utc::now().to_rfc3339())
+            .await
+            .unwrap();
+        issue_pre_deadline_reminders(&state, &Utc::now().to_rfc3339())
+            .await
+            .unwrap();
+        let n: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE vault_id = 'vault-late'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn the_rhythm_note_says_how_long_and_nothing_moved() {
+        let (subject, body) = rhythm_notice_email(Some(180 * 86_400), "https://ghostkeyapp.com");
+        assert_eq!(subject, "No more monthly check-ins");
+        assert!(body.contains("if you don't sign in for 6 months"), "{body}");
+        assert!(body.contains("7 days, 3 days and 1 day ahead"));
+        assert!(body.contains("nothing moved"));
+        let (_, several) = rhythm_notice_email(None, "https://ghostkeyapp.com");
+        assert!(several.contains("for each share"));
+    }
+
     /// Reminder does NOT fire when the deadline is further out than
     /// the lead window. This is the SQL's `next_deadline_at <= window_end`
     /// gate; regressions here would spam owners weeks in advance.
@@ -4457,8 +4835,8 @@ mod tests {
         ensure_test_master_key();
         let pool = fresh_db().await;
         let state = AppState { db: pool.clone() };
-        // Deadline 7 days from now — well outside the 24h lead.
-        let deadline = (Utc::now() + chrono::Duration::days(7)).to_rfc3339();
+        // Deadline 10 days from now: outside the first (7-day) reminder.
+        let deadline = (Utc::now() + chrono::Duration::days(10)).to_rfc3339();
         insert_vault_with_sealed_owner(
             &pool,
             "vault-pre2",

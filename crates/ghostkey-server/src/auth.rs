@@ -1716,6 +1716,63 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn every_sign_of_life_rolls_the_deadline_but_repeats_change_nothing() {
+        // Signing in counts as a check-in, so the deadline is always a
+        // full period from the last proof of life, at any time. Repeats
+        // within 12 hours are a quiet no-op, so activity isn't flooded.
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-roll", Some(&issued.hash_hex)).await;
+        let t = Some(issued.token.as_str());
+        let url = "/vaults/vault-roll/checkin";
+        let count = |db: SqlitePool| async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM events WHERE vault_id = 'vault-roll' AND kind = 'checkin'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap()
+        };
+        let deadline = |v: &Value| {
+            chrono::DateTime::parse_from_rfc3339(v["next_deadline_at"].as_str().unwrap()).unwrap()
+        };
+
+        let (code, first) = call(state.clone(), "POST", url, t, None).await;
+        assert_eq!(code, StatusCode::OK);
+        let (code, again) = call(state.clone(), "POST", url, t, None).await;
+        assert_eq!(code, StatusCode::OK, "a repeat is fine, not a 409");
+        assert_eq!(deadline(&again), deadline(&first), "and moves nothing");
+        assert_eq!(count(state.db.clone()).await, 1);
+
+        // 13 hours later: it rolls forward again.
+        let earlier = (chrono::Utc::now() - chrono::Duration::hours(13)).to_rfc3339();
+        sqlx::query("UPDATE vaults SET last_checkin_at = ? WHERE id = 'vault-roll'")
+            .bind(&earlier)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let (code, later) = call(state.clone(), "POST", url, t, None).await;
+        assert_eq!(code, StatusCode::OK);
+        assert!(deadline(&later) > deadline(&first));
+        assert_eq!(count(state.db.clone()).await, 2);
+
+        // An alarm always clears, however recent the last check-in.
+        sqlx::query("UPDATE vaults SET status = 'alarmed' WHERE id = 'vault-roll'")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let (code, v) = call(state.clone(), "POST", url, t, None).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["status"], "ok");
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM vaults WHERE id = 'vault-roll'")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(status, "ok");
+    }
+
+    #[tokio::test]
     async fn checkin_works_at_any_time() {
         // The plain button works with a normal far-off deadline.
         let state = fresh_state().await;

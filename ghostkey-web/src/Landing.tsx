@@ -147,8 +147,8 @@ const STEPS: Step[] = [
     body: "Send sats from any wallet or exchange, on-chain or by Lightning, as often as you like. Watch your total grow, and get a gentle reminder if you want one. It stays yours: you can spend it any time.",
   },
   {
-    title: "Tap once a month",
-    body: "One free tap says you're still here. Miss it for long enough and the countdown begins.",
+    title: "Sign in now and then",
+    body: "Signing in tells us you're still here. Go quiet for the time you chose (3, 6, 9 or 12 months) and we email you first, a week before. Only then would the person you named be contacted.",
   },
   {
     title: "If you stop showing up, it isn't lost",
