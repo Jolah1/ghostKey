@@ -144,6 +144,11 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
     transition_alarmed_to_claimable(state, &now).await?;
     send_claim_ready_notices(state).await?;
     send_savings_reminders(state, Utc::now()).await?;
+    // Last, and never fatal: a challenge problem must not mark the tick
+    // that runs check-ins and claims as failed.
+    if let Err(e) = crate::challenges::send_completion_emails(state, Utc::now()).await {
+        tracing::warn!(error = ?e, "savings challenge step failed");
+    }
     Ok(())
 }
 

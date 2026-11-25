@@ -23,6 +23,7 @@ mod admin;
 mod analytics;
 mod assist;
 mod auth;
+mod challenges;
 mod concurrency;
 mod config;
 mod crypto;

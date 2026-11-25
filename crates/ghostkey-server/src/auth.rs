@@ -1517,6 +1517,78 @@ mod http_tests {
         assert!(v["reminder"].is_null());
     }
 
+    #[tokio::test]
+    async fn savings_challenges_join_stop_and_stay_the_owners() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-ch", Some(&issued.hash_hex)).await;
+        let other = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-other-ch", Some(&other.hash_hex)).await;
+        let t = Some(issued.token.as_str());
+        let url = "/vaults/vault-ch/savings/challenges";
+
+        // Owner only.
+        let (code, _) = call(state.clone(), "GET", url, None, None).await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
+        let (code, _) = call(state.clone(), "GET", url, Some(other.token.as_str()), None).await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
+
+        let (code, v) = call(state.clone(), "GET", url, t, None).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["challenges"].as_array().unwrap().len(), 0);
+
+        // Join the 52-week challenge; a second one at once is refused.
+        let join = serde_json::json!({"kind": "week52", "week1_sat": 2_000});
+        let (code, v) = call(state.clone(), "POST", url, t, Some(join.clone())).await;
+        assert_eq!(code, StatusCode::OK);
+        let c = &v["challenges"][0];
+        assert_eq!(c["kind"], "week52");
+        assert_eq!(c["state"], "going");
+        assert_eq!(c["week"], 1);
+        assert_eq!(c["this_week_sat"], 2_000);
+        assert_eq!(c["target_sat"], 2_000 * 1378);
+        let id = c["id"].as_str().unwrap().to_string();
+        let (code, _) = call(state.clone(), "POST", url, t, Some(join.clone())).await;
+        assert_eq!(code, StatusCode::CONFLICT);
+
+        // Bad input is refused.
+        for bad in [
+            serde_json::json!({"kind": "hold", "hold_months": 5}),
+            serde_json::json!({"kind": "goal_by_date", "goal_id": "nope"}),
+            serde_json::json!({"kind": "lottery"}),
+        ] {
+            let (code, _) = call(state.clone(), "POST", url, t, Some(bad)).await;
+            assert_eq!(code, StatusCode::BAD_REQUEST);
+        }
+
+        // Someone else can't stop it, even with the id.
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            "/vaults/vault-other-ch/savings/challenges/stop",
+            Some(other.token.as_str()),
+            Some(serde_json::json!({"id": id})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::NOT_FOUND);
+
+        // The owner stops it; then it can be started again.
+        let (code, v) = call(
+            state.clone(),
+            "POST",
+            "/vaults/vault-ch/savings/challenges/stop",
+            t,
+            Some(serde_json::json!({"id": id})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["challenges"][0]["state"], "stopped");
+        let (code, v) = call(state.clone(), "POST", url, t, Some(join)).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["challenges"].as_array().unwrap().len(), 2);
+        assert_eq!(v["challenges"][0]["state"], "going");
+    }
+
     /* ----------------------------------------------------------------- *
      *  Panic stop: POST /vaults/:id/panic                               *
      *                                                                   *
