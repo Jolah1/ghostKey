@@ -214,11 +214,69 @@ fn parse_esplora_urls(raw: &str, network: Network) -> Result<Vec<String>, ApiErr
     Ok(urls)
 }
 
-/// Run an Esplora operation against each endpoint in order, returning
+/// How long an explorer that just failed is asked last.
+const EXPLORER_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Retries on a 429/5xx for the last explorer in line. Earlier ones get
+/// none: the next explorer is a better bet than waiting on this one.
+const LAST_EXPLORER_RETRIES: usize = 2;
+
+/// When each explorer last failed, by URL.
+fn explorer_cooldowns(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>> {
+    static C: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    > = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// The endpoints in the order to ask them: any that failed in the last
+/// [`EXPLORER_COOLDOWN`] go to the back, otherwise the configured order
+/// holds. Nothing is dropped, so if every explorer is struggling they
+/// are all still tried.
+fn explorer_try_order(urls: &[String]) -> Vec<&String> {
+    let now = std::time::Instant::now();
+    let cooling = explorer_cooldowns()
+        .lock()
+        .map(|c| {
+            urls.iter()
+                .map(|u| {
+                    c.get(u)
+                        .is_some_and(|t| now.duration_since(*t) < EXPLORER_COOLDOWN)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|_| vec![false; urls.len()]);
+    let mut order: Vec<(bool, &String)> = cooling.into_iter().zip(urls).collect();
+    // Stable: ties keep the configured order.
+    order.sort_by_key(|(cool, _)| *cool);
+    order.into_iter().map(|(_, u)| u).collect()
+}
+
+fn explorer_failed(url: &str) {
+    if let Ok(mut c) = explorer_cooldowns().lock() {
+        c.insert(url.to_string(), std::time::Instant::now());
+    }
+}
+
+fn explorer_ok(url: &str) {
+    if let Ok(mut c) = explorer_cooldowns().lock() {
+        c.remove(url);
+    }
+}
+
+/// Run an Esplora operation against each endpoint in turn, returning
 /// the first success. Only explorer-side failures (`BlockingErr::Esplora`)
 /// trigger failover — wallet/build errors would fail identically against
 /// every endpoint, so they abort immediately. Returns the last endpoint's
 /// error when all of them fail.
+///
+/// A rate-limited explorer must not hold the request up: on 2026-11-25
+/// blockstream answered everything with 429, and the client's own six
+/// retries spent ~20s there before the next explorer was asked, longer
+/// than Home waits for a balance. So only the last explorer in line
+/// retries, and one that just failed is asked last for a while (see
+/// [`explorer_try_order`]).
 ///
 /// The closure is handed a freshly built client per attempt; anything it
 /// needs mutable access to (the BDK wallet, the PSBT) is captured by the
@@ -227,9 +285,10 @@ fn try_each_esplora<T, F>(explorers: &Explorers, mut op: F) -> Result<T, Blockin
 where
     F: FnMut(&esplora_client::BlockingClient) -> Result<T, BlockingErr>,
 {
-    let urls = &explorers.urls;
+    let urls = explorer_try_order(&explorers.urls);
     let mut last_err = BlockingErr::Esplora("no esplora endpoints configured".into());
     for (i, url) in urls.iter().enumerate() {
+        let is_last = i + 1 == urls.len();
         // Per-request socket timeout. The default is unbounded, so a
         // slow/throttling public explorer (mempool.space rate-limits
         // hard) could hang the whole scan past the gateway's 60s cap.
@@ -237,11 +296,16 @@ where
         // next one quickly instead.
         let client = esplora_client::Builder::new(url)
             .timeout(15)
+            .max_retries(if is_last { LAST_EXPLORER_RETRIES } else { 0 })
             .build_blocking();
         match explorer_on_network(&client, url, explorers.network).and_then(|()| op(&client)) {
-            Ok(v) => return Ok(v),
+            Ok(v) => {
+                explorer_ok(url);
+                return Ok(v);
+            }
             Err(e @ BlockingErr::Esplora(_)) => {
-                if i + 1 < urls.len() {
+                explorer_failed(url);
+                if !is_last {
                     tracing::warn!(
                         endpoint = %url,
                         error = %e,
@@ -2981,6 +3045,100 @@ mod tests {
         });
         assert_eq!(attempts, 1, "must not fail over on non-esplora errors");
         assert!(matches!(result, Err(BlockingErr::NoUtxos)));
+    }
+
+    /// Answer every request with `status` and `body`, counting hits.
+    fn counting_explorer(
+        status: &'static str,
+        body: &'static str,
+    ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{Read, Write};
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = hits.clone();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (format!("http://{addr}"), hits)
+    }
+
+    #[test]
+    fn a_rate_limited_explorer_hands_over_at_once_and_goes_to_the_back() {
+        // Regression: blockstream answered every request with 429, and the
+        // client's built-in retries (6, with doubling sleeps) spent ~20s
+        // on it before trying the next explorer. Home gives up at 20s, so
+        // the owner never saw a balance though the next explorer was fine.
+        use std::sync::atomic::Ordering;
+        let (limited, limited_hits) = counting_explorer("429 Too Many Requests", "slow down");
+        let (healthy, healthy_hits) = counting_explorer("200 OK", "900000");
+        let explorers = Explorers {
+            urls: vec![limited.clone(), healthy.clone()],
+            network: Network::Regtest,
+        };
+        for u in &explorers.urls {
+            verified_explorers()
+                .lock()
+                .unwrap()
+                .insert((u.clone(), Network::Regtest));
+        }
+        let height = |c: &esplora_client::BlockingClient| {
+            c.get_height()
+                .map_err(|e| clean_esplora_err("get_height", &e))
+        };
+
+        let started = std::time::Instant::now();
+        assert_eq!(try_each_esplora(&explorers, height).unwrap(), 900_000);
+        assert_eq!(
+            limited_hits.load(Ordering::SeqCst),
+            1,
+            "a 429 must hand over, not retry, while another explorer is left"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "took {:?}",
+            started.elapsed()
+        );
+
+        // Straight after, the explorer that just turned us away is asked
+        // last, so the next request doesn't pay for it again.
+        assert_eq!(try_each_esplora(&explorers, height).unwrap(), 900_000);
+        assert_eq!(limited_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(healthy_hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_cooling_explorer_is_still_tried_when_it_is_the_only_hope() {
+        // Moving a failed explorer to the back never drops it: if every
+        // other one fails too, it is still asked.
+        let explorers = Explorers {
+            urls: vec![
+                "http://127.0.0.1:3/api".to_string(),
+                "http://127.0.0.1:4/api".to_string(),
+            ],
+            network: Network::Regtest,
+        };
+        let mut asked = Vec::new();
+        let _: Result<(), _> = try_each_esplora(&explorers, |c| {
+            asked.push(c.url().to_string());
+            Err(BlockingErr::Esplora("down".into()))
+        });
+        let mut asked_again = Vec::new();
+        let _: Result<(), _> = try_each_esplora(&explorers, |c| {
+            asked_again.push(c.url().to_string());
+            Err(BlockingErr::Esplora("down".into()))
+        });
+        assert_eq!(asked.len(), 2);
+        assert_eq!(asked_again.len(), 2, "both still tried: {asked_again:?}");
     }
 
     #[test]
