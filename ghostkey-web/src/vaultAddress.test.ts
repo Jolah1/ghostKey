@@ -29,7 +29,7 @@ describe("deriveVaultAddress matches the Rust that builds vaults", () => {
   it("covers every vault shape GhostKey builds", () => {
     const names = new Set((fixtures as Case[]).map((c) => c.name));
     expect([...names].sort()).toEqual(
-      ["guardian", "guardian-dated", "standard", "standard-1-block"].sort(),
+      ["guardian", "guardian-dated", "liana", "liana-1-block", "standard", "standard-1-block"].sort(),
     );
   });
 });

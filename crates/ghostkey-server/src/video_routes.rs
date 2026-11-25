@@ -221,26 +221,33 @@ pub struct VideoView {
 
 type VideoRow = (String, String, String, Option<i64>, String, String);
 
-/// Pull the owner account xpub out of a vault descriptor. The owner key
-/// is the first `pk(...)` in `tr(NUMS,or_d(pk([origin]XPUB/0/*),...))`;
-/// the xpub runs from just after the `]` origin tag to the `/` chain
-/// suffix.
+/// Pull the owner account xpub out of a vault descriptor.
+///
+/// - Standard format (#386): `tr(OWNER/0/*,and_v(v:pk(HEIR/0/*),older(N)))`.
+///   The owner is the Taproot internal key.
+/// - Legacy and guardian vaults: `tr(NUMS,or_d(pk(OWNER/0/*),...))`. The
+///   internal key is the bare NUMS point, and the owner is the first key
+///   in the leaf.
+///
+/// This used to take the first `pk(` in the string, which in the standard
+/// format is the heir's key: the heir would then check the owner's video
+/// against their own key.
 fn owner_xpub_from_descriptor(desc: &str) -> Option<String> {
-    let pk = desc.find("pk(")?;
-    let after = &desc[pk + 3..];
-    let rest = if let Some(stripped) = after.strip_prefix('[') {
-        let close = stripped.find(']')? + 1;
-        &stripped[close..]
-    } else {
-        after
+    use miniscript::descriptor::{Descriptor, DescriptorPublicKey};
+    use std::str::FromStr;
+
+    let Ok(Descriptor::Tr(tr)) = Descriptor::<DescriptorPublicKey>::from_str(desc) else {
+        return None;
     };
-    let end = rest.find('/')?;
-    let xpub = &rest[..end];
-    if xpub.is_empty() {
-        None
-    } else {
-        Some(xpub.to_string())
-    }
+    let xpub = |k: &DescriptorPublicKey| match k {
+        DescriptorPublicKey::XPub(x) => Some(x.xkey.to_string()),
+        _ => None,
+    };
+    xpub(tr.internal_key()).or_else(|| {
+        let (_, leaf) = tr.iter_scripts().next()?;
+        let first = leaf.iter_pk().next()?;
+        xpub(&first)
+    })
 }
 
 /// Heir-side: fetch the encrypted clip for playback. Gated on a valid,
@@ -291,18 +298,58 @@ pub async fn get_claim_video(
 mod tests {
     use super::owner_xpub_from_descriptor;
 
-    #[test]
-    fn extracts_owner_xpub_with_origin() {
-        let d = "tr(50929b74,or_d(pk([6b3b6632/86'/0'/0']xpub6BhZnOwner/0/*),and_v(v:pk([00000000/86'/0'/0']xpub6DNGqHeir/1/*),older(4320))))";
-        assert_eq!(
-            owner_xpub_from_descriptor(d).as_deref(),
-            Some("xpub6BhZnOwner"),
-        );
+    use bitcoin::bip32::Xpriv;
+    use bitcoin::Network;
+    use ghostkey_core::keys::{account_xpub, descriptor_key_fragment, Chain};
+
+    /// Real owner/heir fragments plus each party's account xpub string.
+    fn parties() -> ([String; 4], String, String) {
+        let net = Network::Bitcoin;
+        let owner_m = Xpriv::new_master(net, &[0x31; 32]).unwrap();
+        let heir_m = Xpriv::new_master(net, &[0x42; 32]).unwrap();
+        let (ofp, op, ox) = account_xpub(&owner_m, net).unwrap();
+        let (hfp, hp, hx) = account_xpub(&heir_m, net).unwrap();
+        (
+            [
+                descriptor_key_fragment(ofp, &op, &ox, Chain::External),
+                descriptor_key_fragment(ofp, &op, &ox, Chain::Internal),
+                descriptor_key_fragment(hfp, &hp, &hx, Chain::External),
+                descriptor_key_fragment(hfp, &hp, &hx, Chain::Internal),
+            ],
+            ox.to_string(),
+            hx.to_string(),
+        )
     }
 
     #[test]
-    fn none_when_no_pk() {
+    fn finds_the_owner_in_a_legacy_vault() {
+        let ([oe, oi, he, hi], owner, _) = parties();
+        let pair =
+            ghostkey_core::descriptor::build_descriptor_pair(&oe, &oi, &he, &hi, 4320).unwrap();
+        assert_eq!(owner_xpub_from_descriptor(&pair.external), Some(owner));
+    }
+
+    #[test]
+    fn finds_the_owner_not_the_heir_in_a_standard_vault() {
+        let ([oe, oi, he, hi], owner, heir) = parties();
+        let pair = ghostkey_core::descriptor::build_standard_descriptor_from_fragments(
+            &oe, &oi, &he, &hi, 4320,
+        )
+        .unwrap()
+        .pair;
+        let found = owner_xpub_from_descriptor(&pair.external);
+        assert_ne!(
+            found.as_deref(),
+            Some(heir.as_str()),
+            "picked the heir's key"
+        );
+        assert_eq!(found, Some(owner));
+    }
+
+    #[test]
+    fn none_for_something_that_is_not_a_vault() {
         assert!(owner_xpub_from_descriptor("tr(50929b74)").is_none());
+        assert!(owner_xpub_from_descriptor("not a descriptor").is_none());
     }
 }
 

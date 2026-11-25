@@ -1,0 +1,20 @@
+[package]
+name = "liana-compat"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Checks that GhostKey's standard vault format is accepted by Liana's own descriptor parser (#386)"
+publish = false
+
+# Deliberately NOT a member of the root workspace (see the root
+# Cargo.toml `exclude`). Liana is a large crate we only need for this
+# check, so it stays out of the server's lock file and the production
+# build. CI runs it as its own job.
+
+[dependencies]
+ghostkey-core = { path = "../../crates/ghostkey-core" }
+bitcoin = "0.32"
+# Liana v15.0 (tag v15.0 -> commit 4684d5cb). Pinned to the commit, not
+# the tag, so a moved tag can't change what we test against. Liana is
+# not on crates.io past v5, which predates its Taproot support.
+liana = { git = "https://github.com/wizardsardine/liana", rev = "4684d5cb0c75471ae40f43dffc78333ac74afb38" }

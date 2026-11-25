@@ -10,14 +10,29 @@ For what's planned next: [DESIGN](./DESIGN.md)
 
 ## The on-chain script
 
-Every GhostKey vault is a single Taproot address with two spend paths:
+Every GhostKey vault is a single Taproot address with two spend paths. New vaults use the **standard format** (#386), which Liana and other Miniscript wallets can open:
 
 ```
-or_d(
-  pk(OWNER),
+tr(
+  OWNER,                  key path: the owner, any time
   and_v(
-    v:pk(HEIR),
-    older(N)
+    v:pk(HEIR),           script path: the heir,
+    older(N)              after N blocks
+  )
+)
+```
+
+Vaults created before #386 use the **legacy format**: an unspendable internal key, with both paths in one script leaf. Their spending rule is the same, and they keep working as they are.
+
+```
+tr(
+  NUMS,
+  or_d(
+    pk(OWNER),
+    and_v(
+      v:pk(HEIR),
+      older(N)
+    )
   )
 )
 ```
@@ -29,7 +44,7 @@ or_d(
 
 `N` is set at vault creation (1–65535 blocks, roughly 1 week to 15 months).
 
-### Why `or_d` and not the alternatives
+### Why `or_d` and not the alternatives (legacy format)
 
 `or_d` (dissatisfiable OR) lets the owner spend without revealing anything about the heir's branch. The heir's key and timelock only appear in the transaction witness when the heir actually claims. It's the cheapest combinator with that privacy property.
 
@@ -37,9 +52,16 @@ or_d(
 
 Absolute timelocks (`after(H)`) expire at a fixed block height, so the owner has to create a new vault before that date, forever. Relative timelocks (`older(N)`, BIP68) measure from when the UTXO was last confirmed. Checking in, which moves the funds to a fresh vault address, automatically resets the countdown. No calendar to race against, no vault expiry.
 
-### Why the internal key is unspendable
+### Why the owner is now the internal key
 
-Every Taproot address has a keypath that bypasses all scripts: just one key signature, no conditions. We don't want that shortcut to exist. The internal key is set to a NUMS point (Nothing Up My Sleeve: a value with no known discrete log), which is verifiably unspendable. Every spend goes through the explicit script; there are no exceptions.
+Every Taproot address has a key path: one signature, no conditions. The legacy format set the internal key to a NUMS point (Nothing Up My Sleeve: a value with no known discrete log), so every spend went through the script.
+
+The owner can already spend at any time, so giving the owner the key path adds no new power. It does three useful things:
+- **Wallets can open the vault.** Liana's importer rejects a bare NUMS internal key, so legacy vaults could only be opened in Bitcoin Core. A CI job (`tools/liana-compat`) runs every standard vault through Liana's own parser.
+- **Owner spends are cheaper.** One signature, with no script or control block.
+- **Owner spends are private.** On-chain they look like any single-key Taproot wallet. The heir's script only appears if the heir claims.
+
+Guardian vaults keep the NUMS internal key: their claim rule can't be expressed in Liana's format, so there's nothing to gain.
 
 ### What checking in actually does on-chain
 

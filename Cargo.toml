@@ -6,6 +6,10 @@ members = [
     "crates/ghostkey-server",
     "crates/ghostkey-wasm",
 ]
+# `tools/liana-compat` is excluded so Liana (a git dependency we only use
+# to check vault compatibility, #386) stays out of the main lock file and
+# the production build.
+exclude = ["tools/liana-compat"]
 
 [workspace.package]
 version = "0.1.0"

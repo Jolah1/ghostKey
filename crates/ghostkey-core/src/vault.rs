@@ -87,6 +87,39 @@ impl Vault {
         })
     }
 
+    /// Like [`Vault::new`], but in the standard format (#386): the same
+    /// spending rule, written so Liana and other Miniscript wallets can
+    /// open the vault. See [`crate::descriptor::build_standard_descriptor`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_standard(
+        owner_external: &str,
+        owner_internal: &str,
+        heir_external: &str,
+        heir_internal: &str,
+        timelock_blocks: u32,
+        network: bitcoin::Network,
+        role: VaultRole,
+        label: Option<String>,
+    ) -> Result<Self> {
+        let std = crate::descriptor::build_standard_descriptor_from_fragments(
+            owner_external,
+            owner_internal,
+            heir_external,
+            heir_internal,
+            timelock_blocks,
+        )?;
+        Ok(Self {
+            config: VaultConfig {
+                descriptor_external: std.pair.external,
+                descriptor_internal: std.pair.internal,
+                timelock_blocks,
+                network,
+                role,
+                label,
+            },
+        })
+    }
+
     /// Construct a **guardian vault** (issue #81) whose claim branch is
     /// `heir AND (g1 OR g2) AND older(N)`. The owner branch is unchanged.
     #[allow(clippy::too_many_arguments)]

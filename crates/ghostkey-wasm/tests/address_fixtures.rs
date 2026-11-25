@@ -14,7 +14,9 @@
 
 use bitcoin::bip32::Xpriv;
 use bitcoin::Network;
-use ghostkey_core::descriptor::{build_descriptor_pair, build_guardian_descriptor_pair};
+use ghostkey_core::descriptor::{
+    build_descriptor_pair, build_guardian_descriptor_pair, build_standard_descriptor_from_fragments,
+};
 use ghostkey_core::keys::{account_xpub, descriptor_key_fragment, Chain};
 use ghostkey_wasm::derive_addresses_json;
 use serde_json::{json, Value};
@@ -66,6 +68,24 @@ fn build() -> Value {
             net_s,
             &short.external,
             &short.internal,
+        ));
+
+        // The Liana-compatible format new vaults use (#386): the owner is
+        // the Taproot internal key, not the NUMS point.
+        let liana =
+            build_standard_descriptor_from_fragments(&owner.0, &owner.1, &heir.0, &heir.1, 4320)
+                .unwrap()
+                .pair;
+        cases.push(case("liana", net_s, &liana.external, &liana.internal));
+        let liana_short =
+            build_standard_descriptor_from_fragments(&owner.0, &owner.1, &heir.0, &heir.1, 1)
+                .unwrap()
+                .pair;
+        cases.push(case(
+            "liana-1-block",
+            net_s,
+            &liana_short.external,
+            &liana_short.internal,
         ));
 
         let guardian = build_guardian_descriptor_pair(

@@ -9,12 +9,16 @@
 //!
 //! ## Vault semantics
 //!
-//! A GhostKey vault is a single-leaf Taproot output whose script path is the
-//! miniscript:
+//! A GhostKey vault is a Taproot output with two spending paths. New vaults
+//! use the standard format (#386), which Liana can open: the owner is the
+//! internal key, and the heir is a timelocked leaf.
 //!
 //! ```text
-//! or_d(pk(OWNER), and_v(v:pk(HEIR), older(N)))
+//! tr(OWNER, and_v(v:pk(HEIR), older(N)))
 //! ```
+//!
+//! Older vaults use the legacy format, with a NUMS internal key and one
+//! leaf, `or_d(pk(OWNER), and_v(v:pk(HEIR), older(N)))`. Same rule.
 //!
 //! - **Owner** can spend at any time (the hot path).
 //! - **Heir** can spend only after `N` blocks have elapsed since the UTXO
@@ -23,8 +27,8 @@
 //! "Checking in" is just the owner moving the UTXO to a freshly derived
 //! vault address, which resets the heir's CSV countdown.
 //!
-//! The internal key is an unspendable NUMS point, so the only ways to spend
-//! are via the explicit script paths.
+//! See [`descriptor::build_standard_descriptor`] for why the owner moved
+//! to the key path.
 
 pub mod descriptor;
 pub mod error;

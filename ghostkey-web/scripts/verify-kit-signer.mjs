@@ -38,41 +38,45 @@ function base64ToBytes(b64) {
 
 await init({ module_or_path: base64ToBytes(WASM_BASE64) });
 
-const fixture = JSON.parse(
-  readFileSync(join(root, "crates", "ghostkey-wasm", "tests", "fixture_owner.json"), "utf8"),
-);
-
-const out = JSON.parse(sign_sweep(JSON.stringify(fixture)));
-if (!out.tx_hex || !out.txid) {
-  console.error("[verify-kit-signer] FAIL: no tx_hex/txid in", out);
-  process.exit(1);
-}
-// The signed tx must carry a Taproot witness; a rough check is that it is
-// noticeably longer than the unsigned skeleton.
-if (out.tx_hex.length < 200) {
-  console.error("[verify-kit-signer] FAIL: tx_hex too short, likely unsigned:", out.tx_hex);
-  process.exit(1);
-}
-console.log(`[verify-kit-signer] sign OK — txid ${out.txid}, fee ${out.fee_sat} sat`);
-
-// Address derivation: external[1] must match the fixture recipient (which
-// was derived as external index 1 when the fixture was generated).
-const addrs = JSON.parse(
-  derive_vault_addresses(
-    fixture.descriptor_external,
-    fixture.descriptor_internal,
-    fixture.network,
-    5,
-  ),
-);
-if (addrs.external.length !== 5 || addrs.internal.length !== 5) {
-  console.error("[verify-kit-signer] FAIL: expected 5 addresses each, got", addrs);
-  process.exit(1);
-}
-if (addrs.external[1] !== fixture.recipient) {
-  console.error(
-    `[verify-kit-signer] FAIL: external[1] ${addrs.external[1]} != fixture recipient ${fixture.recipient}`,
+// Legacy vaults, and standard-format vaults (#386) where the owner is the
+// Taproot internal key: the kit in people's hands must sign both.
+for (const name of ["fixture_owner.json", "fixture_owner_standard.json"]) {
+  const fixture = JSON.parse(
+    readFileSync(join(root, "crates", "ghostkey-wasm", "tests", name), "utf8"),
   );
-  process.exit(1);
+
+  const out = JSON.parse(sign_sweep(JSON.stringify(fixture)));
+  if (!out.tx_hex || !out.txid) {
+    console.error(`[verify-kit-signer ${name}] FAIL: no tx_hex/txid in`, out);
+    process.exit(1);
+  }
+  // The signed tx must carry a Taproot witness; a rough check is that it is
+  // noticeably longer than the unsigned skeleton.
+  if (out.tx_hex.length < 200) {
+    console.error(`[verify-kit-signer ${name}] FAIL: tx_hex too short, likely unsigned:`, out.tx_hex);
+    process.exit(1);
+  }
+  console.log(`[verify-kit-signer ${name}] sign OK — txid ${out.txid}, fee ${out.fee_sat} sat`);
+
+  // Address derivation: external[1] must match the fixture recipient (which
+  // was derived as external index 1 when the fixture was generated).
+  const addrs = JSON.parse(
+    derive_vault_addresses(
+      fixture.descriptor_external,
+      fixture.descriptor_internal,
+      fixture.network,
+      5,
+    ),
+  );
+  if (addrs.external.length !== 5 || addrs.internal.length !== 5) {
+    console.error(`[verify-kit-signer ${name}] FAIL: expected 5 addresses each, got`, addrs);
+    process.exit(1);
+  }
+  if (addrs.external[1] !== fixture.recipient) {
+    console.error(
+      `[verify-kit-signer ${name}] FAIL: external[1] ${addrs.external[1]} != fixture recipient ${fixture.recipient}`,
+    );
+    process.exit(1);
+  }
+  console.log(`[verify-kit-signer ${name}] derive OK — external[0]=${addrs.external[0]}`);
 }
-console.log(`[verify-kit-signer] derive OK — external[0]=${addrs.external[0]}`);
