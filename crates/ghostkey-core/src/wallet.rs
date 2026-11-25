@@ -133,7 +133,7 @@ pub fn build_signing_from_account(vault: &Vault, account_xpriv: &Xpriv) -> Resul
 
 /// Splice a single account xprv into one descriptor string, matching it by
 /// the xpub it derives to (so the correct origin tag is preserved). Shared
-/// by [`build_signing_from_account`] and [`build_signing_guardian`].
+/// by [`build_signing_from_account`].
 fn splice_account_into(descriptor: &str, account_xpriv: &Xpriv, vault: &Vault) -> Result<String> {
     let path = vault_account_path(vault.network());
     // The account xprv carries no parent fingerprint of its own. We need
@@ -145,31 +145,6 @@ fn splice_account_into(descriptor: &str, account_xpriv: &Xpriv, vault: &Vault) -
     let fp = find_origin_fingerprint_for_xpub(descriptor, &account_xpub_str)?;
     let xpriv_str = account_xpriv.to_string();
     splice_xpriv(descriptor, fp, &path, &xpriv_str)
-}
-
-/// Build a signing wallet for a **guardian vault** (issue #81) claim.
-///
-/// The claim branch is `heir AND (g1 OR g2) AND older(N)`, so two private
-/// keys must be present: the heir's account xprv plus **one** of the two
-/// guardians' account xprvs. Both are spliced into the descriptor in place
-/// of their xpubs; the owner and the unused guardian remain watch-only.
-/// BDK's satisfier then produces both required signatures.
-pub fn build_signing_guardian(
-    vault: &Vault,
-    heir_account_xpriv: &Xpriv,
-    guardian_account_xpriv: &Xpriv,
-) -> Result<Wallet> {
-    let splice_both = |chain: Chain| -> Result<String> {
-        let d = splice_account_into(vault.descriptor_for(chain), heir_account_xpriv, vault)?;
-        splice_account_into(&d, guardian_account_xpriv, vault)
-    };
-    let ext = splice_both(Chain::External)?;
-    let int_ = splice_both(Chain::Internal)?;
-
-    Wallet::create(ext, int_)
-        .network(vault.network())
-        .create_wallet_no_persist()
-        .map_err(|e| Error::InvalidDescriptor(e.to_string()))
 }
 
 /// Find the origin fingerprint that precedes the given xpub in a

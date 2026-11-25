@@ -6,7 +6,7 @@
  * GhostKey needs none of them, so saying so up front leaves a scam
  * nothing to take, even one we never see.
  *
- * The list is for heirs and guardians. Owners do sign in with a
+ * The list is for heirs. Owners do sign in with a
  * password, so on a page owners also read, pass a `lead` that says who
  * the list is for.
  */

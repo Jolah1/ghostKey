@@ -23,11 +23,9 @@ pub async fn connect(url: &str) -> Result<SqlitePool> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LegacyTokenMigration {
     pub vault_tokens_sealed: usize,
-    pub guardian_tokens_sealed: usize,
     /// Rows whose stored plaintext no longer agrees with its lookup hash,
     /// left untouched. Counted so the boot log states the damage plainly.
     pub vault_tokens_skipped: usize,
-    pub guardian_tokens_skipped: usize,
 }
 
 /// Seal every historical plaintext at-rest claim token before the server
@@ -35,8 +33,7 @@ pub struct LegacyTokenMigration {
 ///
 /// The token itself, its lookup hash and every token-wrapped ciphertext stay
 /// unchanged. Only the database representation of the token moves from raw
-/// text to `gk1.<nonce>.<ciphertext>`. Both vault and guardian tables are
-/// updated in one transaction.
+/// text to `gk1.<nonce>.<ciphertext>`, in one transaction.
 ///
 /// A row whose plaintext disagrees with its own lookup hash is skipped, not
 /// fatal. That row is already broken — the hash is what a claim link is
@@ -69,20 +66,13 @@ pub async fn seal_legacy_claim_tokens(pool: &SqlitePool) -> Result<LegacyTokenMi
     )
     .fetch_all(&mut *tx)
     .await?;
-    let guardian_rows: Vec<(String, i64, String, Option<String>)> = sqlx::query_as(
-        "SELECT vault_id, slot, claim_token_at_rest_b64, claim_token_hash \
-           FROM vault_guardian_keys WHERE claim_token_at_rest_b64 IS NOT NULL",
-    )
-    .fetch_all(&mut *tx)
-    .await?;
 
     let mut report = LegacyTokenMigration::default();
     for (vault_id, stored, token_hash) in vault_rows {
         if crate::crypto::claim_token_at_rest_is_sealed(&stored) {
             continue;
         }
-        if let Err(err) = verify_legacy_token_hash(&vault_id, None, &stored, token_hash.as_deref())
-        {
+        if let Err(err) = verify_legacy_token_hash(&vault_id, &stored, token_hash.as_deref()) {
             tracing::error!(vault_id = %vault_id, error = %err, "skipping unusable legacy claim token");
             report.vault_tokens_skipped += 1;
             continue;
@@ -103,43 +93,12 @@ pub async fn seal_legacy_claim_tokens(pool: &SqlitePool) -> Result<LegacyTokenMi
         report.vault_tokens_sealed += 1;
     }
 
-    for (vault_id, slot, stored, token_hash) in guardian_rows {
-        if crate::crypto::claim_token_at_rest_is_sealed(&stored) {
-            continue;
-        }
-        if let Err(err) =
-            verify_legacy_token_hash(&vault_id, Some(slot), &stored, token_hash.as_deref())
-        {
-            tracing::error!(vault_id = %vault_id, slot, error = %err, "skipping unusable legacy guardian claim token");
-            report.guardian_tokens_skipped += 1;
-            continue;
-        }
-        let sealed = seal_and_verify(&vault_id, &stored)?;
-        let updated = sqlx::query(
-            "UPDATE vault_guardian_keys SET claim_token_at_rest_b64 = ? \
-              WHERE vault_id = ? AND slot = ? AND claim_token_at_rest_b64 = ?",
-        )
-        .bind(sealed)
-        .bind(&vault_id)
-        .bind(slot)
-        .bind(&stored)
-        .execute(&mut *tx)
-        .await?;
-        if updated.rows_affected() != 1 {
-            bail!(
-                "legacy guardian token changed during migration for vault {vault_id}, slot {slot}"
-            );
-        }
-        report.guardian_tokens_sealed += 1;
-    }
-
     tx.commit().await?;
     Ok(report)
 }
 
 fn verify_legacy_token_hash(
     vault_id: &str,
-    guardian_slot: Option<i64>,
     token: &str,
     expected_hash: Option<&str>,
 ) -> Result<()> {
@@ -148,12 +107,7 @@ fn verify_legacy_token_hash(
     }
     if let Some(expected_hash) = expected_hash {
         if !crate::crypto::claim_token_matches(token, expected_hash) {
-            match guardian_slot {
-                Some(slot) => {
-                    bail!("legacy guardian token hash mismatch for vault {vault_id}, slot {slot}")
-                }
-                None => bail!("legacy token hash mismatch for vault {vault_id}"),
-            }
+            bail!("legacy token hash mismatch for vault {vault_id}");
         }
     }
     Ok(())
@@ -217,28 +171,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migration_seals_vault_and_guardian_tokens_without_changing_credentials() {
+    async fn migration_seals_vault_tokens_without_changing_credentials() {
         ensure_test_master_key();
         let pool = fresh_pool().await;
         let vault_token = "legacy-vault-token";
-        let guardian_token = "legacy-guardian-token";
         let vault_hash = crate::crypto::hash_claim_token(vault_token);
-        let guardian_hash = crate::crypto::hash_claim_token(guardian_token);
         insert_vault(&pool, "legacy", Some(vault_token), Some(&vault_hash)).await;
-
-        sqlx::query(
-            r#"INSERT INTO vault_guardian_keys (
-                   vault_id, slot, xprv_sealed_ct_b64, xprv_sealed_nonce,
-                   claim_token_at_rest_b64, claim_token_hash,
-                   xpub_fragment_external, xpub_fragment_internal, created_at
-               ) VALUES ('legacy', 1, 'wrapped-key', 'nonce', ?, ?,
-                         'guardian/0/*', 'guardian/1/*', '2026-01-01T00:00:00Z')"#,
-        )
-        .bind(guardian_token)
-        .bind(&guardian_hash)
-        .execute(&pool)
-        .await
-        .expect("insert guardian");
 
         let already_sealed =
             crate::crypto::seal_claim_token_at_rest("sealed", "keep-me").expect("seal fixture");
@@ -250,9 +188,7 @@ mod tests {
             report,
             LegacyTokenMigration {
                 vault_tokens_sealed: 1,
-                guardian_tokens_sealed: 1,
                 vault_tokens_skipped: 0,
-                guardian_tokens_skipped: 0,
             }
         );
 
@@ -267,22 +203,6 @@ mod tests {
         assert_eq!(
             crate::crypto::open_claim_token_at_rest("legacy", &vault_stored).unwrap(),
             vault_token
-        );
-
-        let (guardian_stored, guardian_hash_after): (String, Option<String>) = sqlx::query_as(
-            "SELECT claim_token_at_rest_b64, claim_token_hash \
-               FROM vault_guardian_keys WHERE vault_id = 'legacy' AND slot = 1",
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("read guardian token");
-        assert!(crate::crypto::claim_token_at_rest_is_sealed(
-            &guardian_stored
-        ));
-        assert_eq!(guardian_hash_after.as_deref(), Some(guardian_hash.as_str()));
-        assert_eq!(
-            crate::crypto::open_claim_token_at_rest("legacy", &guardian_stored).unwrap(),
-            guardian_token
         );
 
         let sealed_after: String =
@@ -336,44 +256,6 @@ mod tests {
             rows[1].1, "bad-token",
             "the broken row must be left exactly as found, not rewritten"
         );
-    }
-
-    /// The skip is per row: a broken guardian slot must not stop the vault
-    /// token beside it from being sealed.
-    #[tokio::test]
-    async fn guardian_hash_mismatch_is_skipped_independently() {
-        ensure_test_master_key();
-        let pool = fresh_pool().await;
-        let vault_token = "vault-token";
-        let vault_hash = crate::crypto::hash_claim_token(vault_token);
-        insert_vault(&pool, "mixed", Some(vault_token), Some(&vault_hash)).await;
-        sqlx::query(
-            r#"INSERT INTO vault_guardian_keys (
-                   vault_id, slot, xprv_sealed_ct_b64, xprv_sealed_nonce,
-                   claim_token_at_rest_b64, claim_token_hash,
-                   xpub_fragment_external, xpub_fragment_internal, created_at
-               ) VALUES ('mixed', 1, 'wrapped-key', 'nonce', 'bad-guardian-token',
-                         'wrong-hash', 'guardian/0/*', 'guardian/1/*',
-                         '2026-01-01T00:00:00Z')"#,
-        )
-        .execute(&pool)
-        .await
-        .expect("insert guardian");
-
-        let report = seal_legacy_claim_tokens(&pool)
-            .await
-            .expect("must not abort");
-        assert_eq!(report.vault_tokens_sealed, 1);
-        assert_eq!(report.guardian_tokens_skipped, 1);
-        assert_eq!(report.guardian_tokens_sealed, 0);
-
-        let guardian: String = sqlx::query_scalar(
-            "SELECT claim_token_at_rest_b64 FROM vault_guardian_keys WHERE vault_id = 'mixed'",
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("read guardian");
-        assert_eq!(guardian, "bad-guardian-token");
     }
 
     /// An empty stored token is the other shape of already-broken data and

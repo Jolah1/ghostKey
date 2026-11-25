@@ -91,7 +91,7 @@ test("an heir's claim is signed in the browser: the server never sees the heir's
         json({
           vault_id: "v-claim", label: "Savings", network: "regtest", status: "timelock_started",
           timelock_blocks: fixture.timelock_blocks, next_deadline_at: PAST, heir_channel: "email",
-          heir_display_name: "Ada", vault_kind: "standard", token_role: "heir",
+          heir_display_name: "Ada",
         }),
       );
     if (p === `${at}/unlock-estimate`)

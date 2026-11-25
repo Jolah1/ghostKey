@@ -225,7 +225,7 @@ type VideoRow = (String, String, String, Option<i64>, String, String);
 ///
 /// - Standard format (#386): `tr(OWNER/0/*,and_v(v:pk(HEIR/0/*),older(N)))`.
 ///   The owner is the Taproot internal key.
-/// - Legacy and guardian vaults: `tr(NUMS,or_d(pk(OWNER/0/*),...))`. The
+/// - Legacy vaults: `tr(NUMS,or_d(pk(OWNER/0/*),...))`. The
 ///   internal key is the bare NUMS point, and the owner is the first key
 ///   in the leaf.
 ///

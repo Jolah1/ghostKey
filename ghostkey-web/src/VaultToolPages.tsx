@@ -10,7 +10,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import type { Route } from "./App";
-import { api, ApiError, type GuardianContactView } from "./api";
+import { api, ApiError } from "./api";
 import { useActiveVault } from "./useActiveVault";
 import { useToolDoneState } from "./toolStatus";
 import { VideoMessageCard } from "./VideoMessageCard";
@@ -395,10 +395,7 @@ export function HeirContactPage({ onNavigate }: PageProps) {
       onNavigate={onNavigate}
     >
       {ready && meta && ownerToken ? (
-        <>
-          <HeirContactCard vaultId={meta.id} ownerToken={ownerToken} />
-          <GuardiansCard vaultId={meta.id} ownerToken={ownerToken} />
-        </>
+        <HeirContactCard vaultId={meta.id} ownerToken={ownerToken} />
       ) : (
         <Fallback
           loading={loading}
@@ -411,143 +408,6 @@ export function HeirContactPage({ onNavigate }: PageProps) {
         />
       )}
     </ToolPage>
-  );
-}
-
-/**
- * Guardians' contacts on a guardian vault (#81). Renders nothing for a
- * standard vault. A guardian vault can only be claimed once the guardians
- * get their links, so a guardian on a channel we can't deliver is a claim
- * that can never finish. Email is the only working channel, so this form
- * is email-only and flags any guardian still on SMS or WhatsApp.
- */
-function GuardiansCard({
-  vaultId,
-  ownerToken,
-}: {
-  vaultId: string;
-  ownerToken: string;
-}) {
-  const [guardians, setGuardians] = useState<GuardianContactView[] | null>(null);
-  const [drafts, setDrafts] = useState<Record<number, string>>({});
-  const [savingSlot, setSavingSlot] = useState<number | null>(null);
-  const [savedSlot, setSavedSlot] = useState<number | null>(null);
-  const [errors, setErrors] = useState<Record<number, string>>({});
-  const cap = useChannelCapability();
-
-  useEffect(() => {
-    let alive = true;
-    api
-      .listVaultGuardians(vaultId, ownerToken)
-      .then((gs) => {
-        if (!alive) return;
-        setGuardians(gs);
-        setDrafts(
-          Object.fromEntries(
-            gs.map((g) => [g.slot, g.channel === "email" ? (g.contact ?? "") : ""]),
-          ),
-        );
-      })
-      .catch(() => {
-        if (alive) setGuardians([]);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [vaultId, ownerToken]);
-
-  if (!guardians || guardians.length === 0) return null;
-
-  async function save(slot: number) {
-    const email = (drafts[slot] ?? "").trim();
-    const shapeError = email ? contactShapeError("email", email) : "Enter their email.";
-    if (shapeError) {
-      setErrors((e) => ({ ...e, [slot]: shapeError }));
-      return;
-    }
-    setSavingSlot(slot);
-    setSavedSlot(null);
-    setErrors((e) => ({ ...e, [slot]: "" }));
-    try {
-      const gs = await api.updateVaultGuardian(vaultId, ownerToken, slot, {
-        contact: email,
-        channel: "email",
-      });
-      setGuardians(gs);
-      setSavedSlot(slot);
-    } catch (e) {
-      setErrors((prev) => ({
-        ...prev,
-        [slot]:
-          e instanceof ApiError && e.message
-            ? e.message
-            : "Couldn't save that. Check your connection and try again.",
-      }));
-    } finally {
-      setSavingSlot(null);
-    }
-  }
-
-  return (
-    <div className="card-flat mt-6 p-5">
-      <p className="text-sm font-semibold">Guardians</p>
-      <p className="mt-1 text-sm text-muted">
-        Your heir needs a guardian to help claim. We email each guardian a
-        link only if you stop checking in.
-      </p>
-      {guardians.map((g) => {
-        const channel = g.channel ?? "email";
-        const unreachable =
-          channel !== "email" &&
-          !(channel === "sms" ? cap.sms : channel === "whatsapp" ? cap.whatsapp : false);
-        return (
-          <div key={g.slot} className="mt-5">
-            {unreachable ? (
-              <div className="mb-3">
-                <InlineAlert tone="warning">
-                  Guardian {g.slot} is set up for{" "}
-                  {channel === "sms" ? "SMS" : "WhatsApp"}, which we can't send
-                  right now. Without an email, they won't get their link and
-                  the claim can't finish. Add their email below.
-                </InlineAlert>
-              </div>
-            ) : null}
-            <Field
-              label={`Guardian ${g.slot}'s email`}
-              hint="Stored encrypted."
-              error={errors[g.slot] || null}
-            >
-              <input
-                type="email"
-                inputMode="email"
-                autoComplete="off"
-                className="input"
-                aria-label={`Guardian ${g.slot}'s email`}
-                placeholder="guardian@example.com"
-                value={drafts[g.slot] ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setDrafts((d) => ({ ...d, [g.slot]: v }));
-                  setSavedSlot(null);
-                }}
-              />
-            </Field>
-            <div className="flex items-center gap-3">
-              <Button
-                size="sm"
-                onClick={() => void save(g.slot)}
-                loading={savingSlot === g.slot}
-              >
-                Save guardian {g.slot}
-              </Button>
-              {savedSlot === g.slot ? (
-                <span className="text-sm text-muted">Saved ✓</span>
-              ) : null}
-            </div>
-          </div>
-        );
-      })}
-    </div>
   );
 }
 

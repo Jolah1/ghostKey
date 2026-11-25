@@ -1434,7 +1434,6 @@ function HeirCard({
   heir,
   removable,
   showHeading,
-  hideOwnKey,
   onChange,
   onRemove,
 }: {
@@ -1442,9 +1441,6 @@ function HeirCard({
   heir: HeirDraft;
   removable: boolean;
   showHeading: boolean;
-  /** Guardian vaults are always browser-keygen, so the Door B
-   *  "heir holds their own key" option is hidden for them (#81). */
-  hideOwnKey?: boolean;
   onChange: (p: Partial<HeirDraft>) => void;
   onRemove: () => void;
 }) {
@@ -1549,14 +1545,14 @@ function HeirCard({
           blocks any move while you check in, and every move shows on the
           public Bitcoin chain.
         </span>
-        {hideOwnKey
-          ? ""
-          : " For full self-custody, where GhostKey holds nothing that can ever spend, have your heir hold their own key (advanced option below)."}
+        {" "}
+        For full self-custody, where GhostKey holds nothing that can ever
+        spend, have your heir hold their own key (advanced option below).
       </p>
       </details>
 
       <details
-        className={`mt-1 rounded-lg border border-app px-3 py-2${hideOwnKey ? " hidden" : ""}`}
+        className="mt-1 rounded-lg border border-app px-3 py-2"
       >
         <summary className="cursor-pointer text-xs text-muted">
           Advanced: your heir holds their own key

@@ -8,9 +8,7 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use bitcoin::bip32::Fingerprint;
 use chrono::{DateTime, Duration, Utc};
-use ghostkey_core::descriptor::{
-    build_guardian_descriptor_pair, build_standard_descriptor_from_fragments, parse_descriptor,
-};
+use ghostkey_core::descriptor::{build_standard_descriptor_from_fragments, parse_descriptor};
 use ghostkey_core::keys::{descriptor_key_fragment, parse_xpub, vault_account_path, Chain};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -129,7 +127,6 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
     let create_routes: Router<Arc<AppState>> = Router::new()
         .route("/vaults", post(create_vault))
         .route("/vaults/from-xpub", post(create_vault_from_xpub))
-        .route("/vaults/guardian", post(guardian_vaults_retired))
         .layer(axum::middleware::from_fn_with_state(
             create_limiter,
             crate::rate_limit::enforce,
@@ -197,14 +194,6 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
         .route(
             "/claim/:token/claim-signed",
             post(crate::psbt_routes::heir_claim_signed),
-        )
-        .route(
-            "/claim/:token/sealed-guardian",
-            get(crate::psbt_routes::get_sealed_guardian_xprv),
-        )
-        .route(
-            "/claim/:token/guardian-claim",
-            post(crate::psbt_routes::guardian_claim),
         )
         .route(
             "/claim/:token/build-psbt",
@@ -318,8 +307,6 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
             "/vaults/:id/savings/reminder",
             put(crate::savings::put_reminder).delete(crate::savings::delete_reminder),
         )
-        .route("/vaults/:id/guardians", get(list_vault_guardians))
-        .route("/vaults/:id/guardians/:slot", put(update_vault_guardian))
         .route(
             "/vaults/:id/balance",
             get(crate::psbt_routes::get_vault_balance),
@@ -729,14 +716,6 @@ pub struct VaultView {
     /// owner-authenticated `GET /vaults/:id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heir_reachability: Option<String>,
-    /// Guardian vaults only (#81): how many guardians we couldn't reach
-    /// today, because they have no contact or sit on a channel this server
-    /// can't deliver. A guardian vault can't be claimed until the
-    /// guardians get their links, so anything above zero means the claim
-    /// would stall. See [`count_unreachable_guardians`]. Only populated on
-    /// the owner-authenticated `GET /vaults/:id`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub guardians_unreachable: Option<i64>,
     /// The vault's descriptor pair (receive + change). Only populated
     /// on the owner-authenticated `GET /vaults/:id` — list/create
     /// responses leave them `None`. The dashboard embeds these in the
@@ -1029,7 +1008,6 @@ async fn create_vault(
                 activation_held: None,
                 heir_pending: None,
                 heir_reachability: None,
-                guardians_unreachable: None,
                 descriptor_external: None,
                 descriptor_internal: None,
                 has_trusted_contact: None,
@@ -1325,8 +1303,7 @@ async fn create_vault_from_xpub(
     // New vaults use the standard format (#386): the same spending rule
     // as the legacy NUMS + `or_d` leaf, written so Liana and other
     // Miniscript wallets can open the vault. Existing vaults keep the
-    // descriptors they were created with. Guardian vaults stay on their
-    // own builder, since their claim policy can't fit Liana's format.
+    // descriptors they were created with.
     let pair = build_standard_descriptor_from_fragments(
         &owner_ext,
         &owner_int,
@@ -1783,7 +1760,6 @@ async fn create_vault_from_xpub(
                 activation_held: None,
                 heir_pending: None,
                 heir_reachability: None,
-                guardians_unreachable: None,
                 // Return the public descriptor pair so the setup browser
                 // can build the heir envelope (block A) immediately,
                 // without a second round-trip. Watch-only; no secrets.
@@ -1797,461 +1773,6 @@ async fn create_vault_from_xpub(
             },
             owner_token: issued_owner.token,
             vault_secret_hex,
-        }),
-    ))
-}
-
-/* -------------------------------------------------------------------------- *
- *  POST /vaults/guardian  — guardian vaults for underage heirs (#81 P2)       *
- *                                                                            *
- *  Claim branch: heir AND (g1 OR g2) AND older(N). The heir reuses the        *
- *  existing inline sealed columns; the two guardians get rows in             *
- *  vault_guardian_keys. Every key is generated + sealed in the browser; the  *
- *  server stores only ciphertext (post-#124, no master-key derivation).      *
- * -------------------------------------------------------------------------- */
-
-/// One guardian's xpub + browser-sealed key material.
-#[derive(Debug, Deserialize)]
-pub struct GuardianParty {
-    /// Bare or origin-tagged xpub (the browser-generated guardian account key).
-    pub xpub: String,
-    pub fingerprint: Option<String>,
-    /// The guardian's xprv, sealed under this guardian's claim token.
-    pub xprv_ct_b64: String,
-    pub xprv_nonce_b64: String,
-    /// Claim token the xprv is sealed under; stored hashed + sealed-at-rest.
-    pub claim_token_b64: String,
-    /// Where this guardian's claim link is delivered, and on which channel.
-    pub contact: Option<String>,
-    pub contact_channel: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateGuardianVaultRequest {
-    pub label: Option<String>,
-    pub network: String,
-    pub owner: PartyXpub,
-    pub heir: PartyXpub,
-    pub guardian1: GuardianParty,
-    pub guardian2: GuardianParty,
-    pub timelock_blocks: u32,
-    /// Optional absolute unlock height (#81 P5). When set, the claim branch
-    /// gains an `after(H)` CLTV so the heir + guardian cannot spend before
-    /// block `H` (e.g. until a child reaches a chosen age), regardless of
-    /// owner inactivity. The web computes this height from the owner's
-    /// chosen unlock year. The owner branch is unaffected.
-    #[serde(default)]
-    pub unlock_height: Option<u32>,
-    pub checkin_period_secs: i64,
-    pub grace_period_secs: i64,
-    pub owner_contact: Option<String>,
-    pub owner_contact_channel: Option<String>,
-    pub heir_contact: Option<String>,
-    pub heir_contact_channel: Option<String>,
-    /// Owner + heir sealed material (password-vault flow). Required: a
-    /// guardian vault is always browser-keygen, so the heir key is sealed
-    /// here (Door B / self-xpub heir is not offered for guardian vaults).
-    pub sealed: SealedSetup,
-    pub from_name: Option<String>,
-    pub heir_note: Option<String>,
-}
-
-/// New guardian (child) vaults are no longer offered. A parent names a
-/// trusted adult as heir instead. Existing guardian vaults keep working:
-/// their claim, guardian-contact and recovery routes are unchanged.
-async fn guardian_vaults_retired() -> (StatusCode, Json<serde_json::Value>) {
-    (
-        StatusCode::GONE,
-        Json(serde_json::json!({
-            "error": "Guardian vaults are no longer offered. Name a trusted adult as your heir instead."
-        })),
-    )
-}
-
-/// Kept so tests can build guardian vaults like the ones that exist,
-/// and prove their claims still work. Not routed (see
-/// [`guardian_vaults_retired`]); delete with the rest of the guardian
-/// code once no guardian vaults remain.
-#[cfg_attr(not(test), allow(dead_code))]
-async fn create_vault_guardian(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<CreateGuardianVaultRequest>,
-) -> Result<(StatusCode, Json<CreatedVault>), ApiError> {
-    // ---- Validate periods + timelock (timelock enforces the 144 floor) ---
-    crate::demo::validate_periods(req.checkin_period_secs, req.grace_period_secs)
-        .map_err(ApiError::Validation)?;
-    crate::demo::validate_timelock_blocks(req.timelock_blocks).map_err(ApiError::Validation)?;
-
-    validate_contact_channel("heir_contact_channel", req.heir_contact_channel.as_deref())?;
-    validate_contact_channel(
-        "owner_contact_channel",
-        req.owner_contact_channel.as_deref(),
-    )?;
-    validate_contact_channel(
-        "guardian1.contact_channel",
-        req.guardian1.contact_channel.as_deref(),
-    )?;
-    validate_contact_channel(
-        "guardian2.contact_channel",
-        req.guardian2.contact_channel.as_deref(),
-    )?;
-
-    let network = crate::config::parse_network(&req.network)
-        .map_err(|name| ApiError::Validation(format!("unknown network {name}")))?;
-    crate::demo::ensure_demo_safe_for_network(&req.network).map_err(ApiError::Validation)?;
-    let path = vault_account_path(network);
-
-    // ---- Resolve the four parties' xpubs -----------------------------
-    let (owner_fp, owner_xpub) =
-        resolve_party("owner", &req.owner.xpub, req.owner.fingerprint.as_deref())?;
-    let (heir_fp, heir_xpub) =
-        resolve_party("heir", &req.heir.xpub, req.heir.fingerprint.as_deref())?;
-    let (g1_fp, g1_xpub) = resolve_party(
-        "guardian1",
-        &req.guardian1.xpub,
-        req.guardian1.fingerprint.as_deref(),
-    )?;
-    let (g2_fp, g2_xpub) = resolve_party(
-        "guardian2",
-        &req.guardian2.xpub,
-        req.guardian2.fingerprint.as_deref(),
-    )?;
-
-    // All four keys must be distinct — a shared key would collapse the
-    // policy (e.g. heir == guardian would let the heir self-claim).
-    let xpubs = [&owner_xpub, &heir_xpub, &g1_xpub, &g2_xpub];
-    for i in 0..xpubs.len() {
-        for j in (i + 1)..xpubs.len() {
-            if xpubs[i] == xpubs[j] {
-                return Err(ApiError::Validation(
-                    "owner, heir, and both guardian keys must all differ".into(),
-                ));
-            }
-        }
-    }
-
-    // ---- Build the guardian descriptor pair --------------------------
-    let owner_ext = descriptor_key_fragment(owner_fp, &path, &owner_xpub, Chain::External);
-    let owner_int = descriptor_key_fragment(owner_fp, &path, &owner_xpub, Chain::Internal);
-    let heir_ext = descriptor_key_fragment(heir_fp, &path, &heir_xpub, Chain::External);
-    let heir_int = descriptor_key_fragment(heir_fp, &path, &heir_xpub, Chain::Internal);
-    let g1_ext = descriptor_key_fragment(g1_fp, &path, &g1_xpub, Chain::External);
-    let g1_int = descriptor_key_fragment(g1_fp, &path, &g1_xpub, Chain::Internal);
-    let g2_ext = descriptor_key_fragment(g2_fp, &path, &g2_xpub, Chain::External);
-    let g2_int = descriptor_key_fragment(g2_fp, &path, &g2_xpub, Chain::Internal);
-
-    let pair = build_guardian_descriptor_pair(
-        &owner_ext,
-        &owner_int,
-        &heir_ext,
-        &heir_int,
-        &g1_ext,
-        &g1_int,
-        &g2_ext,
-        &g2_int,
-        req.timelock_blocks,
-        req.unlock_height,
-    )
-    .map_err(|e| ApiError::Validation(format!("descriptor build: {e}")))?;
-
-    // ---- Validate the sealed (heir + owner) material -----------------
-    // Guardian vaults are always Door A: the heir's sealed xprv and its
-    // claim token are mandatory (no self-xpub heir path here).
-    let s = &req.sealed;
-    if s.password_kdf_mem_kib < 1024 || s.password_kdf_iters < 1 {
-        return Err(ApiError::Validation(
-            "password KDF parameters out of range".into(),
-        ));
-    }
-    if s.owner_email_hash.len() != 64 || !s.owner_email_hash.chars().all(|c| c.is_ascii_hexdigit())
-    {
-        return Err(ApiError::Validation(
-            "owner_email_hash must be 64 hex characters".into(),
-        ));
-    }
-    let (heir_xprv_ct, heir_xprv_nonce, heir_token) = match (
-        &s.heir_xprv_ct_b64,
-        &s.heir_xprv_nonce_b64,
-        &s.claim_token_b64,
-    ) {
-        (Some(ct), Some(nn), Some(tok)) => (ct.clone(), nn.clone(), tok.clone()),
-        _ => {
-            return Err(ApiError::Validation(
-                "guardian vault requires a sealed heir xprv and its claim token".into(),
-            ))
-        }
-    };
-
-    let id = Uuid::new_v4().to_string();
-    let now = Utc::now();
-    let next_deadline = now + Duration::seconds(req.checkin_period_secs + req.grace_period_secs);
-    let now_s = now.to_rfc3339();
-    let next_s = next_deadline.to_rfc3339();
-    let timelock = req.timelock_blocks as i64;
-    let claim_eligible = next_deadline + Duration::seconds(req.grace_period_secs);
-    let claim_eligible_s = claim_eligible.to_rfc3339();
-
-    reject_conflicting_owner_email(&state.db, &s.owner_email_hash, &owner_ext).await?;
-
-    // Heir claim token: sealed at rest + hashed (mirrors create_vault_from_xpub).
-    let heir_at_rest = crypto::seal_claim_token_at_rest(&id, &heir_token)?;
-    let heir_token_hash = crypto::hash_claim_token(&heir_token);
-
-    // Seal contacts at rest.
-    let seal_opt = |v: Option<&str>| -> Result<(Option<String>, Option<String>), ApiError> {
-        match v.filter(|s| !s.is_empty()) {
-            Some(pt) => {
-                let sc = seal_for_vault(&id, pt.as_bytes())?;
-                Ok((Some(sc.ciphertext_b64), Some(sc.nonce_b64)))
-            }
-            None => Ok((None, None)),
-        }
-    };
-    let (heir_ct, heir_nn) = seal_opt(req.heir_contact.as_deref())?;
-    let (owner_ct, owner_nn) = seal_opt(req.owner_contact.as_deref())?;
-    let owner_channel = req
-        .owner_contact_channel
-        .clone()
-        .or_else(|| owner_ct.as_ref().map(|_| "email".to_string()));
-
-    // Personal opener for the heir's claim message (sealed at rest as JSON),
-    // mirroring create_vault_from_xpub.
-    let intro_from_name = req
-        .from_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let intro_note = req
-        .heir_note
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    if intro_from_name.is_some_and(|s| s.chars().count() > 80) {
-        return Err(ApiError::Validation("from_name too long (max 80)".into()));
-    }
-    if intro_note.is_some_and(|s| s.chars().count() > 500) {
-        return Err(ApiError::Validation("heir_note too long (max 500)".into()));
-    }
-    let (heir_intro_ct, heir_intro_nn) = if intro_from_name.is_some() || intro_note.is_some() {
-        let blob =
-            serde_json::json!({ "from_name": intro_from_name, "note": intro_note }).to_string();
-        let sc = seal_for_vault(&id, blob.as_bytes())?;
-        (Some(sc.ciphertext_b64), Some(sc.nonce_b64))
-    } else {
-        (None, None)
-    };
-
-    let issued_owner = issue_owner_token();
-
-    // ---- Insert the vault row (heir inline, vault_kind='guardian') ---
-    sqlx::query(
-        r#"INSERT INTO vaults (
-            id, label, network,
-            descriptor_external, descriptor_internal,
-            timelock_blocks,
-            checkin_period_secs, grace_period_secs,
-            owner_contact, heir_contact,
-            created_at, next_deadline_at, status,
-            owner_xpub_fragment_external, owner_xpub_fragment_internal,
-            heir_xpub_fragment_external,  heir_xpub_fragment_internal,
-            heir_contact_channel,
-            heir_contact_ciphertext, heir_contact_nonce,
-            owner_contact_ciphertext, owner_contact_nonce, owner_contact_channel,
-            claim_eligible_at,
-            owner_token_hash,
-            password_salt_b64, password_kdf_mem_kib, password_kdf_iters,
-            owner_xprv_sealed_ct_b64, owner_xprv_sealed_nonce,
-            owner_token_sealed_ct_b64, owner_token_sealed_nonce,
-            heir_xprv_sealed_ct_b64, heir_xprv_sealed_nonce,
-            owner_email_hash,
-            claim_token_at_rest_b64, claim_token_hash, claim_token_issued_at,
-            heir_derived,
-            heir_intro_ciphertext, heir_intro_nonce,
-            vault_kind
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, 'ok',
-                  ?, ?, ?, ?, ?,
-                  ?, ?,
-                  ?, ?, ?,
-                  ?,
-                  ?,
-                  ?, ?, ?,
-                  ?, ?,
-                  ?, ?,
-                  ?, ?,
-                  ?,
-                  ?, ?, ?,
-                  0,
-                  ?, ?,
-                  'guardian')"#,
-    )
-    .bind(&id)
-    .bind(&req.label)
-    .bind(&req.network)
-    .bind(&pair.external)
-    .bind(&pair.internal)
-    .bind(timelock)
-    .bind(req.checkin_period_secs)
-    .bind(req.grace_period_secs)
-    .bind(&now_s)
-    .bind(&next_s)
-    .bind(&owner_ext)
-    .bind(&owner_int)
-    .bind(&heir_ext)
-    .bind(&heir_int)
-    .bind(&req.heir_contact_channel)
-    .bind(&heir_ct)
-    .bind(&heir_nn)
-    .bind(&owner_ct)
-    .bind(&owner_nn)
-    .bind(&owner_channel)
-    .bind(&claim_eligible_s)
-    .bind(&issued_owner.hash_hex)
-    .bind(&s.password_salt_b64)
-    .bind(s.password_kdf_mem_kib)
-    .bind(s.password_kdf_iters)
-    .bind(&s.owner_xprv_ct_b64)
-    .bind(&s.owner_xprv_nonce_b64)
-    .bind(&s.owner_token_ct_b64)
-    .bind(&s.owner_token_nonce_b64)
-    .bind(&heir_xprv_ct)
-    .bind(&heir_xprv_nonce)
-    .bind(&s.owner_email_hash)
-    .bind(&heir_at_rest)
-    .bind(&heir_token_hash)
-    .bind(&now_s)
-    .bind(&heir_intro_ct)
-    .bind(&heir_intro_nn)
-    .execute(&state.db)
-    .await?;
-
-    // ---- Insert the two guardian rows --------------------------------
-    for (slot, g, g_ext, g_int) in [
-        (1_i64, &req.guardian1, &g1_ext, &g1_int),
-        (2_i64, &req.guardian2, &g2_ext, &g2_int),
-    ] {
-        let at_rest = crypto::seal_claim_token_at_rest(&id, &g.claim_token_b64)?;
-        let token_hash = crypto::hash_claim_token(&g.claim_token_b64);
-        let (contact_ct, contact_nn) = seal_opt(g.contact.as_deref())?;
-        let channel = g
-            .contact_channel
-            .clone()
-            .or_else(|| contact_ct.as_ref().map(|_| "email".to_string()));
-        sqlx::query(
-            r#"INSERT INTO vault_guardian_keys (
-                vault_id, slot,
-                xprv_sealed_ct_b64, xprv_sealed_nonce,
-                claim_token_at_rest_b64, claim_token_hash, claim_token_issued_at,
-                contact_ciphertext, contact_nonce, contact_channel,
-                xpub_fragment_external, xpub_fragment_internal,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
-        )
-        .bind(&id)
-        .bind(slot)
-        .bind(&g.xprv_ct_b64)
-        .bind(&g.xprv_nonce_b64)
-        .bind(&at_rest)
-        .bind(&token_hash)
-        .bind(&now_s)
-        .bind(&contact_ct)
-        .bind(&contact_nn)
-        .bind(&channel)
-        .bind(g_ext)
-        .bind(g_int)
-        .bind(&now_s)
-        .execute(&state.db)
-        .await?;
-    }
-
-    // Hold the clock until the vault is funded.
-    let initial_status = initial_vault_status();
-    if initial_status != "ok" {
-        sqlx::query("UPDATE vaults SET status = ? WHERE id = ?")
-            .bind(initial_status)
-            .bind(&id)
-            .execute(&state.db)
-            .await?;
-    }
-
-    record_event(
-        &state.db,
-        &id,
-        "registered",
-        Some(serde_json::json!({ "source": "guardian", "network": req.network })),
-    )
-    .await?;
-
-    // Owner email verification (best-effort, mirrors from-xpub),
-    // including the sibling check: an owner who already confirmed this
-    // email on another vault should never be asked again.
-    let has_owner_email = owner_ct.is_some() && owner_channel.as_deref() == Some("email");
-    let mut owner_email_already_verified = false;
-    if has_owner_email {
-        let verified_sibling: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM vaults \
-              WHERE owner_email_hash = ? \
-                AND owner_contact_verified_at IS NOT NULL \
-                AND owner_xpub_fragment_external = ? \
-                AND id != ? \
-              LIMIT 1",
-        )
-        .bind(&s.owner_email_hash)
-        .bind(&owner_ext)
-        .bind(&id)
-        .fetch_optional(&state.db)
-        .await?;
-        if verified_sibling.is_some() {
-            sqlx::query("UPDATE vaults SET owner_contact_verified_at = ? WHERE id = ?")
-                .bind(&now_s)
-                .bind(&id)
-                .execute(&state.db)
-                .await?;
-            record_event(&state.db, &id, "owner_contact_verified", None).await?;
-            owner_email_already_verified = true;
-        } else if let Some(email) = req.owner_contact.as_deref() {
-            if let Err(e) = send_contact_verification(&state, &id, email).await {
-                tracing::warn!(vault_id = %id, error = ?e, "guardian: owner verification email");
-            }
-        }
-    }
-
-    Ok((
-        StatusCode::CREATED,
-        Json(CreatedVault {
-            vault: VaultView {
-                id,
-                label: req.label,
-                network: req.network,
-                timelock_blocks: timelock,
-                checkin_period_secs: req.checkin_period_secs,
-                grace_period_secs: req.grace_period_secs,
-                status: initial_status.into(),
-                created_at: now,
-                last_checkin_at: None,
-                next_deadline_at: next_deadline,
-                claim_eligible_at: Some(claim_eligible),
-                panic_frozen_until: None,
-                owner_contact_verified: if has_owner_email {
-                    Some(owner_email_already_verified)
-                } else {
-                    None
-                },
-                // A brand-new vault has no coins yet, so nothing is
-                // being held. The owner GET reports it from then on.
-                activation_held: None,
-                heir_pending: None,
-                heir_reachability: None,
-                guardians_unreachable: None,
-                descriptor_external: Some(pair.external.clone()),
-                descriptor_internal: Some(pair.internal.clone()),
-                has_trusted_contact: None,
-                drill_started_at: None,
-                drill_opened_at: None,
-                drill_completed_at: None,
-                unlock_eta: None,
-            },
-            owner_token: issued_owner.token,
-            vault_secret_hex: None,
         }),
     ))
 }
@@ -2779,125 +2300,6 @@ pub struct UpdateHeirRequest {
     pub channel: String,
 }
 
-/// One guardian's contact, as the owner sees it (guardian vaults, #81).
-#[derive(Debug, Serialize)]
-pub struct GuardianContactView {
-    pub slot: i64,
-    pub contact: Option<String>,
-    pub channel: Option<String>,
-}
-
-async fn read_guardian_contacts(
-    db: &sqlx::SqlitePool,
-    id: &str,
-) -> Result<Vec<GuardianContactView>, ApiError> {
-    // slot, contact ciphertext, contact nonce, channel
-    type GuardianRow = (i64, Option<String>, Option<String>, Option<String>);
-    let rows: Vec<GuardianRow> = sqlx::query_as(
-        "SELECT slot, contact_ciphertext, contact_nonce, contact_channel \
-           FROM vault_guardian_keys WHERE vault_id = ? ORDER BY slot",
-    )
-    .bind(id)
-    .fetch_all(db)
-    .await?;
-    let mut out = Vec::with_capacity(rows.len());
-    for (slot, ct, nn, channel) in rows {
-        let contact = match (ct, nn) {
-            (Some(ct), Some(nn)) => Some(
-                String::from_utf8(open_for_vault(
-                    id,
-                    &SealedContact {
-                        ciphertext_b64: ct,
-                        nonce_b64: nn,
-                    },
-                )?)
-                .map_err(|_| ApiError::Validation("stored contact is not valid UTF-8".into()))?,
-            ),
-            _ => None,
-        };
-        out.push(GuardianContactView {
-            slot,
-            contact,
-            channel,
-        });
-    }
-    Ok(out)
-}
-
-/// `GET /vaults/:id/guardians` (OwnerAuth): both guardians' contacts.
-/// Empty for a standard vault, which has no guardians.
-async fn list_vault_guardians(
-    auth: OwnerAuth,
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<GuardianContactView>>, ApiError> {
-    Ok(Json(
-        read_guardian_contacts(&state.db, &auth.vault_id).await?,
-    ))
-}
-
-/// `PUT /vaults/:id/guardians/:slot` (OwnerAuth): change how one guardian
-/// is reached.
-///
-/// A guardian's key is sealed under their own claim token, not their
-/// contact, so the contact only decides where the link is delivered and
-/// can change safely at any time before the claim. This is the only way
-/// to fix a guardian set up on a channel we can't deliver: without it, a
-/// guardian vault whose guardians are unreachable can never be claimed.
-/// The channel goes through `validate_contact_channel`, so it must be one
-/// this server can deliver (email today).
-async fn update_vault_guardian(
-    auth: OwnerAuth,
-    State(state): State<Arc<AppState>>,
-    Path((_id, slot)): Path<(String, i64)>,
-    Json(req): Json<UpdateHeirRequest>,
-) -> Result<Json<Vec<GuardianContactView>>, ApiError> {
-    let id = auth.vault_id;
-    validate_contact_channel("channel", Some(&req.channel))?;
-    let contact = req.contact.trim().to_string();
-    if contact.is_empty() {
-        return Err(ApiError::Validation("contact must not be empty".into()));
-    }
-    validate_contact_shape(&req.channel, &contact)?;
-
-    let status: String = sqlx::query_scalar("SELECT status FROM vaults WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or(ApiError::NotFound)?;
-    if status == "claimed" {
-        return Err(ApiError::Conflict(
-            "This share has already been claimed, so its guardians can't be changed.".into(),
-        ));
-    }
-
-    let sealed = seal_for_vault(&id, contact.as_bytes())?;
-    let updated = sqlx::query(
-        "UPDATE vault_guardian_keys \
-            SET contact_ciphertext = ?, contact_nonce = ?, contact_channel = ? \
-          WHERE vault_id = ? AND slot = ?",
-    )
-    .bind(&sealed.ciphertext_b64)
-    .bind(&sealed.nonce_b64)
-    .bind(&req.channel)
-    .bind(&id)
-    .bind(slot)
-    .execute(&state.db)
-    .await?;
-    if updated.rows_affected() == 0 {
-        // Not a guardian vault, or no such slot.
-        return Err(ApiError::NotFound);
-    }
-    record_event(
-        &state.db,
-        &id,
-        "guardian_contact_updated",
-        Some(serde_json::json!({ "slot": slot, "channel": req.channel })),
-    )
-    .await?;
-
-    Ok(Json(read_guardian_contacts(&state.db, &id).await?))
-}
-
 #[derive(Debug, Deserialize)]
 pub struct ChooseHeirRequest {
     pub name: String,
@@ -3205,28 +2607,6 @@ pub(crate) fn heir_reachability(
     })
 }
 
-/// How many guardians we couldn't reach today: no contact on file, or a
-/// channel this server can't deliver (no channel means email, the setup
-/// default). Email bounces aren't tracked per guardian yet, so an email
-/// guardian counts as reachable.
-pub(crate) fn count_unreachable_guardians<'a>(
-    guardians: impl Iterator<Item = (bool, Option<&'a str>)>,
-    deliverable: impl Fn(crate::notifier::Channel) -> bool,
-) -> i64 {
-    use crate::notifier::Channel;
-    guardians
-        .filter(|&(has_contact, channel)| {
-            !has_contact
-                || match channel {
-                    None | Some("email") => false,
-                    Some("sms") => !deliverable(Channel::Sms),
-                    Some("whatsapp") => !deliverable(Channel::Whatsapp),
-                    Some(_) => true,
-                }
-        })
-        .count() as i64
-}
-
 async fn get_vault(
     auth: OwnerAuth,
     State(state): State<Arc<AppState>>,
@@ -3310,23 +2690,6 @@ async fn get_vault(
         crate::psbt_routes::UnlockEstimateView::from_estimate(&est, Utc::now()).unlock_eta
     });
 
-    // Guardian vaults: how many guardians we couldn't reach today.
-    let guardian_rows: Vec<(i64, Option<String>)> = sqlx::query_as(
-        "SELECT contact_ciphertext IS NOT NULL, contact_channel \
-           FROM vault_guardian_keys WHERE vault_id = ?",
-    )
-    .bind(&id)
-    .fetch_all(&state.db)
-    .await?;
-    let guardians_unreachable = (!guardian_rows.is_empty()).then(|| {
-        count_unreachable_guardians(
-            guardian_rows
-                .iter()
-                .map(|(has, ch)| (*has == 1, ch.as_deref())),
-            crate::notifier::channel_deliverable,
-        )
-    });
-
     // Before the struct literal takes ownership of the row's fields.
     let heir_reachability = heir_reachability(
         row.has_heir_contact == 1,
@@ -3372,7 +2735,6 @@ async fn get_vault(
         activation_held: Some(activation_held),
         heir_pending: Some(row.heir_pending == 1),
         heir_reachability: heir_reachability.map(str::to_string),
-        guardians_unreachable,
         descriptor_external: Some(row.descriptor_external),
         descriptor_internal: Some(row.descriptor_internal),
         has_trusted_contact: Some(row.has_trusted_contact == 1),
@@ -4185,15 +3547,6 @@ pub struct ClaimView {
     /// disabled or it has already elapsed. While set, the claim page
     /// shows the safety-wait screen and the key/PSBT endpoints refuse.
     pub claim_available_at: Option<DateTime<Utc>>,
-    /// "standard" or "guardian" (#81). A guardian vault needs the heir
-    /// plus one guardian to claim, so the claim page renders the
-    /// two-link flow instead of the one-shot heir flow.
-    pub vault_kind: String,
-    /// Which party opened this link: "heir" or "guardian". Lets the
-    /// claim page ask for the *other* party's link.
-    pub token_role: String,
-    /// For a guardian token, which slot (1 or 2). `None` for heir tokens.
-    pub guardian_slot: Option<i64>,
     /// True when this link is a practice run (#223). The claim page
     /// shows the rehearsal walkthrough instead of the live claim flow;
     /// the server guarantees a drill token can't reach key material or
@@ -4218,10 +3571,8 @@ async fn resolve_claim(
 
     // Look up by hash. The DB lookup itself is constant-time across
     // unknown tokens because we always index against a unique hash;
-    // the row either exists or it doesn't. A guardian vault has the
-    // heir token inline here AND each guardian's token in
-    // vault_guardian_keys, so we try the heir (inline) lookup first and
-    // fall back to a guardian-token lookup (#81).
+    // the row either exists or it doesn't. A guardian vault (#81, no
+    // longer offered) never resolves here: its claim needed two keys.
     type HeirRow = (
         String,         // id
         Option<String>, // label
@@ -4234,25 +3585,23 @@ async fn resolve_claim(
         Option<String>, // heir_contact_ciphertext
         Option<String>, // heir_contact_nonce
         Option<String>, // heir_contact_channel
-        String,         // vault_kind
     );
     let heir_row: Option<HeirRow> = sqlx::query_as(
         r#"SELECT id, label, network, status, timelock_blocks,
                   next_deadline_at,
                   claim_token_hash, claim_token_used_at,
                   heir_contact_ciphertext, heir_contact_nonce,
-                  heir_contact_channel, vault_kind
+                  heir_contact_channel
              FROM vaults
-            WHERE claim_token_hash = ?"#,
+            WHERE claim_token_hash = ? AND vault_kind = 'standard'"#,
     )
     .bind(&hash)
     .fetch_optional(&state.db)
     .await?;
-
-    // Resolved into the shape the rest of the function (challenge window,
-    // contact decrypt, ClaimView) consumes, with the role/slot the heir
-    // and guardian paths differ on.
-    let (
+    // Not an heir token: it may be a practice token (#223), which lives
+    // in its own column and gets its own view, with no challenge window
+    // and no alerts.
+    let Some((
         vault_id,
         label,
         network,
@@ -4264,80 +3613,9 @@ async fn resolve_claim(
         ciphertext_b64,
         nonce_b64,
         channel,
-        vault_kind,
-        token_role,
-        guardian_slot,
-    ) = match heir_row {
-        Some(r) => (
-            r.0,
-            r.1,
-            r.2,
-            r.3,
-            r.4,
-            r.5,
-            r.6,
-            r.7,
-            r.8,
-            r.9,
-            r.10,
-            r.11,
-            "heir".to_string(),
-            None,
-        ),
-        None => {
-            // Guardian token: join the guardian row to its vault. The
-            // heir contact (for the display name) lives on the vault, so
-            // a guardian still sees whose claim they're helping with.
-            type GuardianRow = (
-                String,         // vault id
-                Option<String>, // label
-                String,         // network
-                String,         // status
-                i64,            // timelock_blocks
-                String,         // next_deadline_at
-                Option<String>, // g.claim_token_hash
-                Option<String>, // v.claim_token_used_at
-                Option<String>, // heir_contact_ciphertext
-                Option<String>, // heir_contact_nonce
-                Option<String>, // heir_contact_channel
-                i64,            // g.slot
-            );
-            let g: Option<GuardianRow> = sqlx::query_as(
-                r#"SELECT v.id, v.label, v.network, v.status, v.timelock_blocks,
-                          v.next_deadline_at,
-                          g.claim_token_hash, v.claim_token_used_at,
-                          v.heir_contact_ciphertext, v.heir_contact_nonce,
-                          v.heir_contact_channel, g.slot
-                     FROM vault_guardian_keys g
-                     JOIN vaults v ON v.id = g.vault_id
-                    WHERE g.claim_token_hash = ?"#,
-            )
-            .bind(&hash)
-            .fetch_optional(&state.db)
-            .await?;
-            // Neither a heir nor a guardian token: it may be a practice
-            // token (#223), which lives in its own column and gets its
-            // own view — no challenge window, no alerts.
-            let Some(g) = g else {
-                return crate::drill::resolve_drill_claim(&state, &token).await;
-            };
-            (
-                g.0,
-                g.1,
-                g.2,
-                g.3,
-                g.4,
-                g.5,
-                g.6,
-                g.7,
-                g.8,
-                g.9,
-                g.10,
-                "guardian".to_string(),
-                "guardian".to_string(),
-                Some(g.11),
-            )
-        }
+    )) = heir_row
+    else {
+        return crate::drill::resolve_drill_claim(&state, &token).await;
     };
 
     // Defence-in-depth: constant-time compare against the stored hash.
@@ -4424,9 +3702,6 @@ async fn resolve_claim(
         heir_channel,
         heir_display_name,
         claim_available_at,
-        vault_kind,
-        token_role,
-        guardian_slot,
         drill: false,
         claimed_explorer_url,
         claimed_txid,
@@ -5042,38 +4317,6 @@ mod tests {
         let (fp, _path, xpub) =
             ghostkey_core::keys::account_xpub(&master, Network::Regtest).unwrap();
         (xpub.to_string(), format!("{fp}"))
-    }
-
-    /// A new vault never starts its check-in clock, on any deployment.
-    ///
-    /// Demo mode used to start vaults `ok`, so a demo vault holding
-    /// nothing went overdue and counted down to notifying an heir about
-    /// an empty vault. `demo_mode()` caches in a OnceLock and other tests
-    /// in this binary pin it, so this asserts the value directly rather
-    /// than trying to drive the flag — the point is that the result no
-    /// longer depends on it at all.
-    #[test]
-    fn guardians_on_an_undeliverable_channel_count_as_unreachable() {
-        use crate::notifier::Channel;
-        let sms_off = |c: Channel| c == Channel::Email;
-        let gs = [
-            (true, Some("email")),
-            (true, None),           // no channel means email
-            (true, Some("sms")),    // SMS switched off: unreachable
-            (false, Some("email")), // no contact at all: unreachable
-        ];
-        assert_eq!(count_unreachable_guardians(gs.into_iter(), sms_off), 2);
-        // Once SMS can be delivered, an SMS guardian is reachable again.
-        let all_on = |_c: Channel| true;
-        assert_eq!(
-            count_unreachable_guardians([(true, Some("sms"))].into_iter(), all_on),
-            0
-        );
-        // An unknown channel is never assumed to work.
-        assert_eq!(
-            count_unreachable_guardians([(true, Some("pigeon"))].into_iter(), all_on),
-            1
-        );
     }
 
     #[test]
@@ -5802,33 +5045,6 @@ mod tests {
                 "preflight must allow {method}; got {allowed:?}",
             );
         }
-    }
-
-    /// New guardian vaults are refused; the one route that made them now
-    /// says so plainly, whatever the request carries.
-    #[tokio::test]
-    async fn new_guardian_vaults_are_no_longer_created() {
-        use tower::ServiceExt;
-
-        ensure_test_master_key();
-        let state = fresh_state().await;
-        let res = router(state.clone())
-            .oneshot(
-                axum::http::Request::builder()
-                    .method("POST")
-                    .uri("/vaults/guardian")
-                    .header("content-type", "application/json")
-                    .body(axum::body::Body::from("{}"))
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(res.status(), StatusCode::GONE);
-        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vaults")
-            .fetch_one(&state.db)
-            .await
-            .expect("count");
-        assert_eq!(n, 0, "nothing was created");
     }
 
     #[tokio::test]
@@ -6748,509 +5964,6 @@ mod tests {
         assert_eq!(used.as_deref(), Some(used_at));
     }
 
-    fn guardian_party(seed: u8, token: &str) -> GuardianParty {
-        let (xpub, fp) = xpub_for(seed);
-        GuardianParty {
-            xpub,
-            fingerprint: Some(fp),
-            xprv_ct_b64: "Z3VhcmRjdA".into(),
-            xprv_nonce_b64: "Z3VhcmRubg".into(),
-            claim_token_b64: token.into(),
-            contact: Some(format!("guardian{seed}@example.com")),
-            contact_channel: Some("email".into()),
-        }
-    }
-
-    /// The production case behind this route: a guardian vault whose
-    /// guardians were set up on SMS, which never delivered. The owner can
-    /// move a guardian to email; SMS stays refused while undeliverable; an
-    /// unknown slot is NotFound; a claimed vault can't be changed.
-    #[tokio::test]
-    async fn owner_can_move_a_guardian_from_sms_to_email() {
-        ensure_test_master_key();
-        let state = fresh_state().await;
-        let (owner_xpub, owner_fp) = xpub_for(0x31);
-        let (heir_xpub, heir_fp) = xpub_for(0x32);
-        let req = CreateGuardianVaultRequest {
-            label: Some("guardian-edit".into()),
-            network: "regtest".into(),
-            owner: PartyXpub {
-                xpub: owner_xpub,
-                fingerprint: Some(owner_fp),
-            },
-            heir: PartyXpub {
-                xpub: heir_xpub,
-                fingerprint: Some(heir_fp),
-            },
-            guardian1: guardian_party(0x33, "g1-edit"),
-            guardian2: guardian_party(0x34, "g2-edit"),
-            timelock_blocks: 144,
-            unlock_height: None,
-            checkin_period_secs: 86_400,
-            grace_period_secs: 3_600,
-            owner_contact: None,
-            owner_contact_channel: None,
-            heir_contact: Some("heir@example.com".into()),
-            heir_contact_channel: Some("email".into()),
-            sealed: sealed_setup(
-                &"f".repeat(64),
-                Some("aGVpcmN0".into()),
-                Some("aGVpcm5u".into()),
-                Some("heir-edit".into()),
-            ),
-            from_name: None,
-            heir_note: None,
-        };
-        let (_, created) = create_vault_guardian(State(state.clone()), Json(req))
-            .await
-            .expect("guardian create");
-        let id = created.vault.id.clone();
-        // Put guardian 2 on SMS, the way the stranded production vault is.
-        sqlx::query(
-            "UPDATE vault_guardian_keys SET contact_channel = 'sms' WHERE vault_id = ? AND slot = 2",
-        )
-        .bind(&id)
-        .execute(&state.db)
-        .await
-        .unwrap();
-        let auth = || OwnerAuth {
-            vault_id: id.clone(),
-        };
-
-        let listed = list_vault_guardians(auth(), State(state.clone()))
-            .await
-            .unwrap()
-            .0;
-        assert_eq!(listed.len(), 2);
-        assert_eq!(listed[1].channel.as_deref(), Some("sms"));
-
-        let after = update_vault_guardian(
-            auth(),
-            State(state.clone()),
-            Path((id.clone(), 2)),
-            Json(UpdateHeirRequest {
-                contact: "new-guardian@example.com".into(),
-                channel: "email".into(),
-            }),
-        )
-        .await
-        .expect("move guardian 2 to email")
-        .0;
-        assert_eq!(after[1].channel.as_deref(), Some("email"));
-        assert_eq!(
-            after[1].contact.as_deref(),
-            Some("new-guardian@example.com")
-        );
-        // Guardian 1 untouched.
-        assert_eq!(after[0].contact.as_deref(), Some("guardian51@example.com"));
-
-        if !crate::notifier::channel_deliverable(crate::notifier::Channel::Sms) {
-            let err = update_vault_guardian(
-                auth(),
-                State(state.clone()),
-                Path((id.clone(), 1)),
-                Json(UpdateHeirRequest {
-                    contact: "+2348111111111".into(),
-                    channel: "sms".into(),
-                }),
-            )
-            .await
-            .expect_err("sms refused while undeliverable");
-            assert!(matches!(err, ApiError::Validation(_)), "{err:?}");
-        }
-
-        let err = update_vault_guardian(
-            auth(),
-            State(state.clone()),
-            Path((id.clone(), 3)),
-            Json(UpdateHeirRequest {
-                contact: "x@example.com".into(),
-                channel: "email".into(),
-            }),
-        )
-        .await
-        .expect_err("no slot 3");
-        assert!(matches!(err, ApiError::NotFound), "{err:?}");
-
-        sqlx::query("UPDATE vaults SET status = 'claimed' WHERE id = ?")
-            .bind(&id)
-            .execute(&state.db)
-            .await
-            .unwrap();
-        let err = update_vault_guardian(
-            auth(),
-            State(state.clone()),
-            Path((id.clone(), 1)),
-            Json(UpdateHeirRequest {
-                contact: "late@example.com".into(),
-                channel: "email".into(),
-            }),
-        )
-        .await
-        .expect_err("claimed vault");
-        assert!(matches!(err, ApiError::Conflict(_)), "{err:?}");
-    }
-
-    /// A guardian vault (#81 P2) persists the heir inline plus two guardian
-    /// rows, marks the vault `guardian`, and stores a real `heir AND
-    /// (g1 OR g2)` descriptor. Each party's claim token is stored only as a
-    /// hash + sealed-at-rest, never verbatim.
-    #[tokio::test]
-    async fn guardian_vault_persists_heir_inline_and_two_guardian_rows() {
-        ensure_test_master_key();
-        let state = fresh_state().await;
-
-        let (owner_xpub, owner_fp) = xpub_for(0x21);
-        let (heir_xpub, heir_fp) = xpub_for(0x22);
-        let sealed = sealed_setup(
-            &"e".repeat(64),
-            Some("aGVpcmN0".into()),
-            Some("aGVpcm5u".into()),
-            Some("heir-token".into()),
-        );
-        let req = CreateGuardianVaultRequest {
-            label: Some("guardian".into()),
-            network: "regtest".into(),
-            owner: PartyXpub {
-                xpub: owner_xpub,
-                fingerprint: Some(owner_fp),
-            },
-            heir: PartyXpub {
-                xpub: heir_xpub,
-                fingerprint: Some(heir_fp),
-            },
-            guardian1: guardian_party(0x23, "g1-token"),
-            guardian2: guardian_party(0x24, "g2-token"),
-            timelock_blocks: 144,
-            unlock_height: None,
-            checkin_period_secs: 86_400,
-            grace_period_secs: 3_600,
-            owner_contact: None,
-            owner_contact_channel: None,
-            heir_contact: Some("heir@example.com".into()),
-            heir_contact_channel: Some("email".into()),
-            sealed,
-            from_name: None,
-            heir_note: None,
-        };
-
-        let (code, created) = create_vault_guardian(State(state.clone()), Json(req))
-            .await
-            .expect("guardian create should succeed");
-        assert_eq!(code, StatusCode::CREATED);
-        let id = created.vault.id.clone();
-
-        // Vault row: marked guardian, heir sealed inline, real descriptor.
-        let (kind, ext, heir_ct, token_hash): (String, String, Option<String>, Option<String>) =
-            sqlx::query_as(
-                "SELECT vault_kind, descriptor_external, heir_xprv_sealed_ct_b64, claim_token_hash \
-                   FROM vaults WHERE id = ?",
-            )
-            .bind(&id)
-            .fetch_one(&state.db)
-            .await
-            .expect("vault row");
-        assert_eq!(kind, "guardian");
-        assert!(ext.contains("or_b(pk("), "guardian descriptor: {ext}");
-        parse_descriptor(&ext).expect("descriptor parses");
-        assert!(heir_ct.is_some(), "heir xprv sealed inline");
-        let heir_hash = token_hash.expect("heir claim-token hash stored");
-        assert_ne!(heir_hash, "heir-token", "token stored hashed, not verbatim");
-
-        // Two guardian rows, each with its own hashed token + sealed key.
-        let rows: Vec<(i64, String, String)> = sqlx::query_as(
-            "SELECT slot, claim_token_hash, xprv_sealed_ct_b64 \
-               FROM vault_guardian_keys WHERE vault_id = ? ORDER BY slot",
-        )
-        .bind(&id)
-        .fetch_all(&state.db)
-        .await
-        .expect("guardian rows");
-        assert_eq!(rows.len(), 2, "two guardian rows");
-        assert_eq!(rows[0].0, 1);
-        assert_eq!(rows[1].0, 2);
-        assert_eq!(rows[0].1, crate::crypto::hash_claim_token("g1-token"));
-        assert_eq!(rows[1].1, crate::crypto::hash_claim_token("g2-token"));
-        assert_ne!(rows[0].1, rows[1].1, "guardians have distinct tokens");
-    }
-
-    /// All four keys must differ — a shared key would collapse the policy.
-    #[tokio::test]
-    async fn guardian_vault_rejects_duplicate_keys() {
-        ensure_test_master_key();
-        let state = fresh_state().await;
-        let (owner_xpub, owner_fp) = xpub_for(0x31);
-        let (heir_xpub, heir_fp) = xpub_for(0x32);
-        let req = CreateGuardianVaultRequest {
-            label: None,
-            network: "regtest".into(),
-            owner: PartyXpub {
-                xpub: owner_xpub,
-                fingerprint: Some(owner_fp),
-            },
-            heir: PartyXpub {
-                xpub: heir_xpub,
-                fingerprint: Some(heir_fp),
-            },
-            // guardian2 reuses guardian1's key → must be rejected.
-            guardian1: guardian_party(0x33, "g1-token"),
-            guardian2: guardian_party(0x33, "g2-token"),
-            timelock_blocks: 144,
-            unlock_height: None,
-            checkin_period_secs: 86_400,
-            grace_period_secs: 3_600,
-            owner_contact: None,
-            owner_contact_channel: None,
-            heir_contact: Some("heir@example.com".into()),
-            heir_contact_channel: Some("email".into()),
-            sealed: sealed_setup(
-                &"f".repeat(64),
-                Some("aGVpcmN0".into()),
-                Some("aGVpcm5u".into()),
-                Some("heir-token".into()),
-            ),
-            from_name: None,
-            heir_note: None,
-        };
-        let err = create_vault_guardian(State(state.clone()), Json(req))
-            .await
-            .expect_err("duplicate guardian keys must be rejected");
-        assert!(
-            matches!(&err, ApiError::Validation(m) if m.contains("must all differ")),
-            "got {err:?}"
-        );
-    }
-
-    /// #81 P5: an `unlock_height` on the create request embeds an absolute
-    /// `after(H)` CLTV in the stored guardian descriptor.
-    #[tokio::test]
-    async fn guardian_vault_unlock_height_embeds_cltv() {
-        ensure_test_master_key();
-        let state = fresh_state().await;
-        let (owner_xpub, owner_fp) = xpub_for(0x61);
-        let (heir_xpub, heir_fp) = xpub_for(0x62);
-        let req = CreateGuardianVaultRequest {
-            label: Some("guardian".into()),
-            network: "regtest".into(),
-            owner: PartyXpub {
-                xpub: owner_xpub,
-                fingerprint: Some(owner_fp),
-            },
-            heir: PartyXpub {
-                xpub: heir_xpub,
-                fingerprint: Some(heir_fp),
-            },
-            guardian1: guardian_party(0x63, "g1-token"),
-            guardian2: guardian_party(0x64, "g2-token"),
-            timelock_blocks: 144,
-            unlock_height: Some(900_000),
-            checkin_period_secs: 86_400,
-            grace_period_secs: 3_600,
-            owner_contact: None,
-            owner_contact_channel: None,
-            heir_contact: Some("heir@example.com".into()),
-            heir_contact_channel: Some("email".into()),
-            sealed: sealed_setup(
-                &"c".repeat(64),
-                Some("aGVpcmN0".into()),
-                Some("aGVpcm5u".into()),
-                Some("heir-token".into()),
-            ),
-            from_name: None,
-            heir_note: None,
-        };
-        let (_, created) = create_vault_guardian(State(state.clone()), Json(req))
-            .await
-            .expect("guardian create with unlock");
-        let ext: String = sqlx::query_scalar("SELECT descriptor_external FROM vaults WHERE id = ?")
-            .bind(&created.vault.id)
-            .fetch_one(&state.db)
-            .await
-            .expect("descriptor");
-        assert!(ext.contains("after(900000)"), "unlock CLTV embedded: {ext}");
-        assert!(ext.contains("older(144)"), "inactivity CSV still present");
-    }
-
-    /// A guardian's claim token (#81 P4) resolves through the
-    /// sealed-guardian endpoint to that guardian's sealed xprv and slot,
-    /// is refused once the vault's claim is consumed, and 404s for an
-    /// unknown token. The browser unwraps the returned ciphertext locally
-    /// with the token, exactly like the heir's sealed-heir blob.
-    #[tokio::test]
-    async fn guardian_token_resolves_to_sealed_key_then_locks_after_claim() {
-        ensure_test_master_key();
-        let state = fresh_state().await;
-
-        let (owner_xpub, owner_fp) = xpub_for(0x41);
-        let (heir_xpub, heir_fp) = xpub_for(0x42);
-        let req = CreateGuardianVaultRequest {
-            label: Some("guardian".into()),
-            network: "regtest".into(),
-            owner: PartyXpub {
-                xpub: owner_xpub,
-                fingerprint: Some(owner_fp),
-            },
-            heir: PartyXpub {
-                xpub: heir_xpub,
-                fingerprint: Some(heir_fp),
-            },
-            guardian1: guardian_party(0x43, "g1-token"),
-            guardian2: guardian_party(0x44, "g2-token"),
-            timelock_blocks: 144,
-            unlock_height: None,
-            checkin_period_secs: 86_400,
-            grace_period_secs: 3_600,
-            owner_contact: None,
-            owner_contact_channel: None,
-            heir_contact: Some("heir@example.com".into()),
-            heir_contact_channel: Some("email".into()),
-            sealed: sealed_setup(
-                &"a".repeat(64),
-                Some("aGVpcmN0".into()),
-                Some("aGVpcm5u".into()),
-                Some("heir-token".into()),
-            ),
-            from_name: None,
-            heir_note: None,
-        };
-        let (_, created) = create_vault_guardian(State(state.clone()), Json(req))
-            .await
-            .expect("guardian create");
-        let id = created.vault.id.clone();
-
-        // Elapse the claim-challenge window so the sealed-key endpoints
-        // don't withhold on the safety wait (same gate the heir hits).
-        let long_ago = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
-        sqlx::query("UPDATE vaults SET claim_opened_at = ? WHERE id = ?")
-            .bind(&long_ago)
-            .bind(&id)
-            .execute(&state.db)
-            .await
-            .expect("stamp claim_opened_at");
-
-        // Guardian 1's token resolves to slot 1 + that guardian's sealed key.
-        let view = crate::psbt_routes::get_sealed_guardian_xprv(
-            State(state.clone()),
-            axum::extract::Path("g1-token".to_string()),
-        )
-        .await
-        .expect("g1 token resolves")
-        .0;
-        assert_eq!(view.vault_id, id);
-        assert_eq!(view.slot, 1);
-        assert_eq!(view.guardian_xprv_ct_b64, "Z3VhcmRjdA");
-        assert!(view.descriptor_external.contains("or_b(pk("));
-
-        // Guardian 2's token resolves to slot 2.
-        let view2 = crate::psbt_routes::get_sealed_guardian_xprv(
-            State(state.clone()),
-            axum::extract::Path("g2-token".to_string()),
-        )
-        .await
-        .expect("g2 token resolves")
-        .0;
-        assert_eq!(view2.slot, 2);
-
-        // Unknown token → 404.
-        let nf = crate::psbt_routes::get_sealed_guardian_xprv(
-            State(state.clone()),
-            axum::extract::Path("not-a-token".to_string()),
-        )
-        .await
-        .expect_err("unknown guardian token");
-        assert!(matches!(nf, ApiError::NotFound), "got {nf:?}");
-
-        // Once the vault claim is consumed, no guardian key is handed out.
-        sqlx::query("UPDATE vaults SET claim_token_used_at = ? WHERE id = ?")
-            .bind(&long_ago)
-            .bind(&id)
-            .execute(&state.db)
-            .await
-            .expect("mark claim used");
-        let locked = crate::psbt_routes::get_sealed_guardian_xprv(
-            State(state.clone()),
-            axum::extract::Path("g1-token".to_string()),
-        )
-        .await
-        .expect_err("claim already completed");
-        assert!(matches!(locked, ApiError::Conflict(_)), "got {locked:?}");
-    }
-
-    /// `GET /claim/:token` resolves both the heir's inline token and a
-    /// guardian's token for a guardian vault (#81 P4b), reporting the
-    /// vault kind, which party opened the link, and the guardian slot so
-    /// the claim page can ask for the other party's link.
-    #[tokio::test]
-    async fn resolve_claim_distinguishes_heir_and_guardian_tokens() {
-        ensure_test_master_key();
-        let state = fresh_state().await;
-        let (owner_xpub, owner_fp) = xpub_for(0x51);
-        let (heir_xpub, heir_fp) = xpub_for(0x52);
-        let req = CreateGuardianVaultRequest {
-            label: Some("guardian".into()),
-            network: "regtest".into(),
-            owner: PartyXpub {
-                xpub: owner_xpub,
-                fingerprint: Some(owner_fp),
-            },
-            heir: PartyXpub {
-                xpub: heir_xpub,
-                fingerprint: Some(heir_fp),
-            },
-            guardian1: guardian_party(0x53, "g1-token"),
-            guardian2: guardian_party(0x54, "g2-token"),
-            timelock_blocks: 144,
-            unlock_height: None,
-            checkin_period_secs: 86_400,
-            grace_period_secs: 3_600,
-            owner_contact: None,
-            owner_contact_channel: None,
-            heir_contact: Some("heir@example.com".into()),
-            heir_contact_channel: Some("email".into()),
-            sealed: sealed_setup(
-                &"b".repeat(64),
-                Some("aGVpcmN0".into()),
-                Some("aGVpcm5u".into()),
-                Some("heir-token".into()),
-            ),
-            from_name: None,
-            heir_note: None,
-        };
-        let _ = create_vault_guardian(State(state.clone()), Json(req))
-            .await
-            .expect("guardian create");
-
-        let heir = resolve_claim(
-            State(state.clone()),
-            axum::extract::Path("heir-token".to_string()),
-        )
-        .await
-        .expect("heir token resolves")
-        .0;
-        assert_eq!(heir.vault_kind, "guardian");
-        assert_eq!(heir.token_role, "heir");
-        assert_eq!(heir.guardian_slot, None);
-
-        let g2 = resolve_claim(
-            State(state.clone()),
-            axum::extract::Path("g2-token".to_string()),
-        )
-        .await
-        .expect("guardian token resolves")
-        .0;
-        assert_eq!(g2.vault_kind, "guardian");
-        assert_eq!(g2.token_role, "guardian");
-        assert_eq!(g2.guardian_slot, Some(2));
-
-        let nf = resolve_claim(
-            State(state.clone()),
-            axum::extract::Path("nope".to_string()),
-        )
-        .await
-        .expect_err("unknown token");
-        assert!(matches!(nf, ApiError::NotFound), "got {nf:?}");
-    }
-
     /// A consumed claim token keeps resolving once the vault is claimed,
     /// carrying the broadcast txid so the page can show the heir their
     /// receipt after a reload instead of "link already used". A consumed
@@ -7280,39 +5993,14 @@ mod tests {
         assert!(matches!(missing, ApiError::NotFound), "got {missing:?}");
 
         // A used link stays used.
-        let (owner_xpub, owner_fp) = xpub_for(0x71);
-        let (heir_xpub, heir_fp) = xpub_for(0x72);
-        let req = CreateGuardianVaultRequest {
-            label: Some("signed".into()),
-            network: "regtest".into(),
-            owner: PartyXpub {
-                xpub: owner_xpub,
-                fingerprint: Some(owner_fp),
-            },
-            heir: PartyXpub {
-                xpub: heir_xpub,
-                fingerprint: Some(heir_fp),
-            },
-            guardian1: guardian_party(0x73, "sg1-token"),
-            guardian2: guardian_party(0x74, "sg2-token"),
-            timelock_blocks: 144,
-            unlock_height: None,
-            checkin_period_secs: 86_400,
-            grace_period_secs: 3_600,
-            owner_contact: None,
-            owner_contact_channel: None,
-            heir_contact: Some("heir@example.com".into()),
-            heir_contact_channel: Some("email".into()),
-            sealed: sealed_setup(
-                &"d".repeat(64),
-                Some("aGVpcmN0".into()),
-                Some("aGVpcm5u".into()),
-                Some("signed-heir-token".into()),
-            ),
-            from_name: None,
-            heir_note: None,
-        };
-        let (_, created) = create_vault_guardian(State(state.clone()), Json(req))
+        let mut req = door_b_request(sealed_setup(
+            &"d".repeat(64),
+            Some("aGVpcmN0".into()),
+            Some("aGVpcm5u".into()),
+            Some("signed-heir-token".into()),
+        ));
+        req.label = Some("signed".into());
+        let (_, created) = create_vault_from_xpub(State(state.clone()), Json(req))
             .await
             .expect("create");
         sqlx::query("UPDATE vaults SET claim_token_used_at = ? WHERE id = ?")
@@ -7334,41 +6022,16 @@ mod tests {
     async fn resolve_claim_returns_receipt_after_successful_claim() {
         ensure_test_master_key();
         let state = fresh_state().await;
-        let (owner_xpub, owner_fp) = xpub_for(0x61);
-        let (heir_xpub, heir_fp) = xpub_for(0x62);
-        let req = CreateGuardianVaultRequest {
-            label: Some("receipt".into()),
-            network: "regtest".into(),
-            owner: PartyXpub {
-                xpub: owner_xpub,
-                fingerprint: Some(owner_fp),
-            },
-            heir: PartyXpub {
-                xpub: heir_xpub,
-                fingerprint: Some(heir_fp),
-            },
-            guardian1: guardian_party(0x63, "rg1-token"),
-            guardian2: guardian_party(0x64, "rg2-token"),
-            timelock_blocks: 144,
-            unlock_height: None,
-            checkin_period_secs: 86_400,
-            grace_period_secs: 3_600,
-            owner_contact: None,
-            owner_contact_channel: None,
-            heir_contact: Some("heir@example.com".into()),
-            heir_contact_channel: Some("email".into()),
-            sealed: sealed_setup(
-                &"c".repeat(64),
-                Some("aGVpcmN0".into()),
-                Some("aGVpcm5u".into()),
-                Some("receipt-heir-token".into()),
-            ),
-            from_name: None,
-            heir_note: None,
-        };
-        let (_, created) = create_vault_guardian(State(state.clone()), Json(req))
+        let mut req = door_b_request(sealed_setup(
+            &"c".repeat(64),
+            Some("aGVpcmN0".into()),
+            Some("aGVpcm5u".into()),
+            Some("receipt-heir-token".into()),
+        ));
+        req.label = Some("receipt".into());
+        let (_, created) = create_vault_from_xpub(State(state.clone()), Json(req))
             .await
-            .expect("guardian create");
+            .expect("create");
         let id = created.vault.id.clone();
 
         let txid = "2815f3ddee141950b1d2eca1848d0dc9c810c68c0be13bfd23cfeeae91cad0f7";
@@ -7426,16 +6089,6 @@ mod tests {
         let url = view.claimed_explorer_url.expect("explorer url");
         assert!(url.ends_with(txid), "got {url}");
         assert_eq!(view.claim_available_at, None);
-
-        // A guardian's link shows the same receipt.
-        let gview = resolve_claim(
-            State(state.clone()),
-            axum::extract::Path("rg1-token".to_string()),
-        )
-        .await
-        .expect("guardian token resolves after claim")
-        .0;
-        assert_eq!(gview.claimed_txid.as_deref(), Some(txid));
     }
 
     /// The owner-only heir endpoint decrypts the sealed heir contact and
