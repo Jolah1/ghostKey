@@ -6,6 +6,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, api, type VaultAddressView } from "./api";
 import { DepositAddress } from "./DepositAddress";
+import { LightningDeposit } from "./LightningDeposit";
+import { providerFor } from "./lightning/providers";
 import { Button } from "./ui";
 
 export function ReceiveCard({
@@ -23,6 +25,7 @@ export function ReceiveCard({
   const [view, setView] = useState<VaultAddressView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [via, setVia] = useState<"bitcoin" | "lightning">("bitcoin");
 
   const onExpand = useCallback(async () => {
     setExpanded(true);
@@ -69,6 +72,26 @@ export function ReceiveCard({
         <p className="mt-3 text-xs text-muted">Loading address…</p>
       ) : view ? (
         <div className="mt-3 max-w-sm">
+          {providerFor(view.network) ? (
+            <div role="tablist" aria-label="How to add" className="mb-3 inline-flex rounded-full border border-app p-0.5 text-sm">
+              {(["bitcoin", "lightning"] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  role="tab"
+                  aria-selected={via === v}
+                  onClick={() => setVia(v)}
+                  className={`rounded-full px-3 py-1 ${via === v ? "bg-[var(--accent-tint)] text-[var(--text)]" : "text-muted"}`}
+                >
+                  {v === "bitcoin" ? "Bitcoin" : "Lightning"}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {via === "lightning" && providerFor(view.network) ? (
+            <LightningDeposit vaultId={vaultId} address={view.address} network={view.network} />
+          ) : (
+          <>
           <DepositAddress vaultId={vaultId} address={view.address} network={view.network} />
           {view.network !== "bitcoin" ? (
             <p className="mt-2 text-xs text-dim">
@@ -76,6 +99,8 @@ export function ReceiveCard({
               coins here.
             </p>
           ) : null}
+          </>
+          )}
         </div>
       ) : null}
       {error ? <p className="mt-2 text-sm text-alarm">{error}</p> : null}

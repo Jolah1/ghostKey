@@ -2885,6 +2885,137 @@ async fn last_balance(
 }
 
 /* -------------------------------------------------------------------------- *
+ *  Lightning deposits: the two things the browser asks our server            *
+ *                                                                            *
+ *  A Lightning deposit is a swap the owner's browser runs with an            *
+ *  independent provider (ghostkey-web/src/lightning/reverseSwap.ts). Our     *
+ *  server holds no keys and never sees the money. The browser asks it two    *
+ *  things, so it doesn't have to take the provider's word for them:          *
+ *                                                                            *
+ *  - has the provider's lockup transaction really confirmed?                 *
+ *  - please also broadcast our claim (in case the provider won't), which     *
+ *    we only do for a transaction whose every output pays this vault.        *
+ * -------------------------------------------------------------------------- */
+
+/// Largest claim transaction we'll relay: a swap claim is ~200 bytes.
+const MAX_RELAY_TX_BYTES: usize = 10_000;
+
+#[derive(Debug, Serialize)]
+pub struct TxConfirmedView {
+    pub confirmed: bool,
+}
+
+async fn load_vault_watch(state: &AppState, id: &str) -> Result<(Vault, Network), ApiError> {
+    type Row = (String, String, String, i64);
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT network, descriptor_external, descriptor_internal, timelock_blocks \
+           FROM vaults WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?;
+    let (network_s, ext, int_, timelock) = row.ok_or(ApiError::NotFound)?;
+    let network = crate::config::parse_network(&network_s)
+        .map_err(|name| ApiError::Validation(format!("unknown network {name}")))?;
+    let vault = Vault::from_config(VaultConfig {
+        descriptor_external: ext,
+        descriptor_internal: int_,
+        timelock_blocks: timelock as u32,
+        network,
+        role: VaultRole::Watchonly,
+        label: None,
+    })
+    .map_err(|e| ApiError::Validation(format!("stored vault descriptors invalid: {e}")))?;
+    Ok((vault, network))
+}
+
+/// `GET /vaults/:id/tx/:txid/confirmed` (public): whether a transaction
+/// has at least one confirmation, on this vault's network.
+pub async fn tx_confirmed(
+    State(state): State<Arc<AppState>>,
+    Path((id, txid)): Path<(String, String)>,
+) -> Result<Json<TxConfirmedView>, ApiError> {
+    let txid = bitcoin::Txid::from_str(txid.trim())
+        .map_err(|_| ApiError::Validation("That isn't a transaction id.".into()))?;
+    let (_, network) = load_vault_watch(&state, &id).await?;
+    let urls = esplora_urls(network)?;
+    let _permit = crate::concurrency::acquire_esplora().await;
+    let status = tokio::task::spawn_blocking(move || {
+        try_each_esplora(&urls, |client| {
+            client
+                .get_tx_status(&txid)
+                .map_err(|e| clean_esplora_err("tx status", &e))
+        })
+    })
+    .await
+    .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
+    Ok(Json(TxConfirmedView {
+        confirmed: status.confirmed,
+    }))
+}
+
+/// Whether every output of `tx` pays this vault (and there is at least
+/// one). Only such transactions are relayed: our server is not a general
+/// broadcast service.
+pub(crate) fn pays_only_vault(vault: &Vault, tx: &bitcoin::Transaction) -> Result<bool, ApiError> {
+    let wallet = ghostkey_core::wallet::build_watch_only(vault)
+        .map_err(|e| ApiError::Validation(format!("vault: {e}")))?;
+    Ok(!tx.output.is_empty()
+        && tx
+            .output
+            .iter()
+            .all(|o| wallet.is_mine(o.script_pubkey.clone())))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RelayRequest {
+    pub hex: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RelayResponse {
+    pub txid: String,
+}
+
+/// `POST /vaults/:id/lightning/broadcast` (public): broadcast a
+/// transaction that pays only this vault, e.g. a Lightning deposit's
+/// claim. Holds no keys; the transaction is already signed.
+pub async fn relay_vault_deposit(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<RelayRequest>,
+) -> Result<Json<RelayResponse>, ApiError> {
+    let raw = hex::decode(req.hex.trim())
+        .map_err(|_| ApiError::Validation("That isn't a transaction.".into()))?;
+    if raw.len() > MAX_RELAY_TX_BYTES {
+        return Err(ApiError::Validation("That transaction is too big.".into()));
+    }
+    let tx: bitcoin::Transaction = bitcoin::consensus::deserialize(&raw)
+        .map_err(|_| ApiError::Validation("That isn't a transaction.".into()))?;
+    let (vault, network) = load_vault_watch(&state, &id).await?;
+    if !pays_only_vault(&vault, &tx)? {
+        return Err(ApiError::Validation(
+            "We only send transactions that pay into this vault.".into(),
+        ));
+    }
+    let urls = esplora_urls(network)?;
+    let _permit = crate::concurrency::acquire_esplora().await;
+    let txid = tx.compute_txid();
+    tokio::task::spawn_blocking(move || {
+        try_each_esplora(&urls, |client| {
+            client
+                .broadcast(&tx)
+                .map_err(|e| clean_esplora_err("broadcast", &e))
+        })
+    })
+    .await
+    .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
+    Ok(Json(RelayResponse {
+        txid: txid.to_string(),
+    }))
+}
+
+/* -------------------------------------------------------------------------- *
  *  Tests                                                                     *
  *  Unit-level only; the blocking-task body that does Esplora I/O is not      *
  *  exercised here.                                                           *
@@ -3464,6 +3595,63 @@ mod tests {
         .execute(pool)
         .await
         .expect("seed vault");
+    }
+
+    fn real_vault(seed: u8) -> Vault {
+        use bitcoin::bip32::Xpriv;
+        use ghostkey_core::keys::{account_xpub, descriptor_key_fragment, Chain};
+        let net = Network::Signet;
+        let o = Xpriv::new_master(net, &[seed; 32]).unwrap();
+        let h = Xpriv::new_master(net, &[seed.wrapping_add(1); 32]).unwrap();
+        let (ofp, op, ox) = account_xpub(&o, net).unwrap();
+        let (hfp, hp, hx) = account_xpub(&h, net).unwrap();
+        Vault::new(
+            &descriptor_key_fragment(ofp, &op, &ox, Chain::External),
+            &descriptor_key_fragment(ofp, &op, &ox, Chain::Internal),
+            &descriptor_key_fragment(hfp, &hp, &hx, Chain::External),
+            &descriptor_key_fragment(hfp, &hp, &hx, Chain::Internal),
+            144,
+            net,
+            VaultRole::Watchonly,
+            None,
+        )
+        .unwrap()
+    }
+
+    fn paying(addrs: &[&str]) -> bitcoin::Transaction {
+        bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![],
+            output: addrs
+                .iter()
+                .map(|a| bitcoin::TxOut {
+                    value: bitcoin::Amount::from_sat(5_000),
+                    script_pubkey: Address::from_str(a)
+                        .unwrap()
+                        .assume_checked()
+                        .script_pubkey(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn only_a_transaction_paying_this_vault_is_relayed() {
+        // A Lightning deposit's claim pays the vault's first address. Our
+        // server relays that, and nothing that pays anyone else.
+        let vault = real_vault(0x51);
+        let other = real_vault(0x61);
+        let (mine, _) = ghostkey_core::wallet::peek_addresses(&vault, 2).unwrap();
+        let (theirs, _) = ghostkey_core::wallet::peek_addresses(&other, 1).unwrap();
+        assert!(pays_only_vault(&vault, &paying(&[&mine[0]])).unwrap());
+        assert!(pays_only_vault(&vault, &paying(&[&mine[0], &mine[1]])).unwrap());
+        assert!(!pays_only_vault(&vault, &paying(&[&theirs[0]])).unwrap());
+        assert!(
+            !pays_only_vault(&vault, &paying(&[&mine[0], &theirs[0]])).unwrap(),
+            "one foreign output is enough to refuse"
+        );
+        assert!(!pays_only_vault(&vault, &paying(&[])).unwrap());
     }
 
     #[tokio::test]
