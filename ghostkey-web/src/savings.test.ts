@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addedThisMonth, goalProgress, savePerPeriod } from "./savings";
+import { addedThisMonth, goalProgress, goalShares, savePerPeriod } from "./savings";
 
 describe("goalProgress", () => {
   it("measures the balance against the goal", () => {
@@ -51,5 +51,19 @@ describe("addedThisMonth", () => {
   });
   it("is zero with nothing this month", () => {
     expect(addedThisMonth([], now)).toBe(0);
+  });
+});
+
+describe("goalShares", () => {
+  it("shows the ledger and what's left over when the balance covers it", () => {
+    expect(goalShares([100_000, 50_000], 200_000)).toEqual({ shown: [100_000, 50_000], notInGoalSat: 50_000 });
+  });
+  it("shares the balance out when goals claim more than is there", () => {
+    // A send made outside GhostKey left 90k; goals still say 150k.
+    expect(goalShares([100_000, 50_000], 90_000)).toEqual({ shown: [60_000, 30_000], notInGoalSat: 0 });
+  });
+  it("never shows a negative goal, and waits for a balance", () => {
+    expect(goalShares([-5, 10], null)).toEqual({ shown: [0, 10], notInGoalSat: null });
+    expect(goalShares([], 7)).toEqual({ shown: [], notInGoalSat: 7 });
   });
 });

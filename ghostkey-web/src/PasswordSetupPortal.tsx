@@ -75,6 +75,7 @@
  *     Strictly non-custodial; the residual above does not apply.
  */
 import { useEffect, useState } from "react";
+import { GOAL_PRESETS } from "./savings";
 import { DepositAddress } from "./DepositAddress";
 import {
   Button,
@@ -292,17 +293,6 @@ const EMPTY: Draft = {
 
 const STEPS = ["Your plan", "Password", "Who inherits", "Add bitcoin"] as const;
 
-/** Quick picks for "What are you saving for?". Anything else is typed. */
-const GOAL_PRESETS = [
-  "School fees",
-  "Rent",
-  "Emergency fund",
-  "House",
-  "Business",
-  "Wedding",
-  "Travel",
-  "Car",
-] as const;
 
 /** The waiting periods setup offers. It is written into the vault's
  *  address, so it can only change later by moving the money. */

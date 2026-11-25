@@ -28,6 +28,7 @@ import {
 } from "./ui";
 import { ReceiveCard } from "./ReceiveCard";
 import { ChooseHeirCard } from "./ChooseHeir";
+import { SpendFromGoal } from "./Goals";
 import { SavingsCard } from "./SavingsCard";
 import { addedThisMonth } from "./savings";
 import {
@@ -878,6 +879,17 @@ function SavingsHero({
             network={network}
             ownerToken={ownerToken}
             embedded
+            afterSend={(outSat) =>
+              savings && savings.goals?.length ? (
+                <SpendFromGoal
+                  vaultId={vaultId}
+                  ownerToken={ownerToken}
+                  goals={savings.goals}
+                  amountSat={outSat}
+                  onView={onSavings}
+                />
+              ) : null
+            }
           />
         </div>
       ) : null}
@@ -1290,11 +1302,15 @@ function SendCard({
   network,
   ownerToken,
   embedded,
+  afterSend,
 }: {
   vaultId: string;
   network: string;
   ownerToken: string;
   embedded?: boolean;
+  /** Shown under a successful send, given what left the vault (amount
+   *  plus fee). Savings uses it to ask which goal it came from. */
+  afterSend?: (outSat: number) => ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [destination, setDestination] = useState("");
@@ -1398,6 +1414,7 @@ function SendCard({
             ? `The remaining ${formatAmount(result.remaining_sat, unit)} stays in this share, still covered by your inheritance plan. Your heir's waiting clock starts fresh from this move.`
             : "This share is now empty; add Bitcoin any time to keep the plan going."}
         </p>
+        {afterSend ? afterSend(result.sent_sat + result.fee_sat) : null}
         <div className="mt-3 flex items-center gap-3">
           <a
             href={result.explorer_url}
