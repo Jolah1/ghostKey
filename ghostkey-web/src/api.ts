@@ -321,6 +321,13 @@ export interface VaultBalanceView {
   total_sat: number;
 }
 
+/** Response from `GET /vaults/:id/balance/last`: the balance the last
+ *  successful chain scan saw, read from the server's database. */
+export interface LastBalanceView extends VaultBalanceView {
+  /** When that scan finished (RFC3339). */
+  checked_at: string;
+}
+
 /** Response from `POST /vaults/:id/send` — the owner spend flow. */
 export interface OwnerSendResponse {
   txid: string;
@@ -1031,6 +1038,16 @@ export const api = {
    *  sats landed. */
   getVaultBalance: (id: string) =>
     request<VaultBalanceView>(`/vaults/${id}/balance`),
+  /** The last known balance, at once and with no chain call; null before
+   *  the vault's first scan. */
+  getLastVaultBalance: async (id: string): Promise<LastBalanceView | null> => {
+    try {
+      return await request<LastBalanceView>(`/vaults/${id}/balance/last`);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+  },
   /** AI onboarding guide. Server proxies to the Anthropic API with a
    *  pinned system prompt. The handler refuses to forward seed phrases,
    *  xprvs, or other secret-shaped strings. No vault auth — the chat

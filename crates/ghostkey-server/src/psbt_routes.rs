@@ -1934,8 +1934,39 @@ pub(crate) struct UnlockEstimate {
     pub has_unspent: bool,
 }
 
+/// A vault's balance as one chain scan saw it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScanBalance {
+    pub confirmed_sat: u64,
+    pub unconfirmed_sat: u64,
+}
+
+/// Remember `balance` as the vault's last known balance, for
+/// `GET /vaults/:id/balance/last`. Best effort: a failed write only means
+/// Home waits for the live lookup, as it did before.
+pub(crate) async fn save_last_balance(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+    balance: ScanBalance,
+    now: chrono::DateTime<Utc>,
+) {
+    if let Err(e) = sqlx::query(
+        "UPDATE vaults SET balance_confirmed_sat = ?, balance_unconfirmed_sat = ?, \
+                balance_checked_at = ? WHERE id = ?",
+    )
+    .bind(balance.confirmed_sat as i64)
+    .bind(balance.unconfirmed_sat as i64)
+    .bind(now.to_rfc3339())
+    .bind(vault_id)
+    .execute(db)
+    .await
+    {
+        tracing::warn!(vault_id = %vault_id, error = ?e, "could not save last balance");
+    }
+}
+
 /// Scan a vault's addresses via Esplora and compute its on-chain
-/// unlock-maturity estimate. Blocking BDK + HTTP work runs on a
+/// unlock-maturity estimate, plus the balance the same scan saw. Blocking BDK + HTTP work runs on a
 /// dedicated thread. Esplora failures surface as `BlockingErr::Esplora`
 /// so callers can treat "couldn't reach the chain" as "not ready yet".
 pub(crate) async fn scan_unlock_estimate(
@@ -1944,7 +1975,7 @@ pub(crate) async fn scan_unlock_estimate(
     network: Network,
     timelock_blocks: u32,
     label: Option<String>,
-) -> Result<UnlockEstimate, BlockingErr> {
+) -> Result<(UnlockEstimate, ScanBalance), BlockingErr> {
     let urls = esplora_urls(network).map_err(|e| match e {
         ApiError::Validation(s) => BlockingErr::Esplora(s),
         _ => BlockingErr::Esplora("esplora endpoints unavailable".into()),
@@ -1961,48 +1992,58 @@ pub(crate) async fn scan_unlock_estimate(
     let vault = Vault::from_config(vault_config).map_err(|e| BlockingErr::Vault(e.to_string()))?;
 
     let _concurrency_permit = crate::concurrency::acquire_esplora().await;
-    tokio::task::spawn_blocking(move || -> Result<UnlockEstimate, BlockingErr> {
-        let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
-            .map_err(|e| BlockingErr::Vault(e.to_string()))?;
+    tokio::task::spawn_blocking(
+        move || -> Result<(UnlockEstimate, ScanBalance), BlockingErr> {
+            let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
+                .map_err(|e| BlockingErr::Vault(e.to_string()))?;
 
-        let update = try_each_esplora(&urls, |client| {
-            client
-                .full_scan(wallet.start_full_scan(), 5, 1)
-                .map_err(|e| clean_esplora_err("full_scan", &e))
-        })?;
-        wallet
-            .apply_update(update)
-            // Our wallet choked on what the explorer sent. That's this
-            // vault's problem, not the explorer's, so it must not pause
-            // scans for everyone else.
-            .map_err(|e| BlockingErr::Vault(format!("apply_update: {e}")))?;
+            let update = try_each_esplora(&urls, |client| {
+                client
+                    .full_scan(wallet.start_full_scan(), 5, 1)
+                    .map_err(|e| clean_esplora_err("full_scan", &e))
+            })?;
+            wallet
+                .apply_update(update)
+                // Our wallet choked on what the explorer sent. That's this
+                // vault's problem, not the explorer's, so it must not pause
+                // scans for everyone else.
+                .map_err(|e| BlockingErr::Vault(format!("apply_update: {e}")))?;
 
-        let tip_height = wallet.latest_checkpoint().height();
-        let csv = vault.timelock_blocks();
+            let tip_height = wallet.latest_checkpoint().height();
+            let csv = vault.timelock_blocks();
 
-        // The youngest confirmed coin gates a full drain. Unconfirmed
-        // coins have no started timelock, so they don't lower the unlock
-        // height (issuing the link slightly early is harmless — the heir
-        // still can't spend until the chain matures).
-        let mut youngest_conf: Option<u32> = None;
-        let mut has_unspent = false;
-        for utxo in wallet.list_unspent() {
-            has_unspent = true;
-            if let bdk_wallet::chain::ChainPosition::Confirmed { anchor, .. } = utxo.chain_position
-            {
-                let h = anchor.block_id.height;
-                youngest_conf = Some(youngest_conf.map_or(h, |y| y.max(h)));
+            // The youngest confirmed coin gates a full drain. Unconfirmed
+            // coins have no started timelock, so they don't lower the unlock
+            // height (issuing the link slightly early is harmless — the heir
+            // still can't spend until the chain matures).
+            let mut youngest_conf: Option<u32> = None;
+            let mut has_unspent = false;
+            for utxo in wallet.list_unspent() {
+                has_unspent = true;
+                if let bdk_wallet::chain::ChainPosition::Confirmed { anchor, .. } =
+                    utxo.chain_position
+                {
+                    let h = anchor.block_id.height;
+                    youngest_conf = Some(youngest_conf.map_or(h, |y| y.max(h)));
+                }
             }
-        }
 
-        let unlock_height = youngest_conf.map(|h| h.saturating_add(csv));
+            let unlock_height = youngest_conf.map(|h| h.saturating_add(csv));
+            let bal = wallet.balance();
 
-        Ok(UnlockEstimate {
-            tip_height,
-            unlock_height,
-            has_unspent,
-        })
-    })
+            Ok((
+                UnlockEstimate {
+                    tip_height,
+                    unlock_height,
+                    has_unspent,
+                },
+                ScanBalance {
+                    confirmed_sat: bal.confirmed.to_sat(),
+                    unconfirmed_sat: (bal.trusted_pending + bal.untrusted_pending).to_sat(),
+                },
+            ))
+        },
+    )
     .await
     .map_err(|e| BlockingErr::Vault(format!("scan worker panic: {e}")))?
 }
@@ -2201,7 +2242,8 @@ pub(crate) async fn unlock_estimate_with_cache(
     )
     .await;
     backoff_record(net, &scanned, now);
-    let est = scanned?;
+    let (est, balance) = scanned?;
+    save_last_balance(db, &input.vault_id, balance, now).await;
 
     if let Err(e) = sqlx::query(
         r#"UPDATE vaults
@@ -2729,6 +2771,16 @@ pub async fn get_vault_balance(
         .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
 
     let now = Utc::now();
+    save_last_balance(
+        &state.db,
+        &id,
+        ScanBalance {
+            confirmed_sat,
+            unconfirmed_sat,
+        },
+        now,
+    )
+    .await;
     record_new_deposits(&state.db, &id, &deposits, now).await;
     record_spent_deposits(&state.db, &id, &still_unspent, now).await;
 
@@ -2738,6 +2790,59 @@ pub async fn get_vault_balance(
         confirmed_sat,
         unconfirmed_sat,
         total_sat,
+    }))
+}
+
+/// Response from `GET /vaults/:id/balance/last`.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct LastBalanceView {
+    pub vault_id: String,
+    pub network: String,
+    pub confirmed_sat: u64,
+    pub unconfirmed_sat: u64,
+    pub total_sat: u64,
+    /// When the scan that saw this balance finished (RFC3339).
+    pub checked_at: String,
+}
+
+/// The balance from the vault's last successful scan, straight from the
+/// database, so Home has a number at once. No chain call. 404 until the
+/// first scan has finished. Public, like `GET /vaults/:id/balance`, which
+/// tells anyone with the id the same thing, live.
+pub async fn get_last_balance(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<LastBalanceView>, ApiError> {
+    last_balance(&state.db, &id)
+        .await?
+        .map(Json)
+        .ok_or(ApiError::NotFound)
+}
+
+async fn last_balance(
+    db: &sqlx::SqlitePool,
+    id: &str,
+) -> Result<Option<LastBalanceView>, ApiError> {
+    type Row = (String, Option<i64>, Option<i64>, Option<String>);
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT network, balance_confirmed_sat, balance_unconfirmed_sat, balance_checked_at \
+           FROM vaults WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?;
+    let Some((network, Some(confirmed), Some(unconfirmed), Some(checked_at))) = row else {
+        return Ok(None);
+    };
+    let confirmed_sat = confirmed.max(0) as u64;
+    let unconfirmed_sat = unconfirmed.max(0) as u64;
+    Ok(Some(LastBalanceView {
+        vault_id: id.to_string(),
+        network,
+        confirmed_sat,
+        unconfirmed_sat,
+        total_sat: confirmed_sat + unconfirmed_sat,
+        checked_at,
     }))
 }
 
@@ -3321,6 +3426,59 @@ mod tests {
         .execute(pool)
         .await
         .expect("seed vault");
+    }
+
+    #[tokio::test]
+    async fn the_last_balance_is_what_the_last_scan_saw() {
+        let pool = memory_db().await;
+        seed_vault(&pool, "vault-1").await;
+        seed_vault(&pool, "vault-2").await;
+
+        // Never scanned: nothing to show, rather than a misleading zero.
+        assert_eq!(last_balance(&pool, "vault-1").await.unwrap(), None);
+        assert_eq!(last_balance(&pool, "no-such-vault").await.unwrap(), None);
+
+        let first = Utc::now() - chrono::Duration::minutes(10);
+        save_last_balance(
+            &pool,
+            "vault-1",
+            ScanBalance {
+                confirmed_sat: 2_000,
+                unconfirmed_sat: 629,
+            },
+            first,
+        )
+        .await;
+        let got = last_balance(&pool, "vault-1").await.unwrap().unwrap();
+        assert_eq!(
+            got,
+            LastBalanceView {
+                vault_id: "vault-1".into(),
+                network: "signet".into(),
+                confirmed_sat: 2_000,
+                unconfirmed_sat: 629,
+                total_sat: 2_629,
+                checked_at: first.to_rfc3339(),
+            }
+        );
+
+        // A later scan replaces it, including a drop to zero.
+        let later = Utc::now();
+        save_last_balance(
+            &pool,
+            "vault-1",
+            ScanBalance {
+                confirmed_sat: 0,
+                unconfirmed_sat: 0,
+            },
+            later,
+        )
+        .await;
+        let got = last_balance(&pool, "vault-1").await.unwrap().unwrap();
+        assert_eq!((got.total_sat, got.checked_at), (0, later.to_rfc3339()));
+
+        // Other vaults are untouched.
+        assert_eq!(last_balance(&pool, "vault-2").await.unwrap(), None);
     }
 
     #[tokio::test]

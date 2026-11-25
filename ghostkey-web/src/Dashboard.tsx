@@ -18,7 +18,7 @@
  * If there is no active vault on this device, we offer the two paths
  * out: set one up, or sign in with email + password.
  */
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Avatar,
   Button,
@@ -974,9 +974,16 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 
 /** Balance state for the savings hero, shared with the headline so the
  *  chain is asked once. Hiding the balance is remembered per device and
- *  also skips the slow lookup. */
+ *  also skips the slow lookup.
+ *
+ *  The last known balance (saved by the server after every scan) shows
+ *  at once while the live lookup runs. `asOf` says how old it is, and is
+ *  null once a live answer is on screen. If the live lookup fails, the
+ *  saved balance stays up with its age instead of an error. */
 export interface VaultBalanceState {
   balance: VaultBalanceView | null;
+  /** When the balance on screen was checked, if it is the saved one. */
+  asOf: string | null;
   loading: boolean;
   /** True a few seconds into a slow load. */
   slow: boolean;
@@ -988,6 +995,10 @@ export interface VaultBalanceState {
 
 function useVaultBalance(vaultId: string | null): VaultBalanceState {
   const [balance, setBalance] = useState<VaultBalanceView | null>(null);
+  const [asOf, setAsOf] = useState<string | null>(null);
+  // What's on screen, read inside `load` without re-creating it: a saved
+  // balance must never replace a live one.
+  const shown = useRef<{ vaultId: string | null; live: boolean }>({ vaultId: null, live: false });
   const [loading, setLoading] = useState(false);
   // Flips true a few seconds into a slow load so the card reassures
   // instead of looking frozen — public explorers can crawl.
@@ -1003,9 +1014,24 @@ function useVaultBalance(vaultId: string | null): VaultBalanceState {
 
   const load = useCallback(async () => {
     if (!vaultId) return;
+    if (shown.current.vaultId !== vaultId) {
+      // Another vault: don't leave the last one's number up.
+      shown.current = { vaultId, live: false };
+      setBalance(null);
+      setAsOf(null);
+    }
     setLoading(true);
     setError(null);
     setSlow(false);
+    // The saved balance, straight from the server's database. Shown only
+    // until a live answer arrives, and never over one.
+    const saved = api.getLastVaultBalance(vaultId).catch(() => null);
+    void saved.then((last) => {
+      if (last && shown.current.vaultId === vaultId && !shown.current.live) {
+        setBalance(last);
+        setAsOf(last.checked_at);
+      }
+    });
     // After a few seconds, show a "still checking" note so a slow public
     // explorer doesn't read as a frozen card.
     const slowAt = window.setTimeout(() => setSlow(true), 6000);
@@ -1013,8 +1039,14 @@ function useVaultBalance(vaultId: string | null): VaultBalanceState {
       // Cap the wait so a stuck explorer resolves to a clear, actionable
       // error instead of an endless spinner.
       const b = await withTimeout(api.getVaultBalance(vaultId), 20000);
+      if (shown.current.vaultId !== vaultId) return;
+      shown.current.live = true;
       setBalance(b);
+      setAsOf(null);
     } catch (e) {
+      // A saved balance on screen stays up, marked with its age; that
+      // beats an error over a blank. A live one stays up too.
+      if (shown.current.vaultId === vaultId && (shown.current.live || (await saved))) return;
       // Keep raw server text (e.g. "500 Internal Server Error") out of the
       // owner's face — a chain/explorer hiccup isn't actionable jargon. The
       // figure already falls back to "—" when nothing loaded, so it never
@@ -1049,12 +1081,12 @@ function useVaultBalance(vaultId: string | null): VaultBalanceState {
     });
   }, []);
 
-  return { balance, loading, slow, error, hidden, load, toggleHidden };
+  return { balance, asOf, loading, slow, error, hidden, load, toggleHidden };
 }
 
 /** The big number at the top of the savings hero. */
 function BalanceDisplay({ state }: { state: VaultBalanceState }) {
-  const { balance, loading, slow, error, hidden, load, toggleHidden } = state;
+  const { balance, asOf, loading, slow, error, hidden, load, toggleHidden } = state;
   const usdPerBtc = usePrice();
   const unit = useUnit();
 
@@ -1141,7 +1173,26 @@ function BalanceDisplay({ state }: { state: VaultBalanceState }) {
               {formatAmount(balance.unconfirmed_sat, unit)} pending
             </p>
           ) : null}
-          {loading && slow && !error ? (
+          {balance && asOf ? (
+            <p className="mt-1.5 text-xs text-dim" data-testid="balance-as-of">
+              Updated {humanAgo(new Date(asOf), new Date())}
+              {loading ? (
+                " · checking now"
+              ) : (
+                <>
+                  {" · "}
+                  <button
+                    type="button"
+                    onClick={() => void load()}
+                    className="underline-offset-2 hover:underline"
+                  >
+                    Refresh
+                  </button>
+                </>
+              )}
+            </p>
+          ) : null}
+          {loading && slow && !error && !asOf ? (
             <p className="mt-1.5 text-sm text-muted">
               Still checking your balance. Public networks can be slow, hang
               tight.
