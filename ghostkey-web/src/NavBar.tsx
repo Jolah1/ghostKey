@@ -10,6 +10,7 @@ import { Brand } from "./Brand";
 import type { Route } from "./App";
 import { useTheme } from "./theme";
 import { LanguageToggle } from "./vocab";
+import { openAssist } from "./AssistChat";
 
 // Loaded on first tap: the deposit card checks the address with the
 // wasm signer, which the rest of the nav doesn't need.
@@ -35,12 +36,13 @@ const SIGNED_OUT_ITEMS: NavItem[] = [
   { key: "inherit",   label: "Inherit" },
 ];
 
+// Inherit is for heirs, not savers: it stays in the website footer.
 const SIGNED_IN_ITEMS: NavItem[] = [
-  { key: "dashboard", label: "Home" },
-  { key: "activity",  label: "Activity" },
-  { key: "tools",     label: "Family" },
-  { key: "recovery",  label: "Recovery kit" },
-  { key: "inherit",   label: "Inherit" },
+  { key: "dashboard",  label: "Home" },
+  { key: "activity",   label: "Activity" },
+  { key: "challenges", label: "Challenges" },
+  { key: "tools",      label: "Family" },
+  { key: "recovery",   label: "Recovery kit" },
 ];
 
 interface Props {
@@ -83,6 +85,9 @@ export function NavBar({ route, onNavigate, signedIn, canAddMoney = false }: Pro
               {item.label}
             </button>
           ))}
+          <button type="button" onClick={openAssist} className="nav-link h-full">
+            Ask GhostKey AI
+          </button>
         </nav>
 
         <div className="flex items-center gap-2">
@@ -138,11 +143,20 @@ export function NavBar({ route, onNavigate, signedIn, canAddMoney = false }: Pro
             ))}
             <button
               type="button"
-              onClick={() => onNavigate(signedIn ? "dashboard" : "setup")}
-              className="btn btn-primary mt-2"
+              onClick={() => {
+                setOpen(false);
+                openAssist();
+              }}
+              className="nav-link mobile"
             >
-              {signedIn ? "Open your savings" : "Start saving"}
+              Ask GhostKey AI
             </button>
+            {/* Signed in, the savings are already one tap away (Home). */}
+            {!signedIn ? (
+              <button type="button" onClick={() => onNavigate("setup")} className="btn btn-primary mt-2">
+                Start saving
+              </button>
+            ) : null}
           </nav>
         </div>
       )}

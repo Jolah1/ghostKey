@@ -247,7 +247,7 @@ export function ToolsPage({ onNavigate }: PageProps) {
   }
   if (vault && ownerToken && pushKey && !isClosed && !heirPending) {
     items.push({
-      label: "Reminders",
+      label: "Check-in reminders",
       desc:
         done.remindersOn === true
           ? "On for this device"
@@ -312,7 +312,7 @@ export function RemindersPage({ onNavigate }: PageProps) {
   const ready = Boolean(meta && ownerToken && pushKey && vault?.status !== "claimed");
   return (
     <ToolPage
-      title="Reminders"
+      title="Check-in reminders"
       intro="Get a nudge on this device when it's time to check in, so you never miss it."
       onNavigate={onNavigate}
     >
@@ -643,11 +643,17 @@ function HeirContactCard({
     return <p className="text-sm text-muted">Loading…</p>;
   }
 
+  // Only channels this server can deliver, plus the current one if it
+  // can't (so the warning below has something to point at). With just
+  // email left, there's nothing to pick.
+  const shownChannels = HEIR_CHANNELS.filter((c) => cap[c.id] || c.id === channel);
+
   return (
     <div className="card-flat p-5">
+      {shownChannels.length > 1 ? (
       <Field label="How should we reach them">
         <div className="grid grid-cols-3 gap-2">
-          {HEIR_CHANNELS.map((c) => (
+          {shownChannels.map((c) => (
             <Tile
               key={c.id}
               title={c.title}
@@ -676,6 +682,7 @@ function HeirContactCard({
           </div>
         ) : null}
       </Field>
+      ) : null}
 
       <Field
         label={channel === "email" ? "Their email" : "Their phone number"}

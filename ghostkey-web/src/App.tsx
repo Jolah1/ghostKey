@@ -22,6 +22,7 @@
  * heir metadata) via vaultStore.ts. There is no global store beyond
  * route + health.
  */
+import { AssistChat } from "./AssistChat";
 import {
   Suspense,
   lazy,
@@ -596,8 +597,10 @@ export default function App() {
           probe (or after a failed one) told a mainnet owner
           "Alpha: testnet, don't use real-money keys" — false and
           alarming at the exact moment the server was already down.
-          When the probe fails, ServerOfflineBanner below covers it. */}
-      {health === "ok" && <AlphaBanner network={network} />}
+          When the probe fails, ServerOfflineBanner below covers it.
+          Mainnet is the normal case, so it gets no banner: a line on
+          every screen saying "your funds are real" read like a warning. */}
+      {health === "ok" && network !== "bitcoin" && <AlphaBanner network={network} />}
       {demoMode && <DemoBanner />}
       {health === "offline" && <ServerOfflineBanner />}
       {/*
@@ -723,6 +726,9 @@ export default function App() {
       )}
       </Suspense>
       </div>
+      {/* One chat for the whole app, opened from "Ask GhostKey AI" in
+          the menu. Nothing floats over the page. */}
+      <AssistChat intro="Questions about saving, Lightning, check-ins, or what your heir will see? Ask away." />
     </div>
   );
 }

@@ -30,9 +30,8 @@ export function Landing({ onNavigate }: Props) {
     <main>
       <Hero onNavigate={onNavigate} />
       <HowItWorks onNavigate={onNavigate} />
-      <WhyBitcoin />
-      <Comparison />
       <FAQ />
+      <TechnicallyCurious />
       <FinalCTA onNavigate={onNavigate} />
       <Footer />
     </main>
@@ -145,7 +144,7 @@ const STEPS: Step[] = [
   },
   {
     title: "Save whenever you can",
-    body: "Send sats from any wallet or exchange, as often as you like. Watch your total grow, and get a gentle reminder if you want one. It stays yours: you can spend it any time.",
+    body: "Send sats from any wallet or exchange, on-chain or by Lightning, as often as you like. Watch your total grow, and get a gentle reminder if you want one. It stays yours: you can spend it any time.",
   },
   {
     title: "Tap once a month",
@@ -284,23 +283,61 @@ function WhyBitcoin() {
   );
 }
 
+/* -------------------------- Technically curious --------------------------- */
+
+/** How it's built and how it compares, folded away: savers get the
+ *  savings story first, and anyone curious can open it. */
+function TechnicallyCurious() {
+  return (
+    <section className="border-t border-app bg-app">
+      <details className="group mx-auto max-w-5xl px-5 py-10 md:px-8 md:py-14" data-testid="tech-details">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-4">
+          <span>
+            <span className="block text-xs uppercase tracking-wider text-dim">For the technically curious</span>
+            <span className="mt-2 block font-display text-2xl font-bold tracking-tight md:text-3xl">
+              How it&apos;s built, and how it compares
+            </span>
+          </span>
+          <span aria-hidden="true" className="text-2xl text-muted transition-transform group-open:rotate-45">
+            +
+          </span>
+        </summary>
+        <div className="mt-6">
+          <Comparison />
+          <WhyBitcoin />
+        </div>
+      </details>
+    </section>
+  );
+}
+
 /* ------------------------------ Comparison -------------------------------- */
 
 interface CompRow {
   name: string;
-  heirNoSetup:    "yes" | "partial" | "no";
-  nonTechHeir:    "yes" | "partial" | "no";
-  noCosigner:     "yes" | "partial" | "no";
-  onChainLock:    "yes" | "partial" | "no";
-  highlight?:     boolean;
+  ownKey:      "yes" | "partial" | "no";
+  goals:       "yes" | "partial" | "no";
+  lightning:   "yes" | "partial" | "no";
+  passesOn:    "yes" | "partial" | "no";
+  highlight?:  boolean;
 }
 
+/** Columns, in order, for both renderings below. */
+const COMP_COLS: { key: "ownKey" | "goals" | "lightning" | "passesOn"; label: string }[] = [
+  { key: "ownKey", label: "Your own key" },
+  { key: "goals", label: "Goals and streaks" },
+  { key: "lightning", label: "Lightning deposits" },
+  { key: "passesOn", label: "Family gets it if you're gone" },
+];
+
+// Exchange and wallet rows describe the typical app, not any one brand;
+// "partial" where some do and some don't. Liana from its public docs.
 const COMP: CompRow[] = [
-  { name: "Seed phrase in a safe",   heirNoSetup: "no",  nonTechHeir: "no",      noCosigner: "yes", onChainLock: "no"      },
-  { name: "Nunchuk inheritance",     heirNoSetup: "no",  nonTechHeir: "partial", noCosigner: "no",  onChainLock: "partial" },
-  { name: "AnchorWatch",             heirNoSetup: "no",  nonTechHeir: "no",      noCosigner: "no",  onChainLock: "yes"     },
-  { name: "Liana",                   heirNoSetup: "no",  nonTechHeir: "no",      noCosigner: "yes", onChainLock: "yes"     },
-  { name: "GhostKey",                heirNoSetup: "yes", nonTechHeir: "yes",     noCosigner: "yes", onChainLock: "yes", highlight: true },
+  { name: "An exchange app",       ownKey: "no",  goals: "partial", lightning: "partial", passesOn: "partial" },
+  { name: "A phone wallet",        ownKey: "yes", goals: "no",      lightning: "partial", passesOn: "no"      },
+  { name: "Seed phrase in a safe", ownKey: "yes", goals: "no",      lightning: "no",      passesOn: "partial" },
+  { name: "Liana",                 ownKey: "yes", goals: "no",      lightning: "no",      passesOn: "yes"     },
+  { name: "GhostKey",              ownKey: "yes", goals: "yes",     lightning: "yes",     passesOn: "yes", highlight: true },
 ];
 
 function Comparison() {
@@ -346,22 +383,12 @@ function Comparison() {
                 )}
               </div>
               <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                <div className="flex flex-col items-start gap-1">
-                  <dt className="text-dim">No heir setup</dt>
-                  <dd><Mark v={row.heirNoSetup} /></dd>
-                </div>
-                <div className="flex flex-col items-start gap-1">
-                  <dt className="text-dim">Non-technical heir</dt>
-                  <dd><Mark v={row.nonTechHeir} /></dd>
-                </div>
-                <div className="flex flex-col items-start gap-1">
-                  <dt className="text-dim">No third-party key</dt>
-                  <dd><Mark v={row.noCosigner} /></dd>
-                </div>
-                <div className="flex flex-col items-start gap-1">
-                  <dt className="text-dim">On-chain timelock</dt>
-                  <dd><Mark v={row.onChainLock} /></dd>
-                </div>
+                {COMP_COLS.map((c) => (
+                  <div key={c.key} className="flex flex-col items-start gap-1">
+                    <dt className="text-dim">{c.label}</dt>
+                    <dd><Mark v={row[c.key]} /></dd>
+                  </div>
+                ))}
               </dl>
             </div>
           ))}
@@ -372,10 +399,9 @@ function Comparison() {
             <thead>
               <tr className="text-left text-xs uppercase tracking-wider text-dim">
                 <th scope="col" className="py-3 pr-4 font-medium">Solution</th>
-                <th scope="col" className="py-3 px-4 font-medium">No heir setup</th>
-                <th scope="col" className="py-3 px-4 font-medium">Non-technical heir</th>
-                <th scope="col" className="py-3 px-4 font-medium">No third-party key</th>
-                <th scope="col" className="py-3 px-4 font-medium">On-chain timelock</th>
+                {COMP_COLS.map((c) => (
+                  <th key={c.key} scope="col" className="py-3 px-4 font-medium">{c.label}</th>
+                ))}
               </tr>
             </thead>
             <tbody>
@@ -416,18 +442,14 @@ function Comparison() {
                         )}
                       </span>
                     </th>
-                    <td className="border-t border-app py-4 px-4">
-                      <Mark v={row.heirNoSetup} />
-                    </td>
-                    <td className="border-t border-app py-4 px-4">
-                      <Mark v={row.nonTechHeir} />
-                    </td>
-                    <td className="border-t border-app py-4 px-4">
-                      <Mark v={row.noCosigner} />
-                    </td>
-                    <td className={`border-t border-app py-4 px-4 ${last && row.highlight ? "rounded-br-xl" : ""}`}>
-                      <Mark v={row.onChainLock} />
-                    </td>
+                    {COMP_COLS.map((c, k) => (
+                      <td
+                        key={c.key}
+                        className={`border-t border-app py-4 px-4 ${k === COMP_COLS.length - 1 && last && row.highlight ? "rounded-br-xl" : ""}`}
+                      >
+                        <Mark v={row[c.key]} />
+                      </td>
+                    ))}
                   </tr>
                 );
               })}
@@ -436,7 +458,7 @@ function Comparison() {
         </div>
 
         <p className="mt-6 text-xs text-dim">
-          Comparisons reflect each project's public documentation at time of writing.
+          Exchange and wallet rows describe typical apps; individual apps differ. Liana from its public documentation at time of writing.
         </p>
       </div>
     </section>
@@ -489,15 +511,19 @@ const FAQS = [
   },
   {
     q: "Are there fees?",
-    a: "GhostKey takes no cut. You only pay the normal Bitcoin network fee when you fund the vault, and again when your heir claims.",
+    a: "GhostKey takes no cut and has no subscription. You only pay the normal Bitcoin network fee when you add money on-chain, and again when your heir claims. Adding money by Lightning goes through an independent swap service, which charges its own small fee (see below).",
   },
   {
     q: "Can my heir claim early?",
     a: "No. The waiting period is locked into Bitcoin itself. Until it fully runs out, nobody can move the funds. Not your heir, not us.",
   },
   {
+    q: "What does adding money by Lightning cost?",
+    a: "GhostKey charges nothing. The swap service takes about 0.6%, plus a few hundred sats in Bitcoin network fees, and you see what lands in your vault before you pay. Because part of the fee is fixed, very small deposits cost more as a share. The bitcoin arrives in your vault after one confirmation, usually 10 to 20 minutes, and neither GhostKey nor the swap service can keep it: if anything fails, your Lightning wallet gets the money back.",
+  },
+  {
     q: "What kinds of Bitcoin can I deposit?",
-    a: "Any Bitcoin you already hold. Each heir's share has its own Bitcoin address, with rules that already include them. You send from your own wallet to that address, and your browser checks the address is really yours before showing it. We never hold your money, and your own key never leaves your device.",
+    a: "Any Bitcoin you already hold. Each heir's share has its own Bitcoin address, with rules that already include them. You send from your own wallet to that address, or pay a Lightning invoice, and your browser checks the address is really yours before using it. We never hold your money, and your own key never leaves your device.",
   },
   {
     q: "Is this a legal will?",
@@ -724,8 +750,9 @@ function Footer() {
               <span>ghost<span className="text-accent">Key</span></span>
             </p>
             <p className="mt-3 max-w-sm text-sm text-muted">
-              Heartbeat-based Bitcoin inheritance. Your Bitcoin doesn't die with
-              you. The rules live on the chain, not on us.
+              Stack sats. Build your future. A bitcoin savings plan on your own
+              key, that passes to the people you choose if you stop showing up.
+              Build wealth that outlives you.
             </p>
             <NewsletterSignup />
           </div>
