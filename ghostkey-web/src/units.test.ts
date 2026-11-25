@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { formatAmount, usdLine } from "./units";
+import { fiatAmount, fiatLine, formatAmount, usdLine } from "./units";
+import { formatNgn } from "./fiat";
 
 describe("formatAmount", () => {
   it("shows sats in sats at every size, never switching units", () => {
@@ -28,5 +29,22 @@ describe("usdLine", () => {
 
   it("is absent without a price", () => {
     expect(usdLine(1_000, null)).toBeNull();
+  });
+});
+
+describe("fiat line ($ or ₦)", () => {
+  const prices = { usd: 58_980, ngn: 85_238_089 };
+  it("shows dollars by default and naira when chosen", () => {
+    expect(fiatLine(2_629, prices, "usd")).toBe("≈ $1.55");
+    expect(fiatLine(2_629, prices, "ngn")).toBe("≈ ₦2,241");
+  });
+  it("keeps kobo only for tiny amounts", () => {
+    expect(formatNgn(42.5)).toBe("₦42.5");
+    expect(formatNgn(1_234_567.89)).toBe("₦1,234,568");
+  });
+  it("hides the naira line when there's no naira price, rather than guess", () => {
+    expect(fiatLine(2_629, { usd: 58_980, ngn: null }, "ngn")).toBeNull();
+    expect(fiatLine(2_629, null, "usd")).toBeNull();
+    expect(fiatAmount(100_000_000, prices, "ngn")).toBe("₦85,238,089");
   });
 });

@@ -267,6 +267,25 @@ test("Home shows the savings streak in one line, and the best one in the details
   await expect(page.getByTestId("savings-best-streak")).toHaveText("Best streak: 6 weeks in a row");
 });
 
+test("the small line under the balance switches between $ and ₦, and remembers", async ({ page }) => {
+  await mockVault(page, { overdue: false, balance: 2_629 });
+  await page.goto(`${base}/#/dashboard`);
+  const line = page.getByTestId("balance-fiat");
+  // Dollars by default; bitcoin stays the big number.
+  await expect(page.getByTestId("savings-balance")).toHaveText("2,629 sats");
+  await expect(line).toHaveText("≈ $1.58");
+
+  await page.getByRole("button", { name: "Naira" }).click();
+  await expect(line).toHaveText("≈ ₦2,235");
+  await expect(page.getByTestId("savings-balance")).toHaveText("2,629 sats");
+  await expect(page.getByRole("button", { name: "Naira" })).toHaveAttribute("aria-pressed", "true");
+
+  await page.reload();
+  await expect(page.getByTestId("balance-fiat")).toHaveText("≈ ₦2,235");
+  await page.getByRole("button", { name: "US dollars" }).click();
+  await expect(page.getByTestId("balance-fiat")).toHaveText("≈ $1.58");
+});
+
 type Goal = { id: string; title: string; amount_sat: number | null; target_date: string | null; saved_sat: number; created_at: string };
 const state: {
   reminderBody: Record<string, unknown> | null;
@@ -342,6 +361,8 @@ async function mockVault(
     const p = new URL(req.url()).pathname.replace(/^\/api/, "");
     if (p === "/health")
       return route.fulfill(json({ ok: true, version: "e2e", demo_mode: false, default_network: "signet", email_enabled: true, sms_enabled: false, whatsapp_enabled: false }));
+    if (p === "/price")
+      return route.fulfill(json({ usd_per_btc: 60_000, ngn_per_btc: 85_000_000, fetched_at: new Date().toISOString(), stale: false }));
     if (p === `/vaults/${VAULT_ID}/balance/last`)
       return state.saved
         ? route.fulfill(

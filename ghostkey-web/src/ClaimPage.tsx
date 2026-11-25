@@ -63,8 +63,7 @@ import {
   type UnlockEstimateView,
   type VaultBalanceView,
 } from "./api";
-import { usePrice } from "./fiat";
-import { formatAmount, usdLine, useUnit } from "./units";
+import { formatAmount, useFiatLine, useUnit } from "./units";
 import { countdown, parseRfc } from "./time";
 import { useVocab, LanguageToggle } from "./vocab";
 import type { ClaimCommonVocab } from "./vocab/types";
@@ -2363,7 +2362,7 @@ function parseFeeRate(s: string): number | null | undefined {
  *  while loading, empty, or if the lookup fails. */
 function VaultValueLine({ vaultId }: { vaultId: string }) {
   const [balance, setBalance] = useState<VaultBalanceView | null>(null);
-  const usdPerBtc = usePrice();
+  const fiatLineOf = useFiatLine();
   const unit = useUnit();
   useEffect(() => {
     let cancelled = false;
@@ -2383,7 +2382,7 @@ function VaultValueLine({ vaultId }: { vaultId: string }) {
   return (
     <p className="mt-2 text-sm text-soft">
       {formatAmount(balance.total_sat, unit)}
-      {usdLine(balance.total_sat, usdPerBtc) ? ` · ${usdLine(balance.total_sat, usdPerBtc)}` : ""}
+      {fiatLineOf(balance.total_sat) ? ` · ${fiatLineOf(balance.total_sat)}` : ""}
     </p>
   );
 }

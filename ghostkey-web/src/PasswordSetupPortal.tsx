@@ -126,8 +126,7 @@ import {
 } from "./crypto/sealing";
 import { randomBytes } from "@noble/hashes/utils.js";
 import { unlockYearToHeight, minUnlockYear } from "./unlockHeight";
-import { usePrice } from "./fiat";
-import { formatAmount, usdLine, useUnit } from "./units";
+import { formatAmount, useFiatLine, useUnit } from "./units";
 import {
   DEFAULT_CADENCE_ID,
   DEFAULT_GRACE_ID,
@@ -2625,7 +2624,7 @@ function FundingBalanceLine({ vaultId }: { vaultId: string }) {
   const [balance, setBalance] = useState<VaultBalanceView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const usdPerBtc = usePrice();
+  const fiatLineOf = useFiatLine();
   const unit = useUnit();
 
   async function load() {
@@ -2658,8 +2657,8 @@ function FundingBalanceLine({ vaultId }: { vaultId: string }) {
         <span className="font-mono text-[var(--text)]">
           {balance ? formatAmount(balance.total_sat, unit) : loading ? "…" : "—"}
         </span>
-        {balance && balance.total_sat > 0 && usdLine(balance.total_sat, usdPerBtc) ? (
-          <span className="ml-1 text-dim">{usdLine(balance.total_sat, usdPerBtc)}</span>
+        {balance && balance.total_sat > 0 && fiatLineOf(balance.total_sat) ? (
+          <span className="ml-1 text-dim">{fiatLineOf(balance.total_sat)}</span>
         ) : null}
         {balance && balance.unconfirmed_sat > 0 ? (
           <span className="ml-1 text-dim">

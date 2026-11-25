@@ -611,6 +611,9 @@ export interface GuardianClaimRequest {
  *  `crates/ghostkey-server/src/price.rs::PriceView`. */
 export interface PriceView {
   usd_per_btc: number;
+  /** Naira per BTC at the Nigerian market rate; null if unavailable
+   *  (or from a server that predates naira). */
+  ngn_per_btc?: number | null;
   fetched_at: string;
   /** True when the server is serving a stale cached value (a refresh
    *  failed). The UI can show the estimate more cautiously. */
