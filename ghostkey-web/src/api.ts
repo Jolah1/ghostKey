@@ -663,9 +663,22 @@ export interface SavingsView {
     best_month: number | null;
     best_month_sat: number;
   };
+  /** Weeks (or months) in a row with something added. */
+  streak?: SavingsStreak;
   reminder: SavingsReminder | null;
   /** Reminders only go to a confirmed email. */
   owner_email_confirmed: boolean;
+}
+
+/** A savings streak. The period follows the reminder (monthly without
+ *  one). Any amount counts; missing a period only restarts the count. */
+export interface SavingsStreak {
+  cadence: "weekly" | "monthly";
+  current: number;
+  best: number;
+  saved_this_period: boolean;
+  /** When the current period ends (RFC 3339, UTC). */
+  period_ends_at: string;
 }
 
 /** The optional savings reminder (#367). */

@@ -245,6 +245,28 @@ test("with no saved balance, a failed lookup still says so instead of showing ze
   await expect(page.getByTestId("balance-as-of")).toHaveCount(0);
 });
 
+test("Home shows the savings streak in one line, and the best one in the details", async ({ page }) => {
+  await mockVault(page, {
+    overdue: false,
+    streak: {
+      cadence: "weekly",
+      current: 3,
+      best: 6,
+      saved_this_period: false,
+      period_ends_at: "2026-11-30T00:00:00+00:00",
+    },
+  });
+  await page.goto(`${base}/#/dashboard`);
+  await expect(page.getByTestId("savings-streak")).toHaveText(
+    "3 weeks in a row · add any amount by Sun 29 Nov to make it 4",
+  );
+  // The line sits in the hero, under the buttons, not in a card of its own.
+  await expect(page.getByTestId("savings-hero").getByTestId("savings-streak")).toBeVisible();
+  await expect(page.getByTestId("savings-best-streak")).toHaveCount(0);
+  await page.getByRole("button", { name: "Savings details" }).click();
+  await expect(page.getByTestId("savings-best-streak")).toHaveText("Best streak: 6 weeks in a row");
+});
+
 type Goal = { id: string; title: string; amount_sat: number | null; target_date: string | null; saved_sat: number; created_at: string };
 const state: {
   reminderBody: Record<string, unknown> | null;
@@ -258,6 +280,7 @@ const state: {
   saved: { sat: number; checked_at: string } | null;
   /** How the live `/balance` answers: at once, after `release()`, or 500. */
   live: "ok" | "held" | "fail";
+  streak: Record<string, unknown> | undefined;
 } = {
   reminderBody: null,
   added: [],
@@ -268,6 +291,7 @@ const state: {
   balance: 250_000,
   saved: null,
   live: "ok",
+  streak: undefined,
 };
 let release: () => void = () => {};
 
@@ -277,6 +301,7 @@ function view() {
     goal: state.goals[0] ?? null,
     goals: state.goals,
     unsorted: state.unsorted,
+    streak: state.streak,
     reminder: state.reminderBody ? { ...state.reminderBody, next_at: "2099-12-01T09:00:00Z" } : null,
   };
 }
@@ -290,6 +315,7 @@ async function mockVault(
     balance?: number;
     saved?: { sat: number; minutesAgo: number };
     live?: "ok" | "held" | "fail";
+    streak?: Record<string, unknown>;
   },
 ) {
   state.reminderBody = null;
@@ -303,6 +329,7 @@ async function mockVault(
     ? { sat: opts.saved.sat, checked_at: new Date(Date.now() - opts.saved.minutesAgo * 60_000).toISOString() }
     : null;
   state.live = opts.live ?? "ok";
+  state.streak = opts.streak;
   const held = new Promise<void>((r) => (release = r));
   const deadline = opts.overdue ? new Date(Date.now() - 2 * 86400_000).toISOString() : FUTURE;
   const json = (body: unknown, status = 200) => ({

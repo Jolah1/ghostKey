@@ -98,3 +98,33 @@ export function goalShares(
   const shown = saved.map((s) => Math.floor((s * balanceSat) / total));
   return { shown, notInGoalSat: 0 };
 }
+
+/**
+ * The one streak line on Home: a short bold part and a quiet follow-up.
+ * Null when there's nothing to say yet (no deposits ever). Encouraging,
+ * never scolding: a lapsed streak reads "Start a streak", not "You lost".
+ */
+export function streakLine(
+  streak: { cadence: "weekly" | "monthly"; current: number; saved_this_period: boolean; period_ends_at: string },
+  depositCount: number,
+): { main: string; sub: string } | null {
+  if (depositCount <= 0) return null;
+  const unit = streak.cadence === "weekly" ? "week" : "month";
+  const n = streak.current;
+  // The period ends at midnight UTC; the last day in it is the one before.
+  const by = new Date(new Date(streak.period_ends_at).getTime() - 1).toLocaleDateString("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+  });
+  if (n <= 0) return { main: "Start a streak", sub: `add any amount by ${by}` };
+  if (streak.saved_this_period) {
+    return n === 1
+      ? { main: `Saved this ${unit}`, sub: `save again next ${unit} for 2 in a row` }
+      : { main: `${n} ${unit}s in a row`, sub: `saved this ${unit}` };
+  }
+  return n === 1
+    ? { main: `Saved last ${unit}`, sub: `add any amount by ${by} for 2 in a row` }
+    : { main: `${n} ${unit}s in a row`, sub: `add any amount by ${by} to make it ${n + 1}` };
+}
