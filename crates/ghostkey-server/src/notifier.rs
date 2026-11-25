@@ -181,6 +181,9 @@ pub enum NotificationKind {
     /// or monthly, to their confirmed email only. Never escalates and has
     /// nothing to do with check-ins.
     SavingsReminder,
+    /// Owner-side, once per finished savings challenge: a short
+    /// congratulations, no amounts. Confirmed email only.
+    ChallengeDone,
 }
 
 impl NotificationKind {
@@ -203,6 +206,7 @@ impl NotificationKind {
             NotificationKind::OwnerRecovery => "owner_recovery",
             NotificationKind::HeirUnreachable => "heir_unreachable",
             NotificationKind::SavingsReminder => "savings_reminder",
+            NotificationKind::ChallengeDone => "challenge_done",
         }
     }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addedThisMonth, goalProgress, goalShares, savePerPeriod } from "./savings";
+import { addedThisMonth, goalProgress, goalShares, savePerPeriod, streakLine } from "./savings";
 
 describe("goalProgress", () => {
   it("measures the balance against the goal", () => {
@@ -65,5 +65,44 @@ describe("goalShares", () => {
   it("never shows a negative goal, and waits for a balance", () => {
     expect(goalShares([-5, 10], null)).toEqual({ shown: [0, 10], notInGoalSat: null });
     expect(goalShares([], 7)).toEqual({ shown: [], notInGoalSat: 7 });
+  });
+});
+
+describe("streakLine", () => {
+  // Week of Mon 23 Nov 2026 ends at midnight UTC going into Mon 30 Nov.
+  const week = { cadence: "weekly" as const, period_ends_at: "2026-11-30T00:00:00+00:00" };
+  it("says nothing before the first deposit", () => {
+    expect(streakLine({ ...week, current: 0, saved_this_period: false }, 0)).toBeNull();
+  });
+  it("counts the run and the next one to aim for", () => {
+    expect(streakLine({ ...week, current: 3, saved_this_period: true }, 5)).toEqual({
+      main: "3 weeks in a row",
+      sub: "saved this week",
+    });
+    expect(streakLine({ ...week, current: 3, saved_this_period: false }, 5)).toEqual({
+      main: "3 weeks in a row",
+      sub: "add any amount by Sun 29 Nov to make it 4",
+    });
+  });
+  it("never says '1 weeks in a row'", () => {
+    expect(streakLine({ ...week, current: 1, saved_this_period: true }, 1)?.main).toBe("Saved this week");
+    expect(streakLine({ ...week, current: 1, saved_this_period: false }, 1)).toEqual({
+      main: "Saved last week",
+      sub: "add any amount by Sun 29 Nov for 2 in a row",
+    });
+  });
+  it("invites a fresh start instead of scolding", () => {
+    expect(streakLine({ ...week, current: 0, saved_this_period: false }, 4)).toEqual({
+      main: "Start a streak",
+      sub: "add any amount by Sun 29 Nov",
+    });
+  });
+  it("speaks in months for a monthly saver", () => {
+    expect(
+      streakLine(
+        { cadence: "monthly", current: 2, saved_this_period: false, period_ends_at: "2026-12-01T00:00:00+00:00" },
+        2,
+      ),
+    ).toEqual({ main: "2 months in a row", sub: "add any amount by Mon 30 Nov to make it 3" });
   });
 });

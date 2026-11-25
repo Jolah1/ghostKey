@@ -302,6 +302,14 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
             post(crate::savings::spend_from_goal),
         )
         .route(
+            "/vaults/:id/savings/challenges",
+            get(crate::challenges::get_challenges).post(crate::challenges::join_challenge),
+        )
+        .route(
+            "/vaults/:id/savings/challenges/stop",
+            post(crate::challenges::stop_challenge),
+        )
+        .route(
             "/vaults/:id/savings/reminder",
             put(crate::savings::put_reminder).delete(crate::savings::delete_reminder),
         )
