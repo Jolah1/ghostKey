@@ -9,6 +9,9 @@ import { LangProvider } from "./vocab";
 import "@fontsource-variable/inter";
 import "@fontsource-variable/inter-tight";
 import "./index.css";
+import { watchForUpdates } from "./device";
+
+watchForUpdates();
 
 const root = document.getElementById("root");
 if (!root) throw new Error("missing #root element");
