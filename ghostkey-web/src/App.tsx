@@ -596,6 +596,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-app">
+      <div className="status-bar-fill" aria-hidden="true" />
       <a href="#main" className="skip-link">
         Skip to content
       </a>

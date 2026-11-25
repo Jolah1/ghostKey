@@ -63,8 +63,13 @@ export function NavBar({ route, onNavigate, signedIn, canAddMoney = false }: Pro
 
   return (
     <header
-      className="sticky top-0 z-30 border-b border-app backdrop-blur-md"
-      style={{ backgroundColor: "color-mix(in srgb, var(--bg) 80%, transparent)" }}
+      className="sticky z-30 border-b border-app backdrop-blur-md"
+      // Sticks just below a phone's status bar in the installed app
+      // (0 in a normal tab); see .status-bar-fill.
+      style={{
+        top: "env(safe-area-inset-top, 0px)",
+        backgroundColor: "color-mix(in srgb, var(--bg) 80%, transparent)",
+      }}
     >
       <div className="mx-auto flex h-[60px] max-w-6xl items-center justify-between gap-4 px-5 md:px-8">
         <Brand size="md" onClick={() => onNavigate("landing")} />

@@ -108,7 +108,7 @@ export function AssistChat({ intro }: Props) {
       role="dialog"
       aria-modal="false"
       aria-label="GhostKey AI chat"
-      className="assist-panel fixed bottom-5 right-5 z-40 flex w-[min(380px,calc(100vw-2rem))] flex-col rounded-2xl bg-[var(--surface)] shadow-xl ring-1 ring-[var(--border)]"
+      className="assist-panel fixed bottom-[max(1.25rem,env(safe-area-inset-bottom))] right-5 z-40 flex w-[min(380px,calc(100vw-2rem))] flex-col rounded-2xl bg-[var(--surface)] shadow-xl ring-1 ring-[var(--border)]"
     >
       <header className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
         <div>

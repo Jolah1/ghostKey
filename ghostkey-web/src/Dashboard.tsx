@@ -824,7 +824,7 @@ function SavingsHero({
 
   return (
     <section
-      className="card overflow-hidden p-5 md:p-7"
+      className="card ink-card overflow-hidden p-5 md:p-7"
       data-testid="savings-hero"
       style={{
         // A soft glow of the accent in one corner, so the balance reads

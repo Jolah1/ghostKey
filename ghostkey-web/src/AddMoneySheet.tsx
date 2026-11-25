@@ -31,7 +31,7 @@ export function AddMoneySheet({ onClose }: { onClose: () => void }) {
   // the 60px bar.
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-4 md:items-center"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(1rem,env(safe-area-inset-top))] md:items-center"
       role="dialog"
       aria-modal="true"
       aria-labelledby="add-money-title"
