@@ -208,6 +208,43 @@ test("an overdue check-in takes the top of the page back from savings", async ({
   expect(checkinBox!.y).toBeLessThan(heroBox!.y);
 });
 
+test("the last known balance shows at once, then the live one takes over", async ({ page }) => {
+  await mockVault(page, { overdue: false, balance: 2_629, saved: { sat: 2_000, minutesAgo: 7 }, live: "held" });
+  await page.goto(`${base}/#/dashboard`);
+
+  // The explorer hasn't answered, but there's already a number, with its age.
+  await expect(page.getByTestId("savings-balance")).toHaveText("2,000 sats");
+  await expect(page.getByTestId("balance-as-of")).toHaveText("Updated 7 minutes ago · checking now");
+
+  release();
+  await expect(page.getByTestId("savings-balance")).toHaveText("2,629 sats");
+  await expect(page.getByTestId("balance-as-of")).toHaveCount(0);
+});
+
+test("when every explorer is slow, the last known balance stays up instead of an error", async ({ page }) => {
+  await mockVault(page, { overdue: false, balance: 2_629, saved: { sat: 2_000, minutesAgo: 7 }, live: "fail" });
+  await page.goto(`${base}/#/dashboard`);
+
+  const asOf = page.getByTestId("balance-as-of");
+  await expect(asOf).toHaveText("Updated 7 minutes ago · Refresh");
+  await expect(page.getByTestId("savings-balance")).toHaveText("2,000 sats");
+  await expect(page.getByText(/Couldn't load your balance/)).toHaveCount(0);
+
+  // The explorer is back: Refresh gets the live number.
+  state.live = "ok";
+  await asOf.getByRole("button", { name: "Refresh" }).click();
+  await expect(page.getByTestId("savings-balance")).toHaveText("2,629 sats");
+  await expect(asOf).toHaveCount(0);
+});
+
+test("with no saved balance, a failed lookup still says so instead of showing zero", async ({ page }) => {
+  await mockVault(page, { overdue: false, live: "fail" });
+  await page.goto(`${base}/#/dashboard`);
+  await expect(page.getByText("Couldn't load your balance right now. Tap Refresh to try again.")).toBeVisible();
+  await expect(page.getByTestId("savings-balance")).toHaveText("—");
+  await expect(page.getByTestId("balance-as-of")).toHaveCount(0);
+});
+
 type Goal = { id: string; title: string; amount_sat: number | null; target_date: string | null; saved_sat: number; created_at: string };
 const state: {
   reminderBody: Record<string, unknown> | null;
@@ -217,7 +254,22 @@ const state: {
   goals: Goal[];
   unsorted: { outpoint: string; amount_sat: number; seen_at: string }[];
   balance: number;
-} = { reminderBody: null, added: [], moves: [], sorted: [], goals: [], unsorted: [], balance: 250_000 };
+  /** What `/balance/last` answers; null is "never scanned" (404). */
+  saved: { sat: number; checked_at: string } | null;
+  /** How the live `/balance` answers: at once, after `release()`, or 500. */
+  live: "ok" | "held" | "fail";
+} = {
+  reminderBody: null,
+  added: [],
+  moves: [],
+  sorted: [],
+  goals: [],
+  unsorted: [],
+  balance: 250_000,
+  saved: null,
+  live: "ok",
+};
+let release: () => void = () => {};
 
 function view() {
   return {
@@ -231,7 +283,14 @@ function view() {
 
 async function mockVault(
   page: import("@playwright/test").Page,
-  opts: { overdue: boolean; goals?: Goal[]; unsorted?: typeof state.unsorted; balance?: number },
+  opts: {
+    overdue: boolean;
+    goals?: Goal[];
+    unsorted?: typeof state.unsorted;
+    balance?: number;
+    saved?: { sat: number; minutesAgo: number };
+    live?: "ok" | "held" | "fail";
+  },
 ) {
   state.reminderBody = null;
   state.added = [];
@@ -240,17 +299,35 @@ async function mockVault(
   state.goals = opts.goals ?? [];
   state.unsorted = opts.unsorted ?? [];
   state.balance = opts.balance ?? 250_000;
+  state.saved = opts.saved
+    ? { sat: opts.saved.sat, checked_at: new Date(Date.now() - opts.saved.minutesAgo * 60_000).toISOString() }
+    : null;
+  state.live = opts.live ?? "ok";
+  const held = new Promise<void>((r) => (release = r));
   const deadline = opts.overdue ? new Date(Date.now() - 2 * 86400_000).toISOString() : FUTURE;
   const json = (body: unknown, status = 200) => ({
     status,
     contentType: "application/json",
     body: JSON.stringify(body),
   });
-  await page.route("**/api/**", (route) => {
+  await page.route("**/api/**", async (route) => {
     const req = route.request();
     const p = new URL(req.url()).pathname.replace(/^\/api/, "");
     if (p === "/health")
       return route.fulfill(json({ ok: true, version: "e2e", demo_mode: false, default_network: "signet", email_enabled: true, sms_enabled: false, whatsapp_enabled: false }));
+    if (p === `/vaults/${VAULT_ID}/balance/last`)
+      return state.saved
+        ? route.fulfill(
+            json({
+              vault_id: VAULT_ID,
+              network: "signet",
+              confirmed_sat: state.saved.sat,
+              unconfirmed_sat: 0,
+              total_sat: state.saved.sat,
+              checked_at: state.saved.checked_at,
+            }),
+          )
+        : route.fulfill(json({ error: "not found" }, 404));
     if (p === `/vaults/${VAULT_ID}`)
       return route.fulfill(
         json({
@@ -267,8 +344,11 @@ async function mockVault(
           claim_eligible_at: FUTURE,
         }),
       );
-    if (p === `/vaults/${VAULT_ID}/balance`)
+    if (p === `/vaults/${VAULT_ID}/balance`) {
+      if (state.live === "fail") return route.fulfill(json({ error: "explorer down" }, 500));
+      if (state.live === "held") await held;
       return route.fulfill(json({ vault_id: VAULT_ID, network: "signet", confirmed_sat: state.balance, unconfirmed_sat: 0, total_sat: state.balance }));
+    }
     if (p === `/vaults/${VAULT_ID}/events`) return route.fulfill(json([]));
     if (p === `/vaults/${VAULT_ID}/savings`) return route.fulfill(json(view()));
     if (p === `/vaults/${VAULT_ID}/savings/goals` && req.method() === "POST") {
