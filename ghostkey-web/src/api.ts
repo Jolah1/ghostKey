@@ -1111,6 +1111,18 @@ export const api = {
    *  sats landed. */
   getVaultBalance: (id: string) =>
     request<VaultBalanceView>(`/vaults/${id}/balance`),
+  /** Public: whether a transaction has a confirmation, by our server's
+   *  own explorers. Lightning deposits ask this instead of taking the
+   *  swap provider's word. */
+  txConfirmed: (id: string, txid: string) =>
+    request<{ confirmed: boolean }>(`/vaults/${id}/tx/${txid}/confirmed`),
+  /** Public: broadcast a signed transaction that pays only this vault
+   *  (a Lightning deposit's claim). The server refuses anything else. */
+  relayDeposit: (id: string, hex: string) =>
+    request<{ txid: string }>(`/vaults/${id}/lightning/broadcast`, {
+      method: "POST",
+      body: JSON.stringify({ hex }),
+    }),
   /** The last known balance, at once and with no chain call; null before
    *  the vault's first scan. */
   getLastVaultBalance: async (id: string): Promise<LastBalanceView | null> => {

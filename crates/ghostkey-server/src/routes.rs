@@ -323,6 +323,14 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
             "/vaults/:id/balance/last",
             get(crate::psbt_routes::get_last_balance),
         )
+        .route(
+            "/vaults/:id/tx/:txid/confirmed",
+            get(crate::psbt_routes::tx_confirmed),
+        )
+        .route(
+            "/vaults/:id/lightning/broadcast",
+            post(crate::psbt_routes::relay_vault_deposit),
+        )
         .route("/vaults/:id/send", post(crate::psbt_routes::owner_send))
         .route("/vaults/:id/seal-owner-token", post(seal_owner_token))
         .route("/vaults/:id/checkin", post(checkin))

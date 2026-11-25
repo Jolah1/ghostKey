@@ -71,6 +71,7 @@ import { unsealOwner } from "./crypto/sealing";
 import { usePrices } from "./fiat";
 import { fiatAmount, formatAmount, useFiat, useFiatLine, useUnit } from "./units";
 import { UnitToggle } from "./UnitToggle";
+import { useLightningEngine } from "./lightning/engine";
 import { fanOutCheckin } from "./checkin";
 import { heirContactDue } from "./heirContact";
 import { useToolDoneState } from "./toolStatus";
@@ -143,6 +144,8 @@ export function Dashboard({ onNavigate }: Props) {
   // Savings lead the page, so the balance and the savings view are
   // fetched here once and shared by the headline and the savings hero.
   const balanceState = useVaultBalance(activeId);
+  // Finish any Lightning deposit left mid-way (e.g. the tab was closed).
+  useLightningEngine(activeId);
   const [savings, setSavings] = useState<SavingsView | null>(null);
   useEffect(() => {
     if (!activeId || !ownerToken) return;
