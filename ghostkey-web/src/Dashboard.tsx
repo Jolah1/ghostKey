@@ -66,8 +66,8 @@ import {
   subscribeToPush,
 } from "./push";
 import { unsealOwner } from "./crypto/sealing";
-import { usePrice, satsToUsd, formatUsd } from "./fiat";
-import { formatAmount, usdLine, useUnit } from "./units";
+import { usePrices } from "./fiat";
+import { fiatAmount, formatAmount, useFiat, useFiatLine, useUnit } from "./units";
 import { UnitToggle } from "./UnitToggle";
 import { fanOutCheckin } from "./checkin";
 import { heirContactDue } from "./heirContact";
@@ -1102,7 +1102,7 @@ function useVaultBalance(vaultId: string | null): VaultBalanceState {
 /** The big number at the top of the savings hero. */
 function BalanceDisplay({ state }: { state: VaultBalanceState }) {
   const { balance, asOf, loading, slow, error, hidden, load, toggleHidden } = state;
-  const usdPerBtc = usePrice();
+  const fiatLineOf = useFiatLine();
   const unit = useUnit();
 
   return (
@@ -1177,9 +1177,9 @@ function BalanceDisplay({ state }: { state: VaultBalanceState }) {
           >
             {balance ? formatAmount(balance.total_sat, unit) : loading ? "…" : "—"}
           </div>
-          {balance && usdLine(balance.total_sat, usdPerBtc) ? (
-            <p className="mt-1 text-sm text-accent">
-              {usdLine(balance.total_sat, usdPerBtc)}
+          {balance && fiatLineOf(balance.total_sat) ? (
+            <p className="mt-1 text-sm text-accent" data-testid="balance-fiat">
+              {fiatLineOf(balance.total_sat)}
             </p>
           ) : null}
           {balance && balance.unconfirmed_sat > 0 ? (
@@ -1388,17 +1388,15 @@ function SendCard({
   const [unlockPct, setUnlockPct] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<OwnerSendResponse | null>(null);
-  const usdPerBtc = usePrice();
+  const prices = usePrices();
+  const fiat = useFiat();
   const unit = useUnit();
 
   const busy = phase !== "idle";
   const amountSat = sendAll ? null : Number.parseInt(amountStr, 10);
   const amountUsd =
-    !sendAll &&
-    Number.isFinite(amountSat) &&
-    (amountSat as number) > 0 &&
-    usdPerBtc != null
-      ? formatUsd(satsToUsd(amountSat as number, usdPerBtc))
+    !sendAll && Number.isFinite(amountSat) && (amountSat as number) > 0
+      ? fiatAmount(amountSat as number, prices, fiat)
       : null;
   const addrShapeOk = looksLikeBitcoinAddress(destination);
   const addrNetworkOk = addressMatchesNetwork(destination, network);

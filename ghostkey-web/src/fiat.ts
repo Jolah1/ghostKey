@@ -37,29 +37,45 @@ export function formatBtc(sats: number): string {
   return `${trimmed} BTC`;
 }
 
+/** Format naira: whole naira for everyday amounts, kobo below ₦100 so a
+ *  tiny balance doesn't read as "₦0". */
+export function formatNgn(ngn: number): string {
+  const maximumFractionDigits = ngn !== 0 && Math.abs(ngn) < 100 ? 2 : 0;
+  return `₦${ngn.toLocaleString("en-NG", { maximumFractionDigits })}`;
+}
+
+export interface Prices {
+  usd: number;
+  /** Null when the server has no naira price. */
+  ngn: number | null;
+}
+
 // Module-level cache so multiple components share one fetched rate within
 // a session without re-requesting on every mount.
-let cachedUsdPerBtc: number | null = null;
+let cachedPrices: Prices | null = null;
+let inflight: Promise<Prices> | null = null;
 
 /**
- * Fetch the BTC/USD rate once and return it (or null while loading / on
- * failure). Silent on error: the fiat line just doesn't render. Shared
- * across components via a module cache.
+ * Fetch the BTC/USD and BTC/NGN rates once and return them (or null while
+ * loading / on failure). Silent on error: the fiat line just doesn't
+ * render. Shared across components via a module cache.
  */
-export function usePrice(): number | null {
-  const [usdPerBtc, setUsdPerBtc] = useState<number | null>(cachedUsdPerBtc);
+export function usePrices(): Prices | null {
+  const [prices, setPrices] = useState<Prices | null>(cachedPrices);
 
   useEffect(() => {
-    if (cachedUsdPerBtc != null) return;
+    if (cachedPrices != null) return;
     let cancelled = false;
-    api
-      .getPrice()
+    inflight ??= api.getPrice().then((p) => {
+      cachedPrices = { usd: p.usd_per_btc, ngn: p.ngn_per_btc ?? null };
+      return cachedPrices;
+    });
+    inflight
       .then((p) => {
-        if (cancelled) return;
-        cachedUsdPerBtc = p.usd_per_btc;
-        setUsdPerBtc(p.usd_per_btc);
+        if (!cancelled) setPrices(p);
       })
       .catch(() => {
+        inflight = null;
         /* no price → no fiat line, by design */
       });
     return () => {
@@ -67,5 +83,10 @@ export function usePrice(): number | null {
     };
   }, []);
 
-  return usdPerBtc;
+  return prices;
+}
+
+/** US dollars per BTC, or null. */
+export function usePrice(): number | null {
+  return usePrices()?.usd ?? null;
 }

@@ -12,7 +12,7 @@
  * means seeing sats again, so it never needs to be reliable.
  */
 import { useSyncExternalStore } from "react";
-import { formatBtc, formatUsd, satsToUsd } from "./fiat";
+import { formatBtc, formatNgn, formatUsd, satsToBtc, satsToUsd, usePrices, type Prices } from "./fiat";
 
 export type Unit = "sats" | "btc";
 
@@ -63,4 +63,69 @@ export function formatAmount(sats: number, unit: Unit): string {
 export function usdLine(sats: number, usdPerBtc: number | null): string | null {
   if (usdPerBtc == null) return null;
   return `≈ ${formatUsd(satsToUsd(sats, usdPerBtc))}`;
+}
+
+/**
+ * Which money the small line under an amount is in: US dollars (the
+ * default) or naira. Separate from the sats/BTC choice: bitcoin stays the
+ * main unit either way. Remembered on this device only.
+ */
+export type Fiat = "usd" | "ngn";
+
+const FIAT_KEY = "gk:fiat";
+const fiatListeners = new Set<() => void>();
+
+function readFiat(): Fiat {
+  try {
+    return window.localStorage.getItem(FIAT_KEY) === "ngn" ? "ngn" : "usd";
+  } catch {
+    return "usd";
+  }
+}
+
+let currentFiat: Fiat = typeof window === "undefined" ? "usd" : readFiat();
+
+export function getFiat(): Fiat {
+  return currentFiat;
+}
+
+export function setFiat(fiat: Fiat): void {
+  currentFiat = fiat;
+  try {
+    window.localStorage.setItem(FIAT_KEY, fiat);
+  } catch {
+    // The choice lasts this page load.
+  }
+  fiatListeners.forEach((l) => l());
+}
+
+export function useFiat(): Fiat {
+  return useSyncExternalStore(
+    (l) => {
+      fiatListeners.add(l);
+      return () => fiatListeners.delete(l);
+    },
+    getFiat,
+    () => "usd",
+  );
+}
+
+/** "$1.55" or "₦2,234" for an amount, or null when that price isn't in. */
+export function fiatAmount(sats: number, prices: Prices | null, fiat: Fiat): string | null {
+  if (!prices) return null;
+  if (fiat === "ngn") return prices.ngn != null ? formatNgn(satsToBtc(sats) * prices.ngn) : null;
+  return formatUsd(satsToUsd(sats, prices.usd));
+}
+
+/** "≈ $1.55" / "≈ ₦2,234" under an amount, or null. */
+export function fiatLine(sats: number, prices: Prices | null, fiat: Fiat): string | null {
+  const a = fiatAmount(sats, prices, fiat);
+  return a ? `≈ ${a}` : null;
+}
+
+/** The fiat line in the money this device chose. */
+export function useFiatLine(): (sats: number) => string | null {
+  const prices = usePrices();
+  const fiat = useFiat();
+  return (sats) => fiatLine(sats, prices, fiat);
 }
