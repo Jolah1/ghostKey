@@ -3744,16 +3744,23 @@ pub struct CheckinResponse {
     pub status: String,
 }
 
+/// A check-in this soon after the last one changes nothing: signing in
+/// counts as a check-in, and someone who opens GhostKey several times a
+/// day shouldn't fill their activity with "Checked in".
+const RECENT_CHECKIN_SECS: i64 = 12 * 3600;
+
 async fn checkin(
     auth: OwnerAuth,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<CheckinResponse>, ApiError> {
     let id = auth.vault_id;
-    // Fetch the cadence + last_checkin so we can both recompute the
-    // deadline and enforce once-per-period. Checking in is free: the
-    // owner's signed-in session is the proof of life.
-    let row = sqlx::query_as::<_, (i64, i64, Option<String>, String)>(
-        "SELECT checkin_period_secs, grace_period_secs, last_checkin_at, status \
+    // Checking in is free and works any time: every proof of life (a
+    // password sign-in, the email's one-tap link, a tap on Home) moves
+    // the deadline to a full period from now. The owner's signed-in
+    // session is the proof of life.
+    let row = sqlx::query_as::<_, (i64, i64, Option<String>, String, String)>(
+        "SELECT checkin_period_secs, grace_period_secs, last_checkin_at, status, \
+                next_deadline_at \
            FROM vaults WHERE id = ?",
     )
     .bind(&id)
@@ -3776,18 +3783,23 @@ async fn checkin(
     }
 
     let now = Utc::now();
-    // Once-per-period guard: if the owner already checked in inside
-    // the current cycle, refuse the duplicate so the deadline doesn't
-    // keep getting pushed forward by repeated taps.
-    if let Some(last_s) = row.2.as_deref() {
-        if let Ok(last) = DateTime::parse_from_rfc3339(last_s) {
-            let last_utc = last.with_timezone(&Utc);
-            let next_open = last_utc + Duration::seconds(row.0);
-            if now < next_open {
-                return Err(ApiError::Conflict(format!(
-                    "already checked in this period; next check-in opens at {}",
-                    next_open.to_rfc3339()
-                )));
+    // Checked in moments ago and still on the clock: nothing to change.
+    // (An alarmed vault always goes through, so the alarm clears.)
+    if row.3 == "ok" {
+        if let (Some(last), Ok(deadline)) = (
+            row.2
+                .as_deref()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok()),
+            DateTime::parse_from_rfc3339(&row.4),
+        ) {
+            let last = last.with_timezone(&Utc);
+            if (now - last).num_seconds() < RECENT_CHECKIN_SECS {
+                return Ok(Json(CheckinResponse {
+                    vault_id: id,
+                    last_checkin_at: last,
+                    next_deadline_at: deadline.with_timezone(&Utc),
+                    status: "ok".into(),
+                }));
             }
         }
     }
@@ -3893,7 +3905,7 @@ async fn checkin_from_link(
     .fetch_optional(&state.db)
     .await?;
 
-    let (stored_hash, used_at, checkin_secs, grace_secs, last_checkin_at, status) =
+    let (stored_hash, used_at, checkin_secs, grace_secs, _last_checkin_at, status) =
         row.ok_or(ApiError::NotFound)?;
     let stored_hash = stored_hash.ok_or(ApiError::NotFound)?;
     if !crypto::claim_token_matches(&token, &stored_hash) {
@@ -3912,19 +3924,8 @@ async fn checkin_from_link(
         return Err(claimed_checkin_conflict());
     }
 
-    // Once-per-period guard mirrors the button check-in path.
-    if let Some(last_s) = last_checkin_at.as_deref() {
-        if let Ok(last) = DateTime::parse_from_rfc3339(last_s) {
-            let last_utc = last.with_timezone(&Utc);
-            let next_open = last_utc + Duration::seconds(checkin_secs);
-            if Utc::now() < next_open {
-                return Err(ApiError::Conflict(format!(
-                    "already checked in this period; next check-in opens at {}",
-                    next_open.to_rfc3339()
-                )));
-            }
-        }
-    }
+    // No once-per-period rule: the link is single-use already, and a
+    // check-in any time is just proof of life (see `checkin`).
 
     // Reset the vault state exactly the way `checkin` does, plus
     // mark the one-tap token used. Wrapped in a single transaction

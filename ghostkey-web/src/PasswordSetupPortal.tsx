@@ -294,7 +294,7 @@ const STEPS = ["Your plan", "Password", "Who inherits", "Add bitcoin"] as const;
 
 /** The waiting periods setup offers. It is written into the vault's
  *  address, so it can only change later by moving the money. */
-const WAIT_CHOICES = [3, 6, 12] as const;
+const WAIT_CHOICES = [3, 6, 9, 12] as const;
 
 /** Save the setup's "What are you saving for?" as a new share's goal.
  *  Best effort: setup must never fail because of it, and the owner can
@@ -330,6 +330,13 @@ const NETWORK_FALLBACK: Network = "testnet";
 // guards against the user dragging the slider to zero on an edge case.
 function monthsToBlocks(months: number): number {
   return Math.max(144, months * 30 * 144);
+}
+
+/** How long without signing in before the heir is contacted: the same
+ *  choice as the on-chain wait, so the two can't disagree. Demo mode
+ *  keeps its short test cadence. */
+function checkinSecsFor(draft: { cadenceId: string; waitingMonths: number }, demoMode: boolean): number {
+  return demoMode ? cadenceByIdAnywhere(draft.cadenceId).seconds : draft.waitingMonths * 30 * 86_400;
 }
 
 /* ============================================================ */
@@ -614,7 +621,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
         ownerParty = generateParty(network);
         const heirParty = generateParty(network);
         heirParties.push(heirParty);
-        const checkinSecs = cadenceByIdAnywhere(draft.cadenceId).seconds;
+        const checkinSecs = checkinSecsFor(draft, demoMode);
         const timelockBlocks = demoMode ? 1 : monthsToBlocks(draft.waitingMonths);
         const graceSecs = demoMode
           ? demoWaitingById(draft.demoWaitingId).seconds
@@ -730,7 +737,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
 
         // Shared timing + lookup, same maths as the standard path.
         const ownerEmailHash = hashEmailForLookup(draft.ownerEmail);
-        const checkinSecs = cadenceByIdAnywhere(draft.cadenceId).seconds;
+        const checkinSecs = checkinSecsFor(draft, demoMode);
         const timelockBlocks = demoMode
           ? 1
           : monthsToBlocks(draft.waitingMonths);
@@ -943,7 +950,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
       // grace-period picker; we map it to `grace_period_secs` and pin
       // `timelock_blocks` to the minimum (the demo flow only exercises
       // the off-chain portion of the claim).
-      const checkinSecs = cadenceByIdAnywhere(draft.cadenceId).seconds;
+      const checkinSecs = checkinSecsFor(draft, demoMode);
       const timelockBlocks = demoMode ? 1 : monthsToBlocks(draft.waitingMonths);
       const graceSecs = demoMode
         ? demoWaitingById(draft.demoWaitingId).seconds
@@ -1575,12 +1582,13 @@ function StepPlan({
         onChange={(e) => patch({ savingsGoal: e.target.value })}
       />
 
-      <h2 className="mt-10 font-serif text-2xl">If you stop showing up, how long should we wait?</h2>
+      <h2 className="mt-10 font-serif text-2xl">If you stop signing in, how long should we wait?</h2>
       <p className="mt-1 text-sm text-muted">
-        After your bitcoin sits untouched this long, the person you choose
-        can claim it. Adding money starts the wait again.
+        If you don&apos;t sign in for this long, we email you first. If you
+        still don&apos;t, the person you choose can claim your savings.
+        Signing in starts the wait again.
       </p>
-      <div className="mt-5 grid grid-cols-3 gap-2">
+      <div className={`mt-5 grid gap-2 ${demoMode ? "grid-cols-3" : "grid-cols-2 sm:grid-cols-4"}`}>
         {demoMode
           ? DEMO_WAITING_PRESETS.map((w) => (
               <Tile
