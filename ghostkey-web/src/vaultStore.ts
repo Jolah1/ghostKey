@@ -20,6 +20,7 @@
  *   because the live token intentionally lives only in sessionStorage,
  *   which the browser drops when the tab closes.
  */
+import { keepDeviceData } from "./device";
 
 export interface HeirInfo {
   name: string;
@@ -149,6 +150,9 @@ function writeAll(map: Record<string, VaultMeta>) {
 }
 
 export function saveVaultMeta(meta: VaultMeta) {
+  // A device that holds a vault should keep it: ask the browser not to
+  // clear GhostKey's data (see device.ts). Cheap and idempotent.
+  keepDeviceData();
   const map = readAll();
   if (meta.ownerToken && meta.ownerTokenLock?.validated) {
     setLiveToken(meta.id, meta.ownerToken);

@@ -740,7 +740,7 @@ export function SignInPortal({
 
         {trustedUnlock ? (
           <div className="mt-10 border-t border-app pt-6 text-center text-xs text-muted">
-            Different email or vault?{" "}
+            Not you, or another vault?{" "}
             <button
               type="button"
               className="underline hover:text-[var(--text)]"
@@ -750,7 +750,7 @@ export function SignInPortal({
                 setPassword("");
               }}
             >
-              Email me a sign-in link
+              Use a different email
             </button>
           </div>
         ) : (
