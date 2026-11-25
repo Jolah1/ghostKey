@@ -31,6 +31,7 @@ import { ChooseHeirCard } from "./ChooseHeir";
 import { SpendFromGoal } from "./Goals";
 import { SavingsCard } from "./SavingsCard";
 import { addedThisMonth } from "./savings";
+import { challengeName, freshWins, homeChallengeLine, markWinSeen, seenWins } from "./challenges";
 import {
   ApiError,
   api,
@@ -39,6 +40,7 @@ import {
   type OwnerSendResponse,
   type HeirProfileView,
   type SavingsView,
+  type ChallengeView,
 } from "./api";
 import { countdown, parseRfc } from "./time";
 import { AssistChat } from "./AssistChat";
@@ -817,6 +819,24 @@ function SavingsHero({
 }) {
   const canSend = canManage && Boolean(ownerToken);
   const [panel, setPanel] = useState<"add" | "send" | null>(null);
+  // Challenges are a quiet extra: if they don't load (or the server
+  // doesn't have them yet), Home just doesn't mention them.
+  const [challenges, setChallenges] = useState<ChallengeView[] | null>(null);
+  const [seen, setSeen] = useState<string[]>(() => seenWins());
+  useEffect(() => {
+    if (!ownerToken) return;
+    let live = true;
+    api
+      .getChallenges(vaultId, ownerToken)
+      .then((r) => live && setChallenges(r.challenges))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [vaultId, ownerToken]);
+  const win = challenges ? freshWins(challenges, seen, new Date())[0] : undefined;
+  const challengeLine =
+    challenges && canManage ? homeChallengeLine(challenges, (savings?.deposit_count ?? 0) > 0) : null;
   const toggle = (p: "add" | "send") => setPanel((cur) => (cur === p ? null : p));
 
   return (
@@ -866,6 +886,51 @@ function SavingsHero({
           }
         />
       </div>
+
+      {win ? (
+        <div
+          className="mt-5 rounded-2xl border border-[var(--accent)] bg-[color-mix(in_srgb,var(--accent)_12%,transparent)] p-4"
+          data-testid="challenge-win"
+          role="status"
+        >
+          <p className="font-medium">
+            You did it: {challengeName(win, savings?.goals?.find((g) => g.id === win.goal_id)?.title)}
+          </p>
+          <p className="mt-1 text-sm text-muted">Your badge is on the Challenges page.</p>
+          <div className="mt-3 flex gap-4 text-sm">
+            <button
+              type="button"
+              onClick={() => onNavigate("challenges")}
+              className="font-medium text-accent underline-offset-2 hover:underline"
+            >
+              See your badge
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                markWinSeen(win.id);
+                setSeen(seenWins());
+              }}
+              className="text-muted underline-offset-2 hover:underline"
+            >
+              Nice
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {challengeLine ? (
+        <p className="mt-4 text-sm" data-testid="challenge-line">
+          <span className="font-medium">{challengeLine}</span>
+          <span className="text-muted"> · </span>
+          <button
+            type="button"
+            onClick={() => onNavigate("challenges")}
+            className="text-muted underline underline-offset-2 hover:text-[var(--text)]"
+          >
+            See
+          </button>
+        </p>
+      ) : null}
 
       {panel === "add" ? (
         <div className="mt-5 border-t border-app pt-5">

@@ -155,6 +155,9 @@ const Dashboard = lazyRoute(() =>
 const ActivityPage = lazyRoute(() =>
   import("./ActivityPage").then((m) => ({ default: m.ActivityPage })),
 );
+const ChallengesPage = lazyRoute(() =>
+  import("./ChallengesPage").then((m) => ({ default: m.ChallengesPage })),
+);
 const HeirMessagePage = lazyRoute(() =>
   import("./VaultToolPages").then((m) => ({ default: m.HeirMessagePage })),
 );
@@ -221,6 +224,7 @@ export type Route =
   | "success"
   | "dashboard"
   | "activity"
+  | "challenges"
   | "heir-message"
   | "heir-contact"
   | "practice"
@@ -244,6 +248,7 @@ const VALID: Route[] = [
   "success",
   "dashboard",
   "activity",
+  "challenges",
   "heir-message",
   "heir-contact",
   "practice",
@@ -270,6 +275,7 @@ const VALID: Route[] = [
 const OWNER_ROUTES: Route[] = [
   "dashboard",
   "activity",
+  "challenges",
   "heir-message",
   "heir-contact",
   "practice",
@@ -651,6 +657,7 @@ export default function App() {
       {location.kind === "route" && location.route === "success"   && <Success onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "dashboard" && <Dashboard onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "activity"  && <ActivityPage onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "challenges" && <ChallengesPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "heir-message" && <HeirMessagePage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "heir-contact" && <HeirContactPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "practice"  && <PracticeRunPage onNavigate={setRoute} />}

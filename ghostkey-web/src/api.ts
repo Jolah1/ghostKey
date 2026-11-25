@@ -668,6 +668,46 @@ export interface SavingsView {
   owner_email_confirmed: boolean;
 }
 
+export type ChallengeKind = "hold" | "goal_by_date" | "every_month" | "week52";
+
+/** One savings challenge (`GET /vaults/:id/savings/challenges`). Fields
+ *  that don't apply to a kind are null. */
+export interface ChallengeView {
+  id: string;
+  kind: ChallengeKind;
+  state: "going" | "done" | "over" | "stopped";
+  started_at: string;
+  ended_at: string | null;
+  completed_at: string | null;
+  /** 0 to 100. */
+  pct: number;
+  on_track: boolean | null;
+  saved_sat: number | null;
+  target_sat: number | null;
+  hold_months: number | null;
+  ends_at: string | null;
+  goal_id: string | null;
+  /** YYYY-MM-DD */
+  target_date: string | null;
+  per_week_sat: number | null;
+  year: number | null;
+  /** 1 to 12: the first month that counts. */
+  from_month: number | null;
+  /** January to December. */
+  months: boolean[] | null;
+  week1_sat: number | null;
+  week: number | null;
+  due_so_far_sat: number | null;
+  this_week_sat: number | null;
+}
+
+export interface JoinChallenge {
+  kind: ChallengeKind;
+  hold_months?: number;
+  goal_id?: string;
+  week1_sat?: number;
+}
+
 /** The optional savings reminder (#367). */
 export interface SavingsReminder {
   cadence: "weekly" | "monthly";
@@ -859,6 +899,23 @@ export const api = {
   /** Owner-only: stop the savings reminders. */
   clearSavingsReminder: (id: string, ownerToken: string | null) =>
     request<null>(`/vaults/${id}/savings/reminder`, { method: "DELETE" }, ownerToken),
+  /** Owner-only: every savings challenge, newest first. */
+  getChallenges: (id: string, ownerToken: string | null) =>
+    request<{ challenges: ChallengeView[] }>(`/vaults/${id}/savings/challenges`, undefined, ownerToken),
+  /** Owner-only: start a challenge. 409 if one of that kind is going. */
+  joinChallenge: (id: string, ownerToken: string | null, join: JoinChallenge) =>
+    request<{ challenges: ChallengeView[] }>(
+      `/vaults/${id}/savings/challenges`,
+      { method: "POST", body: JSON.stringify(join) },
+      ownerToken,
+    ),
+  /** Owner-only: stop one. Nothing happens to the money. */
+  stopChallenge: (id: string, ownerToken: string | null, challengeId: string) =>
+    request<{ challenges: ChallengeView[] }>(
+      `/vaults/${id}/savings/challenges/stop`,
+      { method: "POST", body: JSON.stringify({ id: challengeId }) },
+      ownerToken,
+    ),
   /** Owner-only: add a goal (up to 10). */
   addSavingsGoal: (id: string, ownerToken: string | null, goal: SavingsGoal) =>
     request<SavingsView>(
