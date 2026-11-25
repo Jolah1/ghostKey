@@ -1090,6 +1090,28 @@ export const api = {
    *  crypto/sealing.ts) and broadcasts. Omit amount_sat to send the
    *  whole balance. The xprv is held in server memory only for the
    *  duration of the call; same contract as the heir claim. */
+  /** Owner-only: the vault's confirmed history, block height and a
+   *  suggested fee, so this browser can build and sign a send itself
+   *  (#442). No keys involved. */
+  getSpendCoins: (id: string, ownerToken: string) =>
+    request<{
+      network: string;
+      chain_tip_height: number;
+      funding: { tx_hex: string; confirmation_height: number }[];
+      confirmed_sat: number;
+      unconfirmed_sat: number;
+      fee_rate_sat_per_vb: number;
+    }>(`/vaults/${id}/coins`, undefined, ownerToken),
+  /** Owner-only: broadcast a send this browser signed. The server checks
+   *  it only spends this vault's coins and pays the address given. */
+  ownerSendSigned: (id: string, ownerToken: string, body: { tx_hex: string; destination: string }) =>
+    request<OwnerSendResponse>(
+      `/vaults/${id}/send/signed`,
+      { method: "POST", body: JSON.stringify(body) },
+      ownerToken,
+    ),
+  /** Deprecated: sends the unlocked key to the server. Kept only until
+   *  every open app has the browser-signed path; see #442. */
   ownerSend: (
     id: string,
     ownerToken: string,

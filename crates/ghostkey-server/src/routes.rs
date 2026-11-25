@@ -332,6 +332,14 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
             post(crate::psbt_routes::relay_vault_deposit),
         )
         .route("/vaults/:id/send", post(crate::psbt_routes::owner_send))
+        .route(
+            "/vaults/:id/coins",
+            get(crate::psbt_routes::get_spend_coins),
+        )
+        .route(
+            "/vaults/:id/send/signed",
+            post(crate::psbt_routes::owner_send_signed),
+        )
         .route("/vaults/:id/seal-owner-token", post(seal_owner_token))
         .route("/vaults/:id/checkin", post(checkin))
         .route("/vaults/:id/panic", post(crate::panic::panic_stop))

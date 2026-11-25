@@ -118,6 +118,9 @@ export default defineConfig({
         // The 512px icons are only fetched by the OS at install time,
         // never by the running app — no reason to precache them.
         globIgnores: [
+          // The in-browser signer (ghostkey-core as wasm, ~5 MB) loads only
+          // when you send, which needs the network anyway.
+          "**/signer-*.js",
           "**/zxcvbn-*.js",
           "**/inter-{cyrillic,greek,vietnamese}*.woff2",
           "**/inter-tight-{cyrillic,greek,vietnamese}*.woff2",
