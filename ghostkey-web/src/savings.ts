@@ -62,3 +62,39 @@ export function addedThisMonth(
   }
   return total;
 }
+
+/** Quick picks for "What are you saving for?". Anything else is typed. */
+export const GOAL_PRESETS = [
+  "School fees",
+  "Rent",
+  "Emergency fund",
+  "House",
+  "Business",
+  "Wedding",
+  "Travel",
+  "Car",
+] as const;
+
+/**
+ * What to show as saved in each goal, and what isn't in any goal.
+ *
+ * Goals are a ledger over one balance, so a send made outside GhostKey
+ * (the recovery kit, Bitcoin Core) never reaches them and they can add up
+ * to more than is there. Each goal shows at most the real balance, and
+ * when together they claim more than the balance, they share it in
+ * proportion, so the screen never promises money that isn't there.
+ * With no balance known yet, the ledger figures are shown as they are.
+ */
+export function goalShares(
+  savedSat: number[],
+  balanceSat: number | null,
+): { shown: number[]; notInGoalSat: number | null } {
+  const saved = savedSat.map((s) => Math.max(0, s));
+  if (balanceSat == null) return { shown: saved, notInGoalSat: null };
+  const total = saved.reduce((a, b) => a + b, 0);
+  if (total <= balanceSat) {
+    return { shown: saved, notInGoalSat: balanceSat - total };
+  }
+  const shown = saved.map((s) => Math.floor((s * balanceSat) / total));
+  return { shown, notInGoalSat: 0 };
+}

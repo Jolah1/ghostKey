@@ -1,19 +1,18 @@
 /**
- * Savings card (#367): what you're saving for, how close you are, what
- * you've put aside, and your recent deposits.
+ * Savings card (#367): your goals up front (several at once, see
+ * Goals.tsx), and behind "Savings details" your year in savings, save
+ * reminders and recent deposits.
  *
  * Borrowed from PiggyVest's Target Savings: "What are you saving for?",
  * an optional amount and date, a progress bar, and a "save about X a
- * week" line. Not borrowed: anything that pulls money, penalises, or
- * counts streaks. Nothing here can be missed or failed; the total only
- * goes up, and progress is simply the balance against the goal.
+ * week" line. Not borrowed: anything that pulls money or penalises.
  */
 import { useId, useState } from "react";
 import { ApiError, api, type SavingsView } from "./api";
 import { Button } from "./ui";
 import { formatAmount, useUnit } from "./units";
 import { parseAmount, satsToBip21Btc } from "./bip21";
-import { goalProgress, savePerPeriod } from "./savings";
+import { GoalsSection } from "./Goals";
 
 function longDate(iso: string): string {
   const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
@@ -22,12 +21,6 @@ function longDate(iso: string): string {
     month: "long",
     year: "numeric",
   });
-}
-
-function tomorrow(): string {
-  const t = new Date(Date.now() + 86_400_000);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`;
 }
 
 /**
@@ -53,15 +46,7 @@ export function SavingsCard({
   balanceHidden?: boolean;
 }) {
   const unit = useUnit();
-  const titleId = useId();
-  const amountId = useId();
-  const dateId = useId();
-  const [editing, setEditing] = useState(false);
-  const [title, setTitle] = useState("");
-  const [amount, setAmount] = useState("");
-  const [date, setDate] = useState("");
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const cadenceId = useId();
@@ -71,52 +56,6 @@ export function SavingsCard({
   const [remAmount, setRemAmount] = useState("");
   const [remError, setRemError] = useState<string | null>(null);
 
-  const balance = balanceHidden ? null : balanceSat;
-
-  function startEdit() {
-    setTitle(view?.goal?.title ?? "");
-    const goalSat = view?.goal?.amount_sat;
-    setAmount(goalSat ? (unit === "btc" ? satsToBip21Btc(goalSat) : String(goalSat)) : "");
-    setDate(view?.goal?.target_date ?? "");
-    setError(null);
-    setEditing(true);
-  }
-
-  async function save() {
-    const parsed = parseAmount(amount, unit);
-    if (parsed === "invalid") {
-      setError(unit === "btc" ? "Enter an amount like 0.05." : "Enter a whole number of sats.");
-      return;
-    }
-    setSaving(true);
-    setError(null);
-    try {
-      const v = await api.setSavingsGoal(vaultId, ownerToken, {
-        title: title.trim(),
-        amount_sat: parsed,
-        target_date: date || null,
-      });
-      onView(v);
-      setEditing(false);
-    } catch (e) {
-      setError(e instanceof ApiError && e.message ? e.message : "Couldn't save that. Try again.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function clear() {
-    setSaving(true);
-    try {
-      await api.clearSavingsGoal(vaultId, ownerToken);
-      onView({ ...view, goal: null });
-      setEditing(false);
-    } catch (e) {
-      setError(e instanceof ApiError && e.message ? e.message : "Couldn't remove it. Try again.");
-    } finally {
-      setSaving(false);
-    }
-  }
 
   function startReminder() {
     setCadence(view?.reminder?.cadence ?? "weekly");
@@ -157,167 +96,34 @@ export function SavingsCard({
     }
   }
 
-  const goal = view.goal;
   const year = view.this_year;
   const reminder = view.reminder;
-  const progress = goal?.amount_sat && balance != null ? goalProgress(balance, goal.amount_sat) : null;
-  const pace =
-    progress && goal?.target_date ? savePerPeriod(progress.remainingSat, new Date(), goal.target_date) : null;
   const deposits = showAll ? view.deposits : view.deposits.slice(0, 5);
 
   return (
     <div data-testid="savings-card">
-      {editing ? (
-        <div className="space-y-3">
-          <div>
-            <label htmlFor={titleId} className="block text-sm font-medium">
-              What are you saving for?
-            </label>
-            <input
-              id={titleId}
-              className="input mt-1 w-full"
-              maxLength={60}
-              placeholder="e.g. School fees, Rainy day, House 2028"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-            />
-          </div>
-          <div>
-            <label htmlFor={amountId} className="block text-sm font-medium">
-              Goal amount (optional, in {unit === "btc" ? "BTC" : "sats"})
-            </label>
-            <input
-              id={amountId}
-              className="input mt-1 w-full"
-              inputMode="decimal"
-              placeholder={unit === "btc" ? "e.g. 0.05" : "e.g. 5,000,000"}
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-            />
-          </div>
-          <div>
-            <label htmlFor={dateId} className="block text-sm font-medium">
-              By when? (optional)
-            </label>
-            <input
-              id={dateId}
-              type="date"
-              className="input mt-1 w-full"
-              min={tomorrow()}
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-            />
-          </div>
-          {error ? (
-            <p className="text-sm text-alarm" role="alert">
-              {error}
-            </p>
-          ) : null}
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={() => void save()} loading={saving}>
-              Save goal
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => setEditing(false)} disabled={saving}>
-              Cancel
-            </Button>
-            {goal ? (
-              <Button size="sm" variant="ghost" onClick={() => void clear()} disabled={saving}>
-                Remove goal
-              </Button>
-            ) : null}
-          </div>
-        </div>
-      ) : goal ? (
-        <div>
-          <div className="flex items-baseline justify-between gap-3">
-            <p className="font-semibold">{goal.title}</p>
-            {progress && !balanceHidden ? (
-              <span className="shrink-0 text-sm text-muted">{progress.pct}%</span>
-            ) : null}
-          </div>
-          {goal.amount_sat && balanceHidden ? (
-            <p className="mt-2 text-sm text-muted">
-              Goal: {formatAmount(goal.amount_sat, unit)}
-              {goal.target_date ? ` by ${longDate(goal.target_date)}` : ""}. Show
-              your balance to see your progress.
-            </p>
-          ) : goal.amount_sat ? (
-            <>
-              <div
-                className="mt-3 h-2 w-full overflow-hidden rounded-full bg-surface-2"
-                role="progressbar"
-                aria-label={`Progress toward ${goal.title}`}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={progress?.pct ?? 0}
-              >
-                <div
-                  className="h-full rounded-full"
-                  style={{ width: `${progress?.pct ?? 0}%`, background: "var(--accent)" }}
-                />
-              </div>
-              <p className="mt-2 text-sm text-muted">
-                {balance == null
-                  ? "Checking your balance…"
-                  : progress?.reached
-                    ? `You've reached ${formatAmount(goal.amount_sat, unit)}. Well done.`
-                    : `${formatAmount(balance, unit)} of ${formatAmount(goal.amount_sat, unit)}`}
-                {goal.target_date ? ` · by ${longDate(goal.target_date)}` : ""}
-              </p>
-            </>
-          ) : goal.target_date ? (
-            <p className="mt-1 text-sm text-muted">By {longDate(goal.target_date)}</p>
-          ) : null}
-        </div>
-      ) : (
-        <div>
-          <p className="text-sm text-muted">
-            Give your savings a goal. Nothing is locked, and nothing happens if
-            you miss a date.
-          </p>
-          <div className="mt-3">
-            <Button size="sm" variant="ghost" onClick={startEdit}>
-              What are you saving for?
-            </Button>
-          </div>
-        </div>
-      )}
+      <GoalsSection
+        vaultId={vaultId}
+        ownerToken={ownerToken}
+        view={view}
+        onView={onView}
+        balanceSat={balanceSat}
+        balanceHidden={balanceHidden}
+      />
 
       {/* Everything else sits behind one link, so the card stays calm:
-          balance, goal, and the one thing to do (Add money). */}
-      {!editing ? (
-        <button
-          type="button"
-          onClick={() => setShowDetails((d) => !d)}
-          aria-expanded={showDetails}
-          className="mt-4 text-xs text-muted underline underline-offset-2 hover:text-[var(--text)]"
-        >
-          {showDetails ? "Hide details" : "Savings details"}
-        </button>
-      ) : null}
+          balance, goals, and the one thing to do (Add money). */}
+      <button
+        type="button"
+        onClick={() => setShowDetails((d) => !d)}
+        aria-expanded={showDetails}
+        className="mt-5 text-xs text-muted underline underline-offset-2 hover:text-[var(--text)]"
+      >
+        {showDetails ? "Hide details" : "Savings details"}
+      </button>
 
-      {showDetails && !editing ? (
+      {showDetails ? (
       <div data-testid="savings-details">
-      {goal ? (
-        <div className="mt-4 flex items-baseline justify-between gap-3">
-          {pace ? (
-            <p className="text-sm text-muted" data-testid="savings-pace">
-              Save about {formatAmount(pace.perWeek, unit)} a week
-              {pace.perMonth ? ` (or ${formatAmount(pace.perMonth, unit)} a month)` : ""} to get there.
-            </p>
-          ) : (
-            <span />
-          )}
-          <button
-            type="button"
-            onClick={startEdit}
-            className="shrink-0 text-xs text-muted underline-offset-2 hover:underline"
-          >
-            Edit goal
-          </button>
-        </div>
-      ) : null}
-
       {/* Your year in savings: only shown once there's something to say. */}
       {year && year.deposit_count > 0 ? (
         <p className="mt-5 text-sm" data-testid="savings-year">

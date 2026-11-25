@@ -84,21 +84,30 @@ test("savings card: totals, then a goal with progress and pace", async ({ page }
   const card = page.getByTestId("savings-card");
 
   await card.getByRole("button", { name: "What are you saving for?" }).click();
-  await card.getByLabel("What are you saving for?").fill("School fees");
+  await card.getByRole("button", { name: "School fees" }).click();
   await card.getByLabel(/Goal amount/).fill("1,000,000");
   const nextYear = new Date().getFullYear() + 1;
   await card.getByLabel(/By when/).fill(`${nextYear}-06-30`);
   await card.getByRole("button", { name: "Save goal" }).click();
 
-  // The browser sent exactly what was typed, in sats.
-  expect(state.putBody).toEqual({ title: "School fees", amount_sat: 1_000_000, target_date: `${nextYear}-06-30` });
-  await expect(card).toContainText("School fees");
-  await expect(card).toContainText("250,000 sats of 1,000,000 sats");
+  // The browser sent exactly what was picked and typed, in sats.
+  expect(state.added[0]).toEqual({ title: "School fees", amount_sat: 1_000_000, target_date: `${nextYear}-06-30` });
+  // A new goal starts empty; the money so far is offered to it.
+  await expect(card.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "0");
+  await expect(card).toContainText("250,000 sats not in a goal");
+  await card.getByRole("button", { name: "Put it in a goal" }).click();
+  await card.getByLabel("How much").fill("250,000");
+  await card.getByRole("button", { name: "Move" }).click();
+  expect(state.moves[0]).toEqual({ from_goal_id: null, to_goal_id: "g1", amount_sat: 250_000 });
   await expect(card.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "25");
-  // Pace, the year, reminders and deposits sit behind one link.
-  await expect(page.getByTestId("savings-pace")).toHaveCount(0);
-  await card.getByRole("button", { name: "Savings details" }).click();
+
+  // Tapping the goal opens its figures and the pace.
+  await card.getByRole("button", { name: /School fees/ }).click();
+  await expect(page.getByTestId("goal-details")).toContainText("250,000 sats of 1,000,000 sats");
   await expect(page.getByTestId("savings-pace")).toContainText(/Save about [\d,]+ sats a week/);
+
+  // The year, reminders and deposits sit behind one link.
+  await card.getByRole("button", { name: "Savings details" }).click();
 
   await expect(card).toContainText("put aside so far, in 2 deposits");
   await expect(card).toContainText("+150,000 sats");
@@ -123,6 +132,69 @@ test("savings card: totals, then a goal with progress and pace", async ({ page }
   expect(serious.map((v) => v.id)).toEqual([]);
 });
 
+test("several goals: sort new money with a tap, type your own, and never show more than is there", async ({ page }) => {
+  const now = new Date().toISOString();
+  await mockVault(page, {
+    overdue: false,
+    balance: 300_000,
+    goals: [{ id: "g1", title: "School fees", amount_sat: 1_000_000, target_date: null, saved_sat: 200_000, created_at: now }],
+    unsorted: [{ outpoint: "new:0", amount_sat: 50_000, seen_at: now }],
+  });
+  await page.goto(`${base}/#/dashboard`);
+  const card = page.getByTestId("savings-card");
+
+  // A second goal, typed because it isn't in the quick picks.
+  await card.getByRole("button", { name: "+ Add a goal" }).click();
+  await card.getByLabel("Or type your own").fill("Okada for my brother");
+  await card.getByRole("button", { name: "Save goal" }).click();
+  expect(state.added[0]).toEqual({ title: "Okada for my brother", amount_sat: null, target_date: null });
+  await expect(card.getByTestId("goal")).toHaveCount(2);
+
+  // New money: one tap says which goal it's for.
+  const prompt = page.getByTestId("sort-prompt");
+  await expect(prompt).toContainText("+50,000 sats arrived");
+  await prompt.getByRole("button", { name: "Okada for my brother" }).click();
+  expect(state.sorted[0]).toEqual({ outpoint: "new:0", goal_id: "g2" });
+  await expect(page.getByTestId("sort-prompt")).toHaveCount(0);
+  await expect(card.getByTestId("goal").nth(1)).toContainText("50,000 sats");
+  await expect(card).toContainText("50,000 sats not in a goal");
+
+  // Move between goals; a goal can't give more than it holds.
+  await card.getByRole("button", { name: /School fees/ }).click();
+  await card.getByRole("button", { name: "Move money" }).click();
+  await card.getByLabel("To").selectOption({ label: "Okada for my brother" });
+  await card.getByLabel("How much").fill("999,999");
+  await card.getByRole("button", { name: "Move" }).click();
+  await expect(card.getByRole("alert")).toContainText("There's only 200,000 sats there.");
+  expect(state.moves).toHaveLength(0);
+  await card.getByLabel("How much").fill("20,000");
+  await card.getByRole("button", { name: "Move" }).click();
+  expect(state.moves[0]).toEqual({ from_goal_id: "g1", to_goal_id: "g2", amount_sat: 20_000 });
+  await expect(card.getByTestId("goal").nth(1)).toContainText("70,000 sats");
+
+  const results = await new AxeBuilder({ page }).include('[data-testid="savings-hero"]').analyze();
+  const serious = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
+  expect(serious.map((v) => v.id)).toEqual([]);
+});
+
+test("goals never claim more than the balance", async ({ page }) => {
+  const now = new Date().toISOString();
+  // Money left through the recovery kit: goals still say 300k, 150k is there.
+  await mockVault(page, {
+    overdue: false,
+    balance: 150_000,
+    goals: [
+      { id: "g1", title: "School fees", amount_sat: 1_000_000, target_date: null, saved_sat: 200_000, created_at: now },
+      { id: "g2", title: "Rent", amount_sat: null, target_date: null, saved_sat: 100_000, created_at: now },
+    ],
+  });
+  await page.goto(`${base}/#/dashboard`);
+  const card = page.getByTestId("savings-card");
+  await expect(card.getByTestId("goal").nth(0)).toContainText("10%");
+  await expect(card.getByTestId("goal").nth(1)).toContainText("50,000 sats");
+  await expect(card).not.toContainText("not in a goal");
+});
+
 test("an overdue check-in takes the top of the page back from savings", async ({ page }) => {
   await mockVault(page, { overdue: true });
   await page.goto(`${base}/#/dashboard`);
@@ -136,14 +208,38 @@ test("an overdue check-in takes the top of the page back from savings", async ({
   expect(checkinBox!.y).toBeLessThan(heroBox!.y);
 });
 
-const state: { putBody: Record<string, unknown> | null; reminderBody: Record<string, unknown> | null } = {
-  putBody: null,
-  reminderBody: null,
-};
+type Goal = { id: string; title: string; amount_sat: number | null; target_date: string | null; saved_sat: number; created_at: string };
+const state: {
+  reminderBody: Record<string, unknown> | null;
+  added: Record<string, unknown>[];
+  moves: Record<string, unknown>[];
+  sorted: Record<string, unknown>[];
+  goals: Goal[];
+  unsorted: { outpoint: string; amount_sat: number; seen_at: string }[];
+  balance: number;
+} = { reminderBody: null, added: [], moves: [], sorted: [], goals: [], unsorted: [], balance: 250_000 };
 
-async function mockVault(page: import("@playwright/test").Page, opts: { overdue: boolean }) {
-  state.putBody = null;
+function view() {
+  return {
+    ...baseView,
+    goal: state.goals[0] ?? null,
+    goals: state.goals,
+    unsorted: state.unsorted,
+    reminder: state.reminderBody ? { ...state.reminderBody, next_at: "2099-12-01T09:00:00Z" } : null,
+  };
+}
+
+async function mockVault(
+  page: import("@playwright/test").Page,
+  opts: { overdue: boolean; goals?: Goal[]; unsorted?: typeof state.unsorted; balance?: number },
+) {
   state.reminderBody = null;
+  state.added = [];
+  state.moves = [];
+  state.sorted = [];
+  state.goals = opts.goals ?? [];
+  state.unsorted = opts.unsorted ?? [];
+  state.balance = opts.balance ?? 250_000;
   const deadline = opts.overdue ? new Date(Date.now() - 2 * 86400_000).toISOString() : FUTURE;
   const json = (body: unknown, status = 200) => ({
     status,
@@ -172,22 +268,36 @@ async function mockVault(page: import("@playwright/test").Page, opts: { overdue:
         }),
       );
     if (p === `/vaults/${VAULT_ID}/balance`)
-      return route.fulfill(json({ vault_id: VAULT_ID, network: "signet", confirmed_sat: 250_000, unconfirmed_sat: 0, total_sat: 250_000 }));
+      return route.fulfill(json({ vault_id: VAULT_ID, network: "signet", confirmed_sat: state.balance, unconfirmed_sat: 0, total_sat: state.balance }));
     if (p === `/vaults/${VAULT_ID}/events`) return route.fulfill(json([]));
-    if (p === `/vaults/${VAULT_ID}/savings`) return route.fulfill(json(baseView));
-    if (p === `/vaults/${VAULT_ID}/savings/goal` && req.method() === "PUT") {
-      state.putBody = req.postDataJSON();
-      return route.fulfill(json({ ...baseView, goal: state.putBody }));
+    if (p === `/vaults/${VAULT_ID}/savings`) return route.fulfill(json(view()));
+    if (p === `/vaults/${VAULT_ID}/savings/goals` && req.method() === "POST") {
+      const b = req.postDataJSON();
+      state.added.push(b);
+      state.goals.push({ ...b, id: `g${state.goals.length + 1}`, saved_sat: 0, created_at: new Date().toISOString() });
+      return route.fulfill(json(view()));
+    }
+    if (p === `/vaults/${VAULT_ID}/savings/move`) {
+      const b = req.postDataJSON();
+      state.moves.push(b);
+      for (const g of state.goals) {
+        if (g.id === b.from_goal_id) g.saved_sat -= b.amount_sat;
+        if (g.id === b.to_goal_id) g.saved_sat += b.amount_sat;
+      }
+      return route.fulfill(json(view()));
+    }
+    if (p === `/vaults/${VAULT_ID}/savings/sort`) {
+      const b = req.postDataJSON();
+      state.sorted.push(b);
+      const d = state.unsorted.find((u) => u.outpoint === b.outpoint)!;
+      state.unsorted = state.unsorted.filter((u) => u.outpoint !== b.outpoint);
+      const g = state.goals.find((x) => x.id === b.goal_id);
+      if (g) g.saved_sat += d.amount_sat;
+      return route.fulfill(json(view()));
     }
     if (p === `/vaults/${VAULT_ID}/savings/reminder` && req.method() === "PUT") {
       state.reminderBody = req.postDataJSON();
-      return route.fulfill(
-        json({
-          ...baseView,
-          goal: state.putBody,
-          reminder: { ...state.reminderBody, next_at: "2099-12-01T09:00:00Z" },
-        }),
-      );
+      return route.fulfill(json(view()));
     }
     return route.fulfill(json({}, 404));
   });
