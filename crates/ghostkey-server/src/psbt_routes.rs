@@ -2966,6 +2966,49 @@ fn suggested_fee_rate(estimates: Option<std::collections::HashMap<u16, f64>>) ->
         .clamp(1, 500)
 }
 
+/// Scan a vault and return what a browser needs to sign a spend of it
+/// itself: every confirmed transaction (deposits and spends), the tip,
+/// balances and a fee suggestion. Blocking (explorer calls). Shared by
+/// the owner's send and the heir's claim.
+fn scan_spend_coins(
+    vault: &Vault,
+    network: Network,
+    urls: &Explorers,
+) -> Result<SpendCoinsView, BlockingErr> {
+    let mut wallet = ghostkey_core::wallet::build_watch_only(vault)
+        .map_err(|e| BlockingErr::Vault(e.to_string()))?;
+    let estimates = std::cell::RefCell::new(None);
+    let update = try_each_esplora(urls, |client| {
+        let u = client
+            .full_scan(wallet.start_full_scan(), 5, 1)
+            .map_err(|e| clean_esplora_err("full_scan", &e))?;
+        *estimates.borrow_mut() = client.get_fee_estimates().ok();
+        Ok(u)
+    })?;
+    wallet
+        .apply_update(update)
+        .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
+    let funding = wallet
+        .transactions()
+        .filter_map(|t| match t.chain_position {
+            bdk_wallet::chain::ChainPosition::Confirmed { anchor, .. } => Some(FundingTxView {
+                tx_hex: bitcoin::consensus::encode::serialize_hex(t.tx_node.tx.as_ref()),
+                confirmation_height: anchor.block_id.height,
+            }),
+            _ => None,
+        })
+        .collect();
+    let bal = wallet.balance();
+    Ok(SpendCoinsView {
+        network: network.to_string(),
+        chain_tip_height: wallet.latest_checkpoint().height(),
+        funding,
+        confirmed_sat: bal.confirmed.to_sat(),
+        unconfirmed_sat: (bal.trusted_pending + bal.untrusted_pending).to_sat(),
+        fee_rate_sat_per_vb: suggested_fee_rate(estimates.into_inner()),
+    })
+}
+
 /// `GET /vaults/:id/coins` (owner): what the browser needs to build and
 /// sign a send itself. Holds no keys.
 pub async fn get_spend_coins(
@@ -2975,42 +3018,9 @@ pub async fn get_spend_coins(
     let (vault, network) = load_vault_watch(&state, &auth.vault_id).await?;
     let urls = esplora_urls(network)?;
     let _permit = crate::concurrency::acquire_esplora().await;
-    let view = tokio::task::spawn_blocking(move || -> Result<SpendCoinsView, BlockingErr> {
-        let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
-            .map_err(|e| BlockingErr::Vault(e.to_string()))?;
-        let estimates = std::cell::RefCell::new(None);
-        let update = try_each_esplora(&urls, |client| {
-            let u = client
-                .full_scan(wallet.start_full_scan(), 5, 1)
-                .map_err(|e| clean_esplora_err("full_scan", &e))?;
-            *estimates.borrow_mut() = client.get_fee_estimates().ok();
-            Ok(u)
-        })?;
-        wallet
-            .apply_update(update)
-            .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
-        let funding = wallet
-            .transactions()
-            .filter_map(|t| match t.chain_position {
-                bdk_wallet::chain::ChainPosition::Confirmed { anchor, .. } => Some(FundingTxView {
-                    tx_hex: bitcoin::consensus::encode::serialize_hex(t.tx_node.tx.as_ref()),
-                    confirmation_height: anchor.block_id.height,
-                }),
-                _ => None,
-            })
-            .collect();
-        let bal = wallet.balance();
-        Ok(SpendCoinsView {
-            network: network.to_string(),
-            chain_tip_height: wallet.latest_checkpoint().height(),
-            funding,
-            confirmed_sat: bal.confirmed.to_sat(),
-            unconfirmed_sat: (bal.trusted_pending + bal.untrusted_pending).to_sat(),
-            fee_rate_sat_per_vb: suggested_fee_rate(estimates.into_inner()),
-        })
-    })
-    .await
-    .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
+    let view = tokio::task::spawn_blocking(move || scan_spend_coins(&vault, network, &urls))
+        .await
+        .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
     Ok(Json(view))
 }
 
@@ -3152,6 +3162,172 @@ pub async fn owner_send_signed(
     )
     .await?;
     Ok((StatusCode::OK, Json(resp)))
+}
+
+/* -------------------------------------------------------------------------- *
+ *  Heir claims signed in the browser (#390)                                  *
+ *                                                                            *
+ *  Same shape as the owner's browser-signed send: the claim page gets the    *
+ *  vault's history, signs the claim itself with the heir key it unlocked     *
+ *  from the link (ghostkey-core in wasm), and posts only the finished       *
+ *  transaction. Every claim-link guard (valid, unused, past the challenge   *
+ *  window) still applies, and the link is consumed atomically before the    *
+ *  broadcast and released if it fails, as with the one-shot claim.          *
+ * -------------------------------------------------------------------------- */
+
+fn vault_from_claim_row(row: &VaultForClaim) -> Result<Vault, ApiError> {
+    Vault::from_config(VaultConfig {
+        descriptor_external: row.descriptor_external.clone(),
+        descriptor_internal: row.descriptor_internal.clone(),
+        timelock_blocks: row.timelock_blocks as u32,
+        network: row.network,
+        role: VaultRole::Watchonly,
+        label: row.label.clone(),
+    })
+    .map_err(|e| ApiError::Validation(format!("stored vault: {e}")))
+}
+
+/// `GET /claim/:token/coins`: what the heir's browser needs to sign the
+/// claim itself. Holds no keys.
+pub async fn claim_coins(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+) -> Result<Json<SpendCoinsView>, ApiError> {
+    let row = load_vault_for_claim_token(&state, &token).await?;
+    let vault = vault_from_claim_row(&row)?;
+    let network = row.network;
+    let urls = esplora_urls(network)?;
+    let _permit = crate::concurrency::acquire_esplora().await;
+    let view = tokio::task::spawn_blocking(move || scan_spend_coins(&vault, network, &urls))
+        .await
+        .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
+    Ok(Json(view))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SignedClaimRequest {
+    pub tx_hex: String,
+    pub destination: String,
+}
+
+/// `POST /claim/:token/claim-signed`: broadcast a claim the heir's
+/// browser signed. It must spend only this vault's coins and pay only the
+/// heir's address. The server never sees the heir's key.
+pub async fn heir_claim_signed(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+    Json(req): Json<SignedClaimRequest>,
+) -> Result<(StatusCode, Json<BroadcastClaimResponse>), ApiError> {
+    let row = load_vault_for_claim_token(&state, &token).await?;
+    let dest = req
+        .destination
+        .trim()
+        .parse::<Address<bitcoin::address::NetworkUnchecked>>()
+        .map_err(|e| ApiError::Validation(format!("destination: {e}")))?;
+    if !dest.is_valid_for_network(row.network) {
+        return Err(ApiError::Validation(format!(
+            "destination is not valid for {:?}",
+            row.network
+        )));
+    }
+    let dest = dest.assume_checked();
+    let dest_str = dest.to_string();
+    let dest_spk = dest.script_pubkey();
+    let raw = hex::decode(req.tx_hex.trim())
+        .map_err(|_| ApiError::Validation("That isn't a transaction.".into()))?;
+    if raw.len() > 100_000 {
+        return Err(ApiError::Validation("That transaction is too big.".into()));
+    }
+    let tx: bitcoin::Transaction = bitcoin::consensus::deserialize(&raw)
+        .map_err(|_| ApiError::Validation("That isn't a transaction.".into()))?;
+    let vault = vault_from_claim_row(&row)?;
+    let urls = esplora_urls(row.network)?;
+    let network = row.network;
+
+    // Consume the link atomically before anything touches the network;
+    // released below if the broadcast fails, so the heir can retry.
+    let claimed = sqlx::query(
+        r#"UPDATE vaults
+              SET status              = 'claiming',
+                  claim_token_used_at = ?
+            WHERE id = ?
+              AND claim_token_used_at IS NULL"#,
+    )
+    .bind(Utc::now().to_rfc3339())
+    .bind(&row.id)
+    .execute(&state.db)
+    .await?;
+    if claimed.rows_affected() != 1 {
+        return Err(ApiError::Conflict("claim token already used".into()));
+    }
+
+    let vault_id = row.id.clone();
+    let _permit = crate::concurrency::acquire_esplora().await;
+    let result = tokio::task::spawn_blocking(
+        move || -> Result<(bitcoin::Txid, SignedSendSummary), BlockingErr> {
+            let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
+                .map_err(|e| BlockingErr::Vault(e.to_string()))?;
+            let update = try_each_esplora(&urls, |client| {
+                client
+                    .full_scan(wallet.start_full_scan(), 5, 1)
+                    .map_err(|e| clean_esplora_err("full_scan", &e))
+            })?;
+            wallet
+                .apply_update(update)
+                .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
+            // A claim takes everything: nothing comes back to the vault.
+            let summary = summarize_signed_send(
+                &tx,
+                &dest_spk,
+                |op| wallet.get_utxo(*op).map(|u| u.txout.value.to_sat()),
+                |_| false,
+            )
+            .map_err(BlockingErr::Build)?;
+            try_each_esplora(&urls, |client| {
+                client
+                    .broadcast(&tx)
+                    .map_err(|e| clean_esplora_err("broadcast", &e))
+            })?;
+            Ok((tx.compute_txid(), summary))
+        },
+    )
+    .await;
+    let (txid, summary) = match result {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            release_claim_token(&state, &vault_id).await;
+            return Err(ApiError::from(e));
+        }
+        Err(e) => {
+            release_claim_token(&state, &vault_id).await;
+            return Err(ApiError::Validation(format!("worker panic: {e}")));
+        }
+    };
+
+    sqlx::query("UPDATE vaults SET status = 'claimed' WHERE id = ?")
+        .bind(&vault_id)
+        .execute(&state.db)
+        .await?;
+    record_event(
+        &state.db,
+        &vault_id,
+        "claim_broadcast",
+        Some(serde_json::json!({
+            "txid": txid.to_string(),
+            "destination": dest_str,
+            "total_input_sats": summary.total_in,
+            "fee_sats": summary.fee_sat,
+            "flow": "heir-claim-browser-signed",
+        })),
+    )
+    .await?;
+    Ok((
+        StatusCode::OK,
+        Json(BroadcastClaimResponse {
+            txid: txid.to_string(),
+            explorer_url: explorer_url(network, &txid),
+        }),
+    ))
 }
 
 /* -------------------------------------------------------------------------- *

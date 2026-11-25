@@ -1341,6 +1341,26 @@ export const api = {
   /** Password-vault flow: one-shot build + sign + broadcast. The
    *  server uses the supplied heir_xprv in memory only and discards
    *  it after the response is sent. */
+  /** The vault's confirmed history, so the heir's browser can sign the
+   *  claim itself (#390). Same claim-link checks as the claim. */
+  getClaimCoins: (token: string) =>
+    request<{
+      network: string;
+      chain_tip_height: number;
+      funding: { tx_hex: string; confirmation_height: number }[];
+      confirmed_sat: number;
+      unconfirmed_sat: number;
+      fee_rate_sat_per_vb: number;
+    }>(`/claim/${encodeURIComponent(token)}/coins`),
+  /** Broadcast a claim the heir's browser signed. The server never sees
+   *  the heir's key. */
+  heirClaimSigned: (token: string, body: { tx_hex: string; destination: string }) =>
+    request<BroadcastClaimResponse>(`/claim/${encodeURIComponent(token)}/claim-signed`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  /** Deprecated: sends the heir's key to the server. Kept only until every
+   *  open claim page has the browser-signed path; see #390. */
   heirClaim: (token: string, req: HeirClaimRequest) =>
     request<BroadcastClaimResponse>(
       `/claim/${encodeURIComponent(token)}/heir-claim`,
