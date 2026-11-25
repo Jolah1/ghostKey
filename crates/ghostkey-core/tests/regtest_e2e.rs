@@ -764,13 +764,23 @@ fn offline_sweep_owner_and_heir_in(format: Format) -> Result<()> {
 #[test]
 #[ignore]
 fn browser_send_from_full_history_spends_only_whats_left() -> Result<()> {
+    browser_send_from_full_history_in(Format::Legacy)
+}
+
+#[test]
+#[ignore]
+fn browser_send_from_full_history_spends_only_whats_left_standard() -> Result<()> {
+    browser_send_from_full_history_in(Format::Standard)
+}
+
+fn browser_send_from_full_history_in(format: Format) -> Result<()> {
     let net = Network::Regtest;
     let node = Bitcoind::spawn()?;
     let bare = node.client()?;
     let node_w = ensure_node_wallet(&node, "miner")?;
     mine_blocks(&node_w, 101)?;
 
-    let (vault, owner_m, _heir_m) = build_vault_and_keys()?;
+    let (vault, owner_m, _heir_m) = build_vault_and_keys_in(format)?;
     let secp = Secp256k1::new();
     let owner_acct = owner_m.derive_priv(&secp, &vault_account_path(net))?;
     let mut watch = build_watch_only(&vault)?;
