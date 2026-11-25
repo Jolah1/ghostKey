@@ -144,3 +144,28 @@ async function expectNoSerious(page: import("@playwright/test").Page) {
   const serious = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
   expect(serious.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
 }
+
+test.describe("on an iPhone, in Safari", () => {
+  test.use({
+    userAgent:
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+  });
+  test("Home suggests adding GhostKey to the Home Screen, once", async ({ page }) => {
+    await mock(page, true);
+    await page.goto(`${base}/#/dashboard`);
+    const nudge = page.getByTestId("install-nudge");
+    await expect(nudge).toContainText("Add GhostKey to your Home Screen");
+    await nudge.getByRole("button", { name: "Done" }).click();
+    await expect(nudge).toHaveCount(0);
+    await page.reload();
+    await expect(page.getByTestId("savings-balance")).toBeVisible();
+    await expect(page.getByTestId("install-nudge")).toHaveCount(0);
+  });
+});
+
+test("no Home Screen card on other phones and computers", async ({ page }) => {
+  await mock(page, true);
+  await page.goto(`${base}/#/dashboard`);
+  await expect(page.getByTestId("savings-balance")).toBeVisible();
+  await expect(page.getByTestId("install-nudge")).toHaveCount(0);
+});

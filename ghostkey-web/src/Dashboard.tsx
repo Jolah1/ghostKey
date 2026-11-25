@@ -70,6 +70,7 @@ import { unsealOwner } from "./crypto/sealing";
 import { usePrices } from "./fiat";
 import { fiatAmount, formatAmount, useFiat, useFiatLine, useUnit } from "./units";
 import { UnitToggle } from "./UnitToggle";
+import { InstallNudge } from "./InstallNudge";
 import { useLightningEngine } from "./lightning/engine";
 import { checkInVaults } from "./checkin";
 import { heirContactDue } from "./heirContact";
@@ -586,6 +587,8 @@ export function Dashboard({ onNavigate }: Props) {
                 />
               </div>
             ) : null}
+
+            <InstallNudge />
 
             {/* A sign-in or network error with no vault to show it on. */}
             {!vault && error ? (
