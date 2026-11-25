@@ -90,7 +90,6 @@ import {
   api,
   type VaultListItem,
   type SealedSetup,
-  type GuardianParty,
   type VaultBalanceView,
 } from "./api";
 import { saveVaultMeta } from "./vaultStore";
@@ -119,12 +118,10 @@ import {
   sealVaultSecrets,
   sealVaultSecretsHeirLater,
   sealWithKey,
-  deriveClaimKek,
   hashEmailForLookup,
   b64encode,
 } from "./crypto/sealing";
 import { randomBytes } from "@noble/hashes/utils.js";
-import { unlockYearToHeight, minUnlockYear } from "./unlockHeight";
 import { formatAmount, useFiatLine, useUnit } from "./units";
 import {
   DEFAULT_CADENCE_ID,
@@ -173,15 +170,6 @@ interface HeirDraft {
   heirXpub?: string;
 }
 
-/** One guardian's contact details for a guardian vault (#81). The
- *  guardian's key is generated and sealed in the browser at submit; the
- *  owner only fills in who to reach and how. */
-interface GuardianDraft {
-  name: string;
-  contact: string;
-  channel: ContactChannel;
-}
-
 /** Largest number of heirs the wizard allows. Arbitrary cap. */
 const MAX_HEIRS = 5;
 
@@ -212,17 +200,7 @@ interface Draft {
    *  share's savings goal title once the vaults exist. */
   savingsGoal: string;
   // Step 1 — heirs + timing
-  /** "standard" = the default single/multi adult-heir flow. "guardian"
-   *  = #81: one heir who is a child or otherwise needs help, plus two
-   *  guardians, one of whom must co-sign the claim. */
-  vaultKind: "standard" | "guardian";
   heirs: HeirDraft[];
-  /** Exactly two, used only when `vaultKind === "guardian"`. */
-  guardians: GuardianDraft[];
-  /** Optional guardian-vault unlock year (#81 P5): hold the funds until
-   *  around 1 Jan of this year (e.g. until a child reaches an age), on top
-   *  of the inactivity wait. `null` = no extra lock. */
-  unlockYear: number | null;
   waitingMonths: number;
   // Replaces the legacy `reminderEveryTwoWeeks: boolean`. Holds the
   // string id of a CADENCE_PRESETS entry. See ./timing.ts for the
@@ -264,18 +242,9 @@ const EMPTY_HEIR: HeirDraft = {
   channel: "email",
 };
 
-const EMPTY_GUARDIAN: GuardianDraft = {
-  name: "",
-  contact: "",
-  channel: "email",
-};
-
 const EMPTY: Draft = {
   savingsGoal: "",
-  vaultKind: "standard",
   heirs: [{ ...EMPTY_HEIR }],
-  guardians: [{ ...EMPTY_GUARDIAN }, { ...EMPTY_GUARDIAN }],
-  unlockYear: null,
   waitingMonths: 3,
   cadenceId: DEFAULT_CADENCE_ID,
   graceId: DEFAULT_GRACE_ID,
@@ -500,34 +469,6 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
       if (dup) {
         return `Two heirs share the same contact (${dup}). Each heir needs a different email or phone.`;
       }
-
-      // Guardian vaults (#81): the child needs exactly two guardians, one
-      // of whom co-signs the claim. Validate both, and make sure no two
-      // people in the vault share a contact (a typo would otherwise send
-      // two of them the same link).
-      if (draft.vaultKind === "guardian") {
-        for (let i = 0; i < draft.guardians.length; i++) {
-          const g = draft.guardians[i];
-          const tag = ` (guardian #${i + 1})`;
-          if (!g.name.trim()) {
-            return `Tell us who the guardian is${tag}.`;
-          }
-          if (!g.contact.trim()) {
-            return `Add a phone number or email for the guardian${tag}.`;
-          }
-          if (g.channel === "email" && !/^.+@.+\..+$/.test(g.contact.trim())) {
-            return `That guardian email looks off${tag}. Double-check it.`;
-          }
-        }
-        const everyone = [
-          ...draft.heirs.map((h) => h.contact.trim().toLowerCase()),
-          ...draft.guardians.map((g) => g.contact.trim().toLowerCase()),
-        ];
-        const clash = everyone.find((c, i) => everyone.indexOf(c) !== i);
-        if (clash) {
-          return `Two people in this vault share the same contact (${clash}). The heir and each guardian need a different email or phone.`;
-        }
-      }
     }
     if (s === 1) {
       // Single source of truth, shared with the "Create vault" button's
@@ -721,208 +662,6 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           groupId,
           vaults: [{ vaultId: resp.id, heirName: "", address }],
           heirLater: true,
-        });
-        setStep(3);
-        return;
-      }
-
-      // ---- Guardian vault (#81) -----------------------------------
-      // A child heir plus two guardians, one of whom co-signs the claim.
-      // Always browser-keygen (no Door B): we generate owner + heir + two
-      // guardian keys, seal each, and POST to /vaults/guardian. Single
-      // vault, single heir — the multi-heir parallel loop below is for
-      // standard vaults only.
-      if (draft.vaultKind === "guardian") {
-        const heir = draft.heirs[0];
-
-        // Shared timing + lookup, same maths as the standard path.
-        const ownerEmailHash = hashEmailForLookup(draft.ownerEmail);
-        const checkinSecs = checkinSecsFor(draft, demoMode);
-        const timelockBlocks = demoMode
-          ? 1
-          : monthsToBlocks(draft.waitingMonths);
-        const graceSecs = demoMode
-          ? demoWaitingById(draft.demoWaitingId).seconds
-          : graceByIdAnywhere(draft.graceId).seconds;
-        const groupId = crypto.randomUUID();
-
-        // Mint the four parties + three claim tokens (heir + 2 guardians).
-        // Owner key is sealed under the password; the heir and each
-        // guardian key under their own claim token, so the server never
-        // holds anything spendable without a delivered link.
-        ownerParty = generateParty(network);
-        const heirParty = generateParty(network);
-        heirParties.push(heirParty);
-        const heirToken = randomBytes(32);
-        claimTokens.push(heirToken);
-
-        setKdfProgress(0);
-        const sealed = await sealVaultSecrets({
-          password: draft.password,
-          ownerXprv: ownerParty.xprv,
-          heirXprv: heirParty.xprv,
-          ownerToken: "ghostkey-placeholder-owner-token-v1",
-          claimTokenRaw: heirToken,
-          keepOwnerKek: true,
-          onProgress: (p) => setKdfProgress(Math.round(p * 100)),
-        });
-        ownerKek = sealed._owner_kek ?? null;
-
-        const sealedBody: SealedSetup = {
-          password_salt_b64: sealed.password_salt,
-          password_kdf_mem_kib: sealed.password_kdf_mem_kib,
-          password_kdf_iters: sealed.password_kdf_iters,
-          owner_xprv_ct_b64: sealed.owner_xprv.ct,
-          owner_xprv_nonce_b64: sealed.owner_xprv.nonce,
-          owner_token_ct_b64: sealed.owner_token.ct,
-          owner_token_nonce_b64: sealed.owner_token.nonce,
-          owner_email_hash: ownerEmailHash,
-          heir_xprv_ct_b64: sealed.heir_xprv.ct,
-          heir_xprv_nonce_b64: sealed.heir_xprv.nonce,
-          claim_token_b64: b64encode(heirToken),
-        };
-
-        // Seal each guardian's freshly minted key under its own claim
-        // token (same scheme as the heir key). The token is wiped via
-        // `claimTokens` in the `finally`; the KEK is wiped here.
-        const guardianParties: GuardianParty[] = draft.guardians.map((g) => {
-          const gParty = generateParty(network);
-          const gToken = randomBytes(32);
-          claimTokens.push(gToken);
-          const gKek = deriveClaimKek(gToken);
-          const gSealed = sealWithKey(
-            gKek,
-            new TextEncoder().encode(gParty.xprv),
-          );
-          gKek.fill(0);
-          return {
-            xpub: gParty.xpub,
-            fingerprint: gParty.fingerprint,
-            xprv_ct_b64: gSealed.ct,
-            xprv_nonce_b64: gSealed.nonce,
-            claim_token_b64: b64encode(gToken),
-            contact: g.contact.trim(),
-            contact_channel: g.channel,
-          };
-        });
-
-        const label = `${heir.name.trim()}'s inheritance`;
-        const heirContactPayload = JSON.stringify({
-          name: heir.name.trim(),
-          contact: heir.contact.trim(),
-          channel: heir.channel,
-        });
-
-        const resp = await api.createVaultGuardian({
-          label,
-          network,
-          owner: { xpub: ownerParty.xpub, fingerprint: ownerParty.fingerprint },
-          heir: { xpub: heirParty.xpub, fingerprint: heirParty.fingerprint },
-          guardian1: guardianParties[0],
-          guardian2: guardianParties[1],
-          timelock_blocks: timelockBlocks,
-          checkin_period_secs: checkinSecs,
-          grace_period_secs: graceSecs,
-          owner_contact: draft.ownerEmail.trim(),
-          owner_contact_channel: "email",
-          heir_contact: heirContactPayload,
-          heir_contact_channel: heir.channel,
-          sealed: sealedBody,
-          from_name: draft.ownerName.trim() || null,
-          heir_note: heir.note?.trim() || null,
-          // P5: optional absolute unlock. demoMode pins the on-chain
-          // timelock to the minimum, so we skip the multi-year CLTV there
-          // (the off-chain demo can't wait years of blocks anyway).
-          unlock_height: demoMode ? null : unlockYearToHeight(draft.unlockYear),
-        });
-
-        // Re-seal the REAL owner_token under the password KEK (the server
-        // only issues it in the response). Non-fatal on failure.
-        let realOwnerTokenBlob: { v: 1; ct: string; nonce: string } | undefined;
-        if (ownerKek) {
-          try {
-            const realSealed = sealWithKey(
-              ownerKek,
-              new TextEncoder().encode(resp.owner_token),
-            );
-            await api.sealOwnerToken(resp.id, resp.owner_token, {
-              owner_token_ct_b64: realSealed.ct,
-              owner_token_nonce_b64: realSealed.nonce,
-            });
-            realOwnerTokenBlob = realSealed;
-          } catch (e) {
-            console.warn("owner-token re-seal failed for guardian vault", e);
-          }
-        }
-
-        saveVaultMeta({
-          id: resp.id,
-          label,
-          owner: { address: draft.ownerEmail.trim() },
-          heir: {
-            name: heir.name.trim(),
-            email: heir.channel === "email" ? heir.contact.trim() : "",
-            address: "",
-          },
-          createdAt: new Date().toISOString(),
-          ownerToken: resp.owner_token,
-          ownerTokenLock: realOwnerTokenBlob
-            ? {
-                passwordSalt: sealed.password_salt,
-                memKiB: sealed.password_kdf_mem_kib,
-                iters: sealed.password_kdf_iters,
-                ownerTokenBlob: realOwnerTokenBlob,
-                ownerEmailHash: hashEmailForLookup(draft.ownerEmail),
-                validated: true,
-              }
-            : undefined,
-          groupId,
-        });
-
-        let address: string | null = null;
-        try {
-          const a = await api.getVaultAddress(resp.id);
-          address = a.address;
-        } catch (e) {
-          console.warn("address fetch failed for guardian vault", resp.id, e);
-        }
-
-        // Block A heir envelope — the heir's own offline copy. For a
-        // guardian vault this alone cannot claim (a guardian key is also
-        // needed), but it preserves the owner-recovery-file backstop and
-        // the heir's record. Best-effort.
-        let envelope: HeirEnvelope | undefined;
-        if (resp.descriptor_external && resp.descriptor_internal) {
-          try {
-            setKdfProgress(0);
-            envelope = await buildHeirEnvelope({
-              vaultId: resp.id,
-              label: resp.label ?? label,
-              network,
-              timelockBlocks,
-              descriptorExternal: resp.descriptor_external,
-              descriptorInternal: resp.descriptor_internal,
-              heirName: heir.name.trim(),
-              heirXprv: heirParty.xprv,
-              onProgress: (pp) => setKdfProgress(Math.round(pp * 100)),
-            });
-          } catch (e) {
-            console.warn("heir envelope build failed for guardian vault", e);
-          }
-        }
-
-        await saveInitialGoal(resp.id, resp.owner_token, draft.savingsGoal);
-        onCreated({
-          id: resp.id,
-          label: resp.label,
-          status: resp.status,
-          next_deadline_at: resp.next_deadline_at,
-        });
-        setCreated({
-          groupId,
-          vaults: [
-            { vaultId: resp.id, heirName: heir.name.trim(), address, envelope },
-          ],
         });
         setStep(3);
         return;
@@ -1282,7 +1021,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           )}
           {step === 2 && !created && (
             <>
-              <StepHeir draft={draft} patch={patch} demoMode={demoMode} />
+              <StepHeir draft={draft} patch={patch} />
               {/* Inheritance is optional: one big, honest way out. */}
               <div className="mt-8 rounded-xl border border-app p-5">
                 <p className="font-medium">Not ready to choose?</p>
@@ -1615,13 +1354,10 @@ function StepPlan({
 function StepHeir({
   draft,
   patch,
-  demoMode,
 }: {
   draft: Draft;
   patch: (p: Partial<Draft>) => void;
-  demoMode: boolean;
 }) {
-
   // Per-heir mutation helpers. Each heir is mutated by index; the
   // top-level Draft holds the heirs array.
   const updateHeir = (index: number, p: Partial<HeirDraft>) => {
@@ -1638,36 +1374,10 @@ function StepHeir({
     patch({ heirs: [...draft.heirs, { ...EMPTY_HEIR }] });
   };
 
-  const guardian = draft.vaultKind === "guardian";
-  const updateGuardian = (index: number, p: Partial<GuardianDraft>) => {
-    patch({
-      guardians: draft.guardians.map((g, i) =>
-        i === index ? { ...g, ...p } : g,
-      ),
-    });
-  };
-  // Switching to a guardian vault forces a single heir (the child) and
-  // clears the Door B "heir holds their own key" option — a guardian
-  // vault is always browser-keygen so the heir + guardian keys can be
-  // sealed under their claim links.
-  const setVaultKind = (kind: Draft["vaultKind"]) => {
-    if (kind === "guardian") {
-      const first = draft.heirs[0] ?? { ...EMPTY_HEIR };
-      patch({
-        vaultKind: "guardian",
-        heirs: [{ ...first, ownKey: false, heirXpub: undefined }],
-      });
-    } else {
-      patch({ vaultKind: "standard" });
-    }
-  };
-
   return (
     <div>
       <h1 className="font-serif text-3xl md:text-4xl">
-        {guardian
-          ? "Who are you protecting?"
-          : draft.heirs.length === 1
+        {draft.heirs.length === 1
             ? "Who inherits?"
             : `Who inherits? (${draft.heirs.length} heirs)`}
       </h1>
@@ -1676,124 +1386,25 @@ function StepHeir({
         of being lost.
       </p>
 
-      {/* Vault type (#81). The default is a single adult heir who can
-          claim alone. The guardian option is for a child or anyone who
-          needs help: the heir plus one of two guardians must claim
-          together, so the child can't spend alone and the guardians
-          can't take it without the child. */}
-      <Field label="Who is your heir">
-        <div className="grid gap-2 sm:grid-cols-2">
-          <Tile
-            title="An adult I trust"
-            sub="They can claim on their own"
-            selected={!guardian}
-            onClick={() => setVaultKind("standard")}
-          />
-          <Tile
-            title="A child or someone who needs help"
-            sub="A guardian helps them claim"
-            selected={guardian}
-            onClick={() => setVaultKind("guardian")}
-          />
-        </div>
-      </Field>
-
       <div className="mt-8 flex flex-col gap-5">
         {draft.heirs.map((heir, i) => (
           <HeirCard
             key={i}
             index={i}
             heir={heir}
-            removable={!guardian && draft.heirs.length > 1}
-            showHeading={!guardian && draft.heirs.length > 1}
-            hideOwnKey={guardian}
+            removable={draft.heirs.length > 1}
+            showHeading={draft.heirs.length > 1}
             onChange={(p) => updateHeir(i, p)}
             onRemove={() => removeHeir(i)}
           />
         ))}
 
-        {/* Guardian vaults (#81): two guardians, one of whom co-signs the
-            claim with the child. We collect both here; their keys are
-            generated and sealed in the browser at the end, like the
-            heir's. */}
-        {guardian && (
-          <>
-            <div className="rounded-lg border border-app bg-[var(--surface-1)] px-4 py-3 text-sm text-muted">
-              <p className="font-medium text-[var(--text)]">
-                Two guardians help {draft.heirs[0]?.name.trim() || "your heir"}{" "}
-                claim
-              </p>
-              <p className="mt-1 text-xs">
-                When the time comes, {draft.heirs[0]?.name.trim() || "your heir"}{" "}
-                plus one of these two guardians claim together. One guardian is
-                enough, so a guardian who is away or unreachable can't strand
-                the inheritance, and no single guardian can take it on their
-                own.
-              </p>
-            </div>
-            {draft.guardians.map((g, i) => (
-              <GuardianCard
-                key={i}
-                index={i}
-                guardian={g}
-                onChange={(p) => updateGuardian(i, p)}
-              />
-            ))}
-
-            {/* Optional unlock year (#81 P5). On top of the inactivity
-                wait, hold the funds until around a chosen year, e.g. when
-                the child reaches an age. Hidden in demo mode, where the
-                on-chain timelock is pinned to the minimum. */}
-            {!demoMode && (
-              <Field label="Hold until a certain year (optional)">
-                <select
-                  className="input"
-                  value={draft.unlockYear ?? ""}
-                  onChange={(e) =>
-                    patch({
-                      unlockYear: e.target.value ? Number(e.target.value) : null,
-                    })
-                  }
-                  aria-label="Unlock year"
-                >
-                  <option value="">No extra hold</option>
-                  {Array.from({ length: 25 }, (_, i) => minUnlockYear() + i).map(
-                    (y) => (
-                      <option key={y} value={y}>
-                        {y}
-                      </option>
-                    ),
-                  )}
-                </select>
-                <p className="mt-2 text-xs text-dim">
-                  {draft.unlockYear
-                    ? `${draft.heirs[0]?.name.trim() || "Your heir"} and a guardian can only claim from around ${draft.unlockYear}, even if your check-ins stop sooner. The date is approximate (Bitcoin counts blocks, not calendars). You can always recover the funds yourself earlier with your recovery file.`
-                    : "Leave as is to let them claim once the waiting period passes. Pick a year to hold the funds until a child is older."}
-                </p>
-              </Field>
-            )}
-
-            {/* Honest independence note (design-review Move 1). A
-                guardian vault works through GhostKey: the heir + guardian
-                links are how the keys come out. If GhostKey is ever gone,
-                the owner's own recovery file is the way through, not the
-                heir or guardian links alone. */}
-            <p className="text-xs text-dim">
-              A guardian vault is claimed through GhostKey: the links we send
-              the heir and guardians are how their keys are unlocked. If
-              GhostKey ever disappears, your own recovery file (saved at the
-              end of setup) is the way to recover the funds. Keep it safe.
-            </p>
-          </>
-        )}
-
         {/* Cap + helper text. We deliberately keep the cap small (5)
             because each heir multiplies the on-chain funding tx
             outputs the owner has to send. Bigger groups need the
             server-side `vault_groups` table the JOURNAL flags as
-            Phase 2; today everything is client-side. A guardian vault is
-            always a single heir, so the add-heir control is hidden. */}
-        {guardian ? null : draft.heirs.length < MAX_HEIRS ? (
+            Phase 2; today everything is client-side. */}
+        {draft.heirs.length < MAX_HEIRS ? (
           <button
             type="button"
             onClick={addHeir}
@@ -2004,94 +1615,6 @@ function HeirCard({
         Tip: tell this person, with no details, that if they ever hear
         from GhostKey it is real and from you. A quiet word now makes
         the message easy to trust later.
-      </p>
-    </div>
-  );
-}
-
-/** One guardian's contact block for a guardian vault (#81). Simpler
- *  than HeirCard: no note, no own-key option, no inheritance framing —
- *  a guardian only helps the heir claim. */
-function GuardianCard({
-  index,
-  guardian,
-  onChange,
-}: {
-  index: number;
-  guardian: GuardianDraft;
-  onChange: (p: Partial<GuardianDraft>) => void;
-}) {
-  const channelMeta =
-    CHANNELS.find((c) => c.id === guardian.channel) ?? CHANNELS[0];
-  const cap = useChannelCapability();
-
-  return (
-    <div className="card-flat p-4 md:p-5">
-      <div className="mb-3">
-        <span className="text-sm font-medium text-[var(--text)]">
-          Guardian #{index + 1}
-        </span>
-      </div>
-
-      <Field label="Their name">
-        <input
-          type="text"
-          value={guardian.name}
-          onChange={(e) => onChange({ name: e.target.value })}
-          placeholder="Aunt Grace"
-          autoComplete="off"
-          className="input"
-        />
-      </Field>
-
-      {/* Email is the only channel today (#414): no picker until
-          there is a real choice. */}
-      {cap.sms || cap.whatsapp ? (
-        <Field label="How should we reach them">
-          <div className="grid grid-cols-3 gap-2">
-            {CHANNELS.map((c) => (
-              <Tile
-                key={c.id}
-                title={c.title}
-                sub={cap[c.id] ? c.sub : CHANNEL_UNAVAILABLE_NOTE}
-                selected={guardian.channel === c.id}
-                onClick={() => onChange({ channel: c.id })}
-                disabled={!cap[c.id]}
-              />
-            ))}
-          </div>
-          {guardian.channel === "sms" ? (
-            <p className="mt-2 text-xs text-dim">
-              SMS is the least private option. The message travels through phone
-              carriers. WhatsApp or email keep it more private.
-            </p>
-          ) : null}
-        </Field>
-      ) : null}
-
-      <Field
-        label={
-          guardian.channel === "email"
-            ? "Their email"
-            : "Their phone number"
-        }
-        hint="Stored encrypted. We only reach them if you stop checking in."
-      >
-        <input
-          type={guardian.channel === "email" ? "email" : "tel"}
-          value={guardian.contact}
-          onChange={(e) => onChange({ contact: e.target.value })}
-          placeholder={channelMeta.placeholder}
-          autoComplete="off"
-          inputMode={guardian.channel === "email" ? "email" : "tel"}
-          className="input"
-        />
-      </Field>
-
-      <p className="mt-2 text-xs text-muted">
-        Tip: tell this person, with no details, that if they ever hear from
-        GhostKey it is real and from you. A quiet word now makes the message
-        easy to trust later.
       </p>
     </div>
   );

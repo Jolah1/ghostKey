@@ -129,7 +129,7 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
     let create_routes: Router<Arc<AppState>> = Router::new()
         .route("/vaults", post(create_vault))
         .route("/vaults/from-xpub", post(create_vault_from_xpub))
-        .route("/vaults/guardian", post(create_vault_guardian))
+        .route("/vaults/guardian", post(guardian_vaults_retired))
         .layer(axum::middleware::from_fn_with_state(
             create_limiter,
             crate::rate_limit::enforce,
@@ -1856,6 +1856,23 @@ pub struct CreateGuardianVaultRequest {
     pub heir_note: Option<String>,
 }
 
+/// New guardian (child) vaults are no longer offered. A parent names a
+/// trusted adult as heir instead. Existing guardian vaults keep working:
+/// their claim, guardian-contact and recovery routes are unchanged.
+async fn guardian_vaults_retired() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::GONE,
+        Json(serde_json::json!({
+            "error": "Guardian vaults are no longer offered. Name a trusted adult as your heir instead."
+        })),
+    )
+}
+
+/// Kept so tests can build guardian vaults like the ones that exist,
+/// and prove their claims still work. Not routed (see
+/// [`guardian_vaults_retired`]); delete with the rest of the guardian
+/// code once no guardian vaults remain.
+#[cfg_attr(not(test), allow(dead_code))]
 async fn create_vault_guardian(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateGuardianVaultRequest>,
@@ -5785,6 +5802,33 @@ mod tests {
                 "preflight must allow {method}; got {allowed:?}",
             );
         }
+    }
+
+    /// New guardian vaults are refused; the one route that made them now
+    /// says so plainly, whatever the request carries.
+    #[tokio::test]
+    async fn new_guardian_vaults_are_no_longer_created() {
+        use tower::ServiceExt;
+
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let res = router(state.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/vaults/guardian")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from("{}"))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(res.status(), StatusCode::GONE);
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vaults")
+            .fetch_one(&state.db)
+            .await
+            .expect("count");
+        assert_eq!(n, 0, "nothing was created");
     }
 
     #[tokio::test]

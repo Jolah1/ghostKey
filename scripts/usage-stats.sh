@@ -29,6 +29,8 @@ section("Vaults")
 print("total:", q("SELECT COUNT(*) FROM vaults")[0][0])
 for status, n in q("SELECT status, COUNT(*) FROM vaults GROUP BY status ORDER BY 2 DESC"):
     print(f"  {status}: {n}")
+for kind, status, n in q("SELECT vault_kind, status, COUNT(*) FROM vaults GROUP BY vault_kind, status ORDER BY 1, 3 DESC"):
+    print(f"  kind {kind} / {status}: {n}")
 print("created last 7 days: ", q("SELECT COUNT(*) FROM vaults WHERE created_at > datetime('now','-7 days')")[0][0])
 print("created last 30 days:", q("SELECT COUNT(*) FROM vaults WHERE created_at > datetime('now','-30 days')")[0][0])
 
