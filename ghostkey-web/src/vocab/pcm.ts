@@ -356,7 +356,7 @@ export const pcm: Vocab = {
   inheritPortal: {
     eyebrow: "Inherit",
     title: "Somebody trust you with this",
-    description: "If you dey here, somebody wey you know leave something behind and trust you to look after am. We go walk you through am slowly, one step at a time. If you no get your link yet, that one normal. E go arrive by SMS, WhatsApp, or email when the time come. No account to sign in to.",
+    description: "If you dey here, somebody wey you know leave something behind and trust you to look after am. We go walk you through am slowly, one step at a time. If you no get your link yet, that one normal. E go arrive by email when the time come. No account to sign in to.",
     whatLinkLooksLike: "Wetin the link go be like",
     linkExample: "https://www.ghostkeyapp.com/#/claim/AbCdEf12_3456_etc…",
     linkPrivacyNote: "Your link na private and e dey work only once. No share am with anybody.",

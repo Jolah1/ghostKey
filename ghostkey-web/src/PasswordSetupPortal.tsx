@@ -104,7 +104,6 @@ import {
   downloadHeirEnvelope,
   type HeirEnvelope,
 } from "./independenceProof";
-import { AssistChat } from "./AssistChat";
 import {
   checkPassword,
   preloadStrengthChecker,
@@ -1369,9 +1368,6 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
 
         <SetupRail step={step} draft={draft} demoMode={demoMode} />
       </div>
-      <AssistChat
-        intro="Setting up your savings? Ask anything about your password, the waiting period, or what an heir would see."
-      />
     </main>
   );
 }

@@ -10,7 +10,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { Route } from "./App";
-import { api, type VaultEvent } from "./api";
+import { api, type SavingsView, type VaultEvent } from "./api";
+import { addedThisMonth } from "./savings";
 import {
   getActiveVaultId,
   getVaultMeta,
@@ -122,6 +123,15 @@ function dotClass(kind: string): string {
   return "bg-warning";
 }
 
+/** The owner chose to hide amounts on Home; respect it here too. */
+function balanceHidden(): boolean {
+  try {
+    return localStorage.getItem("gk:balanceHidden") === "1";
+  } catch {
+    return false;
+  }
+}
+
 function formatWhen(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -158,6 +168,7 @@ export function ActivityPage({
 
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [network, setNetwork] = useState<string>("");
+  const [savings, setSavings] = useState<SavingsView | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
@@ -165,6 +176,11 @@ export function ActivityPage({
       setLoading(false);
       return;
     }
+    // Savings leads this page too; without it the line just isn't shown.
+    void api
+      .getSavings(activeId, ownerToken)
+      .then(setSavings)
+      .catch(() => {});
     // Network drives the explorer links; a failure here just drops them.
     try {
       const v = await api.getVault(activeId, ownerToken);
@@ -205,6 +221,19 @@ export function ActivityPage({
         </button>
 
         <h1 className="mt-4 font-serif text-3xl">Activity</h1>
+        {savings && savings.total_saved_sat > 0 && !balanceHidden() ? (
+          <p className="mt-2 text-sm" data-testid="activity-savings">
+            <span className="font-medium">
+              You&apos;ve put aside {formatAmount(savings.total_saved_sat, unit)} in total
+            </span>
+            {addedThisMonth(savings.deposits, new Date()) > 0 ? (
+              <span className="text-muted">
+                {" "}
+                · {formatAmount(addedThisMonth(savings.deposits, new Date()), unit)} this month
+              </span>
+            ) : null}
+          </p>
+        ) : null}
         <p className="mt-2 text-sm text-muted">
           {showHeir
             ? "Everything that has happened across your heirs."

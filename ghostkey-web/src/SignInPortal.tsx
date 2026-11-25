@@ -593,7 +593,7 @@ export function SignInPortal({
               ? timedOut
                 ? "Session timed out"
                 : "Welcome back"
-              : "Open your vault on this device"}
+              : "Open your savings on this device"}
           </h1>
           <p className="mx-auto mt-3 text-sm text-muted">
             {trustedUnlock

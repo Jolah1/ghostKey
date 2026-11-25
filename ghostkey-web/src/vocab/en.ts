@@ -350,7 +350,7 @@ export const en: Vocab = {
   inheritPortal: {
     eyebrow: "Inherit",
     title: "Someone trusted you with this",
-    description: "If you're here, someone you knew left something behind and trusted you to look after it. We'll walk you through it slowly, one step at a time. If you don't have your link yet, that's normal. It arrives by SMS, WhatsApp, or email when the time comes. There's no account to sign in to.",
+    description: "If you're here, someone you knew left something behind and trusted you to look after it. We'll walk you through it slowly, one step at a time. If you don't have your link yet, that's normal. It arrives by email when the time comes. There's no account to sign in to.",
     whatLinkLooksLike: "What the link looks like",
     linkExample: "https://www.ghostkeyapp.com/#/claim/AbCdEf12_3456_etc…",
     linkPrivacyNote: "Your link is private and works only once. Please don't share it with anyone.",

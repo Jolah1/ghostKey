@@ -43,7 +43,6 @@ import {
   type ChallengeView,
 } from "./api";
 import { countdown, parseRfc } from "./time";
-import { AssistChat } from "./AssistChat";
 import {
   getActiveVaultId,
   getAllVaultMetas,
@@ -778,9 +777,6 @@ export function Dashboard({ onNavigate }: Props) {
         />
       ) : null}
 
-      <AssistChat
-        intro="Questions about check-ins, the waiting period, or what your heir will see? Ask away."
-      />
     </main>
   );
 }
@@ -2893,7 +2889,7 @@ function NextStep({
         }
       : showReminders
         ? {
-            label: "Reminders",
+            label: "Check-in reminders",
             desc: "Get a nudge to check in",
             route: "reminders",
           }
