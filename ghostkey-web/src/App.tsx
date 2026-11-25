@@ -342,6 +342,13 @@ function locationFromHash(): Location {
       }
     }
   }
+  // Opening the app (or the site's front door) on a device that already
+  // knows you goes to Home, which asks only for your password if the
+  // session timed out. Treating a known device as a visitor sent people
+  // to the email-link sign-in. The front page stays one tap away (logo).
+  if (raw === "" && getTrustedVaultId()) {
+    return { kind: "route", route: "dashboard" };
+  }
   const slug = raw as Route;
   return {
     kind: "route",
