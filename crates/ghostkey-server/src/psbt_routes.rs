@@ -1934,6 +1934,30 @@ pub(crate) struct UnlockEstimate {
     pub has_unspent: bool,
 }
 
+/// Write down what one scan learned: the last known balance, deposits
+/// that came in, and coins that left. The live balance lookup and the
+/// background refresher both call this, so they can't drift apart.
+pub(crate) async fn record_scan(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+    balance: ScanBalance,
+    deposits: &[ConfirmedDeposit],
+    still_unspent: &[String],
+    now: chrono::DateTime<Utc>,
+) {
+    save_last_balance(db, vault_id, balance, now).await;
+    record_new_deposits(db, vault_id, deposits, now).await;
+    record_spent_deposits(db, vault_id, still_unspent, now).await;
+}
+
+/// Everything one background scan learns about a vault.
+pub(crate) struct ScanOutput {
+    pub estimate: UnlockEstimate,
+    pub balance: ScanBalance,
+    pub deposits: Vec<ConfirmedDeposit>,
+    pub still_unspent: Vec<String>,
+}
+
 /// A vault's balance as one chain scan saw it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ScanBalance {
@@ -1975,7 +1999,7 @@ pub(crate) async fn scan_unlock_estimate(
     network: Network,
     timelock_blocks: u32,
     label: Option<String>,
-) -> Result<(UnlockEstimate, ScanBalance), BlockingErr> {
+) -> Result<ScanOutput, BlockingErr> {
     let urls = esplora_urls(network).map_err(|e| match e {
         ApiError::Validation(s) => BlockingErr::Esplora(s),
         _ => BlockingErr::Esplora("esplora endpoints unavailable".into()),
@@ -1992,58 +2016,58 @@ pub(crate) async fn scan_unlock_estimate(
     let vault = Vault::from_config(vault_config).map_err(|e| BlockingErr::Vault(e.to_string()))?;
 
     let _concurrency_permit = crate::concurrency::acquire_esplora().await;
-    tokio::task::spawn_blocking(
-        move || -> Result<(UnlockEstimate, ScanBalance), BlockingErr> {
-            let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
-                .map_err(|e| BlockingErr::Vault(e.to_string()))?;
+    tokio::task::spawn_blocking(move || -> Result<ScanOutput, BlockingErr> {
+        let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
+            .map_err(|e| BlockingErr::Vault(e.to_string()))?;
 
-            let update = try_each_esplora(&urls, |client| {
-                client
-                    .full_scan(wallet.start_full_scan(), 5, 1)
-                    .map_err(|e| clean_esplora_err("full_scan", &e))
-            })?;
-            wallet
-                .apply_update(update)
-                // Our wallet choked on what the explorer sent. That's this
-                // vault's problem, not the explorer's, so it must not pause
-                // scans for everyone else.
-                .map_err(|e| BlockingErr::Vault(format!("apply_update: {e}")))?;
+        let update = try_each_esplora(&urls, |client| {
+            client
+                .full_scan(wallet.start_full_scan(), 5, 1)
+                .map_err(|e| clean_esplora_err("full_scan", &e))
+        })?;
+        wallet
+            .apply_update(update)
+            // Our wallet choked on what the explorer sent. That's this
+            // vault's problem, not the explorer's, so it must not pause
+            // scans for everyone else.
+            .map_err(|e| BlockingErr::Vault(format!("apply_update: {e}")))?;
 
-            let tip_height = wallet.latest_checkpoint().height();
-            let csv = vault.timelock_blocks();
+        let tip_height = wallet.latest_checkpoint().height();
+        let csv = vault.timelock_blocks();
 
-            // The youngest confirmed coin gates a full drain. Unconfirmed
-            // coins have no started timelock, so they don't lower the unlock
-            // height (issuing the link slightly early is harmless — the heir
-            // still can't spend until the chain matures).
-            let mut youngest_conf: Option<u32> = None;
-            let mut has_unspent = false;
-            for utxo in wallet.list_unspent() {
-                has_unspent = true;
-                if let bdk_wallet::chain::ChainPosition::Confirmed { anchor, .. } =
-                    utxo.chain_position
-                {
-                    let h = anchor.block_id.height;
-                    youngest_conf = Some(youngest_conf.map_or(h, |y| y.max(h)));
-                }
+        // The youngest confirmed coin gates a full drain. Unconfirmed
+        // coins have no started timelock, so they don't lower the unlock
+        // height (issuing the link slightly early is harmless — the heir
+        // still can't spend until the chain matures).
+        let mut youngest_conf: Option<u32> = None;
+        let mut has_unspent = false;
+        for utxo in wallet.list_unspent() {
+            has_unspent = true;
+            if let bdk_wallet::chain::ChainPosition::Confirmed { anchor, .. } = utxo.chain_position
+            {
+                let h = anchor.block_id.height;
+                youngest_conf = Some(youngest_conf.map_or(h, |y| y.max(h)));
             }
+        }
 
-            let unlock_height = youngest_conf.map(|h| h.saturating_add(csv));
-            let bal = wallet.balance();
+        let unlock_height = youngest_conf.map(|h| h.saturating_add(csv));
+        let bal = wallet.balance();
+        let (deposits, still_unspent) = deposits_and_unspent(&wallet);
 
-            Ok((
-                UnlockEstimate {
-                    tip_height,
-                    unlock_height,
-                    has_unspent,
-                },
-                ScanBalance {
-                    confirmed_sat: bal.confirmed.to_sat(),
-                    unconfirmed_sat: (bal.trusted_pending + bal.untrusted_pending).to_sat(),
-                },
-            ))
-        },
-    )
+        Ok(ScanOutput {
+            estimate: UnlockEstimate {
+                tip_height,
+                unlock_height,
+                has_unspent,
+            },
+            balance: ScanBalance {
+                confirmed_sat: bal.confirmed.to_sat(),
+                unconfirmed_sat: (bal.trusted_pending + bal.untrusted_pending).to_sat(),
+            },
+            deposits,
+            still_unspent,
+        })
+    })
     .await
     .map_err(|e| BlockingErr::Vault(format!("scan worker panic: {e}")))?
 }
@@ -2242,8 +2266,15 @@ pub(crate) async fn unlock_estimate_with_cache(
     )
     .await;
     backoff_record(net, &scanned, now);
-    let (est, balance) = scanned?;
-    save_last_balance(db, &input.vault_id, balance, now).await;
+    let ScanOutput {
+        estimate: est,
+        balance,
+        deposits,
+        still_unspent,
+    } = scanned?;
+    // Record what came in and what left now, not when the owner next
+    // opens the app, so deposits land in the right week.
+    record_scan(db, &input.vault_id, balance, &deposits, &still_unspent, now).await;
 
     if let Err(e) = sqlx::query(
         r#"UPDATE vaults
@@ -2461,6 +2492,39 @@ pub(crate) struct ConfirmedDeposit {
     pub outpoint: String,
     pub amount_sat: i64,
     pub height: u32,
+}
+
+/// What one scan says came in and what is still there, for
+/// [`record_new_deposits`] and [`record_spent_deposits`]. Used by the live
+/// balance lookup and the background chain refresher, so a deposit is
+/// recorded within minutes of confirming whether or not the owner opens
+/// the app (streaks and challenges count it in the right week).
+///
+/// `deposits` are confirmed receives: external keychain only, since the
+/// internal keychain is owner-send change, not a deposit (#213).
+///
+/// `still_unspent` is the same walk without either filter: every outpoint
+/// the wallet can still spend, change and unconfirmed included. What's
+/// missing from it is what left the vault. Keeping unconfirmed entries in
+/// is what makes a reorg safe: a deposit whose confirmation is rolled back
+/// reappears here as pending, so it reads as present, not spent.
+fn deposits_and_unspent(wallet: &bdk_wallet::Wallet) -> (Vec<ConfirmedDeposit>, Vec<String>) {
+    let mut deposits = Vec::new();
+    let mut still_unspent = Vec::new();
+    for utxo in wallet.list_unspent() {
+        still_unspent.push(utxo.outpoint.to_string());
+        if utxo.keychain != bdk_wallet::KeychainKind::External {
+            continue;
+        }
+        if let bdk_wallet::chain::ChainPosition::Confirmed { anchor, .. } = utxo.chain_position {
+            deposits.push(ConfirmedDeposit {
+                outpoint: utxo.outpoint.to_string(),
+                amount_sat: utxo.txout.value.to_sat() as i64,
+                height: anchor.block_id.height,
+            });
+        }
+    }
+    (deposits, still_unspent)
 }
 
 /// Record any newly-seen deposits as "received" activity events, exactly
@@ -2737,52 +2801,26 @@ pub async fn get_vault_balance(
             let unconfirmed = bal.trusted_pending.to_sat() + bal.untrusted_pending.to_sat();
             let total = bal.total().to_sat();
 
-            // Collect confirmed receives off this same scan (no extra chain
-            // poll). External keychain only: internal is owner-send change,
-            // not a deposit (#213).
-            //
-            // `still_unspent` is the same walk without either filter: every
-            // outpoint the wallet can still spend, change and unconfirmed
-            // included. It's the complement of `deposits` — what's missing
-            // from it is what left the vault. Keeping unconfirmed entries in
-            // is what makes a reorg safe: a deposit whose confirmation is
-            // rolled back reappears here as pending, so it reads as present,
-            // not spent.
-            let mut deposits = Vec::new();
-            let mut still_unspent = Vec::new();
-            for utxo in wallet.list_unspent() {
-                still_unspent.push(utxo.outpoint.to_string());
-                if utxo.keychain != bdk_wallet::KeychainKind::External {
-                    continue;
-                }
-                if let bdk_wallet::chain::ChainPosition::Confirmed { anchor, .. } =
-                    utxo.chain_position
-                {
-                    deposits.push(ConfirmedDeposit {
-                        outpoint: utxo.outpoint.to_string(),
-                        amount_sat: utxo.txout.value.to_sat() as i64,
-                        height: anchor.block_id.height,
-                    });
-                }
-            }
+            // Deposits and spends off this same scan (no extra chain poll).
+            let (deposits, still_unspent) = deposits_and_unspent(&wallet);
             Ok((confirmed, unconfirmed, total, deposits, still_unspent))
         })
         .await
         .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
 
     let now = Utc::now();
-    save_last_balance(
+    record_scan(
         &state.db,
         &id,
         ScanBalance {
             confirmed_sat,
             unconfirmed_sat,
         },
+        &deposits,
+        &still_unspent,
         now,
     )
     .await;
-    record_new_deposits(&state.db, &id, &deposits, now).await;
-    record_spent_deposits(&state.db, &id, &still_unspent, now).await;
 
     Ok(Json(VaultBalanceView {
         vault_id: id_for_resp,
@@ -3426,6 +3464,76 @@ mod tests {
         .execute(pool)
         .await
         .expect("seed vault");
+    }
+
+    #[tokio::test]
+    async fn one_scan_records_the_balance_what_came_in_and_what_left() {
+        // What the background refresher now does every few minutes, so a
+        // deposit lands in the week it arrived, not the week the owner
+        // next opened the app.
+        let pool = memory_db().await;
+        seed_vault(&pool, "vault-1").await;
+        let t1 = Utc::now() - chrono::Duration::days(3);
+        record_scan(
+            &pool,
+            "vault-1",
+            ScanBalance {
+                confirmed_sat: 150_000,
+                unconfirmed_sat: 0,
+            },
+            &[
+                deposit("aaaa:0", 100_000, 900_000),
+                deposit("bbbb:0", 50_000, 900_010),
+            ],
+            &["aaaa:0".into(), "bbbb:0".into()],
+            t1,
+        )
+        .await;
+        let seen: Vec<(String, String)> = sqlx::query_as(
+            "SELECT outpoint, seen_at FROM vault_deposits WHERE vault_id = 'vault-1' ORDER BY outpoint",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            seen,
+            vec![
+                ("aaaa:0".to_string(), t1.to_rfc3339()),
+                ("bbbb:0".to_string(), t1.to_rfc3339())
+            ]
+        );
+        assert_eq!(received_count(&pool, "vault-1").await, 2);
+
+        // Later, one coin has left. The first deposit keeps its date.
+        let t2 = Utc::now();
+        record_scan(
+            &pool,
+            "vault-1",
+            ScanBalance {
+                confirmed_sat: 50_000,
+                unconfirmed_sat: 0,
+            },
+            &[deposit("bbbb:0", 50_000, 900_010)],
+            &["bbbb:0".into()],
+            t2,
+        )
+        .await;
+        let spent: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT outpoint, spent_at FROM vault_deposits WHERE vault_id = 'vault-1' ORDER BY outpoint",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            spent,
+            vec![
+                ("aaaa:0".to_string(), Some(t2.to_rfc3339())),
+                ("bbbb:0".to_string(), None)
+            ]
+        );
+        assert_eq!(received_count(&pool, "vault-1").await, 2, "no repeat");
+        let last = last_balance(&pool, "vault-1").await.unwrap().unwrap();
+        assert_eq!((last.total_sat, last.checked_at), (50_000, t2.to_rfc3339()));
     }
 
     #[tokio::test]
