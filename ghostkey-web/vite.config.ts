@@ -25,6 +25,10 @@ export default defineConfig({
       // we deliberately don't prompt — for a single-vault dashboard
       // the silent update path is fine.
       registerType: "autoUpdate",
+      // We register the worker ourselves (src/device.ts) so an open app
+      // reloads into a new version at a safe moment, instead of running
+      // old code until it's fully closed.
+      injectRegister: false,
       // Don't intercept dev-mode requests. The dev server already
       // hot-reloads; layering a service worker on top causes
       // "stale module" confusion when iterating on src/.
@@ -39,10 +43,10 @@ export default defineConfig({
         "apple-touch-icon-180x180.png",
       ],
       manifest: {
-        name: "GhostKey — Your Bitcoin lives on after you",
+        name: "GhostKey: Stack sats. Build your future.",
         short_name: "GhostKey",
         description:
-          "GhostKey lets your Bitcoin live on after you. Tap once a month. If you ever stop, the people you chose can claim what's theirs.",
+          "A bitcoin savings plan on your own key. Save on-chain or by Lightning, set goals, and if you ever stop signing in, the people you chose can claim it.",
         // Hash-driven routing means everything lives at "/"; the
         // app reads the fragment after the URL settles.
         start_url: "/",
@@ -58,6 +62,12 @@ export default defineConfig({
         theme_color: "#10151B",
         lang: "en",
         categories: ["finance", "utilities"],
+        // Ask the browser to open GhostKey links (like the sign-in email)
+        // in the installed app rather than a browser tab, where it can
+        // (Chrome on desktop; Android when the mail app hands links on),
+        // reusing the open window.
+        handle_links: "preferred",
+        launch_handler: { client_mode: ["navigate-existing", "auto"] },
         icons: [
           {
             src: "pwa-192x192.png",

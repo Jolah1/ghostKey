@@ -1,40 +1,19 @@
 /**
- * Check-in policy helpers.
+ * Check-in helpers.
  *
- * Lightning is the check-in. The free "check in without paying" tap is a
- * last resort, not an everyday option, so it can never cannibalise
- * Lightning. It is only offered when BOTH of these hold:
- *
- *   1. a Lightning check-in has actually failed (the caller decides this,
- *      e.g. the Lightning modal is in its error state), and
- *   2. we are inside the final 24h before the heir would be contacted.
- *
- * The heir is contacted at `claim_eligible_at` (the server's
- * `alarmed -> claimable` transition). This computes the time half of the
- * gate; the caller pairs it with "Lightning failed".
+ * Checking in is free and works any time: signing in with your password
+ * counts, as do "I'm still here" on the dashboard and the one-tap link in
+ * a reminder email. Each moves the deadline to a full waiting period from
+ * now. There is no payment and no last-resort window.
  */
-const LAST_RESORT_WINDOW_MS = 24 * 60 * 60 * 1000;
-
-/**
- * True once we are within 24h of the heir being contacted (and after,
- * while a check-in can still stop the claim). Outside that window the
- * free fallback stays hidden so Lightning is the only way to check in.
- */
-export function lastResortCheckinOpen(
-  claimEligibleAt: string | null | undefined,
-  now: Date,
-): boolean {
-  if (!claimEligibleAt) return false;
-  const eligible = new Date(claimEligibleAt).getTime();
-  if (Number.isNaN(eligible)) return false;
-  return eligible - now.getTime() <= LAST_RESORT_WINDOW_MS;
-}
+import { ApiError, api } from "./api";
+import { getAllVaultMetas, getVaultOwnerToken } from "./vaultStore";
 
 /** What one heir's check-in attempt did. */
 export type CheckinAttempt =
   | "checked-in"
   /** Refused for a reason that is normal for this heir right now:
-   *  already checked in this period, or already claimed. */
+   *  not funded yet, no heir chosen yet, or already claimed. */
   | "skipped"
   | { error: string };
 
@@ -50,7 +29,7 @@ export type FanOutTally = {
  *
  * The rule that matters here: a heir that refuses does NOT stop the
  * others. A group can hold a heir who can't be checked in right now
- * (already checked in this period, or already claimed), and aborting on
+ * (not funded yet, or already claimed), and aborting on
  * the first refusal would leave every heir behind it in the list with a
  * clock nobody reset. The caller decides what the tally means; this
  * just guarantees each heir gets its attempt.
@@ -67,4 +46,29 @@ export async function fanOutCheckin(
     else if (!tally.hardError) tally.hardError = outcome.error;
   }
   return tally;
+}
+
+/** Check in these vaults with their owner tokens on this device. A 409
+ *  (not funded, no heir yet, claimed) is a normal skip. */
+export function checkInVaults(vaultIds: string[]): Promise<FanOutTally> {
+  return fanOutCheckin(vaultIds, async (id) => {
+    try {
+      await api.checkin(id, getVaultOwnerToken(id));
+      return "checked-in";
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) return "skipped";
+      return { error: e instanceof ApiError ? e.message : String(e) };
+    }
+  });
+}
+
+/** Signing in with your password is proof of life: check in every vault
+ *  this device holds an owner key for. Quiet: a failure here only means
+ *  the reminder emails keep their schedule. */
+export async function checkInAfterSignIn(): Promise<void> {
+  const ids = getAllVaultMetas()
+    .filter((m) => getVaultOwnerToken(m.id))
+    .map((m) => m.id);
+  if (ids.length === 0) return;
+  await checkInVaults(ids).catch(() => undefined);
 }

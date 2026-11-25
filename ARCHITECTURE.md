@@ -126,12 +126,11 @@ SQLite tables:
 - `vaults`: descriptor pair, network, timelock, cadence, deadline, status, sealed contacts, sealed (password-wrapped) owner/heir key material, claim tokens, one-tap check-in tokens, panic-freeze state.
 - `events`: append-only: `registered` / `checkin` / `warning` / `alarmed` / `timelock_started` / `claimed` / `claim_resolved` / `claim_broadcast` / `lightning_invoice_issued` / etc.
 - `notifications`: outbound notification queue (subject/body sealed at rest).
-- `lightning_invoices`: per-vault Lightning invoice records for check-in and panic flows.
+- `lightning_invoices`: historical only. Lightning check-ins were removed on 2026-11-24, and nothing writes this table any more.
 
 Background workers:
 - Scheduler (30s default tick) advances vault state, issues claim tokens, mints per-cycle one-tap tokens, enqueues notifications.
 - Notifier (15s default tick) drains the `notifications` queue via SMTP (`lettre` + STARTTLS) or Twilio (SMS / WhatsApp), with exponential backoff and a 6-attempt cap.
-- Lightning poller (3s default tick) reconciles invoice status from the optional Breez sidecar.
 
 Vault registration is rejected if the descriptor doesn't parse as a valid inheritance policy.
 
@@ -143,7 +142,7 @@ Heir / owner / trusted contacts are encrypted at rest with XChaCha20-Poly1305. P
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/health` | GET | Liveness, Lightning / AI / demo flags, default network |
+| `/health` | GET | Liveness, build commit, AI / demo flags, default network, channel and scheduler health |
 | `/assist/chat` | POST | Proxied Claude Messages API for the in-app onboarding guide. Strips seed-shaped strings. |
 | `/vaults` | POST | Register vault from pre-rendered descriptors (CLI flow) |
 | `/vaults` | GET | List all vaults (admin only) |
@@ -166,10 +165,7 @@ requests preserve the current live link and do not enqueue another message. Expi
 rows and used rows older than 24 hours are pruned opportunistically. The uniform
 response has a 200 ms minimum duration to reduce coarse timing differences; this is
 a floor, not a constant-time guarantee under load.
-| `/vaults/:id/lightning-checkin/invoice` | POST | Mint a 1-sat Lightning check-in invoice (owner-auth) |
-| `/vaults/:id/lightning-checkin/status/:hash` | GET | Poll invoice status (owner-auth) |
-| `/lnurlp/:vault_id`, `/lnurlp/:vault_id/cb` | GET | LNURL-pay endpoints (LUD-06) for static QR check-in |
-| `/lnurlp/:vault_id/panic`, `/lnurlp/:vault_id/panic/cb` | GET | LNURL-pay endpoints for panic-freeze |
+| `/vaults/:id/panic` | POST | Panic stop: freeze the vault for 90 days and alert the trusted contact (owner-auth) |
 | `/claim/:token` | GET | Resolve claim token → ClaimView |
 | `/claim/:token/sealed-heir` | GET | Heir xprv ciphertext (browser unwraps with HKDF(token)) |
 | `/claim/:token/heir-derivation-params` | GET | F2 server-derived heirs: vault_secret + heir email |

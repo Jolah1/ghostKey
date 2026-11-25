@@ -76,11 +76,14 @@ const PAST = new Date(Date.now() - 7 * 86400_000).toISOString();
 const health = {
   ok: true,
   version: "e2e",
-  lightning_enabled: false,
   demo_mode: false,
   default_network: "signet",
   assist_enabled: false,
   push_public_key: null,
+  // Matches mainnet since 2026-11-24: email is the only channel.
+  email_enabled: true,
+  sms_enabled: false,
+  whatsapp_enabled: false,
 };
 
 const vaultView = {
@@ -97,8 +100,6 @@ const vaultView = {
   claim_eligible_at: FUTURE,
   owner_contact_verified: true,
   has_trusted_contact: false,
-  lnurl_checkin: null,
-  lnurl_panic: null,
 };
 
 const claimView = {
@@ -137,8 +138,6 @@ async function mockApi(page: Page) {
     const method = route.request().method();
 
     if (p === "/health") return route.fulfill(json(health));
-    if (p === "/health/lightning")
-      return route.fulfill(json({ enabled: false, ready: false }));
     if (p === "/price")
       return route.fulfill(
         json({ usd_per_btc: 100_000, fetched_at: PAST, stale: false }),
@@ -148,6 +147,32 @@ async function mockApi(page: Page) {
 
     if (p === `/vaults/${VAULT_ID}`) return route.fulfill(json(vaultView));
     if (p === `/vaults/${VAULT_ID}/events`) return route.fulfill(json([]));
+    if (p === `/vaults/${VAULT_ID}/heir`)
+      return route.fulfill(
+        json({
+          name: "Ada",
+          contact: "ada@example.com",
+          channel: "email",
+          note: null,
+          contact_verified_at: null,
+        }),
+      );
+    // A guardian vault whose guardian 2 is stuck on SMS, the production
+    // case the guardian editor exists for.
+    if (p === `/vaults/${VAULT_ID}/guardians`)
+      return route.fulfill(
+        json([
+          { slot: 1, contact: "g1@example.com", channel: "email" },
+          { slot: 2, contact: "+2348000000000", channel: "sms" },
+        ]),
+      );
+    if (p === `/vaults/${VAULT_ID}/guardians/2` && method === "PUT")
+      return route.fulfill(
+        json([
+          { slot: 1, contact: "g1@example.com", channel: "email" },
+          { slot: 2, contact: "g2@example.com", channel: "email" },
+        ]),
+      );
     if (p === `/vaults/${VAULT_ID}/video`)
       return route.fulfill(
         json({ has_video: false, mime: null, duration_ms: null, created_at: null }),
@@ -232,6 +257,10 @@ test("setup page has no serious a11y violations", async ({ page }) => {
   await page.goto(`${base}/#/setup`);
   await page.waitForSelector("main");
   await page.waitForLoadState("networkidle");
+  // Setup opens with the savings plan: what for, and how long to wait.
+  await expect(page.getByRole("heading", { name: "What are you saving for?" })).toBeVisible();
+  await expect(page.getByLabel("Or type your own goal")).toBeVisible();
+  await expect(page.getByRole("button", { name: "School fees" })).toBeVisible();
   await expectNoSeriousViolations(page);
 });
 
@@ -239,11 +268,44 @@ test("dashboard has no serious a11y violations", async ({ page }) => {
   await mockApi(page);
   await seedSignedIn(page);
   await page.goto(`${base}/#/dashboard`);
-  // "Add Heir" renders only once the vault view has landed — a real
-  // signed-in dashboard, not a redirect or an error shell.
-  await page.waitForSelector("text=Add Heir");
+  // "Manage heirs" renders only once the vault view has landed — a real
+  // signed-in dashboard, not a redirect or an error shell. Open it so the
+  // scan covers the heir panel too.
+  await page.getByRole("button", { name: "Manage heirs" }).click();
+  await page.waitForSelector("text=Add heir");
   await page.waitForLoadState("networkidle");
   await expectNoSeriousViolations(page);
+});
+
+test("guardian editor flags an SMS guardian and saves an email", async ({ page }) => {
+  await mockApi(page);
+  await seedSignedIn(page);
+  await page.goto(`${base}/#/heir-contact`);
+  await expect(page.getByText("Guardian 2 is set up for SMS")).toBeVisible();
+  await expectNoSeriousViolations(page);
+  await page.getByLabel("Guardian 2's email").fill("g2@example.com");
+  await page.getByRole("button", { name: "Save guardian 2" }).click();
+  await expect(page.getByText("Saved ✓")).toBeVisible();
+  // Saved as email, so the warning is gone.
+  await expect(page.getByText("Guardian 2 is set up for SMS")).toHaveCount(0);
+});
+
+test("dashboard flags unreachable guardians and links to the fix", async ({ page }) => {
+  await mockApi(page);
+  // Registered after mockApi, so it wins for this one URL.
+  await page.route(`**/api/vaults/${VAULT_ID}`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ...vaultView, guardians_unreachable: 2 }),
+    }),
+  );
+  await seedSignedIn(page);
+  await page.goto(`${base}/#/dashboard`);
+  await expect(page.getByText("We can't reach 2 of your guardians.")).toBeVisible();
+  await expectNoSeriousViolations(page);
+  await page.getByRole("button", { name: "Fix guardians" }).click();
+  await expect(page).toHaveURL(/#\/heir-contact/);
 });
 
 test("claim page (timelock wait state) has no serious a11y violations", async ({

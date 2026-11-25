@@ -69,7 +69,14 @@ export function RecoveryKitPage({ onNavigate }: Props) {
   return (
     <main className="bg-app fade-in">
       <div className="mx-auto max-w-md px-5 py-12 md:py-16">
-        <header>
+        <button
+          type="button"
+          onClick={() => onNavigate("dashboard")}
+          className="text-sm text-muted underline hover:text-[var(--text)]"
+        >
+          ← Back to home
+        </button>
+        <header className="mt-4">
           <p className="eyebrow">Recovery kit</p>
           <h1 className="mt-4 font-serif text-3xl">Your spare key</h1>
           <p className="mt-3 text-sm text-muted">

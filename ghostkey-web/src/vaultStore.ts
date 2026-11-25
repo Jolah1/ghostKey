@@ -20,6 +20,7 @@
  *   because the live token intentionally lives only in sessionStorage,
  *   which the browser drops when the tab closes.
  */
+import { keepDeviceData } from "./device";
 
 export interface HeirInfo {
   name: string;
@@ -77,6 +78,13 @@ export interface VaultMeta {
    * vault individually.
    */
   groupId?: string;
+  /**
+   * The vault's descriptor pair, pinned on this device the first time it
+   * saw them (#378). Every deposit address is derived in the browser from
+   * this copy and compared with the one the server sends, so a server
+   * compromised after that moment can't swap in its own address.
+   */
+  pinnedDescriptors?: { external: string; internal: string };
 }
 
 const STORE_KEY = "gk:vaults";
@@ -142,6 +150,9 @@ function writeAll(map: Record<string, VaultMeta>) {
 }
 
 export function saveVaultMeta(meta: VaultMeta) {
+  // A device that holds a vault should keep it: ask the browser not to
+  // clear GhostKey's data (see device.ts). Cheap and idempotent.
+  keepDeviceData();
   const map = readAll();
   if (meta.ownerToken && meta.ownerTokenLock?.validated) {
     setLiveToken(meta.id, meta.ownerToken);
@@ -151,6 +162,22 @@ export function saveVaultMeta(meta: VaultMeta) {
   }
   writeAll(map);
   setActiveVaultId(meta.id);
+}
+
+/** Pin a vault's descriptors on this device, once. Never overwrites an
+ *  existing pin: a later different value is exactly what the pin exists to
+ *  catch. Returns false when there's no local record to pin to. */
+export function pinVaultDescriptors(
+  id: string,
+  pair: { external: string; internal: string },
+): boolean {
+  const map = readAll();
+  const meta = map[id];
+  if (!meta) return false;
+  if (meta.pinnedDescriptors) return true;
+  map[id] = { ...meta, pinnedDescriptors: pair };
+  writeAll(map);
+  return true;
 }
 
 export function getVaultMeta(id: string): VaultMeta | null {

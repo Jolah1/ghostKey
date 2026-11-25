@@ -1,8 +1,8 @@
 /**
  * Fiat (USD) display helpers for sats amounts.
  *
- * Bitcoin amounts are always shown in sats first (the source of truth);
- * BTC and a USD estimate sit alongside as a convenience. The USD figure
+ * Which unit an amount is shown in (sats or BTC) is decided in units.ts;
+ * the USD estimate sits underneath as a convenience. The USD figure
  * comes from the server's cached `/price` endpoint, so it is an estimate
  * and can be briefly stale; never treat it as exact.
  */
@@ -37,37 +37,45 @@ export function formatBtc(sats: number): string {
   return `${trimmed} BTC`;
 }
 
-/** "BTC · ≈ $USD" line to sit under a sats figure. Returns just the BTC
- *  part when no price is available. */
-export function btcAndUsd(sats: number, usdPerBtc: number | null): string {
-  const btc = formatBtc(sats);
-  if (usdPerBtc == null) return btc;
-  return `${btc} · ≈ ${formatUsd(satsToUsd(sats, usdPerBtc))}`;
+/** Format naira: whole naira for everyday amounts, kobo below ₦100 so a
+ *  tiny balance doesn't read as "₦0". */
+export function formatNgn(ngn: number): string {
+  const maximumFractionDigits = ngn !== 0 && Math.abs(ngn) < 100 ? 2 : 0;
+  return `₦${ngn.toLocaleString("en-NG", { maximumFractionDigits })}`;
+}
+
+export interface Prices {
+  usd: number;
+  /** Null when the server has no naira price. */
+  ngn: number | null;
 }
 
 // Module-level cache so multiple components share one fetched rate within
 // a session without re-requesting on every mount.
-let cachedUsdPerBtc: number | null = null;
+let cachedPrices: Prices | null = null;
+let inflight: Promise<Prices> | null = null;
 
 /**
- * Fetch the BTC/USD rate once and return it (or null while loading / on
- * failure). Silent on error: the fiat line just doesn't render. Shared
- * across components via a module cache.
+ * Fetch the BTC/USD and BTC/NGN rates once and return them (or null while
+ * loading / on failure). Silent on error: the fiat line just doesn't
+ * render. Shared across components via a module cache.
  */
-export function usePrice(): number | null {
-  const [usdPerBtc, setUsdPerBtc] = useState<number | null>(cachedUsdPerBtc);
+export function usePrices(): Prices | null {
+  const [prices, setPrices] = useState<Prices | null>(cachedPrices);
 
   useEffect(() => {
-    if (cachedUsdPerBtc != null) return;
+    if (cachedPrices != null) return;
     let cancelled = false;
-    api
-      .getPrice()
+    inflight ??= api.getPrice().then((p) => {
+      cachedPrices = { usd: p.usd_per_btc, ngn: p.ngn_per_btc ?? null };
+      return cachedPrices;
+    });
+    inflight
       .then((p) => {
-        if (cancelled) return;
-        cachedUsdPerBtc = p.usd_per_btc;
-        setUsdPerBtc(p.usd_per_btc);
+        if (!cancelled) setPrices(p);
       })
       .catch(() => {
+        inflight = null;
         /* no price → no fiat line, by design */
       });
     return () => {
@@ -75,5 +83,10 @@ export function usePrice(): number | null {
     };
   }, []);
 
-  return usdPerBtc;
+  return prices;
+}
+
+/** US dollars per BTC, or null. */
+export function usePrice(): number | null {
+  return usePrices()?.usd ?? null;
 }

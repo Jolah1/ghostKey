@@ -1,8 +1,8 @@
 /**
  * Which contact channels the server can actually deliver (#277).
  *
- * Mirrors the Lightning gate (#232): /health reports capability, the
- * UI disables what the server can't do — so an owner can never pick a
+ * /health reports capability, and the UI disables what the server
+ * can't do — so an owner can never pick a
  * contact the notifier would have to drop (the "Ara's share" WhatsApp
  * vault sat undeliverable for 5 days before anyone noticed).
  *

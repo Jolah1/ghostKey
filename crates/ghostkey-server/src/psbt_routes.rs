@@ -81,25 +81,113 @@ fn default_esplora_urls(network: Network) -> &'static [&'static str] {
     }
 }
 
+/// The Esplora endpoints for one network, in fallback order. Carries the
+/// network so [`try_each_esplora`] can refuse an endpoint that serves a
+/// different chain (see [`explorer_on_network`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Explorers {
+    pub urls: Vec<String>,
+    pub network: Network,
+}
+
 /// Resolve the ordered Esplora endpoint list for a network, refusing to
 /// start a request we can't service. `GHOSTKEY_ESPLORA_URL` accepts a
 /// single URL or a comma-separated fallback list, tried left to right.
 /// Mainnet requires the env var to be set and every entry to be HTTPS —
 /// anything else would leak descriptors or expose requests to a passive
 /// attacker.
-fn esplora_urls(network: Network) -> Result<Vec<String>, ApiError> {
-    match std::env::var("GHOSTKEY_ESPLORA_URL") {
-        Ok(raw) => parse_esplora_urls(&raw, network),
-        Err(_) => {
+///
+/// `GHOSTKEY_ESPLORA_URL` describes ONE chain, so it applies only to the
+/// server's own network (`GHOSTKEY_DEFAULT_NETWORK`) and to mainnet,
+/// which has no public default. A test-network vault on a mainnet
+/// server uses that network's public explorers. Before this, the mainnet
+/// indexer was used for every vault, and scanning a testnet vault
+/// against it made bdk_esplora panic on the genesis mismatch, on every
+/// scheduler tick, forever.
+fn esplora_urls(network: Network) -> Result<Explorers, ApiError> {
+    let env = std::env::var("GHOSTKEY_ESPLORA_URL").ok();
+    let server_network = crate::config::parse_network(crate::config::default_network()).ok();
+    esplora_urls_for(network, env.as_deref(), server_network)
+}
+
+/// Env-independent core of [`esplora_urls`].
+fn esplora_urls_for(
+    network: Network,
+    env: Option<&str>,
+    server_network: Option<Network>,
+) -> Result<Explorers, ApiError> {
+    let env_applies = network == Network::Bitcoin || server_network == Some(network);
+    let urls = match env {
+        Some(raw) if env_applies => parse_esplora_urls(raw, network)?,
+        _ => {
             let defaults = default_esplora_urls(network);
             if defaults.is_empty() {
                 return Err(ApiError::Validation(
                     "mainnet requires GHOSTKEY_ESPLORA_URL to be set explicitly".into(),
                 ));
             }
-            Ok(defaults.iter().map(|s| s.to_string()).collect())
+            defaults.iter().map(|s| s.to_string()).collect()
         }
+    };
+    Ok(Explorers { urls, network })
+}
+
+/// Endpoints already confirmed to serve a given network's chain, so the
+/// genesis check costs one request per endpoint per process, not one per
+/// scan.
+fn verified_explorers() -> &'static std::sync::Mutex<std::collections::HashSet<(String, Network)>> {
+    static V: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<(String, Network)>>> =
+        std::sync::OnceLock::new();
+    V.get_or_init(Default::default)
+}
+
+/// Confirm an endpoint serves `network` by comparing its block 0 with
+/// that network's genesis. bdk_esplora PANICS ("remote esplora should
+/// have same genesis block") when they differ, so this runs before any
+/// scan. A mismatch is an explorer problem, so the caller fails over to
+/// the next endpoint.
+///
+/// Only a definite mismatch refuses the endpoint. If the check itself
+/// can't get an answer (timeout, 429), the scan goes ahead: on
+/// 2026-11-24 blockstream.info served `block-height/0` in ~16s, past our
+/// 15s timeout, while serving the scan fine, so a strict check blocked
+/// every mainnet scan. The real guard is that [`esplora_urls`] never
+/// pairs a network with another network's explorer; this is a backstop,
+/// and a panic during the scan is still caught by the scan worker.
+fn explorer_on_network(
+    client: &esplora_client::BlockingClient,
+    url: &str,
+    network: Network,
+) -> Result<(), BlockingErr> {
+    let key = (url.to_string(), network);
+    if verified_explorers()
+        .lock()
+        .map(|v| v.contains(&key))
+        .unwrap_or(false)
+    {
+        return Ok(());
     }
+    let remote = match client.get_block_hash(0) {
+        Ok(hash) => hash,
+        Err(e) => {
+            tracing::debug!(
+                endpoint = %url,
+                error = %clean_esplora_err("genesis check", &e),
+                "genesis check got no answer; scanning anyway"
+            );
+            return Ok(());
+        }
+    };
+    let expected = bitcoin::constants::genesis_block(network).block_hash();
+    if remote != expected {
+        return Err(BlockingErr::Esplora(format!(
+            "{url} serves a different chain than {network}"
+        )));
+    }
+    if let Ok(mut v) = verified_explorers().lock() {
+        v.insert(key);
+    }
+    Ok(())
 }
 
 /// Env-independent core of [`esplora_urls`], split out so tests don't
@@ -126,21 +214,81 @@ fn parse_esplora_urls(raw: &str, network: Network) -> Result<Vec<String>, ApiErr
     Ok(urls)
 }
 
-/// Run an Esplora operation against each endpoint in order, returning
+/// How long an explorer that just failed is asked last.
+const EXPLORER_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Retries on a 429/5xx for the last explorer in line. Earlier ones get
+/// none: the next explorer is a better bet than waiting on this one.
+const LAST_EXPLORER_RETRIES: usize = 2;
+
+/// When each explorer last failed, by URL.
+fn explorer_cooldowns(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>> {
+    static C: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    > = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// The endpoints in the order to ask them: any that failed in the last
+/// [`EXPLORER_COOLDOWN`] go to the back, otherwise the configured order
+/// holds. Nothing is dropped, so if every explorer is struggling they
+/// are all still tried.
+fn explorer_try_order(urls: &[String]) -> Vec<&String> {
+    let now = std::time::Instant::now();
+    let cooling = explorer_cooldowns()
+        .lock()
+        .map(|c| {
+            urls.iter()
+                .map(|u| {
+                    c.get(u)
+                        .is_some_and(|t| now.duration_since(*t) < EXPLORER_COOLDOWN)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|_| vec![false; urls.len()]);
+    let mut order: Vec<(bool, &String)> = cooling.into_iter().zip(urls).collect();
+    // Stable: ties keep the configured order.
+    order.sort_by_key(|(cool, _)| *cool);
+    order.into_iter().map(|(_, u)| u).collect()
+}
+
+fn explorer_failed(url: &str) {
+    if let Ok(mut c) = explorer_cooldowns().lock() {
+        c.insert(url.to_string(), std::time::Instant::now());
+    }
+}
+
+fn explorer_ok(url: &str) {
+    if let Ok(mut c) = explorer_cooldowns().lock() {
+        c.remove(url);
+    }
+}
+
+/// Run an Esplora operation against each endpoint in turn, returning
 /// the first success. Only explorer-side failures (`BlockingErr::Esplora`)
 /// trigger failover — wallet/build errors would fail identically against
 /// every endpoint, so they abort immediately. Returns the last endpoint's
 /// error when all of them fail.
 ///
+/// A rate-limited explorer must not hold the request up: on 2026-11-25
+/// blockstream answered everything with 429, and the client's own six
+/// retries spent ~20s there before the next explorer was asked, longer
+/// than Home waits for a balance. So only the last explorer in line
+/// retries, and one that just failed is asked last for a while (see
+/// [`explorer_try_order`]).
+///
 /// The closure is handed a freshly built client per attempt; anything it
 /// needs mutable access to (the BDK wallet, the PSBT) is captured by the
 /// `FnMut`.
-fn try_each_esplora<T, F>(urls: &[String], mut op: F) -> Result<T, BlockingErr>
+fn try_each_esplora<T, F>(explorers: &Explorers, mut op: F) -> Result<T, BlockingErr>
 where
     F: FnMut(&esplora_client::BlockingClient) -> Result<T, BlockingErr>,
 {
+    let urls = explorer_try_order(&explorers.urls);
     let mut last_err = BlockingErr::Esplora("no esplora endpoints configured".into());
     for (i, url) in urls.iter().enumerate() {
+        let is_last = i + 1 == urls.len();
         // Per-request socket timeout. The default is unbounded, so a
         // slow/throttling public explorer (mempool.space rate-limits
         // hard) could hang the whole scan past the gateway's 60s cap.
@@ -148,11 +296,16 @@ where
         // next one quickly instead.
         let client = esplora_client::Builder::new(url)
             .timeout(15)
+            .max_retries(if is_last { LAST_EXPLORER_RETRIES } else { 0 })
             .build_blocking();
-        match op(&client) {
-            Ok(v) => return Ok(v),
+        match explorer_on_network(&client, url, explorers.network).and_then(|()| op(&client)) {
+            Ok(v) => {
+                explorer_ok(url);
+                return Ok(v);
+            }
             Err(e @ BlockingErr::Esplora(_)) => {
-                if i + 1 < urls.len() {
+                explorer_failed(url);
+                if !is_last {
                     tracing::warn!(
                         endpoint = %url,
                         error = %e,
@@ -1684,6 +1837,12 @@ pub(crate) enum BlockingErr {
     /// waiting out the pause before asking again. See [`ExplorerBackoff`].
     #[error("block explorer is busy; trying again in {0}s")]
     BackingOff(i64),
+    /// The scheduler reads chain data from the cache only, and this
+    /// vault's cache is missing or stale. The background chain refresher
+    /// (`scheduler::run_chain_refresher`) will fill it; until then the
+    /// vault waits, exactly as it would after a failed scan.
+    #[error("waiting for the background chain scan")]
+    NotScannedYet,
     #[error("build: {0}")]
     Build(String),
     #[error("no UTXOs found at vault addresses")]
@@ -1696,6 +1855,7 @@ impl From<BlockingErr> for ApiError {
             BlockingErr::Vault(s) => ApiError::Validation(s),
             BlockingErr::Esplora(s) => ApiError::Validation(s),
             e @ BlockingErr::BackingOff(_) => ApiError::Validation(e.to_string()),
+            e @ BlockingErr::NotScannedYet => ApiError::Validation(e.to_string()),
             BlockingErr::Build(s) => ApiError::Validation(s),
             BlockingErr::NoUtxos => {
                 ApiError::Validation("no UTXOs found at vault addresses".into())
@@ -1774,8 +1934,63 @@ pub(crate) struct UnlockEstimate {
     pub has_unspent: bool,
 }
 
+/// Write down what one scan learned: the last known balance, deposits
+/// that came in, and coins that left. The live balance lookup and the
+/// background refresher both call this, so they can't drift apart.
+pub(crate) async fn record_scan(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+    balance: ScanBalance,
+    deposits: &[ConfirmedDeposit],
+    still_unspent: &[String],
+    now: chrono::DateTime<Utc>,
+) {
+    save_last_balance(db, vault_id, balance, now).await;
+    record_new_deposits(db, vault_id, deposits, now).await;
+    record_spent_deposits(db, vault_id, still_unspent, now).await;
+}
+
+/// Everything one background scan learns about a vault.
+pub(crate) struct ScanOutput {
+    pub estimate: UnlockEstimate,
+    pub balance: ScanBalance,
+    pub deposits: Vec<ConfirmedDeposit>,
+    pub still_unspent: Vec<String>,
+}
+
+/// A vault's balance as one chain scan saw it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScanBalance {
+    pub confirmed_sat: u64,
+    pub unconfirmed_sat: u64,
+}
+
+/// Remember `balance` as the vault's last known balance, for
+/// `GET /vaults/:id/balance/last`. Best effort: a failed write only means
+/// Home waits for the live lookup, as it did before.
+pub(crate) async fn save_last_balance(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+    balance: ScanBalance,
+    now: chrono::DateTime<Utc>,
+) {
+    if let Err(e) = sqlx::query(
+        "UPDATE vaults SET balance_confirmed_sat = ?, balance_unconfirmed_sat = ?, \
+                balance_checked_at = ? WHERE id = ?",
+    )
+    .bind(balance.confirmed_sat as i64)
+    .bind(balance.unconfirmed_sat as i64)
+    .bind(now.to_rfc3339())
+    .bind(vault_id)
+    .execute(db)
+    .await
+    {
+        tracing::warn!(vault_id = %vault_id, error = ?e, "could not save last balance");
+    }
+}
+
 /// Scan a vault's addresses via Esplora and compute its on-chain
-/// unlock-maturity estimate. Blocking BDK + HTTP work runs on a
+/// unlock-maturity estimate, plus the balance the same scan saw. Blocking BDK + HTTP work runs on a
 /// dedicated thread. Esplora failures surface as `BlockingErr::Esplora`
 /// so callers can treat "couldn't reach the chain" as "not ready yet".
 pub(crate) async fn scan_unlock_estimate(
@@ -1784,7 +1999,7 @@ pub(crate) async fn scan_unlock_estimate(
     network: Network,
     timelock_blocks: u32,
     label: Option<String>,
-) -> Result<UnlockEstimate, BlockingErr> {
+) -> Result<ScanOutput, BlockingErr> {
     let urls = esplora_urls(network).map_err(|e| match e {
         ApiError::Validation(s) => BlockingErr::Esplora(s),
         _ => BlockingErr::Esplora("esplora endpoints unavailable".into()),
@@ -1801,7 +2016,7 @@ pub(crate) async fn scan_unlock_estimate(
     let vault = Vault::from_config(vault_config).map_err(|e| BlockingErr::Vault(e.to_string()))?;
 
     let _concurrency_permit = crate::concurrency::acquire_esplora().await;
-    tokio::task::spawn_blocking(move || -> Result<UnlockEstimate, BlockingErr> {
+    tokio::task::spawn_blocking(move || -> Result<ScanOutput, BlockingErr> {
         let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
             .map_err(|e| BlockingErr::Vault(e.to_string()))?;
 
@@ -1836,11 +2051,21 @@ pub(crate) async fn scan_unlock_estimate(
         }
 
         let unlock_height = youngest_conf.map(|h| h.saturating_add(csv));
+        let bal = wallet.balance();
+        let (deposits, still_unspent) = deposits_and_unspent(&wallet);
 
-        Ok(UnlockEstimate {
-            tip_height,
-            unlock_height,
-            has_unspent,
+        Ok(ScanOutput {
+            estimate: UnlockEstimate {
+                tip_height,
+                unlock_height,
+                has_unspent,
+            },
+            balance: ScanBalance {
+                confirmed_sat: bal.confirmed.to_sat(),
+                unconfirmed_sat: (bal.trusted_pending + bal.untrusted_pending).to_sat(),
+            },
+            deposits,
+            still_unspent,
         })
     })
     .await
@@ -1859,15 +2084,20 @@ const EXPLORER_BACKOFF_BASE_SECS: i64 = 60;
 /// vault would be scanned less often than a healthy one.
 const EXPLORER_BACKOFF_MAX_SECS: i64 = MATURITY_CACHE_TTL_SECS;
 
-/// Process-wide pause on maturity scans after the block explorer fails.
+/// Pause on maturity scans after a network's block explorer fails.
 ///
 /// A failed scan writes nothing to the vault's cache, so without this the
 /// next tick rescans the same vault 30 seconds later. When the explorer
 /// is rate limiting us, every waiting vault then retries every tick, and
-/// we answer a 429 by asking twenty times harder. The pause is global
-/// rather than per vault because a rate limit or an outage is about the
-/// explorer, not about any one vault: once one scan fails, the rest of
-/// the tick would fail the same way.
+/// we answer a 429 by asking twenty times harder. The pause covers every
+/// vault on that network rather than one vault, because a rate limit or
+/// an outage is about the explorer, not about any one vault: once one
+/// scan fails, the rest of the tick would fail the same way.
+///
+/// It is kept PER NETWORK because each network has its own explorers
+/// (see [`esplora_urls`]). A rate-limited public testnet explorer must
+/// never pause mainnet scans: when the pause was global, one 429 from
+/// a test vault's explorer stopped heir contact for every real vault.
 ///
 /// Only explorer errors trip it. A bad descriptor fails the same on every
 /// endpoint and must not stall every other vault.
@@ -1906,17 +2136,48 @@ fn trips_backoff(e: &BlockingErr) -> bool {
     matches!(e, BlockingErr::Esplora(_))
 }
 
-fn explorer_backoff() -> &'static std::sync::Mutex<ExplorerBackoff> {
-    static B: std::sync::OnceLock<std::sync::Mutex<ExplorerBackoff>> = std::sync::OnceLock::new();
+type BackoffByNetwork = std::collections::HashMap<Network, ExplorerBackoff>;
+
+fn explorer_backoff() -> &'static std::sync::Mutex<BackoffByNetwork> {
+    static B: std::sync::OnceLock<std::sync::Mutex<BackoffByNetwork>> = std::sync::OnceLock::new();
     B.get_or_init(Default::default)
 }
 
-/// When maturity scans may resume, or `None` if they aren't paused. For
-/// `/health`.
-pub(crate) fn explorer_retry_at(now: chrono::DateTime<Utc>) -> Option<chrono::DateTime<Utc>> {
-    let b = explorer_backoff()
+/// Seconds left in `network`'s explorer pause, or `None` when its scans
+/// may go ahead. Other networks' pauses don't count.
+fn backoff_remaining(network: Network, now: chrono::DateTime<Utc>) -> Option<i64> {
+    explorer_backoff()
+        .lock()
+        .expect("explorer backoff poisoned")
+        .get(&network)
+        .and_then(|b| b.remaining_secs(now))
+}
+
+/// Feed a scan's outcome into `network`'s pause.
+fn backoff_record<T>(
+    network: Network,
+    scanned: &Result<T, BlockingErr>,
+    now: chrono::DateTime<Utc>,
+) {
+    let mut all = explorer_backoff()
         .lock()
         .expect("explorer backoff poisoned");
+    let backoff = all.entry(network).or_default();
+    match scanned {
+        Ok(_) => backoff.record_success(),
+        Err(e) if trips_backoff(e) => backoff.record_failure(now),
+        Err(_) => {}
+    }
+}
+
+/// When maturity scans on the server's own network may resume, or `None`
+/// if they aren't paused. For `/health`.
+pub(crate) fn explorer_retry_at(now: chrono::DateTime<Utc>) -> Option<chrono::DateTime<Utc>> {
+    let net = crate::config::parse_network(crate::config::default_network()).ok()?;
+    let all = explorer_backoff()
+        .lock()
+        .expect("explorer backoff poisoned");
+    let b = all.get(&net)?;
     b.remaining_secs(now).and(b.retry_at)
 }
 
@@ -1939,29 +2200,51 @@ pub(crate) struct EstimateInput {
 /// is fresh and otherwise rescanning Esplora and writing the cache back.
 /// Shared by the scheduler's heir-contact gate and the heir-facing
 /// `/claim/:token/unlock-estimate` endpoint so both see one source.
-pub(crate) async fn unlock_estimate_with_cache(
-    db: &sqlx::SqlitePool,
+/// The cached estimate, if it is fresh (younger than
+/// [`MATURITY_CACHE_TTL_SECS`]) and complete. A fresh row with no tip
+/// means we have never scanned, so it doesn't count.
+fn fresh_cached_estimate(
     input: &EstimateInput,
     now: chrono::DateTime<Utc>,
-) -> Result<UnlockEstimate, BlockingErr> {
-    let cache_fresh = input
+) -> Option<UnlockEstimate> {
+    let fresh = input
         .cached_scanned_at
         .as_deref()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .map(|t| (now - t.with_timezone(&Utc)).num_seconds() < MATURITY_CACHE_TTL_SECS)
         .unwrap_or(false);
+    if !fresh {
+        return None;
+    }
+    match (input.cached_tip_height, input.cached_has_unspent) {
+        (Some(tip), Some(has_unspent)) => Some(UnlockEstimate {
+            tip_height: tip as u32,
+            unlock_height: input.cached_unlock_height.map(|h| h as u32),
+            has_unspent: has_unspent != 0,
+        }),
+        _ => None,
+    }
+}
 
-    // A fresh cache with a recorded tip answers directly. A fresh row
-    // with no tip means we have never scanned; fall through and do so.
-    if cache_fresh {
-        if let (Some(tip), Some(has_unspent)) = (input.cached_tip_height, input.cached_has_unspent)
-        {
-            return Ok(UnlockEstimate {
-                tip_height: tip as u32,
-                unlock_height: input.cached_unlock_height.map(|h| h as u32),
-                has_unspent: has_unspent != 0,
-            });
-        }
+/// The scheduler's read: the fresh cached estimate, never a network
+/// call. Slow or rate-limited explorers used to stretch one scheduler
+/// tick to minutes, delaying reminders and alarms for every vault. Now
+/// the background refresher does the scanning, and a vault without a
+/// fresh estimate simply waits (`NotScannedYet`).
+pub(crate) fn cached_unlock_estimate(
+    input: &EstimateInput,
+    now: chrono::DateTime<Utc>,
+) -> Result<UnlockEstimate, BlockingErr> {
+    fresh_cached_estimate(input, now).ok_or(BlockingErr::NotScannedYet)
+}
+
+pub(crate) async fn unlock_estimate_with_cache(
+    db: &sqlx::SqlitePool,
+    input: &EstimateInput,
+    now: chrono::DateTime<Utc>,
+) -> Result<UnlockEstimate, BlockingErr> {
+    if let Some(est) = fresh_cached_estimate(input, now) {
+        return Ok(est);
     }
 
     let net = crate::config::parse_network(&input.network)
@@ -1970,11 +2253,7 @@ pub(crate) async fn unlock_estimate_with_cache(
     // The explorer failed recently. Fail this one without asking, the
     // same way a failed scan would, so nothing advances on a chain we
     // couldn't read.
-    if let Some(secs) = explorer_backoff()
-        .lock()
-        .expect("explorer backoff poisoned")
-        .remaining_secs(now)
-    {
+    if let Some(secs) = backoff_remaining(net, now) {
         return Err(BlockingErr::BackingOff(secs));
     }
 
@@ -1986,17 +2265,16 @@ pub(crate) async fn unlock_estimate_with_cache(
         None,
     )
     .await;
-    {
-        let mut backoff = explorer_backoff()
-            .lock()
-            .expect("explorer backoff poisoned");
-        match &scanned {
-            Ok(_) => backoff.record_success(),
-            Err(e) if trips_backoff(e) => backoff.record_failure(now),
-            Err(_) => {}
-        }
-    }
-    let est = scanned?;
+    backoff_record(net, &scanned, now);
+    let ScanOutput {
+        estimate: est,
+        balance,
+        deposits,
+        still_unspent,
+    } = scanned?;
+    // Record what came in and what left now, not when the owner next
+    // opens the app, so deposits land in the right week.
+    record_scan(db, &input.vault_id, balance, &deposits, &still_unspent, now).await;
 
     if let Err(e) = sqlx::query(
         r#"UPDATE vaults
@@ -2214,6 +2492,39 @@ pub(crate) struct ConfirmedDeposit {
     pub outpoint: String,
     pub amount_sat: i64,
     pub height: u32,
+}
+
+/// What one scan says came in and what is still there, for
+/// [`record_new_deposits`] and [`record_spent_deposits`]. Used by the live
+/// balance lookup and the background chain refresher, so a deposit is
+/// recorded within minutes of confirming whether or not the owner opens
+/// the app (streaks and challenges count it in the right week).
+///
+/// `deposits` are confirmed receives: external keychain only, since the
+/// internal keychain is owner-send change, not a deposit (#213).
+///
+/// `still_unspent` is the same walk without either filter: every outpoint
+/// the wallet can still spend, change and unconfirmed included. What's
+/// missing from it is what left the vault. Keeping unconfirmed entries in
+/// is what makes a reorg safe: a deposit whose confirmation is rolled back
+/// reappears here as pending, so it reads as present, not spent.
+fn deposits_and_unspent(wallet: &bdk_wallet::Wallet) -> (Vec<ConfirmedDeposit>, Vec<String>) {
+    let mut deposits = Vec::new();
+    let mut still_unspent = Vec::new();
+    for utxo in wallet.list_unspent() {
+        still_unspent.push(utxo.outpoint.to_string());
+        if utxo.keychain != bdk_wallet::KeychainKind::External {
+            continue;
+        }
+        if let bdk_wallet::chain::ChainPosition::Confirmed { anchor, .. } = utxo.chain_position {
+            deposits.push(ConfirmedDeposit {
+                outpoint: utxo.outpoint.to_string(),
+                amount_sat: utxo.txout.value.to_sat() as i64,
+                height: anchor.block_id.height,
+            });
+        }
+    }
+    (deposits, still_unspent)
 }
 
 /// Record any newly-seen deposits as "received" activity events, exactly
@@ -2490,42 +2801,26 @@ pub async fn get_vault_balance(
             let unconfirmed = bal.trusted_pending.to_sat() + bal.untrusted_pending.to_sat();
             let total = bal.total().to_sat();
 
-            // Collect confirmed receives off this same scan (no extra chain
-            // poll). External keychain only: internal is owner-send change,
-            // not a deposit (#213).
-            //
-            // `still_unspent` is the same walk without either filter: every
-            // outpoint the wallet can still spend, change and unconfirmed
-            // included. It's the complement of `deposits` — what's missing
-            // from it is what left the vault. Keeping unconfirmed entries in
-            // is what makes a reorg safe: a deposit whose confirmation is
-            // rolled back reappears here as pending, so it reads as present,
-            // not spent.
-            let mut deposits = Vec::new();
-            let mut still_unspent = Vec::new();
-            for utxo in wallet.list_unspent() {
-                still_unspent.push(utxo.outpoint.to_string());
-                if utxo.keychain != bdk_wallet::KeychainKind::External {
-                    continue;
-                }
-                if let bdk_wallet::chain::ChainPosition::Confirmed { anchor, .. } =
-                    utxo.chain_position
-                {
-                    deposits.push(ConfirmedDeposit {
-                        outpoint: utxo.outpoint.to_string(),
-                        amount_sat: utxo.txout.value.to_sat() as i64,
-                        height: anchor.block_id.height,
-                    });
-                }
-            }
+            // Deposits and spends off this same scan (no extra chain poll).
+            let (deposits, still_unspent) = deposits_and_unspent(&wallet);
             Ok((confirmed, unconfirmed, total, deposits, still_unspent))
         })
         .await
         .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
 
     let now = Utc::now();
-    record_new_deposits(&state.db, &id, &deposits, now).await;
-    record_spent_deposits(&state.db, &id, &still_unspent, now).await;
+    record_scan(
+        &state.db,
+        &id,
+        ScanBalance {
+            confirmed_sat,
+            unconfirmed_sat,
+        },
+        &deposits,
+        &still_unspent,
+        now,
+    )
+    .await;
 
     Ok(Json(VaultBalanceView {
         vault_id: id_for_resp,
@@ -2533,6 +2828,190 @@ pub async fn get_vault_balance(
         confirmed_sat,
         unconfirmed_sat,
         total_sat,
+    }))
+}
+
+/// Response from `GET /vaults/:id/balance/last`.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct LastBalanceView {
+    pub vault_id: String,
+    pub network: String,
+    pub confirmed_sat: u64,
+    pub unconfirmed_sat: u64,
+    pub total_sat: u64,
+    /// When the scan that saw this balance finished (RFC3339).
+    pub checked_at: String,
+}
+
+/// The balance from the vault's last successful scan, straight from the
+/// database, so Home has a number at once. No chain call. 404 until the
+/// first scan has finished. Public, like `GET /vaults/:id/balance`, which
+/// tells anyone with the id the same thing, live.
+pub async fn get_last_balance(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<LastBalanceView>, ApiError> {
+    last_balance(&state.db, &id)
+        .await?
+        .map(Json)
+        .ok_or(ApiError::NotFound)
+}
+
+async fn last_balance(
+    db: &sqlx::SqlitePool,
+    id: &str,
+) -> Result<Option<LastBalanceView>, ApiError> {
+    type Row = (String, Option<i64>, Option<i64>, Option<String>);
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT network, balance_confirmed_sat, balance_unconfirmed_sat, balance_checked_at \
+           FROM vaults WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?;
+    let Some((network, Some(confirmed), Some(unconfirmed), Some(checked_at))) = row else {
+        return Ok(None);
+    };
+    let confirmed_sat = confirmed.max(0) as u64;
+    let unconfirmed_sat = unconfirmed.max(0) as u64;
+    Ok(Some(LastBalanceView {
+        vault_id: id.to_string(),
+        network,
+        confirmed_sat,
+        unconfirmed_sat,
+        total_sat: confirmed_sat + unconfirmed_sat,
+        checked_at,
+    }))
+}
+
+/* -------------------------------------------------------------------------- *
+ *  Lightning deposits: the two things the browser asks our server            *
+ *                                                                            *
+ *  A Lightning deposit is a swap the owner's browser runs with an            *
+ *  independent provider (ghostkey-web/src/lightning/reverseSwap.ts). Our     *
+ *  server holds no keys and never sees the money. The browser asks it two    *
+ *  things, so it doesn't have to take the provider's word for them:          *
+ *                                                                            *
+ *  - has the provider's lockup transaction really confirmed?                 *
+ *  - please also broadcast our claim (in case the provider won't), which     *
+ *    we only do for a transaction whose every output pays this vault.        *
+ * -------------------------------------------------------------------------- */
+
+/// Largest claim transaction we'll relay: a swap claim is ~200 bytes.
+const MAX_RELAY_TX_BYTES: usize = 10_000;
+
+#[derive(Debug, Serialize)]
+pub struct TxConfirmedView {
+    pub confirmed: bool,
+}
+
+async fn load_vault_watch(state: &AppState, id: &str) -> Result<(Vault, Network), ApiError> {
+    type Row = (String, String, String, i64);
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT network, descriptor_external, descriptor_internal, timelock_blocks \
+           FROM vaults WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?;
+    let (network_s, ext, int_, timelock) = row.ok_or(ApiError::NotFound)?;
+    let network = crate::config::parse_network(&network_s)
+        .map_err(|name| ApiError::Validation(format!("unknown network {name}")))?;
+    let vault = Vault::from_config(VaultConfig {
+        descriptor_external: ext,
+        descriptor_internal: int_,
+        timelock_blocks: timelock as u32,
+        network,
+        role: VaultRole::Watchonly,
+        label: None,
+    })
+    .map_err(|e| ApiError::Validation(format!("stored vault descriptors invalid: {e}")))?;
+    Ok((vault, network))
+}
+
+/// `GET /vaults/:id/tx/:txid/confirmed` (public): whether a transaction
+/// has at least one confirmation, on this vault's network.
+pub async fn tx_confirmed(
+    State(state): State<Arc<AppState>>,
+    Path((id, txid)): Path<(String, String)>,
+) -> Result<Json<TxConfirmedView>, ApiError> {
+    let txid = bitcoin::Txid::from_str(txid.trim())
+        .map_err(|_| ApiError::Validation("That isn't a transaction id.".into()))?;
+    let (_, network) = load_vault_watch(&state, &id).await?;
+    let urls = esplora_urls(network)?;
+    let _permit = crate::concurrency::acquire_esplora().await;
+    let status = tokio::task::spawn_blocking(move || {
+        try_each_esplora(&urls, |client| {
+            client
+                .get_tx_status(&txid)
+                .map_err(|e| clean_esplora_err("tx status", &e))
+        })
+    })
+    .await
+    .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
+    Ok(Json(TxConfirmedView {
+        confirmed: status.confirmed,
+    }))
+}
+
+/// Whether every output of `tx` pays this vault (and there is at least
+/// one). Only such transactions are relayed: our server is not a general
+/// broadcast service.
+pub(crate) fn pays_only_vault(vault: &Vault, tx: &bitcoin::Transaction) -> Result<bool, ApiError> {
+    let wallet = ghostkey_core::wallet::build_watch_only(vault)
+        .map_err(|e| ApiError::Validation(format!("vault: {e}")))?;
+    Ok(!tx.output.is_empty()
+        && tx
+            .output
+            .iter()
+            .all(|o| wallet.is_mine(o.script_pubkey.clone())))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RelayRequest {
+    pub hex: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RelayResponse {
+    pub txid: String,
+}
+
+/// `POST /vaults/:id/lightning/broadcast` (public): broadcast a
+/// transaction that pays only this vault, e.g. a Lightning deposit's
+/// claim. Holds no keys; the transaction is already signed.
+pub async fn relay_vault_deposit(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<RelayRequest>,
+) -> Result<Json<RelayResponse>, ApiError> {
+    let raw = hex::decode(req.hex.trim())
+        .map_err(|_| ApiError::Validation("That isn't a transaction.".into()))?;
+    if raw.len() > MAX_RELAY_TX_BYTES {
+        return Err(ApiError::Validation("That transaction is too big.".into()));
+    }
+    let tx: bitcoin::Transaction = bitcoin::consensus::deserialize(&raw)
+        .map_err(|_| ApiError::Validation("That isn't a transaction.".into()))?;
+    let (vault, network) = load_vault_watch(&state, &id).await?;
+    if !pays_only_vault(&vault, &tx)? {
+        return Err(ApiError::Validation(
+            "We only send transactions that pay into this vault.".into(),
+        ));
+    }
+    let urls = esplora_urls(network)?;
+    let _permit = crate::concurrency::acquire_esplora().await;
+    let txid = tx.compute_txid();
+    tokio::task::spawn_blocking(move || {
+        try_each_esplora(&urls, |client| {
+            client
+                .broadcast(&tx)
+                .map_err(|e| clean_esplora_err("broadcast", &e))
+        })
+    })
+    .await
+    .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
+    Ok(Json(RelayResponse {
+        txid: txid.to_string(),
     }))
 }
 
@@ -2620,7 +3099,7 @@ mod tests {
             std::env::set_var("GHOSTKEY_ESPLORA_URL", "https://my.indexer/api");
         }
         assert_eq!(
-            esplora_urls(Network::Bitcoin).unwrap(),
+            esplora_urls(Network::Bitcoin).unwrap().urls,
             vec!["https://my.indexer/api".to_string()]
         );
         unsafe {
@@ -2672,6 +3151,60 @@ mod tests {
     fn parse_esplora_urls_rejects_empty() {
         assert!(parse_esplora_urls("", Network::Signet).is_err());
         assert!(parse_esplora_urls(" , ,", Network::Signet).is_err());
+    }
+
+    fn estimate_input(scanned_secs_ago: Option<i64>, tip: Option<i64>) -> EstimateInput {
+        EstimateInput {
+            vault_id: "v".into(),
+            descriptor_external: "tr(x)".into(),
+            descriptor_internal: "tr(y)".into(),
+            network: "bitcoin".into(),
+            timelock_blocks: 144,
+            cached_unlock_height: Some(1_000),
+            cached_tip_height: tip,
+            cached_scanned_at: scanned_secs_ago
+                .map(|s| (Utc::now() - chrono::Duration::seconds(s)).to_rfc3339()),
+            cached_has_unspent: Some(1),
+        }
+    }
+
+    #[test]
+    fn the_scheduler_reads_the_cache_and_never_the_network() {
+        let now = Utc::now();
+        // Fresh and complete: answered from the cache.
+        let est = cached_unlock_estimate(&estimate_input(Some(60), Some(900)), now).unwrap();
+        assert_eq!((est.tip_height, est.unlock_height), (900, Some(1_000)));
+        // Stale, never scanned, or scanned without a tip: the vault waits
+        // for the background refresher instead of calling an explorer.
+        for input in [
+            estimate_input(Some(MATURITY_CACHE_TTL_SECS + 5), Some(900)),
+            estimate_input(None, None),
+            estimate_input(Some(60), None),
+        ] {
+            assert!(matches!(
+                cached_unlock_estimate(&input, now),
+                Err(BlockingErr::NotScannedYet)
+            ));
+        }
+    }
+
+    #[test]
+    fn a_testnet_explorer_pause_never_pauses_mainnet() {
+        // Regression: one 429 from a public testnet explorer (scanning a
+        // test vault on the mainnet server) paused every mainnet scan,
+        // which stopped heir contact for real vaults.
+        let now = Utc::now();
+        let err: Result<(), BlockingErr> = Err(BlockingErr::Esplora("HTTP 429".into()));
+        backoff_record(Network::Testnet, &err, now);
+        assert!(backoff_remaining(Network::Testnet, now).is_some());
+        assert_eq!(
+            backoff_remaining(Network::Bitcoin, now),
+            None,
+            "mainnet must not inherit testnet's pause"
+        );
+        // A testnet success lifts only testnet's pause.
+        backoff_record::<()>(Network::Testnet, &Ok(()), now);
+        assert_eq!(backoff_remaining(Network::Testnet, now), None);
     }
 
     #[test]
@@ -2735,10 +3268,21 @@ mod tests {
 
     #[test]
     fn try_each_esplora_fails_over_only_on_esplora_errors() {
-        let urls = vec![
-            "http://127.0.0.1:1/api".to_string(),
-            "http://127.0.0.1:2/api".to_string(),
-        ];
+        let urls = Explorers {
+            urls: vec![
+                "http://127.0.0.1:1/api".to_string(),
+                "http://127.0.0.1:2/api".to_string(),
+            ],
+            network: Network::Regtest,
+        };
+        // These endpoints don't exist; mark them as already on the right
+        // chain so the genesis check doesn't stop the test before `op`.
+        for u in &urls.urls {
+            verified_explorers()
+                .lock()
+                .unwrap()
+                .insert((u.clone(), Network::Regtest));
+        }
 
         // Esplora errors fall through to the next endpoint; the helper
         // returns the last one when every endpoint fails.
@@ -2775,6 +3319,199 @@ mod tests {
         });
         assert_eq!(attempts, 1, "must not fail over on non-esplora errors");
         assert!(matches!(result, Err(BlockingErr::NoUtxos)));
+    }
+
+    /// Answer every request with `status` and `body`, counting hits.
+    fn counting_explorer(
+        status: &'static str,
+        body: &'static str,
+    ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{Read, Write};
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = hits.clone();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (format!("http://{addr}"), hits)
+    }
+
+    #[test]
+    fn a_rate_limited_explorer_hands_over_at_once_and_goes_to_the_back() {
+        // Regression: blockstream answered every request with 429, and the
+        // client's built-in retries (6, with doubling sleeps) spent ~20s
+        // on it before trying the next explorer. Home gives up at 20s, so
+        // the owner never saw a balance though the next explorer was fine.
+        use std::sync::atomic::Ordering;
+        let (limited, limited_hits) = counting_explorer("429 Too Many Requests", "slow down");
+        let (healthy, healthy_hits) = counting_explorer("200 OK", "900000");
+        let explorers = Explorers {
+            urls: vec![limited.clone(), healthy.clone()],
+            network: Network::Regtest,
+        };
+        for u in &explorers.urls {
+            verified_explorers()
+                .lock()
+                .unwrap()
+                .insert((u.clone(), Network::Regtest));
+        }
+        let height = |c: &esplora_client::BlockingClient| {
+            c.get_height()
+                .map_err(|e| clean_esplora_err("get_height", &e))
+        };
+
+        let started = std::time::Instant::now();
+        assert_eq!(try_each_esplora(&explorers, height).unwrap(), 900_000);
+        assert_eq!(
+            limited_hits.load(Ordering::SeqCst),
+            1,
+            "a 429 must hand over, not retry, while another explorer is left"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "took {:?}",
+            started.elapsed()
+        );
+
+        // Straight after, the explorer that just turned us away is asked
+        // last, so the next request doesn't pay for it again.
+        assert_eq!(try_each_esplora(&explorers, height).unwrap(), 900_000);
+        assert_eq!(limited_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(healthy_hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_cooling_explorer_is_still_tried_when_it_is_the_only_hope() {
+        // Moving a failed explorer to the back never drops it: if every
+        // other one fails too, it is still asked.
+        let explorers = Explorers {
+            urls: vec![
+                "http://127.0.0.1:3/api".to_string(),
+                "http://127.0.0.1:4/api".to_string(),
+            ],
+            network: Network::Regtest,
+        };
+        let mut asked = Vec::new();
+        let _: Result<(), _> = try_each_esplora(&explorers, |c| {
+            asked.push(c.url().to_string());
+            Err(BlockingErr::Esplora("down".into()))
+        });
+        let mut asked_again = Vec::new();
+        let _: Result<(), _> = try_each_esplora(&explorers, |c| {
+            asked_again.push(c.url().to_string());
+            Err(BlockingErr::Esplora("down".into()))
+        });
+        assert_eq!(asked.len(), 2);
+        assert_eq!(asked_again.len(), 2, "both still tried: {asked_again:?}");
+    }
+
+    #[test]
+    fn a_genesis_check_with_no_answer_does_not_block_the_scan() {
+        // Regression: blockstream answered block-height/0 slower than our
+        // timeout, and the strict check stopped every mainnet scan.
+        let url = "http://127.0.0.1:1/api";
+        let client = esplora_client::Builder::new(url)
+            .timeout(2)
+            .build_blocking();
+        assert!(explorer_on_network(&client, url, Network::Bitcoin).is_ok());
+        // ...and it is not cached as verified, so a later answer still counts.
+        assert!(!verified_explorers()
+            .lock()
+            .unwrap()
+            .contains(&(url.to_string(), Network::Bitcoin)));
+    }
+
+    #[test]
+    fn the_configured_explorer_only_serves_its_own_network() {
+        let env = Some("https://mainnet.indexer/api");
+        // Mainnet server: the indexer serves mainnet vaults...
+        assert_eq!(
+            esplora_urls_for(Network::Bitcoin, env, Some(Network::Bitcoin))
+                .unwrap()
+                .urls,
+            vec!["https://mainnet.indexer/api".to_string()]
+        );
+        // ...but a testnet vault on it gets the public testnet explorers,
+        // never the mainnet indexer (the bug: bdk panicked on the genesis
+        // mismatch every tick).
+        let t = esplora_urls_for(Network::Testnet, env, Some(Network::Bitcoin)).unwrap();
+        assert_eq!(t.network, Network::Testnet);
+        assert!(t.urls.iter().all(|u| u.contains("testnet")), "{:?}", t.urls);
+        // A signet server (Mutinynet) still uses its indexer for signet.
+        let m = Some("https://mutinynet.com/api");
+        assert_eq!(
+            esplora_urls_for(Network::Signet, m, Some(Network::Signet))
+                .unwrap()
+                .urls,
+            vec!["https://mutinynet.com/api".to_string()]
+        );
+        // Mainnet with no indexer still refuses rather than leak to a
+        // public one.
+        assert!(esplora_urls_for(Network::Bitcoin, None, Some(Network::Testnet)).is_err());
+    }
+
+    /// Serve one fixed genesis hash at `/block-height/0`, the endpoint
+    /// `get_block_hash(0)` calls, and return the base URL.
+    fn fake_explorer(genesis: bitcoin::BlockHash) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut stream = stream;
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let body = genesis.to_string();
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[test]
+    fn an_explorer_on_another_chain_is_refused_not_panicked_on() {
+        let testnet_genesis = bitcoin::constants::genesis_block(Network::Testnet).block_hash();
+        let url = fake_explorer(testnet_genesis);
+        let client = esplora_client::Builder::new(&url)
+            .timeout(5)
+            .build_blocking();
+
+        // Asked to serve mainnet, a testnet explorer is a clean, failover-
+        // able Esplora error, not a bdk panic.
+        match explorer_on_network(&client, &url, Network::Bitcoin) {
+            Err(BlockingErr::Esplora(msg)) => assert!(msg.contains("different chain"), "{msg}"),
+            other => panic!("expected an Esplora error, got {other:?}"),
+        }
+        // The same explorer is fine for testnet, and the scan runs.
+        assert!(explorer_on_network(&client, &url, Network::Testnet).is_ok());
+        let explorers = Explorers {
+            urls: vec![url.clone()],
+            network: Network::Bitcoin,
+        };
+        let mut ran = false;
+        let r: Result<(), _> = try_each_esplora(&explorers, |_c| {
+            ran = true;
+            Ok(())
+        });
+        assert!(
+            r.is_err() && !ran,
+            "a wrong-chain explorer must never reach the scan"
+        );
     }
 
     #[test]
@@ -2858,6 +3595,186 @@ mod tests {
         .execute(pool)
         .await
         .expect("seed vault");
+    }
+
+    fn real_vault(seed: u8) -> Vault {
+        use bitcoin::bip32::Xpriv;
+        use ghostkey_core::keys::{account_xpub, descriptor_key_fragment, Chain};
+        let net = Network::Signet;
+        let o = Xpriv::new_master(net, &[seed; 32]).unwrap();
+        let h = Xpriv::new_master(net, &[seed.wrapping_add(1); 32]).unwrap();
+        let (ofp, op, ox) = account_xpub(&o, net).unwrap();
+        let (hfp, hp, hx) = account_xpub(&h, net).unwrap();
+        Vault::new(
+            &descriptor_key_fragment(ofp, &op, &ox, Chain::External),
+            &descriptor_key_fragment(ofp, &op, &ox, Chain::Internal),
+            &descriptor_key_fragment(hfp, &hp, &hx, Chain::External),
+            &descriptor_key_fragment(hfp, &hp, &hx, Chain::Internal),
+            144,
+            net,
+            VaultRole::Watchonly,
+            None,
+        )
+        .unwrap()
+    }
+
+    fn paying(addrs: &[&str]) -> bitcoin::Transaction {
+        bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![],
+            output: addrs
+                .iter()
+                .map(|a| bitcoin::TxOut {
+                    value: bitcoin::Amount::from_sat(5_000),
+                    script_pubkey: Address::from_str(a)
+                        .unwrap()
+                        .assume_checked()
+                        .script_pubkey(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn only_a_transaction_paying_this_vault_is_relayed() {
+        // A Lightning deposit's claim pays the vault's first address. Our
+        // server relays that, and nothing that pays anyone else.
+        let vault = real_vault(0x51);
+        let other = real_vault(0x61);
+        let (mine, _) = ghostkey_core::wallet::peek_addresses(&vault, 2).unwrap();
+        let (theirs, _) = ghostkey_core::wallet::peek_addresses(&other, 1).unwrap();
+        assert!(pays_only_vault(&vault, &paying(&[&mine[0]])).unwrap());
+        assert!(pays_only_vault(&vault, &paying(&[&mine[0], &mine[1]])).unwrap());
+        assert!(!pays_only_vault(&vault, &paying(&[&theirs[0]])).unwrap());
+        assert!(
+            !pays_only_vault(&vault, &paying(&[&mine[0], &theirs[0]])).unwrap(),
+            "one foreign output is enough to refuse"
+        );
+        assert!(!pays_only_vault(&vault, &paying(&[])).unwrap());
+    }
+
+    #[tokio::test]
+    async fn one_scan_records_the_balance_what_came_in_and_what_left() {
+        // What the background refresher now does every few minutes, so a
+        // deposit lands in the week it arrived, not the week the owner
+        // next opened the app.
+        let pool = memory_db().await;
+        seed_vault(&pool, "vault-1").await;
+        let t1 = Utc::now() - chrono::Duration::days(3);
+        record_scan(
+            &pool,
+            "vault-1",
+            ScanBalance {
+                confirmed_sat: 150_000,
+                unconfirmed_sat: 0,
+            },
+            &[
+                deposit("aaaa:0", 100_000, 900_000),
+                deposit("bbbb:0", 50_000, 900_010),
+            ],
+            &["aaaa:0".into(), "bbbb:0".into()],
+            t1,
+        )
+        .await;
+        let seen: Vec<(String, String)> = sqlx::query_as(
+            "SELECT outpoint, seen_at FROM vault_deposits WHERE vault_id = 'vault-1' ORDER BY outpoint",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            seen,
+            vec![
+                ("aaaa:0".to_string(), t1.to_rfc3339()),
+                ("bbbb:0".to_string(), t1.to_rfc3339())
+            ]
+        );
+        assert_eq!(received_count(&pool, "vault-1").await, 2);
+
+        // Later, one coin has left. The first deposit keeps its date.
+        let t2 = Utc::now();
+        record_scan(
+            &pool,
+            "vault-1",
+            ScanBalance {
+                confirmed_sat: 50_000,
+                unconfirmed_sat: 0,
+            },
+            &[deposit("bbbb:0", 50_000, 900_010)],
+            &["bbbb:0".into()],
+            t2,
+        )
+        .await;
+        let spent: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT outpoint, spent_at FROM vault_deposits WHERE vault_id = 'vault-1' ORDER BY outpoint",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            spent,
+            vec![
+                ("aaaa:0".to_string(), Some(t2.to_rfc3339())),
+                ("bbbb:0".to_string(), None)
+            ]
+        );
+        assert_eq!(received_count(&pool, "vault-1").await, 2, "no repeat");
+        let last = last_balance(&pool, "vault-1").await.unwrap().unwrap();
+        assert_eq!((last.total_sat, last.checked_at), (50_000, t2.to_rfc3339()));
+    }
+
+    #[tokio::test]
+    async fn the_last_balance_is_what_the_last_scan_saw() {
+        let pool = memory_db().await;
+        seed_vault(&pool, "vault-1").await;
+        seed_vault(&pool, "vault-2").await;
+
+        // Never scanned: nothing to show, rather than a misleading zero.
+        assert_eq!(last_balance(&pool, "vault-1").await.unwrap(), None);
+        assert_eq!(last_balance(&pool, "no-such-vault").await.unwrap(), None);
+
+        let first = Utc::now() - chrono::Duration::minutes(10);
+        save_last_balance(
+            &pool,
+            "vault-1",
+            ScanBalance {
+                confirmed_sat: 2_000,
+                unconfirmed_sat: 629,
+            },
+            first,
+        )
+        .await;
+        let got = last_balance(&pool, "vault-1").await.unwrap().unwrap();
+        assert_eq!(
+            got,
+            LastBalanceView {
+                vault_id: "vault-1".into(),
+                network: "signet".into(),
+                confirmed_sat: 2_000,
+                unconfirmed_sat: 629,
+                total_sat: 2_629,
+                checked_at: first.to_rfc3339(),
+            }
+        );
+
+        // A later scan replaces it, including a drop to zero.
+        let later = Utc::now();
+        save_last_balance(
+            &pool,
+            "vault-1",
+            ScanBalance {
+                confirmed_sat: 0,
+                unconfirmed_sat: 0,
+            },
+            later,
+        )
+        .await;
+        let got = last_balance(&pool, "vault-1").await.unwrap().unwrap();
+        assert_eq!((got.total_sat, got.checked_at), (0, later.to_rfc3339()));
+
+        // Other vaults are untouched.
+        assert_eq!(last_balance(&pool, "vault-2").await.unwrap(), None);
     }
 
     #[tokio::test]

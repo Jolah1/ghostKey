@@ -13,7 +13,8 @@ export const pcm: Vocab = {
   langName: "Pidgin",
   tagline: "Make your Bitcoin reach your people, no lawyer wahala.",
   longTagline:
-    "Set am once. Every month, tap to show say you dey. If you ever stop, the people wey you choose fit collect wetin be their own.",
+    // NOT YET REVIEWED by a native Pidgin speaker (2026-11-24 rewrite).
+    "Dey save your sats small small anytime you fit, and watch am grow. Na you hold the key, you fit spend am anytime. If you ever stop to show face, your savings go reach the person wey you choose, e no go loss.",
   status: makeStatus({
     unfunded: {
       label: "Dey wait for money",
@@ -51,6 +52,16 @@ export const pcm: Vocab = {
   claim: {
     header: "Message for you",
     loading: "We dey open your link…",
+    neverAsk: {
+      title: "GhostKey no go ever ask you for",
+      items: [
+        "your 12 or 24 words",
+        "password for your wallet",
+        "money or any fee",
+        "make anybody see or control your phone or computer",
+      ],
+      closing: "If anybody ask you for any of these, no be us.",
+    },
     notFound: {
       eyebrow: "This link no dey work",
       title: "We no fit find anything for this link",
@@ -345,7 +356,7 @@ export const pcm: Vocab = {
   inheritPortal: {
     eyebrow: "Inherit",
     title: "Somebody trust you with this",
-    description: "If you dey here, somebody wey you know leave something behind and trust you to look after am. We go walk you through am slowly, one step at a time. If you no get your link yet, that one normal. E go arrive by SMS, WhatsApp, or email when the time come. No account to sign in to.",
+    description: "If you dey here, somebody wey you know leave something behind and trust you to look after am. We go walk you through am slowly, one step at a time. If you no get your link yet, that one normal. E go arrive by email when the time come. No account to sign in to.",
     whatLinkLooksLike: "Wetin the link go be like",
     linkExample: "https://www.ghostkeyapp.com/#/claim/AbCdEf12_3456_etc…",
     linkPrivacyNote: "Your link na private and e dey work only once. No share am with anybody.",

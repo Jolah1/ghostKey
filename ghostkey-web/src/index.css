@@ -61,7 +61,7 @@
      anchored on near-black with a much shallower dip, so the sheen
      survives and the headline still reads as a headline. */
   --title-gradient-light:
-    linear-gradient(135deg, #0B0B0D 0%, #3B4149 50%, #0B0B0D 100%);
+    linear-gradient(135deg, #0E1A2B 0%, #34445B 50%, #0E1A2B 100%);
 }
 
 /* Keyboard-only "skip to content" link: parked off-screen until it
@@ -127,56 +127,111 @@
     radial-gradient(ellipse 50% 40% at 10% 100%, rgba(43, 89, 200, 0.14), transparent 70%);
 }
 
-/* ---- Light theme — clean white, Tando palette translated ---- */
+/* ---- Light theme: ink on paper ---------------------------------------
+   The old light theme put the bright brand teal (#2EE6D2) on white, at
+   1.6:1, so buttons and progress read as pale mint, and the savings card
+   was white on near-white. Now: a cool blue-grey page, deep navy ink
+   from the logo for text, and a deep lagoon teal for anything you can
+   act on (white text on it is 5.2:1). Every text colour passes WCAG AA
+   on both the page and white cards. The bright teal still appears where
+   it shines: on the navy savings card (.ink-card). */
 [data-theme="light"] {
   color-scheme: light;
 
-  /* The page is a soft grey and cards are pure white, not the other
-     way round. Previously both were white (#FFF page, #FAFAFA cards):
-     a 2% difference behind a hairline border, so every surface
-     dissolved into the next and the whole theme read as washed out.
-     Putting the tint on the page instead lets each card lift off it,
-     which is what carries the layout in light mode — dark mode gets
-     that separation from its shadows. */
-  --bg:           #F1F4F7;
+  --bg:           #EEF2F6;
   --bg-elev:      #FFFFFF;
   --surface:      #FFFFFF;
-  --surface-2:    #E9EDF2;
-  --surface-hi:   #DCE2E9;
+  --surface-2:    #E4EAF1;
+  --surface-hi:   #D5DEE8;
 
-  /* Darker than a hairline so cards, inputs, and dividers keep
-     definition instead of dissolving into the page. */
-  --border:       #D3DAE2;
-  --border-hi:    #B6BFCA;
-  --border-focus: rgba(11, 117, 104, 0.50);
+  --border:       #CBD5E0;
+  --border-hi:    #8D9CAE;
+  --border-focus: rgba(11, 122, 109, 0.55);
 
-  --card-outline: #DCE2E9;
+  --card-outline: #D2DBE5;
   --card-grad:    linear-gradient(345deg, #FFFFFF, #FFFFFF);
 
-  --text:         #070709;
-  --text-strong:  #000000;
-  --text-body:    #1A1A1A;
-  --text-muted:   #525252;
-  --text-soft:    #6B6B6B;
-  /* 4.5:1+ on white, same reason as the dark-theme value. */
-  --text-dim:     #6E6E6E;
-  --text-on-accent: #070709;
+  /* Navy ink, 15.5:1 on the page. Muted 7.8:1, dim 5.4:1. */
+  --text:         #0E1A2B;
+  --text-strong:  #0E1A2B;
+  --text-body:    #1C2A3C;
+  --text-muted:   #3E4C5E;
+  --text-soft:    #485669;
+  --text-dim:     #556377;
 
-  --accent-text:  var(--accent-deep);
+  /* Deep lagoon teal for actions, links and progress. */
+  --accent:        #0B7A6D;
+  --accent-strong: #086257;
+  --accent-deep:   #0B7A6D;
+  --accent-glow:   rgba(11, 122, 109, 0.28);
+  --accent-ring:   rgba(11, 122, 109, 0.45);
+  --accent-tint:   rgba(11, 122, 109, 0.10);
+  --accent-tint-2: rgba(11, 122, 109, 0.18);
+  --accent-text:   #0B7A6D;
+  --text-on-accent: #FFFFFF;
+
+  /* Status colours deep enough to read as text on white. */
+  --ok:      #157F4A;
+  --warning: #8A5300;
+  --alarm:   #B42318;
+  --ok-tint:      rgba(21, 127, 74, 0.12);
+  --warning-tint: rgba(178, 94, 0, 0.12);
+  --alarm-tint:   rgba(180, 35, 24, 0.10);
+
   --title-gradient: var(--title-gradient-light);
 
   --shadow-soft:
-    0 10px 28px -10px rgba(0, 0, 0, 0.10),
-    0 3px 8px -2px rgba(0, 0, 0, 0.05);
+    0 10px 28px -12px rgba(14, 26, 43, 0.18),
+    0 3px 8px -2px rgba(14, 26, 43, 0.06);
   --shadow-lg:
-    0 22px 56px -14px rgba(0, 0, 0, 0.14),
-    0 8px 20px -6px rgba(0, 0, 0, 0.06);
+    0 22px 56px -16px rgba(14, 26, 43, 0.24),
+    0 8px 20px -6px rgba(14, 26, 43, 0.08);
   --shadow-btn-white:
-    0 6px 16px rgba(0, 0, 0, 0.10);
+    0 6px 16px rgba(14, 26, 43, 0.12);
 
   --hero-glow:
-    radial-gradient(ellipse 70% 50% at 50% 30%, rgba(46, 230, 210, 0.10), transparent 70%),
-    radial-gradient(ellipse 50% 40% at 10% 100%, rgba(43, 89, 200, 0.07), transparent 70%);
+    radial-gradient(ellipse 70% 50% at 50% 30%, rgba(11, 122, 109, 0.12), transparent 70%),
+    radial-gradient(ellipse 50% 40% at 10% 100%, rgba(43, 89, 200, 0.10), transparent 70%);
+}
+
+/* The savings card is navy in both themes: in light mode it's the one
+   rich object on the page, like a bank card on a white table. It
+   carries the dark palette for everything inside it. */
+.ink-card {
+  color-scheme: dark;
+  --bg:           #090D12;
+  --bg-elev:      #0E1319;
+  --surface:      #101A2B;
+  --surface-2:    #18233A;
+  --surface-hi:   #233049;
+  --border:       #22304A;
+  --border-hi:    #31415E;
+  --border-focus: rgba(46, 230, 210, 0.60);
+  --card-outline: #15473F;
+  --card-grad:    linear-gradient(345deg, #101A2B, rgba(255,255,255,0.02));
+  --text:         #FFFFFF;
+  --text-strong:  #FFFFFF;
+  --text-body:    #EBEBEB;
+  --text-muted:   #B4BCC8;
+  --text-soft:    #ADB0B9;
+  --text-dim:     #8A95A3;
+  --accent:        #2EE6D2;
+  --accent-strong: #5CF2E2;
+  --accent-glow:   rgba(46, 230, 210, 0.28);
+  --accent-ring:   rgba(46, 230, 210, 0.55);
+  --accent-tint:   rgba(46, 230, 210, 0.10);
+  --accent-tint-2: rgba(46, 230, 210, 0.20);
+  --accent-text:   #2EE6D2;
+  --text-on-accent: #070709;
+  --ok:      #2FBF71;
+  --warning: #F0A33D;
+  --alarm:   #FF6B5E;
+  color: var(--text);
+}
+[data-theme="light"] .ink-card {
+  box-shadow:
+    0 28px 56px -24px rgba(14, 26, 43, 0.55),
+    0 10px 24px -12px rgba(14, 26, 43, 0.30);
 }
 
 /* ------------------------------------------------------------------ */
@@ -186,6 +241,14 @@
 @layer base {
   *, *::before, *::after { box-sizing: border-box; }
   html { scroll-behavior: smooth; }
+  /* Installed app on a phone: the page draws under the status bar and
+     the gesture bar (viewport-fit=cover). Leave exactly that room, so
+     the header isn't hidden under the clock and battery. 0 everywhere
+     else, so nothing moves in a normal browser tab. */
+  body {
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
   /* Belt-and-braces defence against horizontal overflow on mobile.
    *
    * If anything in the page (a wide table, an unbroken xpub string,
@@ -316,7 +379,7 @@
   /* Primary CTA — Tando's signature orange pill with the arrow. */
   .btn-primary {
     background-color: var(--accent);
-    color: #070709;
+    color: var(--text-on-accent);
     font-weight: var(--w-bold);
     padding: 12px 26px;
     box-shadow: 0 6px 20px -4px var(--accent-glow);
@@ -720,4 +783,16 @@
     }
     * { transition-duration: 0ms !important; }
   }
+}
+
+/* Behind the phone's status bar: the page colour, so content scrolling
+   up under the sticky header doesn't show through the clock and icons. */
+.status-bar-fill {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: env(safe-area-inset-top, 0px);
+  background: var(--bg);
+  z-index: 40;
 }

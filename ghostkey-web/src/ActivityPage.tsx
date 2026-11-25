@@ -10,7 +10,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { Route } from "./App";
-import { api, type VaultEvent } from "./api";
+import { api, type SavingsView, type VaultEvent } from "./api";
+import { addedThisMonth } from "./savings";
 import {
   getActiveVaultId,
   getVaultMeta,
@@ -18,7 +19,7 @@ import {
   getVaultsByGroup,
 } from "./vaultStore";
 import { Button, friendlyEventKind, shortAddr } from "./ui";
-import { formatBtc } from "./fiat";
+import { formatAmount, useUnit, type Unit } from "./units";
 
 /** A vault event tagged with which heir it belongs to, so a multi-heir
  *  account reads as one merged feed without hiding anything. */
@@ -71,23 +72,23 @@ function str(d: Record<string, unknown>, k: string): string | null {
 
 /** One plain-language line about the money/mechanics of an event, or null
  *  when the title already says everything. */
-function detailLine(e: ActivityEvent): string | null {
+function detailLine(e: ActivityEvent, unit: Unit): string | null {
   const d = detailOf(e);
   switch (e.kind) {
     case "received": {
       const amt = num(d, "amount_sat");
-      return amt != null ? `${formatBtc(amt)} in` : null;
+      return amt != null ? `${formatAmount(amt, unit)} in` : null;
     }
     case "funds_spent": {
       const amt = num(d, "amount_sat");
-      return amt != null ? `${formatBtc(amt)} out` : null;
+      return amt != null ? `${formatAmount(amt, unit)} out` : null;
     }
     case "owner_send": {
       const sent = num(d, "sent_sat");
       const left = num(d, "remaining_sat");
       if (sent != null && left != null)
-        return `Sent ${formatBtc(sent)} · ${formatBtc(left)} left`;
-      return sent != null ? `Sent ${formatBtc(sent)}` : null;
+        return `Sent ${formatAmount(sent, unit)} · ${formatAmount(left, unit)} left`;
+      return sent != null ? `Sent ${formatAmount(sent, unit)}` : null;
     }
     case "checkin":
       return str(d, "source") === "lightning" ? "via Lightning" : null;
@@ -96,7 +97,7 @@ function detailLine(e: ActivityEvent): string | null {
     case "claim_broadcast":
     case "claim_psbt_built": {
       const total = num(d, "total_input_sats");
-      return total != null ? `${formatBtc(total)} claimed` : null;
+      return total != null ? `${formatAmount(total, unit)} claimed` : null;
     }
     default:
       return null;
@@ -122,6 +123,15 @@ function dotClass(kind: string): string {
   return "bg-warning";
 }
 
+/** The owner chose to hide amounts on Home; respect it here too. */
+function balanceHidden(): boolean {
+  try {
+    return localStorage.getItem("gk:balanceHidden") === "1";
+  } catch {
+    return false;
+  }
+}
+
 function formatWhen(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -139,6 +149,7 @@ export function ActivityPage({
 }: {
   onNavigate: (r: Route) => void;
 }) {
+  const unit = useUnit();
   const activeId = useMemo(() => getActiveVaultId(), []);
   const meta = useMemo(
     () => (activeId ? getVaultMeta(activeId) : null),
@@ -157,6 +168,7 @@ export function ActivityPage({
 
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [network, setNetwork] = useState<string>("");
+  const [savings, setSavings] = useState<SavingsView | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
@@ -164,6 +176,11 @@ export function ActivityPage({
       setLoading(false);
       return;
     }
+    // Savings leads this page too; without it the line just isn't shown.
+    void api
+      .getSavings(activeId, ownerToken)
+      .then(setSavings)
+      .catch(() => {});
     // Network drives the explorer links; a failure here just drops them.
     try {
       const v = await api.getVault(activeId, ownerToken);
@@ -200,10 +217,23 @@ export function ActivityPage({
           onClick={() => onNavigate("dashboard")}
           className="text-sm text-muted underline hover:text-[var(--text)]"
         >
-          ← Back to dashboard
+          ← Back to home
         </button>
 
         <h1 className="mt-4 font-serif text-3xl">Activity</h1>
+        {savings && savings.total_saved_sat > 0 && !balanceHidden() ? (
+          <p className="mt-2 text-sm" data-testid="activity-savings">
+            <span className="font-medium">
+              You&apos;ve put aside {formatAmount(savings.total_saved_sat, unit)} in total
+            </span>
+            {addedThisMonth(savings.deposits, new Date()) > 0 ? (
+              <span className="text-muted">
+                {" "}
+                · {formatAmount(addedThisMonth(savings.deposits, new Date()), unit)} this month
+              </span>
+            ) : null}
+          </p>
+        ) : null}
         <p className="mt-2 text-sm text-muted">
           {showHeir
             ? "Everything that has happened across your heirs."
@@ -231,7 +261,7 @@ export function ActivityPage({
             className="mt-8 divide-y divide-[var(--border)]"
           >
             {events.map((e) => {
-              const line = detailLine(e);
+              const line = detailLine(e, unit);
               const txid = txidOf(e);
               const links = txid ? explorerLinks(network, txid) : [];
               return (

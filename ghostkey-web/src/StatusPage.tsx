@@ -1,9 +1,9 @@
 /**
  * Public system-status page (#/status).
  *
- * Probes the same two endpoints the app already uses — GET /health
- * (server up, version, assist flag) and GET /health/lightning (deep
- * sidecar probe) — and renders them as plain-language component rows.
+ * Probes GET /health (server up, version, assist flag), the same
+ * endpoint the app already uses, and renders it as plain-language
+ * component rows.
  * No backend changes: the page is hosted on the web CDN, which is a
  * different provider than the API server, so it stays reachable
  * precisely when the API isn't.
@@ -20,48 +20,30 @@ import { api } from "./api";
 import { usePolling } from "./ui";
 
 type ApiState = "checking" | "up" | "down";
-type LnState = "checking" | "up" | "degraded" | "off" | "unknown";
+/** Row states beyond the API probe (the assist row uses "off" and "unknown"). */
+type RowState = "checking" | "up" | "degraded" | "off" | "unknown";
 
 interface Probe {
   api: ApiState;
-  lightning: LnState;
-  /** One-line sidecar excuse when lightning is degraded. */
-  lightningError?: string;
   assistEnabled: boolean;
   version?: string;
   checkedAt?: Date;
 }
 
-const INITIAL: Probe = { api: "checking", lightning: "checking", assistEnabled: false };
+const INITIAL: Probe = { api: "checking", assistEnabled: false };
 
 async function runProbe(): Promise<Probe> {
   try {
     const h = await api.health();
-    const next: Probe = {
+    return {
       api: "up",
-      lightning: "checking",
       assistEnabled: Boolean(h.assist_enabled),
       version: h.version,
       checkedAt: new Date(),
     };
-    if (!h.lightning_enabled) {
-      next.lightning = "off";
-    } else {
-      try {
-        const ln = await api.healthLightning();
-        next.lightning = ln.ready ? "up" : "degraded";
-        if (!ln.ready) next.lightningError = ln.error;
-      } catch {
-        // Older servers 404 this route; the flag above already told
-        // us lightning is configured, so report "unknown" not "down".
-        next.lightning = "unknown";
-      }
-    }
-    return next;
   } catch {
     return {
       api: "down",
-      lightning: "unknown",
       assistEnabled: false,
       checkedAt: new Date(),
     };
@@ -84,8 +66,7 @@ export function StatusPage() {
   }, []);
   usePolling(async () => setProbe(await runProbe()), 15_000);
 
-  const allGood =
-    probe.api === "up" && (probe.lightning === "up" || probe.lightning === "off");
+  const allGood = probe.api === "up";
 
   return (
     <main className="bg-app fade-in">
@@ -124,20 +105,7 @@ export function StatusPage() {
             detail={
               probe.api === "down"
                 ? "Not responding. Dashboards, reminders, and claim links are paused until it's back. Deadlines are not silently missed. The schedule resumes where it left off."
-                : `Keeps your schedule, sends reminders, and watches deadlines.${probe.version ? ` Version ${probe.version}.` : ""}`
-            }
-          />
-          <StatusRow
-            state={probe.lightning}
-            name="Lightning check-ins"
-            detail={
-              probe.lightning === "degraded"
-                ? "The payment rail behind the check-in button is having trouble. The check-in link in your reminder emails still works."
-                : probe.lightning === "off"
-                  ? "Not enabled on this server. Check-ins happen through the website instead."
-                  : probe.lightning === "unknown"
-                    ? "Couldn't be checked just now."
-                    : "The payment rail behind the one-tap check-in button."
+                : `Keeps your schedule, sends reminders, takes your check-ins, and watches deadlines.${probe.version ? ` Version ${probe.version}.` : ""}`
             }
           />
           <StatusRow
@@ -191,7 +159,7 @@ function StatusRow({
   name,
   detail,
 }: {
-  state: ApiState | LnState;
+  state: ApiState | RowState;
   name: string;
   detail: string;
 }) {
@@ -213,7 +181,7 @@ function StatusRow({
   );
 }
 
-function badge(state: ApiState | LnState): { dot: string; label: string } {
+function badge(state: ApiState | RowState): { dot: string; label: string } {
   switch (state) {
     case "up":
       return { dot: "bg-ok", label: "Up" };

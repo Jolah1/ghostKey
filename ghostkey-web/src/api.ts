@@ -55,11 +55,6 @@ export interface VaultView {
   /** Present only when `status === "frozen"`: when the panic freeze
    *  auto-releases (90 days after activation). */
   panic_frozen_until?: string | null;
-  /** Bech32 `lnurl1...` for the static check-in QR code. `null` when
-   *  the server's Lightning sidecar isn't configured. */
-  lnurl_checkin?: string | null;
-  /** Bech32 `lnurl1...` for the panic-stop QR code. */
-  lnurl_panic?: string | null;
   /** Whether the owner's reminder email has been confirmed via the
    *  verification link. Absent/null when the vault has no email on
    *  file; `false` drives the dashboard's "confirm your email" card. */
@@ -70,12 +65,19 @@ export interface VaultView {
     *  things `status: "unfunded"` means: waiting for coins, and coins
     *  are here and waiting for you. */
   activation_held?: boolean | null;
+  /** No heir chosen yet: inheritance was skipped at setup. The check-in
+   *  clock stays off until the owner chooses one. Owner `GET` only. */
+  heir_pending?: boolean | null;
   /** Can we reach the heir (#327)? `unreachable`: the last message to
    *  them bounced or was marked as spam. `unconfirmed`: nothing sent to
    *  them has ever been confirmed delivered. `confirmed`: something was.
    *  Absent when the heir isn't on email, because only email tells us
    *  a message arrived. Only on the owner `GET /vaults/:id`. */
   heir_reachability?: "unreachable" | "unconfirmed" | "confirmed" | null;
+  /** Guardian vaults only: how many guardians we couldn't reach today
+   *  (no contact, or a channel this server can't send). Above zero, a
+   *  claim would stall. Absent on standard vaults and older servers. */
+  guardians_unreachable?: number | null;
   /** Whether a trusted contact is on file. Gates the panic-stop
    *  copy's "your trusted contact will be alerted" promise — only
    *  rendered when true (issue #70). Absent on list/create
@@ -252,6 +254,10 @@ export interface SealedSetup {
   /** Absent for Door B — the scheduler mints a fresh claim token at
    *  trigger time, since no heir secret is bound to it. */
   claim_token_b64?: string;
+  /** Heir chosen later: the heir xprv sealed under the OWNER's password
+   *  KEK. Sent alone: no claim token, no heir contact. */
+  heir_xprv_owner_ct_b64?: string;
+  heir_xprv_owner_nonce_b64?: string;
 }
 
 /** One vault entry returned after one-time recovery-link exchange. */
@@ -291,6 +297,12 @@ export interface SealedBlobsView {
    *  an origin-tagged `owner.xpub` so the new sibling vault is built
    *  under the identical owner key. `null` on legacy rows. */
   owner_xpub_fragment_external?: string | null;
+  /** Heir chosen later: the heir key sealed under the owner's password,
+   *  plus the heir descriptor fragment to check it against before
+   *  re-sealing. Null once an heir is chosen. */
+  heir_xprv_owner_ct_b64?: string | null;
+  heir_xprv_owner_nonce_b64?: string | null;
+  heir_xpub_fragment_external?: string | null;
 }
 
 /** First external (receive) address derived from the vault descriptor.
@@ -307,6 +319,13 @@ export interface VaultBalanceView {
   confirmed_sat: number;
   unconfirmed_sat: number;
   total_sat: number;
+}
+
+/** Response from `GET /vaults/:id/balance/last`: the balance the last
+ *  successful chain scan saw, read from the server's database. */
+export interface LastBalanceView extends VaultBalanceView {
+  /** When that scan finished (RFC3339). */
+  checked_at: string;
 }
 
 /** Response from `POST /vaults/:id/send` — the owner spend flow. */
@@ -592,28 +611,140 @@ export interface GuardianClaimRequest {
  *  `crates/ghostkey-server/src/price.rs::PriceView`. */
 export interface PriceView {
   usd_per_btc: number;
+  /** Naira per BTC at the Nigerian market rate; null if unavailable
+   *  (or from a server that predates naira). */
+  ngn_per_btc?: number | null;
   fetched_at: string;
   /** True when the server is serving a stale cached value (a refresh
    *  failed). The UI can show the estimate more cautiously. */
   stale: boolean;
 }
 
-/** Response shape from `POST /vaults/:id/lightning-checkin/invoice`. */
-export interface LightningInvoiceView {
-  bolt11: string;
-  payment_hash: string;
-  amount_sat: number;
-  expires_at: string;
-  status: string;
+/** A savings goal (#367). Only the title is required. */
+export interface SavingsGoal {
+  title: string;
+  amount_sat: number | null;
+  /** YYYY-MM-DD */
+  target_date: string | null;
 }
 
-/** Response shape from
- *  `GET /vaults/:id/lightning-checkin/status/:payment_hash`. */
-export interface LightningInvoiceStatusView {
-  payment_hash: string;
+/** One of several goals, with what has been put into it. */
+export interface SavingsGoalView extends SavingsGoal {
+  id: string;
+  /** The goal's ledger total. Can exceed the vault balance after a send
+   *  made outside GhostKey, so show min(saved, balance). */
+  saved_sat: number;
+  created_at: string;
+}
+
+/** A deposit waiting for "which goal is this for?". */
+export interface UnsortedDeposit {
+  outpoint: string;
+  amount_sat: number;
+  seen_at: string;
+}
+
+/** `GET /vaults/:id/savings` (owner). */
+export interface SavingsView {
+  /** Everything ever put aside. Only goes up. */
+  total_saved_sat: number;
+  deposit_count: number;
+  /** Most recent first, up to 50. */
+  deposits: { amount_sat: number; height: number; seen_at: string; spent: boolean }[];
+  /** The first goal, for screens that only show one. */
+  goal: SavingsGoal | null;
+  /** Every goal, oldest first (up to 10). */
+  goals: SavingsGoalView[];
+  /** Deposits since the first goal that haven't been sorted yet. */
+  unsorted: UnsortedDeposit[];
+  /** "Your year in savings": this calendar year (UTC) so far. */
+  this_year: {
+    year: number;
+    total_sat: number;
+    deposit_count: number;
+    /** 1 to 12, or null with no deposits this year. */
+    best_month: number | null;
+    best_month_sat: number;
+  };
+  /** Weeks (or months) in a row with something added. */
+  streak?: SavingsStreak;
+  reminder: SavingsReminder | null;
+  /** Reminders only go to a confirmed email. */
+  owner_email_confirmed: boolean;
+}
+
+export type ChallengeKind = "hold" | "goal_by_date" | "every_month" | "week52";
+
+/** One savings challenge (`GET /vaults/:id/savings/challenges`). Fields
+ *  that don't apply to a kind are null. */
+export interface ChallengeView {
+  id: string;
+  kind: ChallengeKind;
+  state: "going" | "done" | "over" | "stopped";
+  started_at: string;
+  ended_at: string | null;
+  completed_at: string | null;
+  /** 0 to 100. */
+  pct: number;
+  on_track: boolean | null;
+  saved_sat: number | null;
+  target_sat: number | null;
+  hold_months: number | null;
+  ends_at: string | null;
+  goal_id: string | null;
+  /** YYYY-MM-DD */
+  target_date: string | null;
+  per_week_sat: number | null;
+  year: number | null;
+  /** 1 to 12: the first month that counts. */
+  from_month: number | null;
+  /** January to December. */
+  months: boolean[] | null;
+  week1_sat: number | null;
+  week: number | null;
+  due_so_far_sat: number | null;
+  this_week_sat: number | null;
+}
+
+export interface JoinChallenge {
+  kind: ChallengeKind;
+  hold_months?: number;
+  goal_id?: string;
+  week1_sat?: number;
+}
+
+/** A savings streak. The period follows the reminder (monthly without
+ *  one). Any amount counts; missing a period only restarts the count. */
+export interface SavingsStreak {
+  cadence: "weekly" | "monthly";
+  current: number;
+  best: number;
+  saved_this_period: boolean;
+  /** When the current period ends (RFC 3339, UTC). */
+  period_ends_at: string;
+}
+
+/** The optional savings reminder (#367). */
+export interface SavingsReminder {
+  cadence: "weekly" | "monthly";
+  amount_sat: number | null;
+  /** RFC 3339 */
+  next_at: string;
+}
+
+/** One guardian's contact as the owner sees it
+ *  (`GET /vaults/:id/guardians`). */
+export interface GuardianContactView {
+  slot: number;
+  contact: string | null;
+  channel: string | null;
+}
+
+/** Response from `POST /vaults/:id/panic`. */
+export interface PanicResponse {
+  vault_id: string;
   status: string;
-  paid_at: string | null;
-  expires_at: string;
+  frozen_until: string;
 }
 
 export class ApiError extends Error {
@@ -706,7 +837,8 @@ export const api = {
     request<{
       ok: boolean;
       version: string;
-      lightning_enabled: boolean;
+      /** The git commit the server was built from, or "unknown". */
+      commit?: string;
       demo_mode: boolean;
       /** Which Bitcoin network the server wants the UI to default
        *  new vaults to. Mirrors GHOSTKEY_DEFAULT_NETWORK on the
@@ -728,18 +860,6 @@ export const api = {
       sms_enabled?: boolean;
       whatsapp_enabled?: boolean;
     }>("/health"),
-  /** Deep probe of the Lightning sidecar. `/health` only tells us
-   *  whether the operator wired up env vars; this issues the
-   *  sidecar's `/v1/health` and reports the result. Server caches
-   *  the underlying call for 5s so this can be polled cheaply.
-   *  Older servers without this endpoint return 404 — callers must
-   *  treat that as "unknown" and skip the badge. */
-  healthLightning: () =>
-    request<{
-      enabled: boolean;
-      ready: boolean;
-      error?: string;
-    }>("/health/lightning"),
   getVault: (id: string, ownerToken: string | null) =>
     request<VaultView>(`/vaults/${id}`, {}, ownerToken),
   /** Owner-only: the heir's decrypted details (name, contact, channel,
@@ -771,8 +891,132 @@ export const api = {
       { method: "PUT", body: JSON.stringify(body) },
       ownerToken,
     ),
+  /** Owner-only: what's been put aside, recent deposits, and the goal. */
+  getSavings: (id: string, ownerToken: string | null) =>
+    request<SavingsView>(`/vaults/${id}/savings`, {}, ownerToken),
+  /** Owner-only: set or replace the savings goal. */
+  setSavingsGoal: (id: string, ownerToken: string | null, goal: SavingsGoal) =>
+    request<SavingsView>(
+      `/vaults/${id}/savings/goal`,
+      { method: "PUT", body: JSON.stringify(goal) },
+      ownerToken,
+    ),
+  /** Owner-only: remind me to save, weekly or monthly, by email. */
+  setSavingsReminder: (
+    id: string,
+    ownerToken: string | null,
+    body: { cadence: "weekly" | "monthly"; amount_sat: number | null },
+  ) =>
+    request<SavingsView>(
+      `/vaults/${id}/savings/reminder`,
+      { method: "PUT", body: JSON.stringify(body) },
+      ownerToken,
+    ),
+  /** Owner-only: stop the savings reminders. */
+  clearSavingsReminder: (id: string, ownerToken: string | null) =>
+    request<null>(`/vaults/${id}/savings/reminder`, { method: "DELETE" }, ownerToken),
+  /** Owner-only: every savings challenge, newest first. */
+  getChallenges: (id: string, ownerToken: string | null) =>
+    request<{ challenges: ChallengeView[] }>(`/vaults/${id}/savings/challenges`, undefined, ownerToken),
+  /** Owner-only: start a challenge. 409 if one of that kind is going. */
+  joinChallenge: (id: string, ownerToken: string | null, join: JoinChallenge) =>
+    request<{ challenges: ChallengeView[] }>(
+      `/vaults/${id}/savings/challenges`,
+      { method: "POST", body: JSON.stringify(join) },
+      ownerToken,
+    ),
+  /** Owner-only: stop one. Nothing happens to the money. */
+  stopChallenge: (id: string, ownerToken: string | null, challengeId: string) =>
+    request<{ challenges: ChallengeView[] }>(
+      `/vaults/${id}/savings/challenges/stop`,
+      { method: "POST", body: JSON.stringify({ id: challengeId }) },
+      ownerToken,
+    ),
+  /** Owner-only: add a goal (up to 10). */
+  addSavingsGoal: (id: string, ownerToken: string | null, goal: SavingsGoal) =>
+    request<SavingsView>(
+      `/vaults/${id}/savings/goals`,
+      { method: "POST", body: JSON.stringify(goal) },
+      ownerToken,
+    ),
+  /** Owner-only: change one goal; its money stays. */
+  updateSavingsGoal: (
+    id: string,
+    ownerToken: string | null,
+    goalId: string,
+    goal: SavingsGoal,
+  ) =>
+    request<SavingsView>(
+      `/vaults/${id}/savings/goals`,
+      { method: "PUT", body: JSON.stringify({ id: goalId, ...goal }) },
+      ownerToken,
+    ),
+  /** Owner-only: remove one goal. Its money becomes "not in a goal". */
+  removeSavingsGoal: (id: string, ownerToken: string | null, goalId: string) =>
+    request<SavingsView>(
+      `/vaults/${id}/savings/goals/remove`,
+      { method: "POST", body: JSON.stringify({ id: goalId }) },
+      ownerToken,
+    ),
+  /** Owner-only: "which goal is this for?" (null: not for a goal). */
+  sortDeposit: (
+    id: string,
+    ownerToken: string | null,
+    outpoint: string,
+    goalId: string | null,
+  ) =>
+    request<SavingsView>(
+      `/vaults/${id}/savings/sort`,
+      { method: "POST", body: JSON.stringify({ outpoint, goal_id: goalId }) },
+      ownerToken,
+    ),
+  /** Owner-only: move money between goals (null: "not in a goal"). */
+  moveSavings: (
+    id: string,
+    ownerToken: string | null,
+    body: { from_goal_id: string | null; to_goal_id: string | null; amount_sat: number },
+  ) =>
+    request<SavingsView>(
+      `/vaults/${id}/savings/move`,
+      { method: "POST", body: JSON.stringify(body) },
+      ownerToken,
+    ),
+  /** Owner-only: after a send, take it off the goal it was for. */
+  spendFromGoal: (
+    id: string,
+    ownerToken: string | null,
+    goalId: string,
+    amountSat: number,
+  ) =>
+    request<SavingsView>(
+      `/vaults/${id}/savings/spend`,
+      { method: "POST", body: JSON.stringify({ goal_id: goalId, amount_sat: amountSat }) },
+      ownerToken,
+    ),
+  /** Owner-only: remove the goal. Saving carries on exactly as before. */
+  clearSavingsGoal: (id: string, ownerToken: string | null) =>
+    request<null>(`/vaults/${id}/savings/goal`, { method: "DELETE" }, ownerToken),
+  /** Owner-only: both guardians' contacts on a guardian vault (#81).
+   *  Empty for a standard vault. */
+  listVaultGuardians: (id: string, ownerToken: string | null) =>
+    request<GuardianContactView[]>(`/vaults/${id}/guardians`, {}, ownerToken),
+  /** Owner-only: change how one guardian is reached. A guardian's key is
+   *  sealed under their own claim token, not their contact, so this is
+   *  always safe before the claim. The server only accepts channels it
+   *  can deliver (email today). Returns both guardians. */
+  updateVaultGuardian: (
+    id: string,
+    ownerToken: string | null,
+    slot: number,
+    body: { contact: string; channel: "sms" | "email" | "whatsapp" },
+  ) =>
+    request<GuardianContactView[]>(
+      `/vaults/${id}/guardians/${slot}`,
+      { method: "PUT", body: JSON.stringify(body) },
+      ownerToken,
+    ),
   /** Owner-initiated vault deletion. The server clears its metadata
-   *  (vault row + cascaded events/notifications/lightning invoices).
+   *  (vault row + cascaded events and notifications).
    *  On-chain funds remain spendable by the owner — GhostKey never
    *  held the keys. Returns 204; we return null. */
   deleteVault: (id: string, ownerToken: string) =>
@@ -867,6 +1111,28 @@ export const api = {
    *  sats landed. */
   getVaultBalance: (id: string) =>
     request<VaultBalanceView>(`/vaults/${id}/balance`),
+  /** Public: whether a transaction has a confirmation, by our server's
+   *  own explorers. Lightning deposits ask this instead of taking the
+   *  swap provider's word. */
+  txConfirmed: (id: string, txid: string) =>
+    request<{ confirmed: boolean }>(`/vaults/${id}/tx/${txid}/confirmed`),
+  /** Public: broadcast a signed transaction that pays only this vault
+   *  (a Lightning deposit's claim). The server refuses anything else. */
+  relayDeposit: (id: string, hex: string) =>
+    request<{ txid: string }>(`/vaults/${id}/lightning/broadcast`, {
+      method: "POST",
+      body: JSON.stringify({ hex }),
+    }),
+  /** The last known balance, at once and with no chain call; null before
+   *  the vault's first scan. */
+  getLastVaultBalance: async (id: string): Promise<LastBalanceView | null> => {
+    try {
+      return await request<LastBalanceView>(`/vaults/${id}/balance/last`);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+  },
   /** AI onboarding guide. Server proxies to the Anthropic API with a
    *  pinned system prompt. The handler refuses to forward seed phrases,
    *  xprvs, or other secret-shaped strings. No vault auth — the chat
@@ -891,6 +1157,28 @@ export const api = {
   ) =>
     request<null>(
       `/vaults/${id}/seal-owner-token`,
+      { method: "POST", body: JSON.stringify(body) },
+      ownerToken,
+    ),
+  /** Owner-only: choose who inherits on a vault set up without an heir.
+   *  The heir key was opened with the password in this browser, checked
+   *  against the descriptor, and re-sealed under a fresh claim token. */
+  chooseHeir: (
+    id: string,
+    ownerToken: string | null,
+    body: {
+      name: string;
+      contact: string;
+      channel?: "email";
+      heir_xprv_ct_b64: string;
+      heir_xprv_nonce_b64: string;
+      claim_token_b64: string;
+      from_name?: string | null;
+      heir_note?: string | null;
+    },
+  ) =>
+    request<null>(
+      `/vaults/${id}/heir/choose`,
       { method: "POST", body: JSON.stringify(body) },
       ownerToken,
     ),
@@ -935,6 +1223,15 @@ export const api = {
       { method: "POST" },
       ownerToken,
     ),
+  /** Panic stop: freeze this vault for 90 days so no claim can
+   *  proceed, and alert the trusted contact if one is on file. Free and
+   *  signed-in. 409 when the vault is already frozen or claimed. */
+  panicStop: (id: string, ownerToken: string | null) =>
+    request<PanicResponse>(
+      `/vaults/${id}/panic`,
+      { method: "POST" },
+      ownerToken,
+    ),
   /** One-tap check-in from the link in a reminder or alarm email.
    *  No Authorization header — the per-cycle token in the URL IS
    *  the auth. Returns 404 if the token doesn't match, 409 if it
@@ -964,48 +1261,6 @@ export const api = {
       `/vaults/${id}/resend-verification`,
       { method: "POST" },
       ownerToken,
-    ),
-  /** Lightning check-in: mint a 1-sat BOLT11 invoice. Paying it from
-   *  any Lightning wallet resets the vault's check-in deadline,
-   *  identical semantics to the regular HTTP `checkin` above.
-   *  Returns 4xx with `error: "lightning provider not configured..."`
-   *  if the server has no Breez backend wired up — call `health()`
-   *  first and hide the option when `lightning_enabled === false`. */
-  lightningCreateInvoice: (id: string, ownerToken: string | null) =>
-    request<LightningInvoiceView>(
-      `/vaults/${id}/lightning-checkin/invoice`,
-      { method: "POST" },
-      ownerToken,
-    ),
-  /** Poll an invoice's status while the user is paying. The server's
-   *  background poller updates the row on a ~3s tick; this just
-   *  surfaces whatever is in the DB. */
-  lightningInvoiceStatus: (
-    id: string,
-    paymentHash: string,
-    ownerToken: string | null,
-  ) =>
-    request<LightningInvoiceStatusView>(
-      `/vaults/${id}/lightning-checkin/status/${encodeURIComponent(paymentHash)}`,
-      {},
-      ownerToken,
-    ),
-  /** Same as lightningCreateInvoice, but authenticated by a one-tap
-   *  check-in link token instead of the owner bearer, so the owner can
-   *  pay the check-in straight from a reminder email without signing in.
-   *  Mirrors `lightning_create_invoice_from_link`. */
-  lightningCreateInvoiceFromLink: (id: string, token: string) =>
-    request<LightningInvoiceView>(
-      `/vaults/${id}/checkin-link/${encodeURIComponent(token)}/lightning-invoice`,
-      { method: "POST" },
-      null,
-    ),
-  /** Poll a link-minted invoice's status (token-gated, no owner auth). */
-  lightningInvoiceStatusFromLink: (id: string, token: string, paymentHash: string) =>
-    request<LightningInvoiceStatusView>(
-      `/vaults/${id}/checkin-link/${encodeURIComponent(token)}/lightning-status/${encodeURIComponent(paymentHash)}`,
-      {},
-      null,
     ),
   listEvents: (id: string, ownerToken: string | null) =>
     request<VaultEvent[]>(`/vaults/${id}/events`, {}, ownerToken),

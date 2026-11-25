@@ -371,10 +371,7 @@ mod http_tests {
             .run(&pool)
             .await
             .expect("run migrations");
-        std::sync::Arc::new(crate::AppState {
-            db: pool,
-            lightning: std::sync::Arc::new(crate::lightning::NoopProvider),
-        })
+        std::sync::Arc::new(crate::AppState { db: pool })
     }
 
     /// Insert a vault directly so we can pin its id + token hash for
@@ -561,6 +558,12 @@ mod http_tests {
             .unwrap();
         let body: Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(body["ok"], true);
+        // The build commit is always present so a deploy can be checked
+        // against main; local and test builds report "unknown".
+        assert!(
+            body["commit"].as_str().is_some_and(|c| !c.is_empty()),
+            "health must report the build commit, got {body}"
+        );
     }
 
     /* ---------------------------------------------------------------- *
@@ -664,11 +667,10 @@ mod http_tests {
     }
 
     #[tokio::test]
-    async fn one_tap_free_checkin_outside_last_resort_window_is_409() {
-        // The free link check-in is a last resort: only allowed inside the
-        // final 24h before the heir would be contacted. With
-        // claim_eligible_at far in the future it must be refused, and the
-        // token must survive so Lightning can still be used.
+    async fn one_tap_checkin_is_free_long_before_the_deadline() {
+        // Checking in is free. The link works at any point in the cycle,
+        // not only in the final 24h (the old Lightning last-resort rule),
+        // so claim_eligible_at far in the future must not refuse it.
         let state = fresh_state().await;
         let issued = crate::crypto::issue_claim_token();
         sqlx::query(
@@ -701,16 +703,16 @@ mod http_tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(resp.status(), StatusCode::OK);
 
-        // A refused attempt must not consume the token.
+        // A successful check-in scrubs the single-use token.
         let hash: Option<String> = sqlx::query_scalar(
             "SELECT checkin_link_token_hash FROM vaults WHERE id = 'vault-link-W'",
         )
         .fetch_one(&state.db)
         .await
         .unwrap();
-        assert_eq!(hash.as_deref(), Some(issued.hash_hex.as_str()));
+        assert!(hash.is_none(), "token hash must be scrubbed after use");
     }
 
     #[tokio::test]
@@ -837,55 +839,20 @@ mod http_tests {
     }
 
     /* ----------------------------------------------------------------- *
-     *  Lightning last-resort gate on POST /vaults/:id/checkin           *
+     *  Check-in is free on POST /vaults/:id/checkin                     *
      *                                                                   *
-     *  Lightning is THE check-in. With a Lightning provider enabled,    *
-     *  the free owner-token path must refuse outside the final 24h      *
-     *  before the heir would be contacted -- the same server-side rule  *
-     *  checkin_from_link already enforces. These tests pin that the     *
-     *  rule holds at the API, not just in the dashboard UI.             *
+     *  Check-ins used to require a Lightning payment outside the final  *
+     *  24h before the heir would be contacted. That gate is gone, and   *
+     *  so is Lightning. The owner's session alone is enough, at any     *
+     *  point in the cycle.                                              *
      * ----------------------------------------------------------------- */
 
-    /// A Lightning provider that reports enabled but can't mint --
-    /// exactly enough to flip the gate on. The gate only consults
-    /// `is_enabled()`; minting stays on the real provider's routes.
-    struct EnabledStubLightning;
-
-    #[async_trait::async_trait]
-    impl crate::lightning::LightningProvider for EnabledStubLightning {
-        fn is_enabled(&self) -> bool {
-            true
-        }
-        async fn create_invoice(
-            &self,
-            _amount_sat: u64,
-            _description: &str,
-        ) -> Result<crate::lightning::CreatedInvoice, crate::lightning::LightningError> {
-            Err(crate::lightning::LightningError::NotConfigured)
-        }
-        async fn invoice_status(
-            &self,
-            _payment_hash: &str,
-        ) -> Result<crate::lightning::InvoiceStatus, crate::lightning::LightningError> {
-            Err(crate::lightning::LightningError::NotConfigured)
-        }
-    }
-
-    /// `fresh_state`, but with the Lightning gate armed.
-    async fn fresh_state_lightning_enabled() -> std::sync::Arc<crate::AppState> {
-        let state = fresh_state().await;
-        std::sync::Arc::new(crate::AppState {
-            db: state.db.clone(),
-            lightning: std::sync::Arc::new(EnabledStubLightning),
-        })
-    }
-
     #[tokio::test]
-    async fn checkin_with_lightning_enabled_outside_window_is_409() {
-        let state = fresh_state_lightning_enabled().await;
+    async fn checkin_is_free_long_before_the_deadline() {
+        let state = fresh_state().await;
         let issued = crate::crypto::issue_owner_token();
-        // insert_vault pins claim_eligible_at to 2099 -- far outside
-        // the 24h last-resort window.
+        // insert_vault pins claim_eligible_at to 2099, far outside the
+        // old 24h last-resort window.
         insert_vault(&state.db, "vault-ln-A", Some(&issued.hash_hex)).await;
 
         let resp = routes::router(state)
@@ -899,21 +866,12 @@ mod http_tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
-        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
-            .await
-            .unwrap();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        let msg = v["error"].as_str().unwrap_or_default();
-        assert!(
-            msg.contains("Lightning"),
-            "409 body should point at Lightning, got: {msg}"
-        );
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
-    async fn checkin_with_lightning_enabled_inside_window_succeeds() {
-        let state = fresh_state_lightning_enabled().await;
+    async fn checkin_inside_the_final_day_succeeds() {
+        let state = fresh_state().await;
         let issued = crate::crypto::issue_owner_token();
         insert_vault(&state.db, "vault-ln-B", Some(&issued.hash_hex)).await;
         // Pull claim_eligible_at inside the final 24h.
@@ -939,10 +897,10 @@ mod http_tests {
     }
 
     #[tokio::test]
-    async fn checkin_with_lightning_enabled_null_eligible_is_409() {
-        // No claim_eligible_at (legacy row): fail toward Lightning,
-        // mirroring the from-link gate's unwrap_or(false).
-        let state = fresh_state_lightning_enabled().await;
+    async fn checkin_on_a_row_without_claim_eligible_is_free() {
+        // No claim_eligible_at (legacy row): this used to fail toward
+        // Lightning. Check-in is free now, so it must succeed.
+        let state = fresh_state().await;
         let issued = crate::crypto::issue_owner_token();
         insert_vault(&state.db, "vault-ln-C", Some(&issued.hash_hex)).await;
         sqlx::query("UPDATE vaults SET claim_eligible_at = NULL WHERE id = 'vault-ln-C'")
@@ -961,13 +919,862 @@ mod http_tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /* ----------------------------------------------------------------- *
+     *  Savings: GET /vaults/:id/savings, PUT|DELETE .../savings/goal    *
+     * ----------------------------------------------------------------- */
+
+    async fn call(
+        state: std::sync::Arc<crate::AppState>,
+        method: &str,
+        uri: &str,
+        token: Option<&str>,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let mut req = Request::builder().method(method).uri(uri);
+        if let Some(t) = token {
+            req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        let req = match body {
+            Some(b) => req
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(b.to_string()))
+                .unwrap(),
+            None => req.body(Body::empty()).unwrap(),
+        };
+        let resp = routes::router(state).oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, v)
     }
 
     #[tokio::test]
-    async fn checkin_without_lightning_stays_free() {
-        // Servers without a Lightning provider (local dev, demo,
-        // self-hosters) keep the free button working at any time.
+    async fn choosing_an_heir_later_arms_the_vault_once() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-later", Some(&issued.hash_hex)).await;
+        sqlx::query(
+            "UPDATE vaults SET heir_pending = 1, status = 'unfunded', \
+                    heir_xprv_owner_sealed_ct_b64 = 'b3duZXI', heir_xprv_owner_sealed_nonce = 'bm4', \
+                    heir_contact_ciphertext = NULL, heir_contact_nonce = NULL, \
+                    claim_token_hash = NULL WHERE id = 'vault-later'",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let t = Some(issued.token.as_str());
+
+        let (_, v) = call(state.clone(), "GET", "/vaults/vault-later", t, None).await;
+        assert_eq!(v["heir_pending"], true);
+
+        let body = serde_json::json!({
+            "name": "Ada",
+            "contact": "ada@example.com",
+            "heir_xprv_ct_b64": "aGVpcg",
+            "heir_xprv_nonce_b64": "bm9uY2U",
+            "claim_token_b64": "Y2xhaW0tdG9rZW4",
+        });
+        // Owner only.
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            "/vaults/vault-later/heir/choose",
+            None,
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
+        // A bad address is refused before anything changes.
+        let mut bad = body.clone();
+        bad["contact"] = serde_json::json!("ada-at-example");
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            "/vaults/vault-later/heir/choose",
+            t,
+            Some(bad),
+        )
+        .await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            "/vaults/vault-later/heir/choose",
+            t,
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(code, StatusCode::NO_CONTENT);
+        type Row = (
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+        let row: Row = sqlx::query_as(
+            "SELECT heir_pending, heir_xprv_owner_sealed_ct_b64, heir_xprv_sealed_ct_b64, \
+                    claim_token_hash, claim_token_at_rest_b64, heir_contact_ciphertext, label \
+               FROM vaults WHERE id = 'vault-later'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(row.0, 0);
+        assert!(row.1.is_none(), "the owner-sealed copy is dropped");
+        assert_eq!(row.2.as_deref(), Some("aGVpcg"));
+        assert_eq!(
+            row.3.as_deref(),
+            Some(crate::crypto::hash_claim_token("Y2xhaW0tdG9rZW4").as_str())
+        );
+        let at_rest = row.4.expect("token kept at rest");
+        assert!(
+            !at_rest.contains("Y2xhaW0tdG9rZW4"),
+            "the token is sealed at rest, not stored verbatim"
+        );
+        let contact = row.5.expect("heir contact sealed");
+        assert!(!contact.contains("ada@"), "the heir contact is sealed");
+        assert_eq!(row.6.as_deref(), Some("Ada's inheritance"));
+
+        // Once only: a second heir is a new share.
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            "/vaults/vault-later/heir/choose",
+            t,
+            Some(body),
+        )
+        .await;
+        assert_eq!(code, StatusCode::CONFLICT);
+        let (_, v) = call(state.clone(), "GET", "/vaults/vault-later", t, None).await;
+        assert_eq!(v["heir_pending"], false);
+    }
+
+    #[tokio::test]
+    async fn several_goals_sort_move_and_spend() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-goals", Some(&issued.hash_hex)).await;
+        let other = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-other", Some(&other.hash_hex)).await;
+        let t = Some(issued.token.as_str());
+        let base = "/vaults/vault-goals/savings";
+
+        // Money from before any goal is never asked about.
+        sqlx::query(
+            "INSERT INTO vault_deposits (vault_id, outpoint, amount_sat, height, seen_at) \
+             VALUES ('vault-goals', 'old:0', 70000, 90, '2020-01-01T00:00:00Z')",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        // Two goals, one typed by the owner.
+        for title in ["School fees", "Okada for my brother"] {
+            let (code, _) = call(
+                state.clone(),
+                "POST",
+                &format!("{base}/goals"),
+                t,
+                Some(serde_json::json!({"title": title, "amount_sat": 1_000_000, "target_date": null})),
+            )
+            .await;
+            assert_eq!(code, StatusCode::OK, "{title}");
+        }
+        let (_, v) = call(state.clone(), "GET", base, t, None).await;
+        let goals = v["goals"].as_array().unwrap().clone();
+        assert_eq!(goals.len(), 2);
+        assert_eq!(goals[0]["title"], "School fees");
+        assert_eq!(
+            v["goal"]["title"], "School fees",
+            "first goal for one-goal clients"
+        );
+        assert_eq!(v["unsorted"].as_array().unwrap().len(), 0);
+        let school = goals[0]["id"].as_str().unwrap().to_string();
+        let okada = goals[1]["id"].as_str().unwrap().to_string();
+
+        // A new deposit waits to be sorted, then lands in the goal chosen.
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO vault_deposits (vault_id, outpoint, amount_sat, height, seen_at) \
+             VALUES ('vault-goals', 'new:0', 50000, 100, ?)",
+        )
+        .bind(&now)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let (_, v) = call(state.clone(), "GET", base, t, None).await;
+        assert_eq!(v["unsorted"][0]["outpoint"], "new:0");
+        assert_eq!(v["unsorted"].as_array().unwrap().len(), 1);
+        let (code, v) = call(
+            state.clone(),
+            "POST",
+            &format!("{base}/sort"),
+            t,
+            Some(serde_json::json!({"outpoint": "new:0", "goal_id": okada})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["unsorted"].as_array().unwrap().len(), 0);
+        assert_eq!(v["goals"][1]["saved_sat"], 50_000);
+        // Asked once only.
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            &format!("{base}/sort"),
+            t,
+            Some(serde_json::json!({"outpoint": "new:0", "goal_id": school})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::CONFLICT);
+
+        // Move 20k across; a goal can't give more than it holds.
+        let (code, v) = call(
+            state.clone(),
+            "POST",
+            &format!("{base}/move"),
+            t,
+            Some(serde_json::json!({"from_goal_id": okada, "to_goal_id": school, "amount_sat": 20_000})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["goals"][0]["saved_sat"], 20_000);
+        assert_eq!(v["goals"][1]["saved_sat"], 30_000);
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            &format!("{base}/move"),
+            t,
+            Some(serde_json::json!({"from_goal_id": okada, "to_goal_id": school, "amount_sat": 30_001})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        // Old money moves in from "not in a goal".
+        let (code, v) = call(
+            state.clone(),
+            "POST",
+            &format!("{base}/move"),
+            t,
+            Some(serde_json::json!({"from_goal_id": null, "to_goal_id": school, "amount_sat": 70_000})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["goals"][0]["saved_sat"], 90_000);
+
+        // A send from a goal never takes it below zero.
+        let (code, v) = call(
+            state.clone(),
+            "POST",
+            &format!("{base}/spend"),
+            t,
+            Some(serde_json::json!({"goal_id": okada, "amount_sat": 45_000})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["goals"][1]["saved_sat"], 0);
+
+        // Renaming keeps the money.
+        let (code, v) = call(
+            state.clone(),
+            "PUT",
+            &format!("{base}/goals"),
+            t,
+            Some(serde_json::json!({"id": school, "title": "University fees", "amount_sat": 2_000_000, "target_date": null})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["goals"][0]["title"], "University fees");
+        assert_eq!(v["goals"][0]["saved_sat"], 90_000);
+
+        // Another vault can't touch these goals, even with its own token.
+        let o = Some(other.token.as_str());
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            "/vaults/vault-other/savings/move",
+            o,
+            Some(serde_json::json!({"from_goal_id": null, "to_goal_id": school, "amount_sat": 1})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::NOT_FOUND);
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            "/vaults/vault-other/savings/goals/remove",
+            o,
+            Some(serde_json::json!({"id": school})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::NOT_FOUND);
+
+        // Removing a goal drops its ledger; the coins never moved.
+        let (code, v) = call(
+            state.clone(),
+            "POST",
+            &format!("{base}/goals/remove"),
+            t,
+            Some(serde_json::json!({"id": okada})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["goals"].as_array().unwrap().len(), 1);
+        let left: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM savings_goal_entries WHERE goal_id = ?")
+                .bind(&okada)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(left, 0);
+
+        // Up to MAX_GOALS at once.
+        for i in 1..crate::savings::MAX_GOALS {
+            let (code, _) = call(
+                state.clone(),
+                "POST",
+                &format!("{base}/goals"),
+                t,
+                Some(serde_json::json!({"title": format!("Goal {i}"), "amount_sat": null, "target_date": null})),
+            )
+            .await;
+            assert_eq!(code, StatusCode::OK, "goal {i}");
+        }
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            &format!("{base}/goals"),
+            t,
+            Some(serde_json::json!({"title": "One too many", "amount_sat": null, "target_date": null})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+    }
+
+    /// Goals keep the order they were made in, even when two share a
+    /// timestamp. Ordering by `datetime(created_at)` rounded to the second
+    /// and then fell back to the random id, so "the first goal" could flip.
+    #[tokio::test]
+    async fn goals_made_in_the_same_second_keep_their_order() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-order", Some(&issued.hash_hex)).await;
+        // Inserted "z" first, then "a": an id tie-break would reverse them.
+        for (gid, title) in [("z-goal", "School fees"), ("a-goal", "Rent")] {
+            let sealed = crate::crypto::seal_for_vault("vault-order", title.as_bytes()).unwrap();
+            sqlx::query(
+                "INSERT INTO savings_goals (id, vault_id, title_ct, title_nonce, created_at) \
+                 VALUES (?, 'vault-order', ?, ?, '2026-11-24T21:00:00.123+00:00')",
+            )
+            .bind(gid)
+            .bind(&sealed.ciphertext_b64)
+            .bind(&sealed.nonce_b64)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        }
+        let (_, v) = call(
+            state.clone(),
+            "GET",
+            "/vaults/vault-order/savings",
+            Some(issued.token.as_str()),
+            None,
+        )
+        .await;
+        assert_eq!(v["goals"][0]["title"], "School fees");
+        assert_eq!(v["goals"][1]["title"], "Rent");
+        assert_eq!(v["goal"]["title"], "School fees");
+    }
+
+    /// The migration turns a vault's single goal into its first goal and
+    /// gives it the deposits so far, and nobody is asked about old money.
+    #[tokio::test]
+    async fn the_single_goal_becomes_the_first_of_many() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-mig", Some(&issued.hash_hex)).await;
+        let sealed = crate::crypto::seal_for_vault("vault-mig", b"School fees").unwrap();
+        sqlx::query(
+            "UPDATE vaults SET savings_goal_title_ct = ?, savings_goal_title_nonce = ?, \
+                    savings_goal_sat = 500000 WHERE id = 'vault-mig'",
+        )
+        .bind(&sealed.ciphertext_b64)
+        .bind(&sealed.nonce_b64)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        for (op, amt) in [("m:0", 40_000), ("m:1", 60_000)] {
+            sqlx::query(
+                "INSERT INTO vault_deposits (vault_id, outpoint, amount_sat, height, seen_at) \
+                 VALUES ('vault-mig', ?, ?, 100, '2026-10-01T00:00:00Z')",
+            )
+            .bind(op)
+            .bind(amt)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        }
+        // Re-run the migration's data steps against this legacy row.
+        let sql = include_str!("../migrations/20261125000000_savings_goals.sql");
+        for stmt in sql.split(';') {
+            let body: String = stmt
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("--"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let body = body.trim();
+            if body.starts_with("INSERT") || body.starts_with("UPDATE") {
+                sqlx::query(body).execute(&state.db).await.unwrap();
+            }
+        }
+        let (code, v) = call(
+            state.clone(),
+            "GET",
+            "/vaults/vault-mig/savings",
+            Some(issued.token.as_str()),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["goals"][0]["title"], "School fees");
+        assert_eq!(v["goals"][0]["amount_sat"], 500_000);
+        assert_eq!(v["goals"][0]["saved_sat"], 100_000);
+        assert_eq!(v["unsorted"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn savings_totals_deposits_and_a_sealed_goal() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-save", Some(&issued.hash_hex)).await;
+        let t = Some(issued.token.as_str());
+
+        // No deposits, no goal.
+        let (code, v) = call(state.clone(), "GET", "/vaults/vault-save/savings", t, None).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["total_saved_sat"], 0);
+        assert_eq!(v["deposit_count"], 0);
+        assert!(v["goal"].is_null());
+
+        // Two deposits, one since spent. The total counts both: it is
+        // everything ever put aside, and never goes down.
+        for (op, amt, h, spent) in [
+            ("a:0", 50_000, 100, None),
+            ("b:1", 25_000, 120, Some("2026-11-01T00:00:00Z")),
+        ] {
+            sqlx::query(
+                "INSERT INTO vault_deposits (vault_id, outpoint, amount_sat, height, seen_at, spent_at) \
+                 VALUES ('vault-save', ?, ?, ?, '2026-10-01T00:00:00Z', ?)",
+            )
+            .bind(op)
+            .bind(amt)
+            .bind(h)
+            .bind(spent)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        }
+        let (_, v) = call(state.clone(), "GET", "/vaults/vault-save/savings", t, None).await;
+        assert_eq!(v["total_saved_sat"], 75_000);
+        assert_eq!(v["deposit_count"], 2);
+        assert_eq!(v["deposits"][0]["amount_sat"], 25_000, "most recent first");
+        assert_eq!(v["deposits"][0]["spent"], true);
+
+        // Set a goal; the title is stored sealed, not in plain text.
+        let goal = serde_json::json!({"title": "School fees", "amount_sat": 1_000_000, "target_date": "2099-06-30"});
+        let (code, v) = call(
+            state.clone(),
+            "PUT",
+            "/vaults/vault-save/savings/goal",
+            t,
+            Some(goal),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["goal"]["title"], "School fees");
+        assert_eq!(v["goal"]["amount_sat"], 1_000_000);
+        let ct: Option<String> =
+            sqlx::query_scalar("SELECT title_ct FROM savings_goals WHERE vault_id = 'vault-save'")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        let ct = ct.expect("title stored");
+        assert!(!ct.contains("School"), "goal title must be sealed at rest");
+
+        // A bad goal is refused and leaves the old one alone.
+        let bad = serde_json::json!({"title": "", "amount_sat": null, "target_date": null});
+        let (code, _) = call(
+            state.clone(),
+            "PUT",
+            "/vaults/vault-save/savings/goal",
+            t,
+            Some(bad),
+        )
+        .await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        let (_, v) = call(state.clone(), "GET", "/vaults/vault-save/savings", t, None).await;
+        assert_eq!(v["goal"]["title"], "School fees");
+
+        // Clearing the goal.
+        let (code, _) = call(
+            state.clone(),
+            "DELETE",
+            "/vaults/vault-save/savings/goal",
+            t,
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::NO_CONTENT);
+        let (_, v) = call(state.clone(), "GET", "/vaults/vault-save/savings", t, None).await;
+        assert!(v["goal"].is_null());
+
+        // Owner only.
+        let (code, _) = call(
+            state.clone(),
+            "GET",
+            "/vaults/vault-save/savings",
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
+
+        // Year in savings: only this calendar year's deposits count.
+        let year = chrono::Utc::now().format("%Y").to_string();
+        for (op, amt, month) in [
+            ("c:0", 10_000, "02"),
+            ("d:0", 30_000, "02"),
+            ("e:0", 20_000, "05"),
+        ] {
+            sqlx::query(
+                "INSERT INTO vault_deposits (vault_id, outpoint, amount_sat, height, seen_at) \
+                 VALUES ('vault-save', ?, ?, 300, ?)",
+            )
+            .bind(op)
+            .bind(amt)
+            .bind(format!("{year}-{month}-10T00:00:00Z"))
+            .execute(&state.db)
+            .await
+            .unwrap();
+        }
+        let (_, v) = call(state.clone(), "GET", "/vaults/vault-save/savings", t, None).await;
+        // The two rows inserted above are dated 2026-10-01, so they count
+        // toward this year only when the test runs in 2026.
+        let earlier = if year == "2026" { 75_000 } else { 0 };
+        assert_eq!(v["this_year"]["total_sat"], 60_000 + earlier);
+        assert_eq!(
+            v["this_year"]["deposit_count"],
+            if year == "2026" { 5 } else { 3 }
+        );
+        if year != "2026" {
+            assert_eq!(v["this_year"]["best_month"], 2);
+            assert_eq!(v["this_year"]["best_month_sat"], 40_000);
+        } else {
+            // October's 75,000 beats February's 40,000.
+            assert_eq!(v["this_year"]["best_month"], 10);
+            assert_eq!(v["this_year"]["best_month_sat"], 75_000);
+        }
+
+        // Reminders: weekly with an amount; junk cadence refused; stop.
+        assert!(v["reminder"].is_null());
+        assert_eq!(v["owner_email_confirmed"], false);
+        let (code, v) = call(
+            state.clone(),
+            "PUT",
+            "/vaults/vault-save/savings/reminder",
+            t,
+            Some(serde_json::json!({"cadence": "weekly", "amount_sat": 50_000})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["reminder"]["cadence"], "weekly");
+        assert_eq!(v["reminder"]["amount_sat"], 50_000);
+        let (code, _) = call(
+            state.clone(),
+            "PUT",
+            "/vaults/vault-save/savings/reminder",
+            t,
+            Some(serde_json::json!({"cadence": "hourly", "amount_sat": null})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        let (code, _) = call(
+            state.clone(),
+            "DELETE",
+            "/vaults/vault-save/savings/reminder",
+            t,
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::NO_CONTENT);
+        let (_, v) = call(state.clone(), "GET", "/vaults/vault-save/savings", t, None).await;
+        assert!(v["reminder"].is_null());
+    }
+
+    #[tokio::test]
+    async fn savings_challenges_join_stop_and_stay_the_owners() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-ch", Some(&issued.hash_hex)).await;
+        let other = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-other-ch", Some(&other.hash_hex)).await;
+        let t = Some(issued.token.as_str());
+        let url = "/vaults/vault-ch/savings/challenges";
+
+        // Owner only.
+        let (code, _) = call(state.clone(), "GET", url, None, None).await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
+        let (code, _) = call(state.clone(), "GET", url, Some(other.token.as_str()), None).await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
+
+        let (code, v) = call(state.clone(), "GET", url, t, None).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["challenges"].as_array().unwrap().len(), 0);
+
+        // Join the 52-week challenge; a second one at once is refused.
+        let join = serde_json::json!({"kind": "week52", "week1_sat": 2_000});
+        let (code, v) = call(state.clone(), "POST", url, t, Some(join.clone())).await;
+        assert_eq!(code, StatusCode::OK);
+        let c = &v["challenges"][0];
+        assert_eq!(c["kind"], "week52");
+        assert_eq!(c["state"], "going");
+        assert_eq!(c["week"], 1);
+        assert_eq!(c["this_week_sat"], 2_000);
+        assert_eq!(c["target_sat"], 2_000 * 1378);
+        let id = c["id"].as_str().unwrap().to_string();
+        let (code, _) = call(state.clone(), "POST", url, t, Some(join.clone())).await;
+        assert_eq!(code, StatusCode::CONFLICT);
+
+        // Bad input is refused.
+        for bad in [
+            serde_json::json!({"kind": "hold", "hold_months": 5}),
+            serde_json::json!({"kind": "goal_by_date", "goal_id": "nope"}),
+            serde_json::json!({"kind": "lottery"}),
+        ] {
+            let (code, _) = call(state.clone(), "POST", url, t, Some(bad)).await;
+            assert_eq!(code, StatusCode::BAD_REQUEST);
+        }
+
+        // Someone else can't stop it, even with the id.
+        let (code, _) = call(
+            state.clone(),
+            "POST",
+            "/vaults/vault-other-ch/savings/challenges/stop",
+            Some(other.token.as_str()),
+            Some(serde_json::json!({"id": id})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::NOT_FOUND);
+
+        // The owner stops it; then it can be started again.
+        let (code, v) = call(
+            state.clone(),
+            "POST",
+            "/vaults/vault-ch/savings/challenges/stop",
+            t,
+            Some(serde_json::json!({"id": id})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["challenges"][0]["state"], "stopped");
+        let (code, v) = call(state.clone(), "POST", url, t, Some(join)).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["challenges"].as_array().unwrap().len(), 2);
+        assert_eq!(v["challenges"][0]["state"], "going");
+    }
+
+    /* ----------------------------------------------------------------- *
+     *  Panic stop: POST /vaults/:id/panic                               *
+     *                                                                   *
+     *  A free, signed-in freeze. It used to need a Lightning payment.   *
+     * ----------------------------------------------------------------- */
+
+    async fn post_panic(
+        state: std::sync::Arc<crate::AppState>,
+        id: &str,
+        token: Option<&str>,
+    ) -> axum::response::Response {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri(format!("/vaults/{id}/panic"));
+        if let Some(t) = token {
+            req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        routes::router(state)
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn panic_stop_freezes_for_90_days_and_revokes_claim_links() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-panic-A", Some(&issued.hash_hex)).await;
+        // A claim link in flight must be revoked by the freeze.
+        sqlx::query(
+            "UPDATE vaults SET claim_token_hash = 'h', claim_token_issued_at = '2026-01-01T00:00:00Z' \
+              WHERE id = 'vault-panic-A'",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let resp = post_panic(state.clone(), "vault-panic-A", Some(&issued.token)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let (status, until, claim_hash): (String, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT status, panic_frozen_until, claim_token_hash FROM vaults WHERE id = 'vault-panic-A'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(status, "frozen");
+        assert!(claim_hash.is_none(), "claim link must be revoked");
+        let until =
+            chrono::DateTime::parse_from_rfc3339(&until.expect("frozen_until set")).unwrap();
+        let days = (until.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_days();
+        assert!(
+            (89..=90).contains(&days),
+            "freeze should last 90 days, got {days}"
+        );
+
+        let events: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE vault_id = 'vault-panic-A' AND kind = 'panic_activated'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(events, 1);
+    }
+
+    #[tokio::test]
+    async fn panic_stop_twice_is_refused() {
+        // A second tap must not extend the window or re-alert anyone.
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-panic-B", Some(&issued.hash_hex)).await;
+        assert_eq!(
+            post_panic(state.clone(), "vault-panic-B", Some(&issued.token))
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_panic(state.clone(), "vault-panic-B", Some(&issued.token))
+                .await
+                .status(),
+            StatusCode::CONFLICT
+        );
+        let events: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE vault_id = 'vault-panic-B' AND kind = 'panic_activated'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(events, 1);
+    }
+
+    #[tokio::test]
+    async fn panic_stop_on_a_claimed_vault_is_refused_and_keeps_the_claim() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-panic-C", Some(&issued.hash_hex)).await;
+        sqlx::query("UPDATE vaults SET status = 'claimed' WHERE id = 'vault-panic-C'")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let resp = post_panic(state.clone(), "vault-panic-C", Some(&issued.token)).await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM vaults WHERE id = 'vault-panic-C'")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(status, "claimed");
+    }
+
+    #[tokio::test]
+    async fn panic_stop_needs_the_owner_token() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-panic-D", Some(&issued.hash_hex)).await;
+        let resp = post_panic(state.clone(), "vault-panic-D", None).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM vaults WHERE id = 'vault-panic-D'")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(status, "ok");
+    }
+
+    #[tokio::test]
+    async fn every_sign_of_life_rolls_the_deadline_but_repeats_change_nothing() {
+        // Signing in counts as a check-in, so the deadline is always a
+        // full period from the last proof of life, at any time. Repeats
+        // within 12 hours are a quiet no-op, so activity isn't flooded.
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-roll", Some(&issued.hash_hex)).await;
+        let t = Some(issued.token.as_str());
+        let url = "/vaults/vault-roll/checkin";
+        let count = |db: SqlitePool| async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM events WHERE vault_id = 'vault-roll' AND kind = 'checkin'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap()
+        };
+        let deadline = |v: &Value| {
+            chrono::DateTime::parse_from_rfc3339(v["next_deadline_at"].as_str().unwrap()).unwrap()
+        };
+
+        let (code, first) = call(state.clone(), "POST", url, t, None).await;
+        assert_eq!(code, StatusCode::OK);
+        let (code, again) = call(state.clone(), "POST", url, t, None).await;
+        assert_eq!(code, StatusCode::OK, "a repeat is fine, not a 409");
+        assert_eq!(deadline(&again), deadline(&first), "and moves nothing");
+        assert_eq!(count(state.db.clone()).await, 1);
+
+        // 13 hours later: it rolls forward again.
+        let earlier = (chrono::Utc::now() - chrono::Duration::hours(13)).to_rfc3339();
+        sqlx::query("UPDATE vaults SET last_checkin_at = ? WHERE id = 'vault-roll'")
+            .bind(&earlier)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let (code, later) = call(state.clone(), "POST", url, t, None).await;
+        assert_eq!(code, StatusCode::OK);
+        assert!(deadline(&later) > deadline(&first));
+        assert_eq!(count(state.db.clone()).await, 2);
+
+        // An alarm always clears, however recent the last check-in.
+        sqlx::query("UPDATE vaults SET status = 'alarmed' WHERE id = 'vault-roll'")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let (code, v) = call(state.clone(), "POST", url, t, None).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["status"], "ok");
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM vaults WHERE id = 'vault-roll'")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(status, "ok");
+    }
+
+    #[tokio::test]
+    async fn checkin_works_at_any_time() {
+        // The plain button works with a normal far-off deadline.
         let state = fresh_state().await;
         let issued = crate::crypto::issue_owner_token();
         insert_vault(&state.db, "vault-ln-D", Some(&issued.hash_hex)).await;

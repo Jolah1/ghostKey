@@ -63,11 +63,12 @@ import {
   type UnlockEstimateView,
   type VaultBalanceView,
 } from "./api";
-import { usePrice, btcAndUsd } from "./fiat";
+import { formatAmount, useFiatLine, useUnit } from "./units";
 import { countdown, parseRfc } from "./time";
 import { useVocab, LanguageToggle } from "./vocab";
 import type { ClaimCommonVocab } from "./vocab/types";
 import { HeirVideoMessage } from "./HeirVideoMessage";
+import { NeverAskNotice } from "./NeverAskNotice";
 import { ConfirmSend } from "./ConfirmSend";
 import {
   addressMatchesNetwork,
@@ -336,6 +337,9 @@ function DrillFlow({ view, token }: { view: ClaimView; token: string }) {
           <p className="mt-4 text-muted">{d.introBody1}</p>
           <p className="mt-3 text-muted">{d.introBody2}</p>
           <div className="mt-6">
+            <NeverAskNotice />
+          </div>
+          <div className="mt-6">
             <Button onClick={() => setStep("walkthrough")}>{d.introCta}</Button>
           </div>
         </div>
@@ -436,10 +440,12 @@ function Resolved({ view, token }: { view: ClaimView; token: string }) {
 
   // The owner's video message (if any) sits above every state — it's the
   // heir's first reassurance the link is genuine, shown whether they're
-  // waiting out the safety window or claiming right now.
+  // waiting out the safety window or claiming right now. What we never
+  // ask for (#392) comes next, before any step can ask for anything.
   return (
     <>
       <HeirVideoMessage token={token} />
+      <NeverAskNotice />
       {body}
     </>
   );
@@ -1939,6 +1945,7 @@ function ManualPsbtClaim({
 
 function PsbtSummary({ build }: { build: BuildClaimPsbtResponse }) {
   const v = useVocab();
+  const unit = useUnit();
   const m = v.manualClaim;
   return (
     <div className="mt-5 card-flat p-4">
@@ -1946,9 +1953,9 @@ function PsbtSummary({ build }: { build: BuildClaimPsbtResponse }) {
         {m.psbtSummary}
       </p>
       <dl className="mt-2 grid grid-cols-1 gap-1 text-sm">
-        <Row k={m.amountBeingMoved} v={`${formatSats(build.total_input_sats)} sats`} />
-        <Row k={m.youllReceive} v={`${formatSats(build.output_sats)} sats`} />
-        <Row k={m.networkFee} v={`${formatSats(build.fee_sats)} sats`} />
+        <Row k={m.amountBeingMoved} v={formatAmount(build.total_input_sats, unit)} />
+        <Row k={m.youllReceive} v={formatAmount(build.output_sats, unit)} />
+        <Row k={m.networkFee} v={formatAmount(build.fee_sats, unit)} />
         <Row k={m.networkLabel} v={build.network} />
       </dl>
       <p className="mt-3 text-xs text-muted">
@@ -2355,7 +2362,8 @@ function parseFeeRate(s: string): number | null | undefined {
  *  while loading, empty, or if the lookup fails. */
 function VaultValueLine({ vaultId }: { vaultId: string }) {
   const [balance, setBalance] = useState<VaultBalanceView | null>(null);
-  const usdPerBtc = usePrice();
+  const fiatLineOf = useFiatLine();
+  const unit = useUnit();
   useEffect(() => {
     let cancelled = false;
     api
@@ -2373,11 +2381,9 @@ function VaultValueLine({ vaultId }: { vaultId: string }) {
   if (!balance || balance.total_sat <= 0) return null;
   return (
     <p className="mt-2 text-sm text-soft">
-      {formatSats(balance.total_sat)} sat · {btcAndUsd(balance.total_sat, usdPerBtc)}
+      {formatAmount(balance.total_sat, unit)}
+      {fiatLineOf(balance.total_sat) ? ` · ${fiatLineOf(balance.total_sat)}` : ""}
     </p>
   );
 }
 
-function formatSats(n: number): string {
-  return n.toLocaleString();
-}

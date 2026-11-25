@@ -10,7 +10,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import type { Route } from "./App";
-import { api, ApiError } from "./api";
+import { api, ApiError, type GuardianContactView } from "./api";
 import { useActiveVault } from "./useActiveVault";
 import { useToolDoneState } from "./toolStatus";
 import { VideoMessageCard } from "./VideoMessageCard";
@@ -46,7 +46,7 @@ function ToolPage({
           onClick={() => onNavigate("dashboard")}
           className="text-sm text-muted underline hover:text-[var(--text)]"
         >
-          ← Back to dashboard
+          ← Back to home
         </button>
         <h1 className="mt-4 font-serif text-3xl">{title}</h1>
         {intro ? <p className="mt-2 text-sm text-muted">{intro}</p> : null}
@@ -167,11 +167,11 @@ export function PracticeRunPage({ onNavigate }: PageProps) {
 }
 
 export function EmergencyPage({ onNavigate }: PageProps) {
-  const { vault, loading, meta } = useActiveVault();
+  const { vault, loading, meta, ownerToken } = useActiveVault();
   const isClaiming =
     vault?.status === "timelock_started" || vault?.status === "claiming";
   const ready = Boolean(
-    vault?.lnurl_panic &&
+    vault &&
       vault.status !== "frozen" &&
       vault.status !== "claimed" &&
       !isClaiming,
@@ -182,9 +182,10 @@ export function EmergencyPage({ onNavigate }: PageProps) {
       intro="If your wallet is ever compromised, freeze this share so no claim can proceed."
       onNavigate={onNavigate}
     >
-      {ready && vault?.lnurl_panic ? (
+      {ready && vault ? (
         <PanicCard
-          lnurl={vault.lnurl_panic}
+          vaultId={vault.id}
+          ownerToken={ownerToken}
           hasTrustedContact={Boolean(vault.has_trusted_contact)}
         />
       ) : (
@@ -211,9 +212,12 @@ export function ToolsPage({ onNavigate }: PageProps) {
   const isClaiming =
     vault?.status === "timelock_started" || vault?.status === "claiming";
   const isClosed = vault?.status === "claimed";
+  // No heir chosen yet: there is nobody to message, reach or practise
+  // with, and no clock to remind about or freeze. Home offers the choice.
+  const heirPending = vault?.heir_pending === true;
 
   const items: Array<{ label: string; desc: string; route: Route }> = [];
-  if (vault && !isClosed) {
+  if (vault && !isClosed && !heirPending) {
     items.push({
       label: "Message for your heir",
       desc:
@@ -223,14 +227,14 @@ export function ToolsPage({ onNavigate }: PageProps) {
       route: "heir-message",
     });
   }
-  if (vault && !isClosed) {
+  if (vault && !isClosed && !heirPending) {
     items.push({
       label: "How your heir is reached",
       desc: "Change their contact or the way we reach them",
       route: "heir-contact",
     });
   }
-  if (vault && !isClosed && !isClaiming) {
+  if (vault && !isClosed && !isClaiming && !heirPending) {
     items.push({
       label: "Practice a claim",
       desc: vault.drill_completed_at
@@ -241,9 +245,9 @@ export function ToolsPage({ onNavigate }: PageProps) {
       route: "practice",
     });
   }
-  if (vault && ownerToken && pushKey && !isClosed) {
+  if (vault && ownerToken && pushKey && !isClosed && !heirPending) {
     items.push({
-      label: "Reminders",
+      label: "Check-in reminders",
       desc:
         done.remindersOn === true
           ? "On for this device"
@@ -251,7 +255,7 @@ export function ToolsPage({ onNavigate }: PageProps) {
       route: "reminders",
     });
   }
-  if (vault?.lnurl_panic && vault.status !== "frozen" && !isClosed && !isClaiming) {
+  if (vault && vault.status !== "frozen" && !isClosed && !isClaiming && !heirPending) {
     items.push({
       label: "Emergency options",
       desc: "Freeze this share if needed",
@@ -261,14 +265,14 @@ export function ToolsPage({ onNavigate }: PageProps) {
 
   return (
     <ToolPage
-      title="Vault tools"
-      intro="Everything you can set up or check for this vault, in one place."
+      title="Family"
+      intro="Who inherits your savings, how they're reached, and what to do in an emergency."
       onNavigate={onNavigate}
     >
       {items.length > 0 ? (
         <nav
           className="card-flat divide-y divide-[var(--border)] p-0"
-          aria-label="Vault tools"
+          aria-label="Family settings"
         >
           {items.map((it) => (
             <button
@@ -295,7 +299,7 @@ export function ToolsPage({ onNavigate }: PageProps) {
         <Fallback
           loading={loading}
           hasVault={Boolean(meta)}
-          emptyText="No tools apply to this vault right now."
+          emptyText={heirPending ? "Choose who inherits from Home first. These tools are for your heir." : "No tools apply to this vault right now."}
           onNavigate={onNavigate}
         />
       )}
@@ -308,7 +312,7 @@ export function RemindersPage({ onNavigate }: PageProps) {
   const ready = Boolean(meta && ownerToken && pushKey && vault?.status !== "claimed");
   return (
     <ToolPage
-      title="Reminders"
+      title="Check-in reminders"
       intro="Get a nudge on this device when it's time to check in, so you never miss it."
       onNavigate={onNavigate}
     >
@@ -391,7 +395,10 @@ export function HeirContactPage({ onNavigate }: PageProps) {
       onNavigate={onNavigate}
     >
       {ready && meta && ownerToken ? (
-        <HeirContactCard vaultId={meta.id} ownerToken={ownerToken} />
+        <>
+          <HeirContactCard vaultId={meta.id} ownerToken={ownerToken} />
+          <GuardiansCard vaultId={meta.id} ownerToken={ownerToken} />
+        </>
       ) : (
         <Fallback
           loading={loading}
@@ -404,6 +411,143 @@ export function HeirContactPage({ onNavigate }: PageProps) {
         />
       )}
     </ToolPage>
+  );
+}
+
+/**
+ * Guardians' contacts on a guardian vault (#81). Renders nothing for a
+ * standard vault. A guardian vault can only be claimed once the guardians
+ * get their links, so a guardian on a channel we can't deliver is a claim
+ * that can never finish. Email is the only working channel, so this form
+ * is email-only and flags any guardian still on SMS or WhatsApp.
+ */
+function GuardiansCard({
+  vaultId,
+  ownerToken,
+}: {
+  vaultId: string;
+  ownerToken: string;
+}) {
+  const [guardians, setGuardians] = useState<GuardianContactView[] | null>(null);
+  const [drafts, setDrafts] = useState<Record<number, string>>({});
+  const [savingSlot, setSavingSlot] = useState<number | null>(null);
+  const [savedSlot, setSavedSlot] = useState<number | null>(null);
+  const [errors, setErrors] = useState<Record<number, string>>({});
+  const cap = useChannelCapability();
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .listVaultGuardians(vaultId, ownerToken)
+      .then((gs) => {
+        if (!alive) return;
+        setGuardians(gs);
+        setDrafts(
+          Object.fromEntries(
+            gs.map((g) => [g.slot, g.channel === "email" ? (g.contact ?? "") : ""]),
+          ),
+        );
+      })
+      .catch(() => {
+        if (alive) setGuardians([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [vaultId, ownerToken]);
+
+  if (!guardians || guardians.length === 0) return null;
+
+  async function save(slot: number) {
+    const email = (drafts[slot] ?? "").trim();
+    const shapeError = email ? contactShapeError("email", email) : "Enter their email.";
+    if (shapeError) {
+      setErrors((e) => ({ ...e, [slot]: shapeError }));
+      return;
+    }
+    setSavingSlot(slot);
+    setSavedSlot(null);
+    setErrors((e) => ({ ...e, [slot]: "" }));
+    try {
+      const gs = await api.updateVaultGuardian(vaultId, ownerToken, slot, {
+        contact: email,
+        channel: "email",
+      });
+      setGuardians(gs);
+      setSavedSlot(slot);
+    } catch (e) {
+      setErrors((prev) => ({
+        ...prev,
+        [slot]:
+          e instanceof ApiError && e.message
+            ? e.message
+            : "Couldn't save that. Check your connection and try again.",
+      }));
+    } finally {
+      setSavingSlot(null);
+    }
+  }
+
+  return (
+    <div className="card-flat mt-6 p-5">
+      <p className="text-sm font-semibold">Guardians</p>
+      <p className="mt-1 text-sm text-muted">
+        Your heir needs a guardian to help claim. We email each guardian a
+        link only if you stop checking in.
+      </p>
+      {guardians.map((g) => {
+        const channel = g.channel ?? "email";
+        const unreachable =
+          channel !== "email" &&
+          !(channel === "sms" ? cap.sms : channel === "whatsapp" ? cap.whatsapp : false);
+        return (
+          <div key={g.slot} className="mt-5">
+            {unreachable ? (
+              <div className="mb-3">
+                <InlineAlert tone="warning">
+                  Guardian {g.slot} is set up for{" "}
+                  {channel === "sms" ? "SMS" : "WhatsApp"}, which we can't send
+                  right now. Without an email, they won't get their link and
+                  the claim can't finish. Add their email below.
+                </InlineAlert>
+              </div>
+            ) : null}
+            <Field
+              label={`Guardian ${g.slot}'s email`}
+              hint="Stored encrypted."
+              error={errors[g.slot] || null}
+            >
+              <input
+                type="email"
+                inputMode="email"
+                autoComplete="off"
+                className="input"
+                aria-label={`Guardian ${g.slot}'s email`}
+                placeholder="guardian@example.com"
+                value={drafts[g.slot] ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setDrafts((d) => ({ ...d, [g.slot]: v }));
+                  setSavedSlot(null);
+                }}
+              />
+            </Field>
+            <div className="flex items-center gap-3">
+              <Button
+                size="sm"
+                onClick={() => void save(g.slot)}
+                loading={savingSlot === g.slot}
+              >
+                Save guardian {g.slot}
+              </Button>
+              {savedSlot === g.slot ? (
+                <span className="text-sm text-muted">Saved ✓</span>
+              ) : null}
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -499,11 +643,17 @@ function HeirContactCard({
     return <p className="text-sm text-muted">Loading…</p>;
   }
 
+  // Only channels this server can deliver, plus the current one if it
+  // can't (so the warning below has something to point at). With just
+  // email left, there's nothing to pick.
+  const shownChannels = HEIR_CHANNELS.filter((c) => cap[c.id] || c.id === channel);
+
   return (
     <div className="card-flat p-5">
+      {shownChannels.length > 1 ? (
       <Field label="How should we reach them">
         <div className="grid grid-cols-3 gap-2">
-          {HEIR_CHANNELS.map((c) => (
+          {shownChannels.map((c) => (
             <Tile
               key={c.id}
               title={c.title}
@@ -532,6 +682,7 @@ function HeirContactCard({
           </div>
         ) : null}
       </Field>
+      ) : null}
 
       <Field
         label={channel === "email" ? "Their email" : "Their phone number"}

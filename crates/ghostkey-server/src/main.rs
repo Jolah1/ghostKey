@@ -23,6 +23,7 @@ mod admin;
 mod analytics;
 mod assist;
 mod auth;
+mod challenges;
 mod concurrency;
 mod config;
 mod crypto;
@@ -31,16 +32,16 @@ mod deliverability;
 mod delivery;
 mod demo;
 mod drill;
-mod lightning;
-mod lnurl;
 mod newsletter;
 mod notifier;
+mod panic;
 mod price;
 mod psbt_routes;
 mod push;
 mod rate_limit;
 mod resend;
 mod routes;
+mod savings;
 mod scheduler;
 mod video_routes;
 
@@ -68,22 +69,11 @@ struct Args {
     /// timeouts have their own cadence. Reasonable default: 15s.
     #[arg(long, env = "GHOSTKEY_NOTIF_TICK_SECS", default_value_t = 15)]
     notif_tick_secs: u64,
-
-    /// How often the Lightning poller checks pending invoices.
-    /// Only used when a Lightning provider is configured. Faster than
-    /// the scheduler tick because users wait on this synchronously
-    /// (they're staring at a QR code).
-    #[arg(long, env = "GHOSTKEY_LN_TICK_SECS", default_value_t = 3)]
-    ln_tick_secs: u64,
 }
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: sqlx::SqlitePool,
-    /// Lightning provider. Always present (Noop when not configured)
-    /// so handlers can call it without an Option check; the provider
-    /// itself reports `is_enabled()`.
-    pub lightning: std::sync::Arc<dyn lightning::LightningProvider>,
 }
 
 #[tokio::main]
@@ -157,15 +147,7 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Lightning provider: HttpProvider talking to a sidecar (either
-    // Breez or LNbits — same wire protocol) when
-    // GHOSTKEY_LN_SIDECAR_URL + GHOSTKEY_LN_SIDECAR_SHARED_SECRET
-    // are set, otherwise NoopProvider. build_provider() never panics.
-    let lightning = lightning::build_provider().await;
-    let state = Arc::new(AppState {
-        db: pool.clone(),
-        lightning: lightning.clone(),
-    });
+    let state = Arc::new(AppState { db: pool.clone() });
 
     // Background scheduler.
     //
@@ -173,8 +155,7 @@ async fn main() -> Result<()> {
     // what the operator passed on the CLI / env) so a seconds-scale
     // cadence is actually observable. We log the override so the
     // operator can see why their `GHOSTKEY_TICK_SECS=30` is being
-    // ignored. The same overide is applied to the Lightning poller
-    // below for the same reason.
+    // ignored.
     let sched_tick = if demo::demo_mode() {
         if args.tick_secs != demo::DEMO_SCHEDULER_TICK_SECS {
             tracing::info!(
@@ -192,16 +173,13 @@ async fn main() -> Result<()> {
         scheduler::run(sched_state, std::time::Duration::from_secs(sched_tick)).await;
     });
 
-    // Background Lightning poller. Cheap when disabled (the first
-    // check in tick_once early-returns), so we always spawn it.
-    let ln_tick = if demo::demo_mode() {
-        demo::DEMO_LIGHTNING_TICK_SECS
-    } else {
-        args.ln_tick_secs
-    };
-    let ln_state = state.clone();
+    // Chain refresher: does all block-explorer scanning on its own clock,
+    // so a slow or rate-limited explorer can never delay the scheduler's
+    // reminders and alarms. See `scheduler::run_chain_refresher`.
+    let refresh_state = state.clone();
     tokio::spawn(async move {
-        lightning::run_poller(ln_state, std::time::Duration::from_secs(ln_tick)).await;
+        scheduler::run_chain_refresher(refresh_state, std::time::Duration::from_secs(sched_tick))
+            .await;
     });
 
     // Background notification worker. Runs on the same DB pool as

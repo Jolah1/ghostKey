@@ -48,6 +48,8 @@ import {
 } from "./vaultStore";
 import { VideoMessageRecorder, type RecordedClip } from "./VideoMessageRecorder";
 import { isUnsealFailure } from "./unlockErrors";
+import { useChannelCapability } from "./useChannelCapability";
+import { DepositAddress } from "./DepositAddress";
 
 const PLACEHOLDER_OWNER_TOKEN = "ghostkey-placeholder-owner-token-v1";
 
@@ -83,7 +85,13 @@ type Phase =
   | { kind: "form" }
   | { kind: "unlocking"; pct: number }
   | { kind: "creating" }
-  | { kind: "done"; heirName: string; address: string | null };
+  | {
+      kind: "done";
+      heirName: string;
+      address: string | null;
+      vaultId: string;
+      network: string;
+    };
 
 /** Strip the `/<chain>/*` receive-path suffix off a descriptor key
  *  fragment, leaving an origin-tagged xpub the server accepts as
@@ -103,6 +111,9 @@ export function AddHeirPortal({
   const [heirName, setHeirName] = useState("");
   const [contact, setContact] = useState("");
   const [channel, setChannel] = useState<Channel>("email");
+  // Channels this server can't deliver are disabled, like every other
+  // contact picker (#277). Email is the only working channel today.
+  const cap = useChannelCapability();
   const [password, setPassword] = useState("");
   const [videoClip, setVideoClip] = useState<RecordedClip | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "form" });
@@ -313,13 +324,22 @@ export function AddHeirPortal({
       // (6) Fetch the receive address to show the owner where to fund
       // this heir's share. Best-effort.
       let address: string | null = null;
+      let addressNetwork: string = vault.network;
       try {
-        address = (await api.getVaultAddress(resp.id)).address;
+        const a = await api.getVaultAddress(resp.id);
+        address = a.address;
+        addressNetwork = a.network;
       } catch (e) {
         console.warn("address fetch failed for new heir", resp.id, e);
       }
 
-      setPhase({ kind: "done", heirName: heirName.trim(), address });
+      setPhase({
+        kind: "done",
+        heirName: heirName.trim(),
+        address,
+        vaultId: resp.id,
+        network: addressNetwork,
+      });
     } catch (e) {
       setPhase({ kind: "form" });
       setError(e instanceof ApiError ? e.message : String(e));
@@ -366,9 +386,13 @@ export function AddHeirPortal({
                 <p className="text-xs uppercase tracking-wider text-dim">
                   {phase.heirName}'s deposit address
                 </p>
-                <p className="mt-1 break-all font-mono text-sm text-[var(--text)]">
-                  {phase.address}
-                </p>
+                <div className="mt-2">
+                  <DepositAddress
+                    vaultId={phase.vaultId}
+                    address={phase.address}
+                    network={phase.network}
+                  />
+                </div>
               </div>
             ) : (
               <p className="mt-4 text-sm text-muted">
@@ -410,8 +434,12 @@ export function AddHeirPortal({
                     aria-label="Contact method"
                   >
                     <option value="email">Email</option>
-                    <option value="sms">SMS</option>
-                    <option value="whatsapp">WhatsApp</option>
+                    <option value="sms" disabled={!cap.sms}>
+                      {cap.sms ? "SMS" : "SMS (not available yet)"}
+                    </option>
+                    <option value="whatsapp" disabled={!cap.whatsapp}>
+                      {cap.whatsapp ? "WhatsApp" : "WhatsApp (not available yet)"}
+                    </option>
                   </select>
                   <input
                     className="input flex-1"

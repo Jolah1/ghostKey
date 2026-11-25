@@ -4,7 +4,7 @@ use axum::extract::{Path, State};
 use axum::http::header;
 use axum::http::{Method, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use bitcoin::bip32::Fingerprint;
 use chrono::{DateTime, Duration, Utc};
@@ -245,11 +245,9 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024));
 
     // Routes whose owner-auth or one-tap token already gates abuse,
-    // plus the always-open `/health` and the LNURL endpoints (capped
-    // upstream by the Lightning provider's own minting limits).
+    // plus the always-open `/health`.
     let open_routes: Router<Arc<AppState>> = Router::new()
         .route("/health", get(health))
-        .route("/health/lightning", get(health_lightning))
         // Twilio's per-message delivery callback (#311). Open by URL
         // because Twilio has no credential to present; the request's
         // HMAC-SHA1 signature over the auth token IS the authentication,
@@ -280,44 +278,67 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
             "/vaults/:id/heir",
             get(get_vault_heir).put(update_vault_heir),
         )
+        .route("/vaults/:id/heir/choose", post(choose_heir))
+        .route("/vaults/:id/savings", get(crate::savings::get_savings))
+        .route(
+            "/vaults/:id/savings/goal",
+            put(crate::savings::put_goal).delete(crate::savings::delete_goal),
+        )
+        .route(
+            "/vaults/:id/savings/goals",
+            post(crate::savings::create_goal).put(crate::savings::update_goal),
+        )
+        .route(
+            "/vaults/:id/savings/goals/remove",
+            post(crate::savings::remove_goal),
+        )
+        .route(
+            "/vaults/:id/savings/sort",
+            post(crate::savings::sort_deposit),
+        )
+        .route("/vaults/:id/savings/move", post(crate::savings::move_money))
+        .route(
+            "/vaults/:id/savings/spend",
+            post(crate::savings::spend_from_goal),
+        )
+        .route(
+            "/vaults/:id/savings/challenges",
+            get(crate::challenges::get_challenges).post(crate::challenges::join_challenge),
+        )
+        .route(
+            "/vaults/:id/savings/challenges/stop",
+            post(crate::challenges::stop_challenge),
+        )
+        .route(
+            "/vaults/:id/savings/reminder",
+            put(crate::savings::put_reminder).delete(crate::savings::delete_reminder),
+        )
+        .route("/vaults/:id/guardians", get(list_vault_guardians))
+        .route("/vaults/:id/guardians/:slot", put(update_vault_guardian))
         .route(
             "/vaults/:id/balance",
             get(crate::psbt_routes::get_vault_balance),
         )
+        .route(
+            "/vaults/:id/balance/last",
+            get(crate::psbt_routes::get_last_balance),
+        )
+        .route(
+            "/vaults/:id/tx/:txid/confirmed",
+            get(crate::psbt_routes::tx_confirmed),
+        )
+        .route(
+            "/vaults/:id/lightning/broadcast",
+            post(crate::psbt_routes::relay_vault_deposit),
+        )
         .route("/vaults/:id/send", post(crate::psbt_routes::owner_send))
         .route("/vaults/:id/seal-owner-token", post(seal_owner_token))
         .route("/vaults/:id/checkin", post(checkin))
+        .route("/vaults/:id/panic", post(crate::panic::panic_stop))
         .route(
             "/vaults/:id/checkin-from-link/:token",
             post(checkin_from_link),
         )
-        .route(
-            "/vaults/:id/lightning-checkin/invoice",
-            post(lightning_create_invoice),
-        )
-        .route(
-            "/vaults/:id/lightning-checkin/status/:payment_hash",
-            get(lightning_invoice_status),
-        )
-        // One-tap-link Lightning check-in: same mint/poll flow as above
-        // but gated by the email link token instead of owner auth, so the
-        // owner can pay the check-in straight from a reminder email.
-        .route(
-            "/vaults/:id/checkin-link/:token/lightning-invoice",
-            post(lightning_create_invoice_from_link),
-        )
-        .route(
-            "/vaults/:id/checkin-link/:token/lightning-status/:payment_hash",
-            get(lightning_invoice_status_from_link),
-        )
-        // Static LNURL-pay endpoints. No auth — the vault UUID is the
-        // access control (1-sat invoices are cheap; a stolen UUID lets
-        // a stranger help the owner stay alive, which is harmless).
-        // See lnurl.rs for the LUD-06 spec links.
-        .route("/lnurlp/:vault_id", get(lnurlp_pay_request))
-        .route("/lnurlp/:vault_id/cb", get(lnurlp_callback))
-        .route("/lnurlp/:vault_id/panic", get(lnurlp_panic_pay_request))
-        .route("/lnurlp/:vault_id/panic/cb", get(lnurlp_panic_callback))
         .route("/vaults/:id/events", get(list_events))
         .route("/vaults/:id/issue-claim", post(issue_claim))
         // Claim fire drill (#223): owner starts a practice run for
@@ -388,12 +409,10 @@ fn redact_credential_path(raw_path: &str) -> &str {
 struct Health {
     ok: bool,
     version: &'static str,
-    /// Whether this server has a configured Lightning provider. The
-    /// web client uses this to decide whether to show the "check in
-    /// with Lightning" button next to the existing tap-to-checkin
-    /// affordance. When false the button is hidden and only the
-    /// regular HTTP check-in is offered.
-    lightning_enabled: bool,
+    /// The git commit this binary was built from, so anyone can check
+    /// that what is live matches main. Set by the deploy at build time
+    /// (`--build-arg GIT_SHA=...`); "unknown" for local builds.
+    commit: &'static str,
     /// Whether this server is running in demonstration mode. When
     /// true, the web client surfaces the seconds-scale cadence
     /// presets and a prominent "DEMO MODE" banner; vault creation
@@ -421,7 +440,7 @@ struct Health {
     /// Which contact channels this server can actually deliver (#277).
     /// The setup and edit-heir flows disable channels that are false
     /// here, so an owner can never pick a contact the notifier would
-    /// have to drop. Same gating pattern as `lightning_enabled`.
+    /// have to drop.
     email_enabled: bool,
     sms_enabled: bool,
     whatsapp_enabled: bool,
@@ -494,6 +513,16 @@ struct Health {
 /// worker is stuck (retries already push `scheduled_at` out, so a due row
 /// this old is not just normal backoff).
 const NOTIFIER_STUCK_SECS: i64 = 15 * 60;
+
+/// The commit baked in at build time, or "unknown". An empty value counts
+/// as unknown so a deploy that forgets the build arg can't pass for one
+/// that set it.
+fn build_commit() -> &'static str {
+    match option_env!("GHOSTKEY_GIT_SHA") {
+        Some(sha) if !sha.trim().is_empty() => sha,
+        _ => "unknown",
+    }
+}
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
     let assist_enabled = std::env::var("ANTHROPIC_API_KEY")
@@ -589,7 +618,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
     Json(Health {
         ok: true,
         version: env!("CARGO_PKG_VERSION"),
-        lightning_enabled: state.lightning.is_enabled(),
+        commit: build_commit(),
         demo_mode: crate::demo::demo_mode(),
         default_network: crate::config::default_network(),
         assist_enabled,
@@ -614,49 +643,6 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         chain_scan_retry_at: crate::psbt_routes::explorer_retry_at(Utc::now())
             .map(|t| t.to_rfc3339()),
     })
-}
-
-/// Ops-facing deep probe of the Lightning wire.
-///
-/// `GET /health` only tells you "the operator set the env vars."
-/// `GET /health/lightning` actually issues the sidecar's `/v1/health`
-/// and surfaces:
-///   * `enabled` — the main app has a configured provider at all
-///   * `ready` — the sidecar replied `ok: true, ready: true`
-///   * `error` — the sidecar was unreachable or returned non-OK,
-///     with a one-line excuse you can grep in logs
-///
-/// Cached in-provider for 5 seconds (see `HttpProvider::probe`),
-/// so this endpoint can be curled tightly without DoSing the
-/// sidecar. Always returns 200 — the JSON body is the signal.
-#[derive(Debug, Serialize)]
-struct LightningHealth {
-    enabled: bool,
-    ready: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-}
-
-async fn health_lightning(State(state): State<Arc<AppState>>) -> Json<LightningHealth> {
-    if !state.lightning.is_enabled() {
-        return Json(LightningHealth {
-            enabled: false,
-            ready: false,
-            error: None,
-        });
-    }
-    match state.lightning.probe().await {
-        Ok(ready) => Json(LightningHealth {
-            enabled: true,
-            ready,
-            error: None,
-        }),
-        Err(e) => Json(LightningHealth {
-            enabled: true,
-            ready: false,
-            error: Some(e.to_string()),
-        }),
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -698,16 +684,6 @@ pub struct VaultView {
     /// `None` whenever `status != "frozen"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub panic_frozen_until: Option<DateTime<Utc>>,
-    /// LNURL-pay string for the check-in invoice. `None` when
-    /// Lightning is disabled (the operator has not set
-    /// `GHOSTKEY_API_BASE_URL` and/or has not configured the
-    /// Breez sidecar).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lnurl_checkin: Option<String>,
-    /// LNURL-pay string for the panic-stop invoice. Same null rules
-    /// as `lnurl_checkin`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lnurl_panic: Option<String>,
     /// Whether the owner's reminder email has been confirmed by
     /// tapping the verification link we sent at setup. `None` when
     /// the vault has no sealed owner email on file (legacy CLI rows,
@@ -730,11 +706,24 @@ pub struct VaultView {
     /// owner-authenticated `GET /vaults/:id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activation_held: Option<bool>,
+    /// No heir chosen yet: the owner skipped inheritance at setup. The
+    /// check-in clock stays off until they choose one. Only populated on
+    /// the owner-authenticated `GET /vaults/:id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heir_pending: Option<bool>,
     /// Can we reach the heir (#327)? `"unreachable"`, `"unconfirmed"` or
     /// `"confirmed"`; see [`heir_reachability`]. Only populated on the
     /// owner-authenticated `GET /vaults/:id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heir_reachability: Option<String>,
+    /// Guardian vaults only (#81): how many guardians we couldn't reach
+    /// today, because they have no contact or sit on a channel this server
+    /// can't deliver. A guardian vault can't be claimed until the
+    /// guardians get their links, so anything above zero means the claim
+    /// would stall. See [`count_unreachable_guardians`]. Only populated on
+    /// the owner-authenticated `GET /vaults/:id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guardians_unreachable: Option<i64>,
     /// The vault's descriptor pair (receive + change). Only populated
     /// on the owner-authenticated `GET /vaults/:id` — list/create
     /// responses leave them `None`. The dashboard embeds these in the
@@ -844,15 +833,30 @@ impl IntoResponse for ApiError {
 /// we don't deliver to yet; we'd rather fail loudly at creation
 /// than enqueue a notification with `channel = "telegram"` that
 /// the worker will then skip forever.
+///
+/// SMS and WhatsApp are also refused while this server can't deliver
+/// them (no usable Twilio sender, see `notifier::channel_deliverable`).
+/// The setup screens hide those options, but the API has to hold the
+/// line too: a contact we can't reach is an heir who never hears from
+/// us. Email is always accepted; it is the default channel, and a local
+/// dev server without SMTP logs email instead of sending it.
 fn validate_contact_channel(field: &str, ch: Option<&str>) -> Result<(), ApiError> {
     if let Some(c) = ch {
-        match c {
-            "email" | "sms" | "whatsapp" => {}
+        let channel = match c {
+            "email" => return Ok(()),
+            "sms" => crate::notifier::Channel::Sms,
+            "whatsapp" => crate::notifier::Channel::Whatsapp,
             _ => {
                 return Err(ApiError::Validation(format!(
                     "unknown {field} {c:?}; expected email, sms, or whatsapp"
                 )));
             }
+        };
+        if !crate::notifier::channel_deliverable(channel) {
+            let name = if c == "sms" { "SMS" } else { "WhatsApp" };
+            return Err(ApiError::Validation(format!(
+                "{name} isn't available yet, so we couldn't reach this contact. Please use an email address."
+            )));
         }
     }
     Ok(())
@@ -1006,13 +1010,13 @@ async fn create_vault(
                 next_deadline_at: next_deadline,
                 claim_eligible_at: Some(claim_eligible),
                 panic_frozen_until: None,
-                lnurl_checkin: None,
-                lnurl_panic: None,
                 // Legacy CLI route stores the plaintext contact and
                 // doesn't participate in email verification.
                 owner_contact_verified: None,
                 activation_held: None,
+                heir_pending: None,
                 heir_reachability: None,
+                guardians_unreachable: None,
                 descriptor_external: None,
                 descriptor_internal: None,
                 has_trusted_contact: None,
@@ -1159,6 +1163,15 @@ pub struct SealedSetup {
     /// scheduler mints a fresh claim token at trigger time, exactly like
     /// a legacy vault, since no heir secret is bound to it.
     pub claim_token_b64: Option<String>,
+
+    /// Heir chosen later: the heir's xprv sealed under the OWNER's
+    /// password KEK instead of a claim token. Present only on a vault
+    /// created without an heir; then no claim token and no heir contact
+    /// may be sent, so the server holds nothing that reaches the heir
+    /// branch. `POST /vaults/:id/heir/choose` swaps it for the Door A
+    /// seal once the owner picks someone.
+    pub heir_xprv_owner_ct_b64: Option<String>,
+    pub heir_xprv_owner_nonce_b64: Option<String>,
 }
 
 /// One *verified owner* per email — but an owner may have several heirs, each
@@ -1500,6 +1513,21 @@ async fn create_vault_from_xpub(
                 "sealed heir xprv and claim token must be both present or both absent".into(),
             ));
         }
+        // Heir chosen later: the heir key is sealed for the owner only.
+        // Nothing that could reach the heir branch may come with it.
+        let heir_later =
+            s.heir_xprv_owner_ct_b64.is_some() || s.heir_xprv_owner_nonce_b64.is_some();
+        if heir_later
+            && (s.heir_xprv_owner_ct_b64.is_none()
+                || s.heir_xprv_owner_nonce_b64.is_none()
+                || heir_present
+                || effective_heir_contact.is_some()
+                || req.heir_derivation.is_some())
+        {
+            return Err(ApiError::Validation(
+                "a vault with its heir chosen later carries only the owner-sealed heir key".into(),
+            ));
+        }
         // Door B: no heir secret, no at-rest claim token. The scheduler
         // mints a fresh token at trigger time (legacy path).
         //
@@ -1629,6 +1657,22 @@ async fn create_vault_from_xpub(
     .execute(&state.db)
     .await?;
 
+    // Heir chosen later: keep the owner-sealed heir key and hold the
+    // check-in clock off until an heir is chosen.
+    if let Some(s) = req.sealed.as_ref() {
+        if let (Some(ct), Some(nn)) = (&s.heir_xprv_owner_ct_b64, &s.heir_xprv_owner_nonce_b64) {
+            sqlx::query(
+                "UPDATE vaults SET heir_pending = 1, heir_xprv_owner_sealed_ct_b64 = ?, \
+                                   heir_xprv_owner_sealed_nonce = ? WHERE id = ?",
+            )
+            .bind(ct)
+            .bind(nn)
+            .bind(&id)
+            .execute(&state.db)
+            .await?;
+        }
+    }
+
     // Hold the clock until the vault is funded.
     let initial_status = initial_vault_status();
     if initial_status != "ok" {
@@ -1716,8 +1760,6 @@ async fn create_vault_from_xpub(
                 next_deadline_at: next_deadline,
                 claim_eligible_at: Some(claim_eligible),
                 panic_frozen_until: None,
-                lnurl_checkin: None,
-                lnurl_panic: None,
                 owner_contact_verified: if has_owner_email {
                     Some(owner_email_already_verified)
                 } else {
@@ -1726,7 +1768,9 @@ async fn create_vault_from_xpub(
                 // A brand-new vault has no coins yet, so nothing is
                 // being held. The owner GET reports it from then on.
                 activation_held: None,
+                heir_pending: None,
                 heir_reachability: None,
+                guardians_unreachable: None,
                 // Return the public descriptor pair so the setup browser
                 // can build the heir envelope (block A) immediately,
                 // without a second round-trip. Watch-only; no secrets.
@@ -2157,8 +2201,6 @@ async fn create_vault_guardian(
                 next_deadline_at: next_deadline,
                 claim_eligible_at: Some(claim_eligible),
                 panic_frozen_until: None,
-                lnurl_checkin: None,
-                lnurl_panic: None,
                 owner_contact_verified: if has_owner_email {
                     Some(owner_email_already_verified)
                 } else {
@@ -2167,7 +2209,9 @@ async fn create_vault_guardian(
                 // A brand-new vault has no coins yet, so nothing is
                 // being held. The owner GET reports it from then on.
                 activation_held: None,
+                heir_pending: None,
                 heir_reachability: None,
+                guardians_unreachable: None,
                 descriptor_external: Some(pair.external.clone()),
                 descriptor_internal: Some(pair.internal.clone()),
                 has_trusted_contact: None,
@@ -2705,6 +2749,281 @@ pub struct UpdateHeirRequest {
     pub channel: String,
 }
 
+/// One guardian's contact, as the owner sees it (guardian vaults, #81).
+#[derive(Debug, Serialize)]
+pub struct GuardianContactView {
+    pub slot: i64,
+    pub contact: Option<String>,
+    pub channel: Option<String>,
+}
+
+async fn read_guardian_contacts(
+    db: &sqlx::SqlitePool,
+    id: &str,
+) -> Result<Vec<GuardianContactView>, ApiError> {
+    // slot, contact ciphertext, contact nonce, channel
+    type GuardianRow = (i64, Option<String>, Option<String>, Option<String>);
+    let rows: Vec<GuardianRow> = sqlx::query_as(
+        "SELECT slot, contact_ciphertext, contact_nonce, contact_channel \
+           FROM vault_guardian_keys WHERE vault_id = ? ORDER BY slot",
+    )
+    .bind(id)
+    .fetch_all(db)
+    .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (slot, ct, nn, channel) in rows {
+        let contact = match (ct, nn) {
+            (Some(ct), Some(nn)) => Some(
+                String::from_utf8(open_for_vault(
+                    id,
+                    &SealedContact {
+                        ciphertext_b64: ct,
+                        nonce_b64: nn,
+                    },
+                )?)
+                .map_err(|_| ApiError::Validation("stored contact is not valid UTF-8".into()))?,
+            ),
+            _ => None,
+        };
+        out.push(GuardianContactView {
+            slot,
+            contact,
+            channel,
+        });
+    }
+    Ok(out)
+}
+
+/// `GET /vaults/:id/guardians` (OwnerAuth): both guardians' contacts.
+/// Empty for a standard vault, which has no guardians.
+async fn list_vault_guardians(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<GuardianContactView>>, ApiError> {
+    Ok(Json(
+        read_guardian_contacts(&state.db, &auth.vault_id).await?,
+    ))
+}
+
+/// `PUT /vaults/:id/guardians/:slot` (OwnerAuth): change how one guardian
+/// is reached.
+///
+/// A guardian's key is sealed under their own claim token, not their
+/// contact, so the contact only decides where the link is delivered and
+/// can change safely at any time before the claim. This is the only way
+/// to fix a guardian set up on a channel we can't deliver: without it, a
+/// guardian vault whose guardians are unreachable can never be claimed.
+/// The channel goes through `validate_contact_channel`, so it must be one
+/// this server can deliver (email today).
+async fn update_vault_guardian(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+    Path((_id, slot)): Path<(String, i64)>,
+    Json(req): Json<UpdateHeirRequest>,
+) -> Result<Json<Vec<GuardianContactView>>, ApiError> {
+    let id = auth.vault_id;
+    validate_contact_channel("channel", Some(&req.channel))?;
+    let contact = req.contact.trim().to_string();
+    if contact.is_empty() {
+        return Err(ApiError::Validation("contact must not be empty".into()));
+    }
+    validate_contact_shape(&req.channel, &contact)?;
+
+    let status: String = sqlx::query_scalar("SELECT status FROM vaults WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    if status == "claimed" {
+        return Err(ApiError::Conflict(
+            "This share has already been claimed, so its guardians can't be changed.".into(),
+        ));
+    }
+
+    let sealed = seal_for_vault(&id, contact.as_bytes())?;
+    let updated = sqlx::query(
+        "UPDATE vault_guardian_keys \
+            SET contact_ciphertext = ?, contact_nonce = ?, contact_channel = ? \
+          WHERE vault_id = ? AND slot = ?",
+    )
+    .bind(&sealed.ciphertext_b64)
+    .bind(&sealed.nonce_b64)
+    .bind(&req.channel)
+    .bind(&id)
+    .bind(slot)
+    .execute(&state.db)
+    .await?;
+    if updated.rows_affected() == 0 {
+        // Not a guardian vault, or no such slot.
+        return Err(ApiError::NotFound);
+    }
+    record_event(
+        &state.db,
+        &id,
+        "guardian_contact_updated",
+        Some(serde_json::json!({ "slot": slot, "channel": req.channel })),
+    )
+    .await?;
+
+    Ok(Json(read_guardian_contacts(&state.db, &id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChooseHeirRequest {
+    pub name: String,
+    pub contact: String,
+    /// Defaults to email, the only channel delivered today.
+    pub channel: Option<String>,
+    /// The heir key, opened in the browser with the owner's password and
+    /// re-sealed under a fresh claim token (Door A).
+    pub heir_xprv_ct_b64: String,
+    pub heir_xprv_nonce_b64: String,
+    pub claim_token_b64: String,
+    pub from_name: Option<String>,
+    pub heir_note: Option<String>,
+}
+
+/// Choose who inherits, on a vault set up without an heir (OwnerAuth).
+///
+/// The browser opened the heir key with the owner's password, checked it
+/// against the heir branch in the descriptor, and re-sealed it under a
+/// new claim token. From here the vault is exactly like one set up with
+/// its heir at the start: the owner-sealed copy is dropped, and the next
+/// scheduler pass starts the check-in clock once the vault is funded and
+/// the owner's email is confirmed.
+///
+/// Refused once an heir is chosen: changing who inherits later is a new
+/// share (Add heir), and changing how they're reached is `PUT /heir`.
+async fn choose_heir(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ChooseHeirRequest>,
+) -> Result<StatusCode, ApiError> {
+    let id = auth.vault_id;
+    let name = req.name.trim();
+    if name.is_empty() {
+        return Err(ApiError::Validation("Say who inherits.".into()));
+    }
+    if name.chars().count() > 80 {
+        return Err(ApiError::Validation(
+            "Keep the name under 80 characters.".into(),
+        ));
+    }
+    let channel = req.channel.as_deref().unwrap_or("email");
+    validate_contact_channel("channel", Some(channel))?;
+    let contact = req.contact.trim();
+    if contact.is_empty() {
+        return Err(ApiError::Validation("contact must not be empty".into()));
+    }
+    validate_contact_shape(channel, contact)?;
+    for (field, v) in [
+        ("heir_xprv_ct_b64", &req.heir_xprv_ct_b64),
+        ("heir_xprv_nonce_b64", &req.heir_xprv_nonce_b64),
+        ("claim_token_b64", &req.claim_token_b64),
+    ] {
+        if v.trim().is_empty() || v.len() > 4096 {
+            return Err(ApiError::Validation(format!(
+                "{field} is missing or too long"
+            )));
+        }
+    }
+    let from_name = req
+        .from_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let note = req
+        .heir_note
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if from_name.is_some_and(|s| s.chars().count() > 80) {
+        return Err(ApiError::Validation("from_name too long (max 80)".into()));
+    }
+    if note.is_some_and(|s| s.chars().count() > 500) {
+        return Err(ApiError::Validation("heir_note too long (max 500)".into()));
+    }
+
+    let pending: Option<i64> = sqlx::query_scalar("SELECT heir_pending FROM vaults WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await?;
+    match pending {
+        None => return Err(ApiError::NotFound),
+        Some(1) => {}
+        Some(_) => {
+            return Err(ApiError::Conflict(
+                "This vault already has an heir. Use Add heir for someone else.".into(),
+            ))
+        }
+    }
+
+    let contact_blob = serde_json::json!({
+        "name": name,
+        "contact": contact,
+        "channel": channel,
+    })
+    .to_string();
+    let sealed_contact = seal_for_vault(&id, contact_blob.as_bytes())?;
+    let at_rest = crypto::seal_claim_token_at_rest(&id, &req.claim_token_b64)?;
+    let token_hash = crypto::hash_claim_token(&req.claim_token_b64);
+    let intro = if from_name.is_some() || note.is_some() {
+        let blob = serde_json::json!({ "from_name": from_name, "note": note }).to_string();
+        Some(seal_for_vault(&id, blob.as_bytes())?)
+    } else {
+        None
+    };
+    let now_s = Utc::now().to_rfc3339();
+
+    // `AND heir_pending = 1` makes this a compare-and-swap: two tabs
+    // choosing at once can't both write.
+    let updated = sqlx::query(
+        r#"UPDATE vaults
+              SET heir_pending = 0,
+                  heir_xprv_owner_sealed_ct_b64 = NULL,
+                  heir_xprv_owner_sealed_nonce = NULL,
+                  heir_xprv_sealed_ct_b64 = ?,
+                  heir_xprv_sealed_nonce = ?,
+                  claim_token_at_rest_b64 = ?,
+                  claim_token_hash = ?,
+                  claim_token_issued_at = ?,
+                  heir_contact_ciphertext = ?,
+                  heir_contact_nonce = ?,
+                  heir_contact_channel = ?,
+                  heir_intro_ciphertext = ?,
+                  heir_intro_nonce = ?,
+                  label = ?
+            WHERE id = ? AND heir_pending = 1"#,
+    )
+    .bind(&req.heir_xprv_ct_b64)
+    .bind(&req.heir_xprv_nonce_b64)
+    .bind(&at_rest)
+    .bind(&token_hash)
+    .bind(&now_s)
+    .bind(&sealed_contact.ciphertext_b64)
+    .bind(&sealed_contact.nonce_b64)
+    .bind(channel)
+    .bind(intro.as_ref().map(|s| s.ciphertext_b64.clone()))
+    .bind(intro.as_ref().map(|s| s.nonce_b64.clone()))
+    .bind(format!("{name}'s inheritance"))
+    .bind(&id)
+    .execute(&state.db)
+    .await?;
+    if updated.rows_affected() == 0 {
+        return Err(ApiError::Conflict(
+            "This vault already has an heir. Use Add heir for someone else.".into(),
+        ));
+    }
+    record_event(
+        &state.db,
+        &id,
+        "heir_chosen",
+        Some(serde_json::json!({ "channel": channel })),
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Change the heir's contact address and channel on an existing vault
 /// (OwnerAuth). This is the only way to fix a heir who was set up on a
 /// channel we can't deliver to (e.g. WhatsApp before it's approved) or
@@ -2856,6 +3175,28 @@ pub(crate) fn heir_reachability(
     })
 }
 
+/// How many guardians we couldn't reach today: no contact on file, or a
+/// channel this server can't deliver (no channel means email, the setup
+/// default). Email bounces aren't tracked per guardian yet, so an email
+/// guardian counts as reachable.
+pub(crate) fn count_unreachable_guardians<'a>(
+    guardians: impl Iterator<Item = (bool, Option<&'a str>)>,
+    deliverable: impl Fn(crate::notifier::Channel) -> bool,
+) -> i64 {
+    use crate::notifier::Channel;
+    guardians
+        .filter(|&(has_contact, channel)| {
+            !has_contact
+                || match channel {
+                    None | Some("email") => false,
+                    Some("sms") => !deliverable(Channel::Sms),
+                    Some("whatsapp") => !deliverable(Channel::Whatsapp),
+                    Some(_) => true,
+                }
+        })
+        .count() as i64
+}
+
 async fn get_vault(
     auth: OwnerAuth,
     State(state): State<Arc<AppState>>,
@@ -2900,6 +3241,8 @@ async fn get_vault(
         heir_contact_channel: Option<String>,
         heir_contact_verified_at: Option<String>,
         heir_unreachable_alerted_at: Option<String>,
+        /// No heir chosen yet (0/1).
+        heir_pending: i64,
     }
     let row = sqlx::query_as::<_, VaultRow>(
         r#"SELECT id, label, network, timelock_blocks,
@@ -2915,29 +3258,13 @@ async fn get_vault(
                   drill_started_at, drill_opened_at, drill_completed_at,
                   heir_contact_ciphertext IS NOT NULL AS has_heir_contact,
                   heir_contact_channel, heir_contact_verified_at,
-                  heir_unreachable_alerted_at
+                  heir_unreachable_alerted_at, heir_pending
            FROM vaults WHERE id = ?"#,
     )
     .bind(&id)
     .fetch_optional(&state.db)
     .await?
     .ok_or(ApiError::NotFound)?;
-
-    // Build the LNURL pair only when both prerequisites hold: Lightning
-    // is wired up (otherwise the QR is a footgun — the owner would scan
-    // it and the callback would 503) AND the operator has set the public
-    // base URL (otherwise we'd encode `None` and produce garbage).
-    let (lnurl_checkin, lnurl_panic) = if state.lightning.is_enabled() {
-        match crate::config::api_base_url() {
-            Some(base) => (
-                Some(crate::lnurl::encode(&format!("{base}/lnurlp/{id}"))),
-                Some(crate::lnurl::encode(&format!("{base}/lnurlp/{id}/panic"))),
-            ),
-            None => (None, None),
-        }
-    } else {
-        (None, None)
-    };
 
     // Derive the on-chain unlock date from the cached maturity scan. We
     // never scan here — a dashboard poll reads whatever the scheduler last
@@ -2951,6 +3278,23 @@ async fn get_vault(
             has_unspent: row.chain_unlock_height.is_some(),
         };
         crate::psbt_routes::UnlockEstimateView::from_estimate(&est, Utc::now()).unlock_eta
+    });
+
+    // Guardian vaults: how many guardians we couldn't reach today.
+    let guardian_rows: Vec<(i64, Option<String>)> = sqlx::query_as(
+        "SELECT contact_ciphertext IS NOT NULL, contact_channel \
+           FROM vault_guardian_keys WHERE vault_id = ?",
+    )
+    .bind(&id)
+    .fetch_all(&state.db)
+    .await?;
+    let guardians_unreachable = (!guardian_rows.is_empty()).then(|| {
+        count_unreachable_guardians(
+            guardian_rows
+                .iter()
+                .map(|(has, ch)| (*has == 1, ch.as_deref())),
+            crate::notifier::channel_deliverable,
+        )
     });
 
     // Before the struct literal takes ownership of the row's fields.
@@ -2981,8 +3325,6 @@ async fn get_vault(
         next_deadline_at: parse_rfc(&row.next_deadline_at),
         claim_eligible_at: row.claim_eligible_at.as_deref().map(parse_rfc),
         panic_frozen_until: row.panic_frozen_until.as_deref().map(parse_rfc),
-        lnurl_checkin,
-        lnurl_panic,
         // Some(bool) only when there's a sealed email contact to
         // verify; legacy plaintext rows and SMS/WhatsApp channels
         // report None so the dashboard never nags about them.
@@ -2998,7 +3340,9 @@ async fn get_vault(
         // last scan saw coins. Anything else reads `false`, including a
         // vault nobody has funded yet.
         activation_held: Some(activation_held),
+        heir_pending: Some(row.heir_pending == 1),
         heir_reachability: heir_reachability.map(str::to_string),
+        guardians_unreachable,
         descriptor_external: Some(row.descriptor_external),
         descriptor_internal: Some(row.descriptor_internal),
         has_trusted_contact: Some(row.has_trusted_contact == 1),
@@ -3405,17 +3749,23 @@ pub struct CheckinResponse {
     pub status: String,
 }
 
+/// A check-in this soon after the last one changes nothing: signing in
+/// counts as a check-in, and someone who opens GhostKey several times a
+/// day shouldn't fill their activity with "Checked in".
+const RECENT_CHECKIN_SECS: i64 = 12 * 3600;
+
 async fn checkin(
     auth: OwnerAuth,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<CheckinResponse>, ApiError> {
     let id = auth.vault_id;
-    // Fetch the cadence + last_checkin so we can both recompute the
-    // deadline and enforce once-per-period, plus claim_eligible_at for
-    // the Lightning last-resort gate below.
-    let row = sqlx::query_as::<_, (i64, i64, Option<String>, String, Option<String>)>(
+    // Checking in is free and works any time: every proof of life (a
+    // password sign-in, the email's one-tap link, a tap on Home) moves
+    // the deadline to a full period from now. The owner's signed-in
+    // session is the proof of life.
+    let row = sqlx::query_as::<_, (i64, i64, Option<String>, String, String)>(
         "SELECT checkin_period_secs, grace_period_secs, last_checkin_at, status, \
-                claim_eligible_at \
+                next_deadline_at \
            FROM vaults WHERE id = ?",
     )
     .bind(&id)
@@ -3438,48 +3788,24 @@ async fn checkin(
     }
 
     let now = Utc::now();
-    // Once-per-period guard: if the owner already checked in inside
-    // the current cycle, refuse the duplicate so the deadline doesn't
-    // keep getting pushed forward by repeated taps. Checked before the
-    // Lightning gate so a duplicate tap hears "already checked in"
-    // (accurate, calming) rather than "pay with Lightning".
-    if let Some(last_s) = row.2.as_deref() {
-        if let Ok(last) = DateTime::parse_from_rfc3339(last_s) {
-            let last_utc = last.with_timezone(&Utc);
-            let next_open = last_utc + Duration::seconds(row.0);
-            if now < next_open {
-                return Err(ApiError::Conflict(format!(
-                    "already checked in this period; next check-in opens at {}",
-                    next_open.to_rfc3339()
-                )));
+    // Checked in moments ago and still on the clock: nothing to change.
+    // (An alarmed vault always goes through, so the alarm clears.)
+    if row.3 == "ok" {
+        if let (Some(last), Ok(deadline)) = (
+            row.2
+                .as_deref()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok()),
+            DateTime::parse_from_rfc3339(&row.4),
+        ) {
+            let last = last.with_timezone(&Utc);
+            if (now - last).num_seconds() < RECENT_CHECKIN_SECS {
+                return Ok(Json(CheckinResponse {
+                    vault_id: id,
+                    last_checkin_at: last,
+                    next_deadline_at: deadline.with_timezone(&Utc),
+                    status: "ok".into(),
+                }));
             }
-        }
-    }
-
-    // Lightning is THE check-in (ghostkey-web/src/checkin.ts states the
-    // policy; checkin_from_link enforces the same gate on the one-tap
-    // path). When this server has a Lightning provider, the free path
-    // is a last resort: only inside the final 24h before the heir would
-    // be contacted. The dashboard already routes taps to the invoice
-    // modal — this makes the rule hold at the server too, so an owner
-    // token can't curl around it. Servers without Lightning (local
-    // dev, demo, self-hosters who skipped the sidecar) keep the free
-    // button; a vault with no claim_eligible_at yet is treated as
-    // outside the window, mirroring the from-link gate.
-    if state.lightning.is_enabled() {
-        let last_resort_window = Duration::seconds(24 * 60 * 60);
-        let in_last_resort_window = row
-            .4
-            .as_deref()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|eligible| eligible.with_timezone(&Utc) - now <= last_resort_window)
-            .unwrap_or(false);
-        if !in_last_resort_window {
-            return Err(ApiError::Conflict(
-                "free check-in is only available in the final 24 hours; \
-                 check in with Lightning instead"
-                    .into(),
-            ));
         }
     }
 
@@ -3537,7 +3863,7 @@ async fn checkin(
  *  per-cycle bearer token; the server stores only its SHA-256 hash so a     *
  *  DB leak cannot impersonate the owner. The token is single-use AND        *
  *  single-cycle: consumed on first POST, AND cleared on every successful    *
- *  check-in (button, Lightning, or one-tap).                                *
+ *  check-in (button or one-tap).                                             *
  *                                                                            *
  *  Threat model: anyone who reads the owner's email can check in for that   *
  *  vault until the next cycle starts or the link is consumed. That's the    *
@@ -3569,13 +3895,12 @@ async fn checkin_from_link(
         i64,            // checkin_period_secs
         i64,            // grace_period_secs
         Option<String>, // last_checkin_at
-        Option<String>, // claim_eligible_at
         String,         // status
     );
     let row: Option<Row> = sqlx::query_as(
         r#"SELECT checkin_link_token_hash, checkin_link_token_used_at,
                   checkin_period_secs, grace_period_secs, last_checkin_at,
-                  claim_eligible_at, status
+                  status
              FROM vaults
             WHERE id = ?
               AND checkin_link_token_hash = ?"#,
@@ -3585,15 +3910,8 @@ async fn checkin_from_link(
     .fetch_optional(&state.db)
     .await?;
 
-    let (
-        stored_hash,
-        used_at,
-        checkin_secs,
-        grace_secs,
-        last_checkin_at,
-        claim_eligible_at,
-        status,
-    ) = row.ok_or(ApiError::NotFound)?;
+    let (stored_hash, used_at, checkin_secs, grace_secs, _last_checkin_at, status) =
+        row.ok_or(ApiError::NotFound)?;
     let stored_hash = stored_hash.ok_or(ApiError::NotFound)?;
     if !crypto::claim_token_matches(&token, &stored_hash) {
         return Err(ApiError::NotFound);
@@ -3605,44 +3923,14 @@ async fn checkin_from_link(
         return Err(ApiError::Conflict("check-in link already used".into()));
     }
 
-    // Same rule as the button and Lightning paths: a claimed vault has
+    // Same rule as the button path: a claimed vault has
     // no clock to reset, and a check-in here would erase the claim.
     if claim_is_final(&status) {
         return Err(claimed_checkin_conflict());
     }
 
-    // Free check-in via the link is a last resort: only allowed inside the
-    // final 24h before the heir would be contacted (claim_eligible_at).
-    // Outside that window Lightning is the only way to check in, so the
-    // free path is refused (the Lightning-from-link route has no gate).
-    // The matching UI only surfaces the free option after a Lightning
-    // payment has actually failed, so both halves of the rule hold.
-    let last_resort_window = Duration::seconds(24 * 60 * 60);
-    let in_last_resort_window = claim_eligible_at
-        .as_deref()
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|eligible| eligible.with_timezone(&Utc) - Utc::now() <= last_resort_window)
-        .unwrap_or(false);
-    if !in_last_resort_window {
-        return Err(ApiError::Conflict(
-            "free check-in is only available in the final 24 hours; \
-             check in with Lightning instead"
-                .into(),
-        ));
-    }
-    // Once-per-period guard mirrors the button check-in path.
-    if let Some(last_s) = last_checkin_at.as_deref() {
-        if let Ok(last) = DateTime::parse_from_rfc3339(last_s) {
-            let last_utc = last.with_timezone(&Utc);
-            let next_open = last_utc + Duration::seconds(checkin_secs);
-            if Utc::now() < next_open {
-                return Err(ApiError::Conflict(format!(
-                    "already checked in this period; next check-in opens at {}",
-                    next_open.to_rfc3339()
-                )));
-            }
-        }
-    }
+    // No once-per-period rule: the link is single-use already, and a
+    // check-in any time is just proof of life (see `checkin`).
 
     // Reset the vault state exactly the way `checkin` does, plus
     // mark the one-tap token used. Wrapped in a single transaction
@@ -4480,6 +4768,13 @@ pub struct SealedBlobsView {
     /// origin-tagged `owner.xpub`, so the server rebuilds an identical
     /// owner branch. `None` for legacy rows that predate this column.
     pub owner_xpub_fragment_external: Option<String>,
+    /// Heir chosen later: the heir key sealed under the owner's password,
+    /// and the heir's descriptor fragment so the browser can check it
+    /// opened the right key before re-sealing it for a claim. `None`
+    /// once an heir is chosen, and on every other vault.
+    pub heir_xprv_owner_ct_b64: Option<String>,
+    pub heir_xprv_owner_nonce_b64: Option<String>,
+    pub heir_xpub_fragment_external: Option<String>,
 }
 
 async fn load_sealed_blobs(pool: &sqlx::SqlitePool, id: &str) -> Result<SealedBlobsView, ApiError> {
@@ -4495,12 +4790,18 @@ async fn load_sealed_blobs(pool: &sqlx::SqlitePool, id: &str) -> Result<SealedBl
         String,         // network
         i64,            // timelock
         Option<String>, // owner_xpub_fragment_external
+        Option<String>, // heir_xprv_owner_sealed_ct_b64
+        Option<String>, // heir_xprv_owner_sealed_nonce
+        Option<String>, // heir_xpub_fragment_external
+        i64,            // heir_pending
     );
     let row: Option<Row> = sqlx::query_as(
         r#"SELECT id, password_salt_b64, password_kdf_mem_kib, password_kdf_iters,
                   owner_xprv_sealed_ct_b64, owner_xprv_sealed_nonce,
                   owner_token_sealed_ct_b64, owner_token_sealed_nonce,
-                  network, timelock_blocks, owner_xpub_fragment_external
+                  network, timelock_blocks, owner_xpub_fragment_external,
+                  heir_xprv_owner_sealed_ct_b64, heir_xprv_owner_sealed_nonce,
+                  heir_xpub_fragment_external, heir_pending
              FROM vaults WHERE id = ?"#,
     )
     .bind(id)
@@ -4533,6 +4834,9 @@ async fn load_sealed_blobs(pool: &sqlx::SqlitePool, id: &str) -> Result<SealedBl
         network: row.8,
         timelock_blocks: row.9,
         owner_xpub_fragment_external: row.10,
+        heir_xprv_owner_ct_b64: row.11,
+        heir_xprv_owner_nonce_b64: row.12,
+        heir_xpub_fragment_external: if row.14 == 1 { row.13 } else { None },
     })
 }
 
@@ -4686,525 +4990,6 @@ async fn get_vault_address(
 }
 
 /* -------------------------------------------------------------------------- *
- *  Lightning check-ins.                                                      *
- *                                                                            *
- *  Two routes, both scoped to a single vault:                                *
- *                                                                            *
- *    POST /vaults/:id/lightning-checkin/invoice                              *
- *        Owner-authenticated. Mints a 1-sat BOLT11 invoice through the      *
- *        configured LightningProvider, writes a `lightning_invoices` row,    *
- *        and returns the bolt11 + payment_hash + expiry to the browser.     *
- *                                                                            *
- *    GET  /vaults/:id/lightning-checkin/status/:payment_hash                 *
- *        Owner-authenticated. Returns the current status of a previously    *
- *        minted invoice. The browser polls this while showing the QR code   *
- *        and flips to "checked in!" when status becomes `paid`. The         *
- *        background poller (lightning::run_poller) also updates the row;    *
- *        this route just surfaces whatever is in the DB. If you need a       *
- *        live read from the provider on demand, prefer waiting for the      *
- *        next poller tick (default 3s) — that's what the UI does.           *
- *                                                                            *
- *  Both routes return 503 when no Lightning provider is configured. The      *
- *  UI uses the body field `lightning_enabled` on `GET /health` (added in    *
- *  a follow-up) to decide whether to surface the Lightning option at all.   *
- * -------------------------------------------------------------------------- */
-
-#[derive(Debug, Serialize)]
-pub struct LightningInvoiceView {
-    pub bolt11: String,
-    pub payment_hash: String,
-    pub amount_sat: u64,
-    pub expires_at: DateTime<Utc>,
-    pub status: String,
-}
-
-async fn lightning_create_invoice(
-    auth: OwnerAuth,
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<LightningInvoiceView>, ApiError> {
-    Ok(Json(create_checkin_invoice(&state, &auth.vault_id).await?))
-}
-
-/// Mint a check-in invoice for a vault. Shared by the owner-authenticated
-/// route and the one-tap-link route below. Enforces "lightning enabled"
-/// and the once-per-period guard, writes the `lightning_invoices` row,
-/// records the event, and returns the view. The actual check-in happens
-/// when the invoice is paid (see `lightning::mark_paid_and_checkin` in the
-/// poller), not here.
-async fn create_checkin_invoice(
-    state: &Arc<AppState>,
-    vault_id: &str,
-) -> Result<LightningInvoiceView, ApiError> {
-    // Vault state is checked before the provider. Whether this server
-    // has Lightning wired up says nothing about whether the vault can
-    // be checked in at all, and "already claimed" is the more useful
-    // answer than "no provider" on a self-hosted server without one.
-    //
-    // Refuse to mint a duplicate check-in invoice inside the current
-    // period too. Spec: at most one successful check-in per period. We
-    // catch it at mint time so the owner doesn't pay sats that won't
-    // count.
-    let cad: Option<(i64, Option<String>, String)> = sqlx::query_as(
-        "SELECT checkin_period_secs, last_checkin_at, status FROM vaults WHERE id = ?",
-    )
-    .bind(vault_id)
-    .fetch_optional(&state.db)
-    .await?;
-
-    // Don't let an owner pay a Lightning invoice to "check in" on a vault
-    // that isn't funded yet — there's no clock to reset.
-    if matches!(&cad, Some((_, _, status)) if status == "unfunded") {
-        return Err(ApiError::Conflict(
-            "Fund your vault first. Check-ins begin once your Bitcoin is in the vault.".into(),
-        ));
-    }
-
-    // Nor on a vault whose heir has already claimed. Caught at mint
-    // time so the owner is never shown a QR for sats that buy nothing.
-    if matches!(&cad, Some((_, _, status)) if claim_is_final(status)) {
-        return Err(claimed_checkin_conflict());
-    }
-
-    if !state.lightning.is_enabled() {
-        return Err(ApiError::Validation(
-            "lightning provider not configured on this server".into(),
-        ));
-    }
-
-    if let Some((period, Some(last_s), _)) = cad {
-        if let Ok(last) = DateTime::parse_from_rfc3339(&last_s) {
-            let next_open = last.with_timezone(&Utc) + Duration::seconds(period);
-            if Utc::now() < next_open {
-                return Err(ApiError::Conflict(format!(
-                    "already checked in this period; next check-in opens at {}",
-                    next_open.to_rfc3339()
-                )));
-            }
-        }
-    }
-
-    let description = format!("ghostkey:checkin:{vault_id}");
-    let invoice = state
-        .lightning
-        .create_invoice(crate::lightning::heartbeat_amount_sat(), &description)
-        .await
-        .map_err(|e| match e {
-            crate::lightning::LightningError::NotConfigured => {
-                ApiError::Validation("lightning provider not configured".into())
-            }
-            crate::lightning::LightningError::InvalidAmount(m) => ApiError::Validation(m),
-            crate::lightning::LightningError::Provider(m) => {
-                tracing::error!(error = %m, "lightning provider failed to mint invoice");
-                ApiError::Validation(format!("lightning provider error: {m}"))
-            }
-        })?;
-
-    let rec = crate::lightning::insert_invoice(
-        &state.db,
-        vault_id,
-        &invoice,
-        crate::lightning::INVOICE_TYPE_CHECKIN,
-    )
-    .await?;
-
-    record_event(
-        &state.db,
-        vault_id,
-        "lightning_invoice_issued",
-        Some(serde_json::json!({
-            "payment_hash": invoice.payment_hash,
-            "amount_sat": invoice.amount_sat,
-        })),
-    )
-    .await?;
-
-    Ok(LightningInvoiceView {
-        bolt11: rec.bolt11,
-        payment_hash: rec.payment_hash,
-        amount_sat: rec.amount_sat as u64,
-        expires_at: rec.expires_at,
-        status: rec.status,
-    })
-}
-
-/// Owner-free variant of the Lightning check-in mint, gated by a one-tap
-/// check-in link token instead of the owner bearer. Lets the owner pay
-/// the check-in invoice straight from the link in a reminder email,
-/// without signing in. The token is verified but NOT consumed here: the
-/// check-in (and token clearing) happens when the invoice is paid.
-async fn lightning_create_invoice_from_link(
-    State(state): State<Arc<AppState>>,
-    Path((vault_id, token)): Path<(String, String)>,
-) -> Result<Json<LightningInvoiceView>, ApiError> {
-    verify_checkin_link_token(&state, &vault_id, &token).await?;
-    Ok(Json(create_checkin_invoice(&state, &vault_id).await?))
-}
-
-#[derive(Debug, Serialize)]
-pub struct LightningInvoiceStatusView {
-    pub payment_hash: String,
-    pub status: String,
-    pub paid_at: Option<DateTime<Utc>>,
-    pub expires_at: DateTime<Utc>,
-}
-
-async fn lightning_invoice_status(
-    State(state): State<Arc<AppState>>,
-    Path((vault_id, payment_hash)): Path<(String, String)>,
-    headers: axum::http::HeaderMap,
-) -> Result<Json<LightningInvoiceStatusView>, ApiError> {
-    // Two-param route so we can't use the OwnerAuth extractor (it
-    // assumes a single :id path param). Inline the same check.
-    inline_owner_auth(&state, &vault_id, &headers).await?;
-    Ok(Json(
-        read_invoice_status(&state, &vault_id, &payment_hash).await?,
-    ))
-}
-
-/// Read an invoice's status for a vault. Shared by the owner-authenticated
-/// route and the one-tap-link route. Cross-vault lookups are flattened to
-/// NotFound so the relationship can't be probed.
-async fn read_invoice_status(
-    state: &Arc<AppState>,
-    vault_id: &str,
-    payment_hash: &str,
-) -> Result<LightningInvoiceStatusView, ApiError> {
-    let rec = crate::lightning::fetch_invoice_by_hash(&state.db, payment_hash)
-        .await?
-        .ok_or(ApiError::NotFound)?;
-
-    if rec.vault_id != vault_id {
-        return Err(ApiError::NotFound);
-    }
-
-    Ok(LightningInvoiceStatusView {
-        payment_hash: rec.payment_hash,
-        status: rec.status,
-        paid_at: rec.paid_at,
-        expires_at: rec.expires_at,
-    })
-}
-
-/// Poll an invoice's status using a one-tap link token instead of the
-/// owner bearer. Pairs with `lightning_create_invoice_from_link` so the
-/// email-link Lightning flow can wait for payment without signing in.
-async fn lightning_invoice_status_from_link(
-    State(state): State<Arc<AppState>>,
-    Path((vault_id, token, payment_hash)): Path<(String, String, String)>,
-) -> Result<Json<LightningInvoiceStatusView>, ApiError> {
-    verify_checkin_link_token(&state, &vault_id, &token).await?;
-    Ok(Json(
-        read_invoice_status(&state, &vault_id, &payment_hash).await?,
-    ))
-}
-
-/// Verify a one-tap check-in link token WITHOUT consuming it. Used by the
-/// Lightning-from-link routes, where the token only authorises minting and
-/// polling an invoice; the check-in (and token clearing) happens when the
-/// invoice is paid. Mirrors the validation in `checkin_from_link`:
-/// NotFound for an unknown or already-cleared token, Conflict for one that
-/// has been used.
-async fn verify_checkin_link_token(
-    state: &Arc<AppState>,
-    vault_id: &str,
-    token: &str,
-) -> Result<(), ApiError> {
-    let hash = hash_claim_token(token);
-    let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-        r#"SELECT checkin_link_token_hash, checkin_link_token_used_at
-             FROM vaults
-            WHERE id = ?
-              AND checkin_link_token_hash = ?"#,
-    )
-    .bind(vault_id)
-    .bind(&hash)
-    .fetch_optional(&state.db)
-    .await?;
-    let (stored_hash, used_at) = row.ok_or(ApiError::NotFound)?;
-    let stored_hash = stored_hash.ok_or(ApiError::NotFound)?;
-    if !crypto::claim_token_matches(token, &stored_hash) {
-        return Err(ApiError::NotFound);
-    }
-    if used_at.is_some() {
-        return Err(ApiError::Conflict("check-in link already used".into()));
-    }
-    Ok(())
-}
-
-/// Inline equivalent of the `OwnerAuth` extractor for routes that
-/// have more than one path parameter (axum's `Path<String>` extractor
-/// can't be used in that case). Returns the same error types so the
-/// HTTP responses are indistinguishable.
-async fn inline_owner_auth(
-    state: &Arc<AppState>,
-    vault_id: &str,
-    headers: &axum::http::HeaderMap,
-) -> Result<(), ApiError> {
-    use axum::http::header;
-
-    if crate::auth::auth_disabled() {
-        tracing::warn!(
-            vault_id = %vault_id,
-            "owner auth bypassed by GHOSTKEY_AUTH_DISABLED"
-        );
-        return Ok(());
-    }
-
-    let raw = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| ApiError::Validation("missing Authorization header".into()))?;
-    let token = raw
-        .strip_prefix("Bearer ")
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| ApiError::Validation("Authorization must be Bearer ...".into()))?;
-
-    let row: Option<(Option<String>,)> =
-        sqlx::query_as("SELECT owner_token_hash FROM vaults WHERE id = ?")
-            .bind(vault_id)
-            .fetch_optional(&state.db)
-            .await?;
-    let stored_hash = match row {
-        Some((Some(h),)) => h,
-        _ => return Err(ApiError::Validation("unauthorized".into())),
-    };
-    if !crate::crypto::owner_token_matches(token, &stored_hash) {
-        return Err(ApiError::Validation("unauthorized".into()));
-    }
-    Ok(())
-}
-
-/* -------------------------------------------------------------------------- *
- *  LNURL-pay handlers (F1, F4)                                                *
- *                                                                            *
- *  Static per-vault URLs that wallets like Phoenix and BlueWallet hit when    *
- *  the owner scans the QR rendered in the dashboard. Two endpoints per       *
- *  vault: check-in (resets the deadline) and panic (freezes the vault).      *
- *                                                                            *
- *  No auth. The vault UUID IS the access control — a 1-sat payment can only  *
- *  ever help the owner stay alive (check-in) or freeze their own vault       *
- *  (panic). Both are favourable to the owner; neither leaks information to   *
- *  the payer.                                                                *
- *                                                                            *
- *  LNURL spec demands HTTP 200 with `{ status: "ERROR", reason: ... }` on    *
- *  protocol-level errors, never 4xx/5xx. We honour that strictly: every     *
- *  branch below returns an axum `Response` rather than `ApiError`.          *
- * -------------------------------------------------------------------------- */
-
-async fn lnurlp_pay_request(
-    State(state): State<Arc<AppState>>,
-    Path(vault_id): Path<String>,
-) -> axum::response::Response {
-    lnurlp_pay_request_inner(state, vault_id, /*panic=*/ false).await
-}
-
-async fn lnurlp_panic_pay_request(
-    State(state): State<Arc<AppState>>,
-    Path(vault_id): Path<String>,
-) -> axum::response::Response {
-    lnurlp_pay_request_inner(state, vault_id, /*panic=*/ true).await
-}
-
-async fn lnurlp_pay_request_inner(
-    state: Arc<AppState>,
-    vault_id: String,
-    is_panic: bool,
-) -> axum::response::Response {
-    // Vault state first, before the provider and config checks. Whether
-    // this server has Lightning wired up says nothing about whether the
-    // vault can be paid to at all, and the wallet is about to draw a
-    // payable QR: on a claimed vault a check-in has nothing to reset and
-    // a panic has nothing to freeze, so either would take real sats for
-    // nothing. LNURL twin of the guards in `checkin` and
-    // `create_checkin_invoice`.
-    //
-    // The lookup doubles as the existence check: an LNURL on a deleted
-    // vault should fail clean rather than mint orphan invoices.
-    let exists: Option<(String,)> = match sqlx::query_as("SELECT status FROM vaults WHERE id = ?")
-        .bind(&vault_id)
-        .fetch_optional(&state.db)
-        .await
-    {
-        Ok(row) => row,
-        Err(e) => {
-            tracing::error!(vault_id = %vault_id, error = ?e, "lnurlp_pay_request db error");
-            return lnurl_error("internal");
-        }
-    };
-    let Some((status,)) = exists else {
-        return lnurl_error("unknown vault");
-    };
-    if claim_is_final(&status) {
-        return lnurl_error("This vault is closed. Your heir already claimed the money.");
-    }
-
-    if !state.lightning.is_enabled() {
-        return lnurl_error("lightning disabled on this server");
-    }
-    let Some(base) = crate::config::api_base_url() else {
-        return lnurl_error("server misconfigured (no GHOSTKEY_API_BASE_URL)");
-    };
-
-    let cb_path = if is_panic { "/panic/cb" } else { "/cb" };
-    let segment = if is_panic { "/panic" } else { "" };
-    let callback_url = format!("{base}/lnurlp/{vault_id}{segment}{cb_path}");
-    let amount_sat = crate::lightning::heartbeat_amount_sat();
-    let body = if is_panic {
-        crate::lnurl::panic_pay_request_json(&callback_url, amount_sat)
-    } else {
-        crate::lnurl::pay_request_json(&callback_url, amount_sat)
-    };
-    lnurl_ok(body)
-}
-
-#[derive(Debug, Deserialize)]
-struct LnurlCallbackParams {
-    amount: Option<u64>,
-}
-
-async fn lnurlp_callback(
-    State(state): State<Arc<AppState>>,
-    Path(vault_id): Path<String>,
-    axum::extract::Query(params): axum::extract::Query<LnurlCallbackParams>,
-) -> axum::response::Response {
-    lnurlp_callback_inner(state, vault_id, params, /*panic=*/ false).await
-}
-
-async fn lnurlp_panic_callback(
-    State(state): State<Arc<AppState>>,
-    Path(vault_id): Path<String>,
-    axum::extract::Query(params): axum::extract::Query<LnurlCallbackParams>,
-) -> axum::response::Response {
-    lnurlp_callback_inner(state, vault_id, params, /*panic=*/ true).await
-}
-
-async fn lnurlp_callback_inner(
-    state: Arc<AppState>,
-    vault_id: String,
-    params: LnurlCallbackParams,
-    is_panic: bool,
-) -> axum::response::Response {
-    // Claim state first, same as the pay_request above. Re-checked here
-    // and not just there: a wallet can hold a cached pay_response across
-    // the moment the heir claims, and this is the call that actually
-    // mints a payable invoice.
-    let row: Option<(String,)> = match sqlx::query_as("SELECT status FROM vaults WHERE id = ?")
-        .bind(&vault_id)
-        .fetch_optional(&state.db)
-        .await
-    {
-        Ok(row) => row,
-        Err(e) => {
-            tracing::error!(vault_id = %vault_id, error = ?e, "lnurlp_callback db error");
-            return lnurl_error("internal");
-        }
-    };
-    let Some((status,)) = row else {
-        return lnurl_error("unknown vault");
-    };
-    if claim_is_final(&status) {
-        return lnurl_error("This vault is closed. Your heir already claimed the money.");
-    }
-
-    if !state.lightning.is_enabled() {
-        return lnurl_error("lightning disabled on this server");
-    }
-
-    // LUD-06: amount is in millisats. Our pay_request pins both
-    // min and max to 1000 msat, so anything else is a wallet bug.
-    match params.amount {
-        Some(1000) => {}
-        Some(other) => return lnurl_error(&format!("amount must be 1000 msat, got {other}")),
-        None => return lnurl_error("amount query parameter required"),
-    }
-
-    let invoice_type = if is_panic {
-        crate::lightning::INVOICE_TYPE_PANIC
-    } else {
-        crate::lightning::INVOICE_TYPE_CHECKIN
-    };
-
-    // Reuse an existing pending invoice of the same type if there is
-    // one. LUD-06 doesn't require this, but mints-per-scan churn is
-    // wasteful and most wallets cache pay_response for a couple of
-    // seconds anyway, so two back-to-back scans should observe the
-    // same bolt11.
-    let existing: Result<Option<(String,)>, sqlx::Error> = sqlx::query_as(
-        r#"SELECT bolt11
-             FROM lightning_invoices
-            WHERE vault_id     = ?
-              AND invoice_type = ?
-              AND status       = 'pending'
-              AND expires_at   > ?
-            ORDER BY created_at DESC
-            LIMIT 1"#,
-    )
-    .bind(&vault_id)
-    .bind(invoice_type)
-    .bind(chrono::Utc::now().to_rfc3339())
-    .fetch_optional(&state.db)
-    .await;
-    match existing {
-        Ok(Some((bolt11,))) => return lnurl_ok(crate::lnurl::pay_response_json(&bolt11)),
-        Ok(None) => {}
-        Err(e) => {
-            tracing::error!(vault_id = %vault_id, error = ?e, "lnurlp_callback existing-invoice lookup failed");
-            return lnurl_error("internal");
-        }
-    }
-
-    let description = format!("ghostkey:{invoice_type}:{vault_id}");
-    let invoice = match state
-        .lightning
-        .create_invoice(crate::lightning::heartbeat_amount_sat(), &description)
-        .await
-    {
-        Ok(inv) => inv,
-        Err(e) => {
-            tracing::error!(vault_id = %vault_id, error = ?e, "lnurlp_callback mint failed");
-            return lnurl_error("provider failed to mint invoice");
-        }
-    };
-    if let Err(e) =
-        crate::lightning::insert_invoice(&state.db, &vault_id, &invoice, invoice_type).await
-    {
-        tracing::error!(vault_id = %vault_id, error = ?e, "lnurlp_callback insert failed");
-        return lnurl_error("internal");
-    }
-    let _ = record_event(
-        &state.db,
-        &vault_id,
-        "lightning_invoice_issued",
-        Some(serde_json::json!({
-            "payment_hash": invoice.payment_hash,
-            "amount_sat":  invoice.amount_sat,
-            "source":      "lnurl",
-            "invoice_type": invoice_type,
-        })),
-    )
-    .await;
-
-    lnurl_ok(crate::lnurl::pay_response_json(&invoice.bolt11))
-}
-
-/// Build an HTTP 200 with an LNURL JSON body. Wallets reject anything
-/// that isn't `application/json` regardless of the body shape, so the
-/// header is mandatory.
-fn lnurl_ok(json: String) -> axum::response::Response {
-    use axum::http::header::CONTENT_TYPE;
-    axum::response::Response::builder()
-        .status(StatusCode::OK)
-        .header(CONTENT_TYPE, "application/json")
-        .body(axum::body::Body::from(json))
-        .expect("constant headers")
-}
-
-fn lnurl_error(reason: &str) -> axum::response::Response {
-    lnurl_ok(crate::lnurl::error_json(reason))
-}
-
-/* -------------------------------------------------------------------------- *
  *  Unit tests for the from-xpub parsing layer.                               *
  *  Full route-level integration testing lives outside this file (would need  *
  *  a SqlitePool harness); these cover the parse_party branches that diverge  *
@@ -5237,6 +5022,30 @@ mod tests {
     /// in this binary pin it, so this asserts the value directly rather
     /// than trying to drive the flag — the point is that the result no
     /// longer depends on it at all.
+    #[test]
+    fn guardians_on_an_undeliverable_channel_count_as_unreachable() {
+        use crate::notifier::Channel;
+        let sms_off = |c: Channel| c == Channel::Email;
+        let gs = [
+            (true, Some("email")),
+            (true, None),           // no channel means email
+            (true, Some("sms")),    // SMS switched off: unreachable
+            (false, Some("email")), // no contact at all: unreachable
+        ];
+        assert_eq!(count_unreachable_guardians(gs.into_iter(), sms_off), 2);
+        // Once SMS can be delivered, an SMS guardian is reachable again.
+        let all_on = |_c: Channel| true;
+        assert_eq!(
+            count_unreachable_guardians([(true, Some("sms"))].into_iter(), all_on),
+            0
+        );
+        // An unknown channel is never assumed to work.
+        assert_eq!(
+            count_unreachable_guardians([(true, Some("pigeon"))].into_iter(), all_on),
+            1
+        );
+    }
+
     #[test]
     fn heir_reachability_reports_the_latest_verdict() {
         // Email heir, nothing confirmed yet.
@@ -5397,10 +5206,7 @@ mod tests {
             .run(&pool)
             .await
             .expect("run migrations");
-        Arc::new(AppState {
-            db: pool,
-            lightning: Arc::new(crate::lightning::NoopProvider),
-        })
+        Arc::new(AppState { db: pool })
     }
 
     async fn insert_vault_with_email(state: &AppState, id: &str, email: &str) {
@@ -6286,6 +6092,95 @@ mod tests {
             heir_xprv_nonce_b64,
             owner_email_hash: owner_email_hash.into(),
             claim_token_b64,
+            heir_xprv_owner_ct_b64: None,
+            heir_xprv_owner_nonce_b64: None,
+        }
+    }
+
+    /// A request for a vault whose heir is chosen later: only the
+    /// owner-sealed heir key, no claim token, no heir contact.
+    fn heir_later_request() -> CreateVaultFromXpubRequest {
+        let mut sealed = sealed_setup(&"c".repeat(64), None, None, None);
+        sealed.heir_xprv_owner_ct_b64 = Some("aGVpcmN0".into());
+        sealed.heir_xprv_owner_nonce_b64 = Some("aGVpcm5u".into());
+        let mut req = door_b_request(sealed);
+        req.label = Some("Savings".into());
+        req.heir_contact = None;
+        req.heir_contact_channel = None;
+        req
+    }
+
+    #[tokio::test]
+    async fn a_vault_can_be_created_with_its_heir_chosen_later() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let (_, created) = create_vault_from_xpub(State(state.clone()), Json(heir_later_request()))
+            .await
+            .expect("create without an heir");
+        let id = created.vault.id.clone();
+        type Row = (
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+        );
+        let row: Row = sqlx::query_as(
+            "SELECT heir_pending, heir_xprv_owner_sealed_ct_b64, heir_xprv_sealed_ct_b64, \
+                    claim_token_hash, heir_contact_ciphertext, status FROM vaults WHERE id = ?",
+        )
+        .bind(&id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(row.0, 1);
+        assert_eq!(row.1.as_deref(), Some("aGVpcmN0"));
+        // Nothing the server holds can reach the heir branch.
+        assert!(row.2.is_none() && row.3.is_none() && row.4.is_none());
+        assert_eq!(row.5, "unfunded");
+
+        // The owner gets the sealed key and the heir branch back to re-seal.
+        let blobs = load_sealed_blobs(&state.db, &id).await.unwrap();
+        assert_eq!(blobs.heir_xprv_owner_ct_b64.as_deref(), Some("aGVpcmN0"));
+        assert!(blobs.heir_xpub_fragment_external.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_heir_later_vault_carries_nothing_that_reaches_the_heir() {
+        ensure_test_master_key();
+        for (label, mangle) in [
+            (
+                "a claim token alongside",
+                Box::new(|r: &mut CreateVaultFromXpubRequest| {
+                    let s = r.sealed.as_mut().unwrap();
+                    s.heir_xprv_ct_b64 = Some("eA".into());
+                    s.heir_xprv_nonce_b64 = Some("eQ".into());
+                    s.claim_token_b64 = Some("dG9r".into());
+                }) as Box<dyn Fn(&mut CreateVaultFromXpubRequest)>,
+            ),
+            (
+                "an heir contact alongside",
+                Box::new(|r: &mut CreateVaultFromXpubRequest| {
+                    r.heir_contact = Some("heir@example.com".into());
+                    r.heir_contact_channel = Some("email".into());
+                }),
+            ),
+            (
+                "half the owner-sealed key",
+                Box::new(|r: &mut CreateVaultFromXpubRequest| {
+                    r.sealed.as_mut().unwrap().heir_xprv_owner_nonce_b64 = None;
+                }),
+            ),
+        ] {
+            let state = fresh_state().await;
+            let mut req = heir_later_request();
+            mangle(&mut req);
+            let result = create_vault_from_xpub(State(state.clone()), Json(req)).await;
+            assert!(
+                matches!(result, Err(ApiError::Validation(_))),
+                "{label} must be refused"
+            );
         }
     }
 
@@ -6646,52 +6541,6 @@ mod tests {
         assert_eq!(redact_credential_path("/health"), "/health");
     }
 
-    /// The one-tap-link Lightning route must verify the link token (a bad
-    /// token is NotFound, never reaching the provider) and then defer to
-    /// the Lightning provider (NoopProvider in tests reports "not
-    /// configured"). This proves the token gate without a real backend.
-    #[tokio::test]
-    async fn lightning_from_link_verifies_token_then_defers_to_provider() {
-        ensure_test_master_key();
-        let state = fresh_state().await;
-        let req = door_b_request(sealed_setup(&"e".repeat(64), None, None, None));
-        let (_, created) = create_vault_from_xpub(State(state.clone()), Json(req))
-            .await
-            .expect("Door B create should succeed");
-        let id = created.vault.id.clone();
-
-        // Attach a one-tap check-in link token to the vault, and mark it
-        // funded. Vault state is checked before the provider, so a still-
-        // unfunded vault would stop at "fund your vault first" and never
-        // exercise the deferral this test is about.
-        let token = "a".repeat(64);
-        let hash = hash_claim_token(&token);
-        sqlx::query("UPDATE vaults SET checkin_link_token_hash = ?, status = 'ok' WHERE id = ?")
-            .bind(&hash)
-            .bind(&id)
-            .execute(&state.db)
-            .await
-            .expect("set link token");
-
-        // Wrong token: rejected as NotFound, never reaching the provider.
-        let err = lightning_create_invoice_from_link(
-            State(state.clone()),
-            Path((id.clone(), "b".repeat(64))),
-        )
-        .await
-        .expect_err("wrong token must be rejected");
-        assert!(matches!(err, ApiError::NotFound));
-
-        // Right token: passes the gate, then fails on the absent provider.
-        let err =
-            lightning_create_invoice_from_link(State(state.clone()), Path((id.clone(), token)))
-                .await
-                .expect_err("no provider in tests");
-        assert!(
-            matches!(&err, ApiError::Validation(m) if m.contains("lightning provider not configured"))
-        );
-    }
-
     #[tokio::test]
     async fn health_reports_notifier_queue_health() {
         ensure_test_master_key();
@@ -6830,14 +6679,7 @@ mod tests {
         .expect_err("one-tap check-in on a claimed vault");
         assert!(is_claimed_conflict(&err), "got {err:?}");
 
-        // Path 3: minting a Lightning invoice. Refused before any sats
-        // are quoted, so the owner never pays for a no-op.
-        let err = create_checkin_invoice(&state, "v-claimed")
-            .await
-            .expect_err("lightning check-in on a claimed vault");
-        assert!(is_claimed_conflict(&err), "got {err:?}");
-
-        // The claim record survived all three attempts untouched.
+        // The claim record survived both attempts untouched.
         let (status, token_hash, used): (String, Option<String>, Option<String>) = sqlx::query_as(
             "SELECT status, claim_token_hash, claim_token_used_at FROM vaults WHERE id = 'v-claimed'",
         )
@@ -6847,67 +6689,6 @@ mod tests {
         assert_eq!(status, "claimed", "status must not revert to ok");
         assert_eq!(token_hash.as_deref(), Some("claimhash"));
         assert_eq!(used.as_deref(), Some(used_at));
-    }
-
-    /// The LNURL endpoints mint invoices without going through
-    /// `create_checkin_invoice`, so they need their own claimed-vault
-    /// guard — and unlike the free paths, reaching the poller here costs
-    /// the owner real sats. Both the pay_request (what the wallet reads
-    /// to draw the QR) and the callback (what actually mints) refuse,
-    /// for check-in and panic alike.
-    #[tokio::test]
-    async fn lnurl_refuses_claimed_vault_before_minting() {
-        ensure_test_master_key();
-        let state = fresh_state().await;
-        sqlx::query(
-            r#"INSERT INTO vaults (
-                id, network, descriptor_external, descriptor_internal,
-                timelock_blocks, checkin_period_secs, grace_period_secs,
-                created_at, next_deadline_at, status, claim_eligible_at
-            ) VALUES ('v-lnurl','regtest','tr(a)','tr(b)',144,86400,3600,
-                      '2026-01-01T00:00:00Z','2099-01-01T00:00:00Z','claimed',
-                      '2099-01-02T00:00:00Z')"#,
-        )
-        .execute(&state.db)
-        .await
-        .expect("insert claimed vault");
-
-        async fn body_of(resp: axum::response::Response) -> String {
-            let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
-                .await
-                .expect("read body");
-            String::from_utf8(bytes.to_vec()).expect("utf-8 body")
-        }
-
-        for is_panic in [false, true] {
-            let resp = lnurlp_pay_request_inner(state.clone(), "v-lnurl".into(), is_panic).await;
-            let body = body_of(resp).await;
-            assert!(
-                body.contains("This vault is closed"),
-                "pay_request (panic={is_panic}) should refuse, got {body}"
-            );
-
-            let resp = lnurlp_callback_inner(
-                state.clone(),
-                "v-lnurl".into(),
-                LnurlCallbackParams { amount: Some(1000) },
-                is_panic,
-            )
-            .await;
-            let body = body_of(resp).await;
-            assert!(
-                body.contains("This vault is closed"),
-                "callback (panic={is_panic}) should refuse, got {body}"
-            );
-        }
-
-        // Nothing payable was created.
-        let (invoices,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM lightning_invoices WHERE vault_id = 'v-lnurl'")
-                .fetch_one(&state.db)
-                .await
-                .expect("count invoices");
-        assert_eq!(invoices, 0, "a claimed vault must never mint an invoice");
     }
 
     fn guardian_party(seed: u8, token: &str) -> GuardianParty {
@@ -6921,6 +6702,136 @@ mod tests {
             contact: Some(format!("guardian{seed}@example.com")),
             contact_channel: Some("email".into()),
         }
+    }
+
+    /// The production case behind this route: a guardian vault whose
+    /// guardians were set up on SMS, which never delivered. The owner can
+    /// move a guardian to email; SMS stays refused while undeliverable; an
+    /// unknown slot is NotFound; a claimed vault can't be changed.
+    #[tokio::test]
+    async fn owner_can_move_a_guardian_from_sms_to_email() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let (owner_xpub, owner_fp) = xpub_for(0x31);
+        let (heir_xpub, heir_fp) = xpub_for(0x32);
+        let req = CreateGuardianVaultRequest {
+            label: Some("guardian-edit".into()),
+            network: "regtest".into(),
+            owner: PartyXpub {
+                xpub: owner_xpub,
+                fingerprint: Some(owner_fp),
+            },
+            heir: PartyXpub {
+                xpub: heir_xpub,
+                fingerprint: Some(heir_fp),
+            },
+            guardian1: guardian_party(0x33, "g1-edit"),
+            guardian2: guardian_party(0x34, "g2-edit"),
+            timelock_blocks: 144,
+            unlock_height: None,
+            checkin_period_secs: 86_400,
+            grace_period_secs: 3_600,
+            owner_contact: None,
+            owner_contact_channel: None,
+            heir_contact: Some("heir@example.com".into()),
+            heir_contact_channel: Some("email".into()),
+            sealed: sealed_setup(
+                &"f".repeat(64),
+                Some("aGVpcmN0".into()),
+                Some("aGVpcm5u".into()),
+                Some("heir-edit".into()),
+            ),
+            from_name: None,
+            heir_note: None,
+        };
+        let (_, created) = create_vault_guardian(State(state.clone()), Json(req))
+            .await
+            .expect("guardian create");
+        let id = created.vault.id.clone();
+        // Put guardian 2 on SMS, the way the stranded production vault is.
+        sqlx::query(
+            "UPDATE vault_guardian_keys SET contact_channel = 'sms' WHERE vault_id = ? AND slot = 2",
+        )
+        .bind(&id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let auth = || OwnerAuth {
+            vault_id: id.clone(),
+        };
+
+        let listed = list_vault_guardians(auth(), State(state.clone()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[1].channel.as_deref(), Some("sms"));
+
+        let after = update_vault_guardian(
+            auth(),
+            State(state.clone()),
+            Path((id.clone(), 2)),
+            Json(UpdateHeirRequest {
+                contact: "new-guardian@example.com".into(),
+                channel: "email".into(),
+            }),
+        )
+        .await
+        .expect("move guardian 2 to email")
+        .0;
+        assert_eq!(after[1].channel.as_deref(), Some("email"));
+        assert_eq!(
+            after[1].contact.as_deref(),
+            Some("new-guardian@example.com")
+        );
+        // Guardian 1 untouched.
+        assert_eq!(after[0].contact.as_deref(), Some("guardian51@example.com"));
+
+        if !crate::notifier::channel_deliverable(crate::notifier::Channel::Sms) {
+            let err = update_vault_guardian(
+                auth(),
+                State(state.clone()),
+                Path((id.clone(), 1)),
+                Json(UpdateHeirRequest {
+                    contact: "+2348111111111".into(),
+                    channel: "sms".into(),
+                }),
+            )
+            .await
+            .expect_err("sms refused while undeliverable");
+            assert!(matches!(err, ApiError::Validation(_)), "{err:?}");
+        }
+
+        let err = update_vault_guardian(
+            auth(),
+            State(state.clone()),
+            Path((id.clone(), 3)),
+            Json(UpdateHeirRequest {
+                contact: "x@example.com".into(),
+                channel: "email".into(),
+            }),
+        )
+        .await
+        .expect_err("no slot 3");
+        assert!(matches!(err, ApiError::NotFound), "{err:?}");
+
+        sqlx::query("UPDATE vaults SET status = 'claimed' WHERE id = ?")
+            .bind(&id)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let err = update_vault_guardian(
+            auth(),
+            State(state.clone()),
+            Path((id.clone(), 1)),
+            Json(UpdateHeirRequest {
+                contact: "late@example.com".into(),
+                channel: "email".into(),
+            }),
+        )
+        .await
+        .expect_err("claimed vault");
+        assert!(matches!(err, ApiError::Conflict(_)), "{err:?}");
     }
 
     /// A guardian vault (#81 P2) persists the heir inline plus two guardian
@@ -7621,7 +7532,10 @@ mod tests {
             "got {mismatch:?}"
         );
 
-        // A real phone number on a phone channel is fine.
+        // A real phone number on a phone channel is accepted only when
+        // this server can deliver SMS. Tests run without Twilio, so it is
+        // refused with a pointer to email: an heir we can't reach must
+        // never be saved as if they could be.
         let sms = update_vault_heir(
             OwnerAuth {
                 vault_id: id.to_string(),
@@ -7632,11 +7546,18 @@ mod tests {
                 channel: "sms".to_string(),
             }),
         )
-        .await
-        .expect("phone on sms channel")
-        .0;
-        assert_eq!(sms.channel.as_deref(), Some("sms"));
-        assert_eq!(sms.contact.as_deref(), Some("+2348111111111"));
+        .await;
+        if crate::notifier::channel_deliverable(crate::notifier::Channel::Sms) {
+            let sms = sms.expect("phone on sms channel").0;
+            assert_eq!(sms.channel.as_deref(), Some("sms"));
+        } else {
+            match sms {
+                Err(ApiError::Validation(m)) => {
+                    assert!(m.contains("isn't available") && m.contains("email"), "{m}")
+                }
+                other => panic!("SMS must be refused while undeliverable, got {other:?}"),
+            }
+        }
 
         // Put the vault back on email so the F2 lock below starts from a
         // consistent {email contact, email channel} state.

@@ -22,6 +22,7 @@
  * heir metadata) via vaultStore.ts. There is no global store beyond
  * route + health.
  */
+import { AssistChat } from "./AssistChat";
 import {
   Suspense,
   lazy,
@@ -155,6 +156,9 @@ const Dashboard = lazyRoute(() =>
 const ActivityPage = lazyRoute(() =>
   import("./ActivityPage").then((m) => ({ default: m.ActivityPage })),
 );
+const ChallengesPage = lazyRoute(() =>
+  import("./ChallengesPage").then((m) => ({ default: m.ChallengesPage })),
+);
 const HeirMessagePage = lazyRoute(() =>
   import("./VaultToolPages").then((m) => ({ default: m.HeirMessagePage })),
 );
@@ -221,6 +225,7 @@ export type Route =
   | "success"
   | "dashboard"
   | "activity"
+  | "challenges"
   | "heir-message"
   | "heir-contact"
   | "practice"
@@ -244,6 +249,7 @@ const VALID: Route[] = [
   "success",
   "dashboard",
   "activity",
+  "challenges",
   "heir-message",
   "heir-contact",
   "practice",
@@ -270,6 +276,7 @@ const VALID: Route[] = [
 const OWNER_ROUTES: Route[] = [
   "dashboard",
   "activity",
+  "challenges",
   "heir-message",
   "heir-contact",
   "practice",
@@ -334,6 +341,13 @@ function locationFromHash(): Location {
         return { kind: "verify-email", vaultId, token };
       }
     }
+  }
+  // Opening the app (or the site's front door) on a device that already
+  // knows you goes to Home, which asks only for your password if the
+  // session timed out. Treating a known device as a visitor sent people
+  // to the email-link sign-in. The front page stays one tap away (logo).
+  if (raw === "" && getTrustedVaultId()) {
+    return { kind: "route", route: "dashboard" };
   }
   const slug = raw as Route;
   return {
@@ -582,6 +596,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-app">
+      <div className="status-bar-fill" aria-hidden="true" />
       <a href="#main" className="skip-link">
         Skip to content
       </a>
@@ -590,8 +605,10 @@ export default function App() {
           probe (or after a failed one) told a mainnet owner
           "Alpha: testnet, don't use real-money keys" — false and
           alarming at the exact moment the server was already down.
-          When the probe fails, ServerOfflineBanner below covers it. */}
-      {health === "ok" && <AlphaBanner network={network} />}
+          When the probe fails, ServerOfflineBanner below covers it.
+          Mainnet is the normal case, so it gets no banner: a line on
+          every screen saying "your funds are real" read like a warning. */}
+      {health === "ok" && network !== "bitcoin" && <AlphaBanner network={network} />}
       {demoMode && <DemoBanner />}
       {health === "offline" && <ServerOfflineBanner />}
       {/*
@@ -604,6 +621,7 @@ export default function App() {
           route={location.kind === "route" ? location.route : "landing"}
           onNavigate={setRoute}
           signedIn={signedIn}
+          canAddMoney={signedIn && !locked}
         />
       )}
       {expiredNotice && !isClaim && !isOneTap && !lockScreen && (
@@ -650,6 +668,7 @@ export default function App() {
       {location.kind === "route" && location.route === "success"   && <Success onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "dashboard" && <Dashboard onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "activity"  && <ActivityPage onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "challenges" && <ChallengesPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "heir-message" && <HeirMessagePage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "heir-contact" && <HeirContactPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "practice"  && <PracticeRunPage onNavigate={setRoute} />}
@@ -715,6 +734,9 @@ export default function App() {
       )}
       </Suspense>
       </div>
+      {/* One chat for the whole app, opened from "Ask GhostKey AI" in
+          the menu. Nothing floats over the page. */}
+      <AssistChat intro="Questions about saving, Lightning, check-ins, or what your heir will see? Ask away." />
     </div>
   );
 }
@@ -881,7 +903,7 @@ function Success({ onNavigate }: { onNavigate: (r: Route) => void }) {
         <h1 className="mt-6 font-serif text-4xl md:text-5xl">Your vault is live</h1>
         <p className="mt-3 max-w-md text-muted">
           The person you named will receive your Bitcoin when the time comes.
-          Tap once a month. Nothing changes until you stop.
+          Signing in now and then keeps it that way. Nothing changes until you stop.
         </p>
         <div className="mt-10">
           <Button onClick={() => onNavigate("dashboard")} size="lg">

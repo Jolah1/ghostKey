@@ -67,6 +67,22 @@ const MAX_ATTEMPTS: i64 = 6;
 const BACKOFF_BASE_SECS: i64 = 30;
 const BACKOFF_CAP_SECS: i64 = 3_600;
 
+/// What GhostKey will never ask an heir or guardian for (#392). A fake
+/// message or page only works if it gets one of these, so every message
+/// that hands someone a claim says so plainly. The web claim page shows
+/// the same list (`vocab` `claim.neverAsk`); keep the two in step.
+pub const NEVER_ASK_EMAIL: &str = "GhostKey will never ask you for:\n\
+  - your 12 or 24 words\n\
+  - a password for your wallet\n\
+  - money or a fee\n\
+  - to let anyone see or control your phone or computer\n\
+If anyone asks you for these, it is not us.\n\n";
+
+/// The SMS/WhatsApp form of [`NEVER_ASK_EMAIL`]. It always goes after
+/// the link, so a lock-screen preview still shows nothing about Bitcoin
+/// (C2, #123).
+pub const NEVER_ASK_SHORT: &str = "GhostKey will never ask for your 12 words, a password or money.";
+
 /// What we're notifying about. Drives the subject + body template.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationKind {
@@ -112,7 +128,7 @@ pub enum NotificationKind {
     ClaimOpened,
     /// Trusted-contact-side, when the owner triggers a panic stop:
     /// "someone you know froze their account — check on them." Fired
-    /// from [`crate::lightning::mark_panic_paid`]. This is the alert
+    /// from [`crate::panic::after_freeze`]. This is the alert
     /// the dashboard has promised since F4; see issue #70.
     PanicAlert,
     /// Heir-side, once the claim-challenge window has elapsed without
@@ -161,6 +177,17 @@ pub enum NotificationKind {
     /// it at most once per address, and that column is cleared when the
     /// address changes or when something is actually delivered to it.
     HeirUnreachable,
+    /// The optional savings reminder the owner asked for (#367): weekly
+    /// or monthly, to their confirmed email only. Never escalates and has
+    /// nothing to do with check-ins.
+    SavingsReminder,
+    /// Owner-side, once per finished savings challenge: a short
+    /// congratulations, no amounts. Confirmed email only.
+    ChallengeDone,
+    /// Owner-side, once per owner: signing in now replaces the monthly
+    /// check-in, and the time before the heir is contacted is the
+    /// vault's own waiting period. Confirmed email only.
+    CheckinRhythm,
 }
 
 impl NotificationKind {
@@ -182,6 +209,9 @@ impl NotificationKind {
             NotificationKind::OwnerSend => "owner_send",
             NotificationKind::OwnerRecovery => "owner_recovery",
             NotificationKind::HeirUnreachable => "heir_unreachable",
+            NotificationKind::SavingsReminder => "savings_reminder",
+            NotificationKind::ChallengeDone => "challenge_done",
+            NotificationKind::CheckinRhythm => "checkin_rhythm",
         }
     }
 }

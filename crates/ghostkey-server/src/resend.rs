@@ -475,13 +475,7 @@ mod tests {
             .await
             .expect("hand off");
 
-        (
-            Arc::new(AppState {
-                db: pool,
-                lightning: Arc::new(crate::lightning::NoopProvider),
-            }),
-            id,
-        )
+        (Arc::new(AppState { db: pool }), id)
     }
 
     /// Build a correctly signed request the way Resend would.

@@ -38,6 +38,7 @@
  *     string `ghostkey-placeholder-owner-token-v1`; we detect this
  *     and tell the user to do one check-in from the original device.
  */
+import { checkInAfterSignIn } from "./checkin";
 import { useEffect, useRef, useState } from "react";
 import {
   Button,
@@ -361,6 +362,8 @@ export function SignInPortal({
         throw new Error("The saved credential could not be restored.");
       }
       setPhase({ kind: "done" });
+      // Signing in with your password counts as a check-in.
+      void checkInAfterSignIn();
       onUnlock?.();
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -449,6 +452,8 @@ export function SignInPortal({
       });
       setActiveVaultId(v.id);
       setPhase({ kind: "done" });
+      // Signing in with your password counts as a check-in.
+      void checkInAfterSignIn();
       onUnlock?.();
       onNavigate("dashboard");
     } catch (e) {
@@ -579,6 +584,8 @@ export function SignInPortal({
     }
     setActiveVaultId(firstLiveId ?? firstId);
     setPhase({ kind: "done" });
+    // Signing in with your password counts as a check-in.
+    void checkInAfterSignIn();
     onUnlock?.();
     onNavigate("dashboard");
   }
@@ -593,7 +600,7 @@ export function SignInPortal({
               ? timedOut
                 ? "Session timed out"
                 : "Welcome back"
-              : "Open your vault on this device"}
+              : "Open your savings on this device"}
           </h1>
           <p className="mx-auto mt-3 text-sm text-muted">
             {trustedUnlock
@@ -733,7 +740,7 @@ export function SignInPortal({
 
         {trustedUnlock ? (
           <div className="mt-10 border-t border-app pt-6 text-center text-xs text-muted">
-            Different email or vault?{" "}
+            Not you, or another vault?{" "}
             <button
               type="button"
               className="underline hover:text-[var(--text)]"
@@ -743,7 +750,7 @@ export function SignInPortal({
                 setPassword("");
               }}
             >
-              Email me a sign-in link
+              Use a different email
             </button>
           </div>
         ) : (

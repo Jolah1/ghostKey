@@ -5,7 +5,7 @@
  *
  * Each page needs the same handful of things the dashboard already
  * derives: the active vault id + local metadata, the owner token, the
- * server-side vault view (for status / lnurl_panic / trusted contact),
+ * server-side vault view (for status / trusted contact),
  * and the push VAPID key from /health. This hook fetches them once so
  * every tool page stays a thin wrapper around its existing card.
  */

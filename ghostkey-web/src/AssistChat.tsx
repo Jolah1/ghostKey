@@ -1,5 +1,7 @@
 /**
- * Floating AI guide chat.
+ * AI guide chat, opened from "Ask GhostKey AI" in the menu (`openAssist`).
+ * Mounted once for the whole app; there is no floating button over the
+ * page any more.
  *
  * A small, dismissible panel that asks the user's question to a
  * server-proxied Claude model. Used on the setup, dashboard, and
@@ -15,15 +17,20 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, type AssistChatMessage } from "./api";
 
+const OPEN_EVENT = "gk:assist-open";
+
+/** Open the chat from anywhere (the menu). */
+export function openAssist(): void {
+  window.dispatchEvent(new Event(OPEN_EVENT));
+}
+
 interface Props {
-  /** A short label that opens the chat. Defaults to "GhostKey AI". */
-  label?: string;
   /** Optional opener message shown above the input on first open.
    *  Use this to set scope ("Ask anything about funding your vault"). */
   intro?: string;
 }
 
-export function AssistChat({ label = "GhostKey AI", intro }: Props) {
+export function AssistChat({ intro }: Props) {
   const [open, setOpen] = useState(false);
   // We only probe /health on first open — keeps the dashboard cheap.
   const [enabled, setEnabled] = useState<boolean | null>(null);
@@ -32,6 +39,12 @@ export function AssistChat({ label = "GhostKey AI", intro }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const onOpen = () => setOpen(true);
+    window.addEventListener(OPEN_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_EVENT, onOpen);
+  }, []);
 
   useEffect(() => {
     if (!open || enabled !== null) return;
@@ -88,25 +101,14 @@ export function AssistChat({ label = "GhostKey AI", intro }: Props) {
     }
   }
 
-  if (!open) {
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="fixed bottom-5 right-5 z-40 rounded-full bg-[var(--surface)] px-4 py-2.5 text-sm font-medium shadow-lg ring-1 ring-[var(--border)] hover:bg-[var(--surface-2,var(--surface))]"
-        aria-label={label}
-      >
-        💬 {label}
-      </button>
-    );
-  }
+  if (!open) return null;
 
   return (
     <div
       role="dialog"
       aria-modal="false"
       aria-label="GhostKey AI chat"
-      className="assist-panel fixed bottom-5 right-5 z-40 flex w-[min(380px,calc(100vw-2rem))] flex-col rounded-2xl bg-[var(--surface)] shadow-xl ring-1 ring-[var(--border)]"
+      className="assist-panel fixed bottom-[max(1.25rem,env(safe-area-inset-bottom))] right-5 z-40 flex w-[min(380px,calc(100vw-2rem))] flex-col rounded-2xl bg-[var(--surface)] shadow-xl ring-1 ring-[var(--border)]"
     >
       <header className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
         <div>

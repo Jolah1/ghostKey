@@ -371,6 +371,47 @@ export async function sealVaultSecrets(
   return out;
 }
 
+/** What setup ships when the heir is chosen later: the owner side as
+ *  usual, and the heir key sealed under the SAME password KEK instead of
+ *  a claim token. No claim token exists yet, so nothing the server stores
+ *  can open the heir key. */
+export interface SealedHeirLater {
+  password_salt: string;
+  password_kdf_mem_kib: number;
+  password_kdf_iters: number;
+  owner_xprv: SealedBlob;
+  owner_token: SealedBlob;
+  heir_xprv_owner: SealedBlob;
+  /** Scratch copy of the KEK for re-sealing the real owner token; the
+   *  caller wipes it. */
+  _owner_kek: Uint8Array;
+}
+
+export async function sealVaultSecretsHeirLater(input: {
+  password: string;
+  ownerXprv: string;
+  heirXprv: string;
+  ownerToken: string;
+  onProgress?: (pct: number) => void;
+}): Promise<SealedHeirLater> {
+  const enc = new TextEncoder();
+  const salt = randomBytes(16);
+  const kek = await deriveOwnerKek(input.password, salt, { onProgress: input.onProgress });
+  try {
+    return {
+      password_salt: b64encode(salt),
+      password_kdf_mem_kib: ARGON_MEM_KIB,
+      password_kdf_iters: ARGON_ITERS,
+      owner_xprv: sealWithKey(kek, enc.encode(input.ownerXprv)),
+      owner_token: sealWithKey(kek, enc.encode(input.ownerToken)),
+      heir_xprv_owner: sealWithKey(kek, enc.encode(input.heirXprv)),
+      _owner_kek: new Uint8Array(kek),
+    };
+  } finally {
+    kek.fill(0);
+  }
+}
+
 /** Result of sealing one secret under a password: the ciphertext plus
  *  the KDF parameters a reader needs to re-derive the same KEK. Shaped
  *  to drop straight into a recovery-kit data blob. */

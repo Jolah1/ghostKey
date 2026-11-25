@@ -8,7 +8,7 @@ export const en: Vocab = {
   langName: "English",
   tagline: "Bitcoin inheritance, without the lawyers.",
   longTagline:
-    "Set up once. Tap once a month to say you're here. If you ever stop, the people you chose can claim what's theirs.",
+    "Put sats aside whenever you can and watch them grow. You hold the key and can spend any time. If you ever stop showing up, your savings go to someone you chose instead of being lost.",
   status: makeStatus({
     unfunded: {
       label: "Awaiting funding",
@@ -46,6 +46,16 @@ export const en: Vocab = {
   claim: {
     header: "A message for you",
     loading: "Opening your link…",
+    neverAsk: {
+      title: "GhostKey will never ask you for",
+      items: [
+        "your 12 or 24 words",
+        "a password for your wallet",
+        "money or a fee",
+        "to let anyone see or control your phone or computer",
+      ],
+      closing: "If anyone asks you for these, it is not us.",
+    },
     notFound: {
       eyebrow: "This link doesn't work",
       title: "We couldn't find anything for this link",
@@ -340,7 +350,7 @@ export const en: Vocab = {
   inheritPortal: {
     eyebrow: "Inherit",
     title: "Someone trusted you with this",
-    description: "If you're here, someone you knew left something behind and trusted you to look after it. We'll walk you through it slowly, one step at a time. If you don't have your link yet, that's normal. It arrives by SMS, WhatsApp, or email when the time comes. There's no account to sign in to.",
+    description: "If you're here, someone you knew left something behind and trusted you to look after it. We'll walk you through it slowly, one step at a time. If you don't have your link yet, that's normal. It arrives by email when the time comes. There's no account to sign in to.",
     whatLinkLooksLike: "What the link looks like",
     linkExample: "https://www.ghostkeyapp.com/#/claim/AbCdEf12_3456_etc…",
     linkPrivacyNote: "Your link is private and works only once. Please don't share it with anyone.",
