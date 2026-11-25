@@ -91,14 +91,14 @@ test("savings card: totals, then a goal with progress and pace", async ({ page }
   await card.getByRole("button", { name: "Save goal" }).click();
 
   // The browser sent exactly what was picked and typed, in sats.
-  expect(state.added[0]).toEqual({ title: "School fees", amount_sat: 1_000_000, target_date: `${nextYear}-06-30` });
+  await expect.poll(() => state.added[0]).toEqual({ title: "School fees", amount_sat: 1_000_000, target_date: `${nextYear}-06-30` });
   // A new goal starts empty; the money so far is offered to it.
   await expect(card.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "0");
   await expect(card).toContainText("250,000 sats not in a goal");
   await card.getByRole("button", { name: "Put it in a goal" }).click();
   await card.getByLabel("How much").fill("250,000");
   await card.getByRole("button", { name: "Move" }).click();
-  expect(state.moves[0]).toEqual({ from_goal_id: null, to_goal_id: "g1", amount_sat: 250_000 });
+  await expect.poll(() => state.moves[0]).toEqual({ from_goal_id: null, to_goal_id: "g1", amount_sat: 250_000 });
   await expect(card.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "25");
 
   // Tapping the goal opens its figures and the pace.
@@ -122,7 +122,7 @@ test("savings card: totals, then a goal with progress and pace", async ({ page }
   await card.getByLabel("Remind me to save").selectOption("weekly");
   await card.getByLabel(/How much each time/).fill("50,000");
   await card.getByRole("button", { name: "Save reminder" }).click();
-  expect(state.reminderBody).toEqual({ cadence: "weekly", amount_sat: 50_000 });
+  await expect.poll(() => state.reminderBody).toEqual({ cadence: "weekly", amount_sat: 50_000 });
   await expect(page.getByTestId("savings-reminder")).toContainText(
     "We'll remind you to save every week (about 50,000 sats). Next on",
   );
@@ -147,14 +147,14 @@ test("several goals: sort new money with a tap, type your own, and never show mo
   await card.getByRole("button", { name: "+ Add a goal" }).click();
   await card.getByLabel("Or type your own").fill("Okada for my brother");
   await card.getByRole("button", { name: "Save goal" }).click();
-  expect(state.added[0]).toEqual({ title: "Okada for my brother", amount_sat: null, target_date: null });
+  await expect.poll(() => state.added[0]).toEqual({ title: "Okada for my brother", amount_sat: null, target_date: null });
   await expect(card.getByTestId("goal")).toHaveCount(2);
 
   // New money: one tap says which goal it's for.
   const prompt = page.getByTestId("sort-prompt");
   await expect(prompt).toContainText("+50,000 sats arrived");
   await prompt.getByRole("button", { name: "Okada for my brother" }).click();
-  expect(state.sorted[0]).toEqual({ outpoint: "new:0", goal_id: "g2" });
+  await expect.poll(() => state.sorted[0]).toEqual({ outpoint: "new:0", goal_id: "g2" });
   await expect(page.getByTestId("sort-prompt")).toHaveCount(0);
   await expect(card.getByTestId("goal").nth(1)).toContainText("50,000 sats");
   await expect(card).toContainText("50,000 sats not in a goal");
@@ -169,7 +169,7 @@ test("several goals: sort new money with a tap, type your own, and never show mo
   expect(state.moves).toHaveLength(0);
   await card.getByLabel("How much").fill("20,000");
   await card.getByRole("button", { name: "Move" }).click();
-  expect(state.moves[0]).toEqual({ from_goal_id: "g1", to_goal_id: "g2", amount_sat: 20_000 });
+  await expect.poll(() => state.moves[0]).toEqual({ from_goal_id: "g1", to_goal_id: "g2", amount_sat: 20_000 });
   await expect(card.getByTestId("goal").nth(1)).toContainText("70,000 sats");
 
   const results = await new AxeBuilder({ page }).include('[data-testid="savings-hero"]').analyze();
