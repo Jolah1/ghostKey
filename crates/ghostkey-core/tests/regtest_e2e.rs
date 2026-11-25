@@ -682,6 +682,130 @@ fn offline_sweep_owner_and_heir() -> Result<()> {
     Ok(())
 }
 
+/// Owner sends signed in the browser (#442): the server hands the browser
+/// every confirmed transaction touching the vault, deposits AND earlier
+/// spends, and the browser's signer (this same `sign_owner_sweep`) must
+/// work out what is still unspent from that history alone. Two deposits,
+/// a partial send, then a second partial send and a full drain built only
+/// from the history: each must be accepted by Bitcoin Core.
+#[test]
+#[ignore]
+fn browser_send_from_full_history_spends_only_whats_left() -> Result<()> {
+    let net = Network::Regtest;
+    let node = Bitcoind::spawn()?;
+    let bare = node.client()?;
+    let node_w = ensure_node_wallet(&node, "miner")?;
+    mine_blocks(&node_w, 101)?;
+
+    let (vault, owner_m, _heir_m) = build_vault_and_keys()?;
+    let secp = Secp256k1::new();
+    let owner_acct = owner_m.derive_priv(&secp, &vault_account_path(net))?;
+    let mut watch = build_watch_only(&vault)?;
+
+    // Two deposits in one block.
+    let a = watch.reveal_next_address(KeychainKind::External).address;
+    let b = watch.reveal_next_address(KeychainKind::External).address;
+    let a_txid = node_w.send_to_address(
+        &a,
+        Amount::from_btc(0.5)?,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )?;
+    let b_txid = node_w.send_to_address(
+        &b,
+        Amount::from_btc(0.3)?,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )?;
+    let h1 = mine_blocks(&node_w, 1)?;
+    let mut history = vec![
+        ConfirmedTx {
+            tx: node_w.get_transaction(&a_txid, None)?.transaction()?,
+            confirmation_height: h1,
+        },
+        ConfirmedTx {
+            tx: node_w.get_transaction(&b_txid, None)?.transaction()?,
+            confirmation_height: h1,
+        },
+    ];
+    let dest = |label: &str| -> Result<Address> {
+        node_w
+            .get_new_address(Some(label), Some(AddressType::Bech32))?
+            .require_network(net)
+            .map_err(|e| anyhow!("{e}"))
+    };
+
+    // 1. A partial send; its change comes back to the vault.
+    let d1 = dest("send-1")?;
+    let s1 = sign_owner_sweep(
+        &vault,
+        &owner_acct,
+        history.clone(),
+        h1,
+        &d1,
+        Some(20_000_000),
+        fee_rate(),
+    )?;
+    broadcast_tx(&bare, &s1.tx)?;
+    let h2 = mine_blocks(&node_w, 1)?;
+    history.push(ConfirmedTx {
+        tx: s1.tx.clone(),
+        confirmation_height: h2,
+    });
+
+    // 2. Built from the whole history: must not touch what send 1 spent.
+    let d2 = dest("send-2")?;
+    let s2 = sign_owner_sweep(
+        &vault,
+        &owner_acct,
+        history.clone(),
+        h2,
+        &d2,
+        Some(10_000_000),
+        fee_rate(),
+    )?;
+    for input in &s2.tx.input {
+        assert!(
+            !s1.tx
+                .input
+                .iter()
+                .any(|i| i.previous_output == input.previous_output),
+            "send 2 tried to spend a coin send 1 already spent"
+        );
+    }
+    broadcast_tx(&bare, &s2.tx)?;
+    let h3 = mine_blocks(&node_w, 1)?;
+    history.push(ConfirmedTx {
+        tx: s2.tx.clone(),
+        confirmation_height: h3,
+    });
+    assert_eq!(
+        received_by_address(&node_w, &d2)?,
+        Amount::from_sat(10_000_000)
+    );
+
+    // 3. Drain what's left, again from the history alone.
+    let d3 = dest("drain")?;
+    let s3 = sign_owner_sweep(&vault, &owner_acct, history, h3, &d3, None, fee_rate())?;
+    broadcast_tx(&bare, &s3.tx)?;
+    mine_blocks(&node_w, 1)?;
+    let left = received_by_address(&node_w, &d3)?;
+    // 0.8 in, 0.2 + 0.1 sent, three small fees.
+    assert!(
+        left > Amount::from_btc(0.4999)? && left < Amount::from_btc(0.5)?,
+        "drain should deliver about 0.5 BTC, got {left}"
+    );
+    Ok(())
+}
+
 /// Emit a deterministic owner-sweep fixture for the wasm runtime test
 /// (`ghostkey-wasm`). Run with `--ignored --nocapture` and capture the
 /// JSON between the BEGIN/END markers. No node required: the funding tx is

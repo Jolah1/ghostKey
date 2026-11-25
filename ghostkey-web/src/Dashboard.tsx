@@ -73,6 +73,7 @@ import { UnitToggle } from "./UnitToggle";
 import { InstallNudge } from "./InstallNudge";
 import { useLightningEngine } from "./lightning/engine";
 import { checkInVaults } from "./checkin";
+import type { Network } from "./crypto/keygen";
 import { heirContactDue } from "./heirContact";
 import { useToolDoneState } from "./toolStatus";
 import type { Route } from "./App";
@@ -1491,10 +1492,46 @@ function SendCard({
 
     setPhase("sending");
     try {
-      const res = await api.ownerSend(vaultId, ownerToken, {
+      // Signed here, in this browser (#442): the server sends the vault's
+      // history and broadcasts the finished transaction, but never sees
+      // the key. The signer is the recovery kit's (ghostkey-core in wasm),
+      // loaded only now because it's large.
+      const [coins, vault, signer] = await Promise.all([
+        api.getSpendCoins(vaultId, ownerToken),
+        api.getVault(vaultId, ownerToken),
+        import("./kit/signer"),
+      ]);
+      if (coins.confirmed_sat === 0) {
+        throw new Error(
+          coins.unconfirmed_sat > 0
+            ? "Your bitcoin is still waiting for its first confirmation. Try again in about 10 minutes."
+            : "There's nothing in the vault to send yet.",
+        );
+      }
+      // The descriptors this device pinned the first time it saw the
+      // vault, so a tampered server can't redirect the change.
+      const pinned = getVaultMeta(vaultId)?.pinnedDescriptors;
+      const descriptorExternal = pinned?.external ?? vault.descriptor_external;
+      const descriptorInternal = pinned?.internal ?? vault.descriptor_internal;
+      if (!descriptorExternal || !descriptorInternal) {
+        throw new Error("Couldn't load your vault's details. Try again.");
+      }
+      const signed = await signer.signSweep({
+        role: "owner",
+        descriptor_external: descriptorExternal,
+        descriptor_internal: descriptorInternal,
+        timelock_blocks: vault.timelock_blocks,
+        network: network as Network,
+        account_xprv: ownerXprv,
+        funding: coins.funding,
+        chain_tip_height: coins.chain_tip_height,
+        recipient: destination.trim(),
+        amount_sat: sendAll ? null : (amountSat as number),
+        fee_rate_sat_vb: coins.fee_rate_sat_per_vb,
+      });
+      const res = await api.ownerSendSigned(vaultId, ownerToken, {
+        tx_hex: signed.tx_hex,
         destination: destination.trim(),
-        ...(sendAll ? {} : { amount_sat: amountSat as number }),
-        owner_xprv: ownerXprv,
       });
       setResult(res);
       setPassword("");
@@ -1641,7 +1678,8 @@ function SendCard({
               className="input mt-1 w-full"
             />
             <span className="mt-1 block text-xs text-dim">
-              Your password unlocks the vault key right here in your browser.
+              Your password unlocks your key and signs the send right here.
+              Your key never leaves this device.
             </span>
           </label>
           {error ? <p className="text-xs text-alarm">{error}</p> : null}

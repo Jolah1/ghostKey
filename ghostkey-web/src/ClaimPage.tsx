@@ -1157,6 +1157,46 @@ function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
 /* ------------------ Password-vault claim (one-shot) ------------------------ */
 
 /**
+ * Sign an heir's claim in THIS browser and broadcast only the finished
+ * transaction (#390). The server sends the vault's confirmed history and
+ * never sees the heir's key. The signer is the recovery kit's
+ * (ghostkey-core in wasm), loaded only now because it's large.
+ */
+async function signAndSendClaim(args: {
+  token: string;
+  heirXprv: string;
+  descriptorExternal: string;
+  descriptorInternal: string;
+  timelockBlocks: number;
+  network: string;
+  destination: string;
+  feeRate: number | null | undefined;
+}): Promise<BroadcastClaimResponse> {
+  const [coins, signer] = await Promise.all([api.getClaimCoins(args.token), import("./kit/signer")]);
+  if (coins.confirmed_sat === 0) {
+    throw new Error(
+      coins.unconfirmed_sat > 0
+        ? "The bitcoin is still waiting for a confirmation. Try again in about 10 minutes."
+        : "There's nothing left to claim in this vault.",
+    );
+  }
+  const signed = await signer.signSweep({
+    role: "heir",
+    descriptor_external: args.descriptorExternal,
+    descriptor_internal: args.descriptorInternal,
+    timelock_blocks: args.timelockBlocks,
+    network: args.network as Network,
+    account_xprv: args.heirXprv,
+    funding: coins.funding,
+    chain_tip_height: coins.chain_tip_height,
+    recipient: args.destination,
+    amount_sat: null,
+    fee_rate_sat_vb: args.feeRate ?? coins.fee_rate_sat_per_vb,
+  });
+  return api.heirClaimSigned(args.token, { tx_hex: signed.tx_hex, destination: args.destination });
+}
+
+/**
  * The happy path for vaults set up via the password-vault flow.
  *
  * Flow:
@@ -1168,9 +1208,10 @@ function GuardianClaim({ view, token }: { view: ClaimView; token: string }) {
  *        a. b64decode(token) -> 32 raw token bytes
  *        b. unsealHeirXprv(rawBytes, sealedBlob) -> heir account xprv
  *           (pure local; KEK derived from HKDF-SHA256 of the token)
- *        c. POST /claim/:token/heir-claim with { destination, heir_xprv }
- *           — the server builds, signs, broadcasts; the xprv is held
- *           in memory only for that single call.
+ *        c. GET /claim/:token/coins, then sign the claim HERE with the
+ *           recovery kit's signer (ghostkey-core in wasm), then POST
+ *           /claim/:token/claim-signed with only the finished
+ *           transaction. The heir's key never leaves this browser (#390).
  *        d. Wipe our local copy of the unwrapped xprv, regardless of
  *           outcome.
  *
@@ -1229,10 +1270,15 @@ function PasswordVaultClaim({
         ct: sealed.heir_xprv_ct_b64,
         nonce: sealed.heir_xprv_nonce_b64,
       });
-      const resp = await api.heirClaim(token, {
+      const resp = await signAndSendClaim({
+        token,
+        heirXprv,
+        descriptorExternal: sealed.descriptor_external,
+        descriptorInternal: sealed.descriptor_internal,
+        timelockBlocks: sealed.timelock_blocks,
+        network: sealed.network,
         destination: address.trim(),
-        fee_rate_sat_per_vb: feeRateNum,
-        heir_xprv: heirXprv,
+        feeRate: feeRateNum,
       });
       setResult(resp);
     } catch (e) {
@@ -1497,10 +1543,15 @@ function DerivedHeirClaim({
       );
       heirXprv = derived.xprvBase58;
       mnemonic = derived.mnemonic;
-      const resp = await api.heirClaim(token, {
+      const resp = await signAndSendClaim({
+        token,
+        heirXprv,
+        descriptorExternal: params.descriptor_external,
+        descriptorInternal: params.descriptor_internal,
+        timelockBlocks: params.timelock_blocks,
+        network: params.network,
         destination: address.trim(),
-        fee_rate_sat_per_vb: feeRateNum,
-        heir_xprv: heirXprv,
+        feeRate: feeRateNum,
       });
       setResult({ kind: "ok", resp, mnemonic });
     } catch (e) {

@@ -193,6 +193,11 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
             "/claim/:token/heir-claim",
             post(crate::psbt_routes::heir_claim),
         )
+        .route("/claim/:token/coins", get(crate::psbt_routes::claim_coins))
+        .route(
+            "/claim/:token/claim-signed",
+            post(crate::psbt_routes::heir_claim_signed),
+        )
         .route(
             "/claim/:token/sealed-guardian",
             get(crate::psbt_routes::get_sealed_guardian_xprv),
@@ -332,6 +337,14 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
             post(crate::psbt_routes::relay_vault_deposit),
         )
         .route("/vaults/:id/send", post(crate::psbt_routes::owner_send))
+        .route(
+            "/vaults/:id/coins",
+            get(crate::psbt_routes::get_spend_coins),
+        )
+        .route(
+            "/vaults/:id/send/signed",
+            post(crate::psbt_routes::owner_send_signed),
+        )
         .route("/vaults/:id/seal-owner-token", post(seal_owner_token))
         .route("/vaults/:id/checkin", post(checkin))
         .route("/vaults/:id/panic", post(crate::panic::panic_stop))
@@ -7190,6 +7203,81 @@ mod tests {
     /// carrying the broadcast txid so the page can show the heir their
     /// receipt after a reload instead of "link already used". A consumed
     /// token on a vault that never reached 'claimed' stays a 409.
+    #[tokio::test]
+    async fn browser_signed_claim_routes_keep_the_claim_link_guards() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        // An unknown link: nothing to see, nothing to claim.
+        let missing = crate::psbt_routes::claim_coins(
+            State(state.clone()),
+            axum::extract::Path("no-such-token".to_string()),
+        )
+        .await
+        .expect_err("unknown token");
+        assert!(matches!(missing, ApiError::NotFound), "got {missing:?}");
+        let missing = crate::psbt_routes::heir_claim_signed(
+            State(state.clone()),
+            axum::extract::Path("no-such-token".to_string()),
+            Json(crate::psbt_routes::SignedClaimRequest {
+                tx_hex: "00".into(),
+                destination: "bcrt1qexample".into(),
+            }),
+        )
+        .await
+        .expect_err("unknown token");
+        assert!(matches!(missing, ApiError::NotFound), "got {missing:?}");
+
+        // A used link stays used.
+        let (owner_xpub, owner_fp) = xpub_for(0x71);
+        let (heir_xpub, heir_fp) = xpub_for(0x72);
+        let req = CreateGuardianVaultRequest {
+            label: Some("signed".into()),
+            network: "regtest".into(),
+            owner: PartyXpub {
+                xpub: owner_xpub,
+                fingerprint: Some(owner_fp),
+            },
+            heir: PartyXpub {
+                xpub: heir_xpub,
+                fingerprint: Some(heir_fp),
+            },
+            guardian1: guardian_party(0x73, "sg1-token"),
+            guardian2: guardian_party(0x74, "sg2-token"),
+            timelock_blocks: 144,
+            unlock_height: None,
+            checkin_period_secs: 86_400,
+            grace_period_secs: 3_600,
+            owner_contact: None,
+            owner_contact_channel: None,
+            heir_contact: Some("heir@example.com".into()),
+            heir_contact_channel: Some("email".into()),
+            sealed: sealed_setup(
+                &"d".repeat(64),
+                Some("aGVpcmN0".into()),
+                Some("aGVpcm5u".into()),
+                Some("signed-heir-token".into()),
+            ),
+            from_name: None,
+            heir_note: None,
+        };
+        let (_, created) = create_vault_guardian(State(state.clone()), Json(req))
+            .await
+            .expect("create");
+        sqlx::query("UPDATE vaults SET claim_token_used_at = ? WHERE id = ?")
+            .bind(Utc::now().to_rfc3339())
+            .bind(&created.vault.id)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let used = crate::psbt_routes::claim_coins(
+            State(state.clone()),
+            axum::extract::Path("signed-heir-token".to_string()),
+        )
+        .await
+        .expect_err("used token");
+        assert!(matches!(used, ApiError::Conflict(_)), "got {used:?}");
+    }
+
     #[tokio::test]
     async fn resolve_claim_returns_receipt_after_successful_claim() {
         ensure_test_master_key();
