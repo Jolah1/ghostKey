@@ -58,6 +58,12 @@ export default defineConfig({
         theme_color: "#10151B",
         lang: "en",
         categories: ["finance", "utilities"],
+        // Ask the browser to open GhostKey links (like the sign-in email)
+        // in the installed app rather than a browser tab, where it can
+        // (Chrome on desktop; Android when the mail app hands links on),
+        // reusing the open window.
+        handle_links: "preferred",
+        launch_handler: { client_mode: ["navigate-existing", "auto"] },
         icons: [
           {
             src: "pwa-192x192.png",
