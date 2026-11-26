@@ -295,6 +295,7 @@ pub(crate) async fn resolve_drill_claim(
         notifier::parse_heir_contact(&vault_id, heir_ct.as_deref(), heir_nn.as_deref())?
             .and_then(|c| c.name);
 
+    let heir_code = crate::psbt_routes::heir_code_kdf(&state.db, &vault_id).await?;
     Ok(Json(ClaimView {
         vault_id,
         label,
@@ -311,6 +312,7 @@ pub(crate) async fn resolve_drill_claim(
         token_role: "heir".to_string(),
         guardian_slot: None,
         drill: true,
+        heir_code,
         // A rehearsal never broadcasts anything.
         claimed_txid: None,
         claimed_explorer_url: None,

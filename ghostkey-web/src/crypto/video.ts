@@ -20,6 +20,14 @@ import {
   sealWithKey,
 } from "./sealing";
 
+/** What locks a video: the claim token (older vaults), or the key
+ *  derived from the heir code (`heirVideoKey`, heir-code vaults). */
+export type VideoLock = { claimTokenRaw: Uint8Array } | { videoKey: Uint8Array };
+
+function videoKek(lock: VideoLock): Uint8Array {
+  return "videoKey" in lock ? new Uint8Array(lock.videoKey) : deriveClaimKek(lock.claimTokenRaw);
+}
+
 export interface PreparedVideo {
   video_ct_b64: string;
   video_nonce_b64: string;
@@ -55,19 +63,24 @@ export interface VerifiedClip {
  * flagged unverified.
  */
 export function decryptAndVerifyVideo(input: {
-  claimTokenRaw: Uint8Array;
+  lock: VideoLock;
   ownerXpub: string;
   videoCtB64: string;
   videoNonceB64: string;
   ownerSigB64: string;
   signedSha256Hex: string;
 }): VerifiedClip {
-  const kek = deriveClaimKek(input.claimTokenRaw);
-  const bytes = openWithKey(kek, {
-    v: 1,
-    ct: input.videoCtB64,
-    nonce: input.videoNonceB64,
-  });
+  const kek = videoKek(input.lock);
+  let bytes: Uint8Array;
+  try {
+    bytes = openWithKey(kek, {
+      v: 1,
+      ct: input.videoCtB64,
+      nonce: input.videoNonceB64,
+    });
+  } finally {
+    kek.fill(0);
+  }
 
   let verified = false;
   try {
@@ -89,7 +102,7 @@ export function decryptAndVerifyVideo(input: {
  */
 export function prepareVideo(
   ownerXprv: string,
-  claimTokenRaw: Uint8Array,
+  lock: VideoLock,
   videoBytes: Uint8Array,
 ): PreparedVideo {
   const digest = sha256(videoBytes);
@@ -99,8 +112,9 @@ export function prepareVideo(
   }
   // Deterministic ECDSA (RFC6979) over the clip digest, 64-byte compact.
   const sig = node.sign(digest);
-  const kek = deriveClaimKek(claimTokenRaw);
+  const kek = videoKek(lock);
   const sealed = sealWithKey(kek, videoBytes);
+  kek.fill(0);
   return {
     video_ct_b64: sealed.ct,
     video_nonce_b64: sealed.nonce,

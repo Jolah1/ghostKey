@@ -12,6 +12,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { deriveClaimKek, sealWithKey } from "../src/crypto/sealing";
+import { deriveHeirCodeKek } from "../src/crypto/heirCode";
 import { HDKey } from "@scure/bip32";
 import { bip32Versions } from "../src/crypto/keygen";
 import { Transaction, OutScript, Address, TEST_NETWORK } from "@scure/btc-signer";
@@ -65,33 +66,41 @@ const fixture = JSON.parse(
 const REGTEST = { ...TEST_NETWORK, bech32: "bcrt" };
 const PAST = new Date(Date.now() - 200 * 86400_000).toISOString();
 
-test("an heir's claim is signed in the browser: the server never sees the heir's key", async ({ page }) => {
-  test.setTimeout(120_000);
-  // The fixture vault's heir: the same deterministic seed the Rust test
-  // builds it from, at the BIP86 account the descriptor uses.
-  const heirXprv = HDKey.fromMasterSeed(new Uint8Array(32).fill(0xb2), bip32Versions("regtest")).derive("m/86'/1'/0'")
-    .privateExtendedKey;
+// The fixture vault's heir: the same deterministic seed the Rust test
+// builds it from, at the BIP86 account the descriptor uses.
+const HEIR_XPRV = HDKey.fromMasterSeed(new Uint8Array(32).fill(0xb2), bip32Versions("regtest")).derive("m/86'/1'/0'")
+  .privateExtendedKey;
+const HEIR_CODE = "river-garden-mango-seven-lamp";
+// Small Argon2 settings: the same maths as real vaults, a fast test.
+const CODE_KDF = { salt_b64: "c2FsdHNhbHRzYWx0c2FsdA", kdf_mem_kib: 1024, kdf_iters: 1 };
+
+/** Mock the claim API for a vault whose heir key is locked with the claim
+ *  link (older vaults) or with an heir code (new vaults). */
+async function mockClaim(page: Page, lockedWith: "link" | "code") {
   const rawToken = new Uint8Array(32).fill(7);
   const token = Buffer.from(rawToken).toString("base64");
-  const sealed = sealWithKey(deriveClaimKek(rawToken), new TextEncoder().encode(heirXprv));
-  const bodies: string[] = [];
-  let signedBody: { tx_hex: string; destination: string } | null = null;
-  let oldClaimCalled = false;
-  const T = `/claim/${encodeURIComponent(token)}`;
+  const kek = lockedWith === "link" ? deriveClaimKek(rawToken) : await deriveHeirCodeKek(HEIR_CODE, CODE_KDF);
+  const sealed = sealWithKey(kek, new TextEncoder().encode(HEIR_XPRV));
+  const heirCode = lockedWith === "code" ? { heir_code: CODE_KDF } : {};
+  const seen = {
+    bodies: [] as string[],
+    signedBody: null as { tx_hex: string; destination: string } | null,
+    oldClaimCalled: false,
+  };
+  const at = `/claim/${token}`;
 
   await page.route("**/api/**", (route) => {
     const req = route.request();
     const p = decodeURIComponent(new URL(req.url()).pathname.replace(/^\/api/, ""));
     const raw = req.postData();
-    if (raw) bodies.push(raw);
-    const at = decodeURIComponent(T);
+    if (raw) seen.bodies.push(raw);
     if (p === "/health") return route.fulfill(json({ ok: true, version: "e2e", demo_mode: false, default_network: "regtest", email_enabled: true }));
     if (p === at)
       return route.fulfill(
         json({
           vault_id: "v-claim", label: "Savings", network: "regtest", status: "timelock_started",
           timelock_blocks: fixture.timelock_blocks, next_deadline_at: PAST, heir_channel: "email",
-          heir_display_name: "Ada", vault_kind: "standard", token_role: "heir",
+          heir_display_name: "Ada", ...heirCode,
         }),
       );
     if (p === `${at}/unlock-estimate`)
@@ -105,6 +114,7 @@ test("an heir's claim is signed in the browser: the server never sees the heir's
           vault_id: "v-claim", network: "regtest", timelock_blocks: fixture.timelock_blocks,
           heir_xprv_ct_b64: sealed.ct, heir_xprv_nonce_b64: sealed.nonce,
           descriptor_external: fixture.descriptor_external, descriptor_internal: fixture.descriptor_internal,
+          ...heirCode,
         }),
       );
     if (p === `${at}/coins`)
@@ -112,32 +122,67 @@ test("an heir's claim is signed in the browser: the server never sees the heir's
         json({ network: "regtest", chain_tip_height: fixture.chain_tip_height, funding: fixture.funding, confirmed_sat: 100_000, unconfirmed_sat: 0, fee_rate_sat_per_vb: 2 }),
       );
     if (p === `${at}/heir-claim`) {
-      oldClaimCalled = true;
+      seen.oldClaimCalled = true;
       return route.fulfill(json({ error: "gone" }, 410));
     }
     if (p === `${at}/claim-signed`) {
-      signedBody = req.postDataJSON();
+      seen.signedBody = req.postDataJSON();
       return route.fulfill(json({ txid: "cd".repeat(32), explorer_url: "https://example.com/tx" }));
     }
     return route.fulfill(json({ error: "not mocked" }, 404));
   });
+  return { token, seen };
+}
 
-  await page.goto(`${base}/#/claim/${token}`);
+async function finishClaim(page: Page, seen: Awaited<ReturnType<typeof mockClaim>>["seen"]) {
   await page.getByRole("button", { name: /Yes, I do/ }).click();
   await page.getByPlaceholder(/bcrt1/).first().fill(fixture.recipient);
   await page.getByRole("button", { name: "Review and send" }).click();
   await page.getByRole("button", { name: "Send the Bitcoin" }).click();
-  await expect.poll(() => signedBody, { timeout: 90_000 }).not.toBeNull();
+  await expect.poll(() => seen.signedBody, { timeout: 90_000 }).not.toBeNull();
 
-  expect(signedBody!.destination).toBe(fixture.recipient);
-  const tx = Transaction.fromRaw(hexToBytes(signedBody!.tx_hex));
+  expect(seen.signedBody!.destination).toBe(fixture.recipient);
+  const tx = Transaction.fromRaw(hexToBytes(seen.signedBody!.tx_hex));
   expect(tx.outputsLength).toBe(1);
   expect(bytesToHex(tx.getOutput(0).script!)).toBe(bytesToHex(OutScript.encode(Address(REGTEST).decode(fixture.recipient))));
   // The heir branch: each input waits out the vault's timelock.
   expect(tx.getInput(0).sequence).toBe(fixture.timelock_blocks);
-  expect(oldClaimCalled).toBe(false);
-  for (const b of bodies) {
+  expect(seen.oldClaimCalled).toBe(false);
+  for (const b of seen.bodies) {
     expect(b).not.toContain("prv");
     expect(b).not.toContain("heir_xprv");
+    expect(b).not.toContain("river");
   }
+}
+
+test("an heir's claim is signed in the browser: the server never sees the heir's key", async ({ page }) => {
+  test.setTimeout(120_000);
+  const { token, seen } = await mockClaim(page, "link");
+  await page.goto(`${base}/#/claim/${token}`);
+  await finishClaim(page, seen);
 });
+
+test("an heir code opens the key in the browser; a wrong code doesn't", async ({ page }) => {
+  test.setTimeout(120_000);
+  const { token, seen } = await mockClaim(page, "code");
+  await page.goto(`${base}/#/claim/${token}`);
+
+  await expect(page.getByRole("heading", { name: "Enter your heir code" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Yes, I do/ })).toHaveCount(0);
+  await expectNoSerious(page);
+
+  await page.getByLabel("Your heir code").fill("river garden mango seven bird");
+  await page.getByRole("button", { name: "Unlock" }).click();
+  await expect(page.getByText("That code doesn't match. Check each word and try again.")).toBeVisible();
+
+  // As a person would type it: spaces and capitals.
+  await page.getByLabel("Your heir code").fill("River Garden Mango Seven Lamp");
+  await page.getByRole("button", { name: "Unlock" }).click();
+  await finishClaim(page, seen);
+});
+
+async function expectNoSerious(page: Page) {
+  const results = await new AxeBuilder({ page }).analyze();
+  const serious = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
+  expect(serious.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
+}

@@ -223,7 +223,13 @@ function render() {
   const result = unlock.querySelector("[data-result]") as HTMLElement;
 
   async function onUnlock() {
-    const password = input.value;
+    // An heir file opens with the heir code: five words, shown with
+    // spaces on the heir card but locked in one form (lower case,
+    // hyphen-joined). Older heir files used that same form, so this is
+    // safe for them too. An owner kit takes the password as typed.
+    const password = isHeir
+      ? input.value.toLowerCase().split(/[^a-z]+/).filter(Boolean).join("-")
+      : input.value;
     if (!password) return;
     button.disabled = true;
     errLine.hidden = true;

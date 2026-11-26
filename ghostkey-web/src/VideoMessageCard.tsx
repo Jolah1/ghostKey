@@ -24,8 +24,14 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { api, ApiError, type VideoStatusView } from "./api";
-import { b64decode, unsealOwner } from "./crypto/sealing";
-import { prepareVideo } from "./crypto/video";
+import { b64decode, deriveOwnerKek, openWithKey } from "./crypto/sealing";
+import { prepareVideo, type VideoLock } from "./crypto/video";
+import {
+  deriveHeirCodeKek,
+  heirVideoKey,
+  openOwnerHeirCode,
+  type HeirCodeKdf,
+} from "./crypto/heirCode";
 import {
   VideoMessageRecorder,
   type RecordedClip,
@@ -121,42 +127,57 @@ export function VideoMessageCard({
     // password = AEAD failure, nothing leaves the browser.
     setBusy("unlocking");
     let ownerXprv: string;
+    // Heir-code vaults lock the video with a key from the heir code; the
+    // owner's sealed copy of the code opens with the same password key.
+    let heirCode: { code: string; kdf: HeirCodeKdf } | null = null;
     try {
       const blobs = await api.getSealedBlobs(vaultId, ownerToken);
-      const unsealed = await unsealOwner({
-        password,
-        passwordSalt: blobs.password_salt_b64,
+      const kek = await deriveOwnerKek(password, b64decode(blobs.password_salt_b64), {
         memKiB: blobs.password_kdf_mem_kib,
         iters: blobs.password_kdf_iters,
-        ownerXprvBlob: {
-          v: 1,
-          ct: blobs.owner_xprv_ct_b64,
-          nonce: blobs.owner_xprv_nonce_b64,
-        },
-        ownerTokenBlob: {
-          v: 1,
-          ct: blobs.owner_token_ct_b64,
-          nonce: blobs.owner_token_nonce_b64,
-        },
       });
-      ownerXprv = unsealed.ownerXprv;
+      try {
+        ownerXprv = new TextDecoder().decode(
+          openWithKey(kek, {
+            v: 1,
+            ct: blobs.owner_xprv_ct_b64,
+            nonce: blobs.owner_xprv_nonce_b64,
+          }),
+        );
+        if (blobs.heir_code && blobs.heir_code_owner_ct_b64 && blobs.heir_code_owner_nonce_b64) {
+          heirCode = {
+            code: openOwnerHeirCode(kek, {
+              v: 1,
+              ct: blobs.heir_code_owner_ct_b64,
+              nonce: blobs.heir_code_owner_nonce_b64,
+            }),
+            kdf: blobs.heir_code,
+          };
+        }
+      } finally {
+        kek.fill(0);
+      }
     } catch (e) {
       setBusy(null);
       setError(unlockErrorMessage(e));
       return;
     }
 
-    // (2) Seal under the heir's claim token and upload — the exact
-    // sealing setup performs, so the heir's link plays it unchanged.
+    // (2) Seal with the heir-code key (or, on older vaults, the heir's
+    // claim token) and upload, so the heir's page plays it unchanged.
     setBusy("saving");
     try {
-      const tok = await api.getVaultClaimToken(vaultId, ownerToken);
+      let lock: VideoLock;
+      if (heirCode) {
+        const codeKek = await deriveHeirCodeKek(heirCode.code, heirCode.kdf);
+        lock = { videoKey: heirVideoKey(codeKek) };
+        codeKek.fill(0);
+      } else {
+        const tok = await api.getVaultClaimToken(vaultId, ownerToken);
+        lock = { claimTokenRaw: b64decode(tok.claim_token_b64) };
+      }
       const bytes = new Uint8Array(await clip.blob.arrayBuffer());
-      const prepared = prepareVideo(
-        ownerXprv,
-        b64decode(tok.claim_token_b64),
-        bytes,
-      );
+      const prepared = prepareVideo(ownerXprv, lock, bytes);
       await api.uploadVideo(vaultId, ownerToken, {
         ...prepared,
         mime: clip.mime,

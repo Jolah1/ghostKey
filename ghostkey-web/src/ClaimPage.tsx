@@ -77,6 +77,8 @@ import {
   looksLikeLightningDestination,
 } from "./address";
 import { b64decode, unsealHeirXprv } from "./crypto/sealing";
+import { openHeirXprv } from "./crypto/heirCode";
+import { HeirCodeEntry, HeirCodeProvider, useHeirCode } from "./HeirCodeEntry";
 import { deriveHeirKey } from "./crypto/heirKey";
 import type { Network } from "./crypto/keygen";
 import {
@@ -442,13 +444,16 @@ function Resolved({ view, token }: { view: ClaimView; token: string }) {
   // heir's first reassurance the link is genuine, shown whether they're
   // waiting out the safety window or claiming right now. What we never
   // ask for (#392) comes next, before any step can ask for anything.
-  return (
+  const page = (
     <>
       <HeirVideoMessage token={token} />
       <NeverAskNotice />
       {body}
     </>
   );
+  // An heir-code vault: the heir types their code once, and it opens
+  // both the video and the claim.
+  return view.heir_code ? <HeirCodeProvider kdf={view.heir_code}>{page}</HeirCodeProvider> : page;
 }
 
 /**
@@ -1232,6 +1237,20 @@ function PasswordVaultClaim({
 }) {
   const v = useVocab();
   const c = v.claimCommon;
+  const heirCode = useHeirCode();
+  // Heir-code vaults: nothing else shows until the code opens the key.
+  const locked = heirCode !== null && heirCode.codeKek === null;
+  const openKey = useCallback(
+    (codeKek: Uint8Array | null = heirCode?.codeKek ?? null) => {
+      const blob = {
+        v: 1 as const,
+        ct: sealed.heir_xprv_ct_b64,
+        nonce: sealed.heir_xprv_nonce_b64,
+      };
+      return codeKek ? openHeirXprv(codeKek, blob) : unsealHeirXprv(b64decode(token), blob);
+    },
+    [heirCode, sealed, token],
+  );
   const [hasWallet, setHasWallet] = useState<boolean | null>(null);
   const [address, setAddress] = useState("");
   const [feeRate, setFeeRate] = useState("");
@@ -1262,14 +1281,10 @@ function PasswordVaultClaim({
     // garbage-collects on its own schedule.
     let heirXprv: string | null = null;
     try {
-      const rawToken = b64decode(token);
-      // unsealHeirXprv throws on a Poly1305 tag mismatch — handled
-      // generically by the Poly1305 entry in `claimErrors.ts`.
-      heirXprv = unsealHeirXprv(rawToken, {
-        v: 1,
-        ct: sealed.heir_xprv_ct_b64,
-        nonce: sealed.heir_xprv_nonce_b64,
-      });
+      // Opened with the heir code's key, or (older vaults) the link.
+      // Throws on a Poly1305 tag mismatch, handled generically by the
+      // Poly1305 entry in `claimErrors.ts`.
+      heirXprv = openKey();
       const resp = await signAndSendClaim({
         token,
         heirXprv,
@@ -1287,7 +1302,7 @@ function PasswordVaultClaim({
       heirXprv = null;
       setSubmitting(false);
     }
-  }, [address, feeRateNum, feeRateValid, sealed, token, validAddr]);
+  }, [address, feeRateNum, feeRateValid, openKey, sealed, token, validAddr]);
 
   if (result) {
     return (
@@ -1324,6 +1339,25 @@ function PasswordVaultClaim({
         <VaultValueLine vaultId={view.vault_id} />
       </div>
 
+      {locked ? (
+        <div className="mt-10">
+          <h2 className="font-display text-2xl font-bold tracking-tight">
+            Enter your heir code
+          </h2>
+          <p className="mt-2 text-sm text-soft">
+            The person who set this up gave you five words. They unlock
+            what's yours. GhostKey never sees them.
+          </p>
+          <HeirCodeEntry
+            ownerName="the person who set this up"
+            check={(kek) => {
+              // Throws on a wrong code (the key won't open).
+              openKey(kek);
+            }}
+          />
+        </div>
+      ) : (
+        <>
       <div className="mt-10">
         <p className="text-xs uppercase tracking-wider text-dim">{c.step1}</p>
         <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
@@ -1447,14 +1481,10 @@ function PasswordVaultClaim({
         descriptorExternal={sealed.descriptor_external}
         descriptorInternal={sealed.descriptor_internal}
         heirName={view.heir_display_name?.trim() || ""}
-        deriveXprv={() =>
-          unsealHeirXprv(b64decode(token), {
-            v: 1,
-            ct: sealed.heir_xprv_ct_b64,
-            nonce: sealed.heir_xprv_nonce_b64,
-          })
-        }
+        deriveXprv={() => openKey()}
       />
+        </>
+      )}
     </section>
   );
 }

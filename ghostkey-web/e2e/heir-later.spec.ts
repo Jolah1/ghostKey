@@ -6,9 +6,9 @@
  *     contact, and the heir key it does send opens only with the
  *     owner's password and is the heir key in the request.
  *  2. Home on a vault with no heir shows savings and "Choose who
- *     inherits", never an overdue check-in. Choosing re-seals the heir
- *     key so the claim token really opens it; a wrong password sends
- *     nothing.
+ *     inherits", never an overdue check-in. Choosing locks the heir key
+ *     with a new heir code, shown on the heir card, that really opens it;
+ *     a wrong password sends nothing.
  *
  * Serves the built dist/ and intercepts /api/*. Prereq: `npm run build`.
  */
@@ -20,7 +20,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { HDKey } from "@scure/bip32";
 import { bip32Versions, generateParty } from "../src/crypto/keygen";
-import { b64decode, deriveOwnerKek, openWithKey, sealWithKey, unsealHeirXprv } from "../src/crypto/sealing";
+import { b64decode, deriveOwnerKek, openWithKey, sealWithKey } from "../src/crypto/sealing";
+import { deriveHeirCodeKek, openHeirXprv } from "../src/crypto/heirCode";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dist = resolve(__dirname, "..", "dist");
@@ -154,6 +155,92 @@ test("setup: 'Do this later' creates savings with nothing that reaches an heir",
   expect(HDKey.fromExtendedKey(heirXprv, versions).publicExtendedKey).toBe(body.heir.xpub);
 });
 
+test("setup with an heir: the key is locked with an heir code; the server gets no claim token", async ({ page }) => {
+  test.setTimeout(180_000);
+  let created: Record<string, any> | null = null;
+  await page.route("**/api/**", (route) => {
+    const req = route.request();
+    const p = new URL(req.url()).pathname.replace(/^\/api/, "");
+    if (p === "/health") return route.fulfill(json(HEALTH));
+    if (p === "/vaults/from-xpub" && req.method() === "POST") {
+      created = req.postDataJSON();
+      return route.fulfill(
+        json({
+          id: "v-new",
+          owner_token: "e2e-owner-token",
+          label: "Sarah's inheritance",
+          network: "signet",
+          status: "unfunded",
+          created_at: new Date().toISOString(),
+          next_deadline_at: new Date().toISOString(),
+          timelock_blocks: created!.timelock_blocks,
+          checkin_period_secs: created!.checkin_period_secs,
+          grace_period_secs: created!.grace_period_secs,
+          last_checkin_at: null,
+          claim_eligible_at: null,
+        }),
+      );
+    }
+    if (p === "/vaults/v-new/seal-owner-token") return route.fulfill({ status: 204, body: "" });
+    if (p === "/vaults/v-new/address")
+      return route.fulfill(json({ vault_id: "v-new", network: "signet", address: "tb1qexample" }));
+    if (p === "/vaults/v-new/savings/goal") return route.fulfill(json({}));
+    return route.fulfill(json({}, 404));
+  });
+
+  await page.goto(`${base}/#/setup`);
+  await page.getByRole("button", { name: "School fees" }).click();
+  await page.getByRole("button", { name: "6 months" }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+
+  await page.locator('input[autocomplete="email"]').fill("owner@example.com");
+  const pw = page.locator('input[autocomplete="new-password"]');
+  await pw.nth(0).fill(PASSWORD);
+  await pw.nth(1).fill(PASSWORD);
+  await page.getByText("I have saved my password somewhere I can get it back.").click();
+  await page.getByRole("button", { name: "Continue" }).click();
+
+  await expect(page.getByRole("heading", { name: "Who inherits?" })).toBeVisible();
+  await page.getByPlaceholder("Sarah").first().fill("Sarah");
+  await page.locator('input[inputmode="email"]').first().fill("sarah@example.com");
+  await page.getByRole("button", { name: "Create vault" }).click();
+  await expect.poll(() => created, { timeout: 90_000 }).not.toBeNull();
+
+  const card = page.getByTestId("heir-card");
+  await expect(card).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("heading", { name: "Give your heir their code" })).toBeVisible();
+  await expectNoSerious(page, '[data-testid="heir-card"]');
+  const code = (await card.getByTestId("heir-code").textContent())!.trim();
+  expect(code.split(" ")).toHaveLength(5);
+
+  const body = created!;
+  expect(body.sealed.claim_token_b64).toBeUndefined();
+  expect(body.sealed.heir_code).toBeTruthy();
+  // The code itself never goes to the server, in any form.
+  expect(JSON.stringify(body)).not.toContain(code.split(" ").join("-"));
+  expect(JSON.stringify(body)).not.toContain(code);
+
+  // The code opens the key the server holds, and it is the heir key in
+  // the descriptor.
+  const codeKek = await deriveHeirCodeKek(code, body.sealed.heir_code);
+  const heirXprv = openHeirXprv(codeKek, {
+    v: 1,
+    ct: body.sealed.heir_xprv_ct_b64,
+    nonce: body.sealed.heir_xprv_nonce_b64,
+  });
+  expect(HDKey.fromExtendedKey(heirXprv, bip32Versions("signet")).publicExtendedKey).toBe(body.heir.xpub);
+
+  // The owner's copy of the code opens with their password.
+  const kek = await deriveOwnerKek(PASSWORD, b64decode(body.sealed.password_salt_b64), {
+    memKiB: body.sealed.password_kdf_mem_kib,
+    iters: body.sealed.password_kdf_iters,
+  });
+  const ownerCopy = new TextDecoder().decode(
+    openWithKey(kek, { v: 1, ct: body.sealed.heir_code.owner_ct_b64, nonce: body.sealed.heir_code.owner_nonce_b64 }),
+  );
+  expect(ownerCopy).toBe(code.split(" ").join("-"));
+});
+
 async function mockLaterVault(page: Page, sealedBlobs: Record<string, unknown>, onChoose: (b: any) => void) {
   await page.route("**/api/**", (route) => {
     const req = route.request();
@@ -218,7 +305,7 @@ async function mockLaterVault(page: Page, sealedBlobs: Record<string, unknown>, 
   });
 }
 
-test("Home: choose who inherits later; the claim token really opens the key", async ({ page }) => {
+test("Home: choose who inherits later; the heir code really opens the key", async ({ page }) => {
   test.setTimeout(60_000);
   const heir = generateParty("signet");
   const salt = new Uint8Array(16).fill(9);
@@ -268,7 +355,15 @@ test("Home: choose who inherits later; the claim token really opens the key", as
   const body = posts[0];
   expect(body.name).toBe("Ada");
   expect(body.contact).toBe("ada@example.com");
-  const opened = unsealHeirXprv(b64decode(body.claim_token_b64), {
+  // Option a: no claim token. The key is locked with an heir code the
+  // server never sees; the owner gets it on the heir card.
+  expect(body.claim_token_b64).toBeUndefined();
+  const code = (await card.getByTestId("heir-code").textContent())!.trim();
+  expect(code.split(" ")).toHaveLength(5);
+  expect(JSON.stringify(body)).not.toContain(code.split(" ")[0] + "-" + code.split(" ")[1]);
+  await expectNoSerious(page, '[data-testid="choose-heir"]');
+  const codeKek = await deriveHeirCodeKek(code, body.heir_code);
+  const opened = openHeirXprv(codeKek, {
     v: 1,
     ct: body.heir_xprv_ct_b64,
     nonce: body.heir_xprv_nonce_b64,

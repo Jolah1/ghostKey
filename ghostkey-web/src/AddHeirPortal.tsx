@@ -31,7 +31,6 @@ import { useState } from "react";
 import { Button, Field, InlineAlert } from "./ui";
 import { ApiError, api, type VaultView } from "./api";
 import {
-  b64encode,
   hashEmailForLookup,
   sealVaultSecrets,
   sealWithKey,
@@ -39,7 +38,8 @@ import {
 } from "./crypto/sealing";
 import { generateParty, wipe, type Network } from "./crypto/keygen";
 import { prepareVideo } from "./crypto/video";
-import { randomBytes } from "@noble/hashes/utils.js";
+import { lockHeirKey, type HeirKeyLock } from "./crypto/heirCode";
+import { HeirCodeCard } from "./HeirCodeCard";
 import {
   getVaultMeta,
   getVaultOwnerToken,
@@ -91,6 +91,8 @@ type Phase =
       address: string | null;
       vaultId: string;
       network: string;
+      /** The new heir's code, for the heir card. */
+      heirCode: string;
     };
 
 /** Strip the `/<chain>/*` receive-path suffix off a descriptor key
@@ -200,22 +202,24 @@ export function AddHeirPortal({
       return;
     }
 
-    // (2) Mint this heir's key + claim token and create the vault.
+    // (2) Mint this heir's key, lock it with a fresh heir code, and
+    // create the vault. No claim token: the server keeps nothing that
+    // opens the heir key, and mints the heir's link when it's needed.
     setPhase({ kind: "creating" });
     const network = vault.network as Network;
     const heirParty = generateParty(network);
-    const claimToken = randomBytes(32);
     let ownerKek: Uint8Array | undefined;
+    let heirLock: HeirKeyLock | undefined;
     try {
       const sealed = await sealVaultSecrets({
         password,
         ownerXprv,
         heirXprv: heirParty.xprv,
         ownerToken: PLACEHOLDER_OWNER_TOKEN,
-        claimTokenRaw: claimToken,
         keepOwnerKek: true,
       });
       ownerKek = sealed._owner_kek;
+      heirLock = await lockHeirKey(heirParty.xprv, ownerKek!);
 
       const label = `${heirName.trim()}'s share`;
       const resp = await api.createVaultFromXpub({
@@ -242,10 +246,10 @@ export function AddHeirPortal({
           owner_xprv_nonce_b64: sealed.owner_xprv.nonce,
           owner_token_ct_b64: sealed.owner_token.ct,
           owner_token_nonce_b64: sealed.owner_token.nonce,
-          heir_xprv_ct_b64: sealed.heir_xprv.ct,
-          heir_xprv_nonce_b64: sealed.heir_xprv.nonce,
+          heir_xprv_ct_b64: heirLock.heir_xprv_ct_b64,
+          heir_xprv_nonce_b64: heirLock.heir_xprv_nonce_b64,
           owner_email_hash: hashEmailForLookup(ownerEmail),
-          claim_token_b64: b64encode(claimToken),
+          heir_code: heirLock.heir_code,
         },
         heir_derivation: null,
       });
@@ -269,12 +273,12 @@ export function AddHeirPortal({
         }
       }
 
-      // (4) Optional video, sealed under THIS heir's claim token and
-      // signed with the owner key. Best-effort.
+      // (4) Optional video, locked with this heir's code key and signed
+      // with the owner key. Best-effort.
       if (videoClip) {
         try {
           const bytes = new Uint8Array(await videoClip.blob.arrayBuffer());
-          const prepared = prepareVideo(ownerXprv, claimToken, bytes);
+          const prepared = prepareVideo(ownerXprv, { videoKey: heirLock.videoKey }, bytes);
           await api.uploadVideo(resp.id, resp.owner_token, {
             ...prepared,
             mime: videoClip.mime,
@@ -339,12 +343,13 @@ export function AddHeirPortal({
         address,
         vaultId: resp.id,
         network: addressNetwork,
+        heirCode: heirLock.code,
       });
     } catch (e) {
       setPhase({ kind: "form" });
       setError(e instanceof ApiError ? e.message : String(e));
     } finally {
-      wipe(claimToken);
+      if (heirLock) wipe(heirLock.videoKey);
       if (ownerKek) wipe(ownerKek);
     }
   }
@@ -381,6 +386,9 @@ export function AddHeirPortal({
               address below with whatever you want them to inherit. Nothing is
               pooled with your other heirs.
             </p>
+            <div className="mt-4">
+              <HeirCodeCard heirName={phase.heirName} code={phase.heirCode} />
+            </div>
             {phase.address ? (
               <div className="mt-4">
                 <p className="text-xs uppercase tracking-wider text-dim">

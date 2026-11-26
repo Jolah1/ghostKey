@@ -11,6 +11,7 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import type { Route } from "./App";
 import { api, ApiError, type GuardianContactView } from "./api";
+import { ShowHeirCodeCard } from "./HeirCodeCard";
 import { useActiveVault } from "./useActiveVault";
 import { useToolDoneState } from "./toolStatus";
 import { VideoMessageCard } from "./VideoMessageCard";
@@ -397,6 +398,7 @@ export function HeirContactPage({ onNavigate }: PageProps) {
       {ready && meta && ownerToken ? (
         <>
           <HeirContactCard vaultId={meta.id} ownerToken={ownerToken} />
+          <ShowHeirCodeCard vaultId={meta.id} ownerToken={ownerToken} heirName={meta.heir.name} />
           <GuardiansCard vaultId={meta.id} ownerToken={ownerToken} />
         </>
       ) : (
