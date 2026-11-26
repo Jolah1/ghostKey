@@ -6,7 +6,7 @@ const std = (fixtures as { name: string; network: string; descriptor_external: s
   (c) => c.name === "standard" && c.network === "bitcoin",
 )!;
 const other = (fixtures as { name: string; network: string; external: string[] }[]).find(
-  (c) => c.name === "guardian" && c.network === "bitcoin",
+  (c) => c.name === "standard-1-block" && c.network === "bitcoin",
 )!;
 
 describe("compareDepositAddress", () => {

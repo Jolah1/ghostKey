@@ -67,7 +67,7 @@ const MAX_ATTEMPTS: i64 = 6;
 const BACKOFF_BASE_SECS: i64 = 30;
 const BACKOFF_CAP_SECS: i64 = 3_600;
 
-/// What GhostKey will never ask an heir or guardian for (#392). A fake
+/// What GhostKey will never ask an heir for (#392). A fake
 /// message or page only works if it gets one of these, so every message
 /// that hands someone a claim says so plainly. The web claim page shows
 /// the same list (`vocab` `claim.neverAsk`); keep the two in step.

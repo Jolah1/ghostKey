@@ -74,10 +74,6 @@ export interface VaultView {
    *  Absent when the heir isn't on email, because only email tells us
    *  a message arrived. Only on the owner `GET /vaults/:id`. */
   heir_reachability?: "unreachable" | "unconfirmed" | "confirmed" | null;
-  /** Guardian vaults only: how many guardians we couldn't reach today
-   *  (no contact, or a channel this server can't send). Above zero, a
-   *  claim would stall. Absent on standard vaults and older servers. */
-  guardians_unreachable?: number | null;
   /** Whether a trusted contact is on file. Gates the panic-stop
    *  copy's "your trusted contact will be alerted" promise — only
    *  rendered when true (issue #70). Absent on list/create
@@ -176,59 +172,6 @@ export interface CreateVaultFromXpubRequest {
    *  message. Both optional, sealed at rest server-side. */
   from_name?: string | null;
   heir_note?: string | null;
-}
-
-/**
- * One guardian's xpub + browser-sealed key material for a guardian
- * vault (#81). Mirrors `routes.rs::GuardianParty`. The guardian key is
- * generated and sealed in the owner's browser under this guardian's
- * own claim token, exactly like the heir key; the server stores only
- * ciphertext and the token hash.
- */
-export interface GuardianParty {
-  xpub: string;
-  fingerprint?: string | null;
-  xprv_ct_b64: string;
-  xprv_nonce_b64: string;
-  claim_token_b64: string;
-  contact?: string | null;
-  contact_channel?: "sms" | "email" | "whatsapp" | null;
-}
-
-/**
- * Guardian-vault setup request (#81): an heir who needs a guardian's
- * help to claim. The spend branch is `heir AND (g1 OR g2)`, so the
- * child alone can't move the funds and one missing guardian doesn't
- * strand them. Always browser-keygen (no Door B): the heir key is
- * sealed in `sealed`, each guardian key in its `GuardianParty`.
- *
- * Mirrors `crates/ghostkey-server/src/routes.rs::CreateGuardianVaultRequest`.
- */
-export interface CreateVaultGuardianRequest {
-  label: string | null;
-  network: string;
-  owner: PartyXpub;
-  heir: PartyXpub;
-  guardian1: GuardianParty;
-  guardian2: GuardianParty;
-  timelock_blocks: number;
-  checkin_period_secs: number;
-  grace_period_secs: number;
-  owner_contact?: string | null;
-  owner_contact_channel?: "sms" | "email" | "whatsapp" | null;
-  heir_contact?: string | null;
-  heir_contact_channel?: "sms" | "email" | "whatsapp" | null;
-  /** Required: a guardian vault always seals the owner + heir keys in
-   *  the browser. Unlike `CreateVaultFromXpubRequest`, this is not
-   *  optional. */
-  sealed: SealedSetup;
-  from_name?: string | null;
-  heir_note?: string | null;
-  /** Optional absolute unlock height (#81 P5). When set, the claim branch
-   *  gains an `after(H)` CLTV so the heir + guardian can't spend before
-   *  block `H` (e.g. until a child reaches a chosen age). The browser
-   *  computes this height from the owner's chosen unlock year. */
-  unlock_height?: number | null;
 }
 
 /** Snake-cased to match the Rust struct exactly; the server is the
@@ -400,13 +343,6 @@ export interface ClaimView {
    *  already elapsed). While set in the future, the claim page shows
    *  the wait screen and the claim endpoints answer 409. */
   claim_available_at?: string | null;
-  /** "standard" or "guardian" (#81). A guardian vault needs the heir
-   *  plus one guardian, so the claim page renders the two-link flow. */
-  vault_kind: "standard" | "guardian";
-  /** Which party opened this link: "heir" or "guardian". */
-  token_role: "heir" | "guardian";
-  /** For a guardian token, which slot (1 or 2). Null for heir tokens. */
-  guardian_slot?: number | null;
   /** True when this link is a practice run (#223): the page walks the
    *  heir through the claim without moving anything. Optional so an
    *  older server (which never sends it) reads as "not a drill". */
@@ -596,42 +532,6 @@ export interface HeirClaimRequest {
   heir_xprv: string;
 }
 
-/**
- * Returned by `GET /claim/:token/sealed-guardian` for a guardian vault
- * (#81). Same shape as `SealedHeirView` but for one guardian's key; the
- * browser unwraps `guardian_xprv_ct_b64` locally with the guardian's
- * claim token. `slot` is which guardian (1 or 2) the token belongs to.
- *
- * Backed by `crates/ghostkey-server/src/psbt_routes.rs::SealedGuardianView`.
- */
-export interface SealedGuardianView {
-  vault_id: string;
-  slot: number;
-  network: string;
-  timelock_blocks: number;
-  guardian_xprv_ct_b64: string;
-  guardian_xprv_nonce_b64: string;
-  descriptor_external: string;
-  descriptor_internal: string;
-}
-
-/**
- * Two-key guardian claim (#81). The browser unwraps the heir key (from
- * the heir's sealed-heir blob) and one guardian key (from a
- * sealed-guardian blob), then ships both here. Posted to the HEIR
- * token's endpoint (the vault's primary claim token, which this call
- * consumes). The server splices both keys, signs, broadcasts, and
- * discards them.
- *
- * Backed by `crates/ghostkey-server/src/psbt_routes.rs::GuardianClaimRequest`.
- */
-export interface GuardianClaimRequest {
-  destination: string;
-  fee_rate_sat_per_vb?: number | null;
-  heir_xprv: string;
-  guardian_xprv: string;
-}
-
 /** Cached BTC/USD spot price for fiat display. Backed by
  *  `crates/ghostkey-server/src/price.rs::PriceView`. */
 export interface PriceView {
@@ -755,14 +655,6 @@ export interface SavingsReminder {
   amount_sat: number | null;
   /** RFC 3339 */
   next_at: string;
-}
-
-/** One guardian's contact as the owner sees it
- *  (`GET /vaults/:id/guardians`). */
-export interface GuardianContactView {
-  slot: number;
-  contact: string | null;
-  channel: string | null;
 }
 
 /** Response from `POST /vaults/:id/panic`. */
@@ -1021,25 +913,6 @@ export const api = {
   /** Owner-only: remove the goal. Saving carries on exactly as before. */
   clearSavingsGoal: (id: string, ownerToken: string | null) =>
     request<null>(`/vaults/${id}/savings/goal`, { method: "DELETE" }, ownerToken),
-  /** Owner-only: both guardians' contacts on a guardian vault (#81).
-   *  Empty for a standard vault. */
-  listVaultGuardians: (id: string, ownerToken: string | null) =>
-    request<GuardianContactView[]>(`/vaults/${id}/guardians`, {}, ownerToken),
-  /** Owner-only: change how one guardian is reached. A guardian's key is
-   *  sealed under their own claim token, not their contact, so this is
-   *  always safe before the claim. The server only accepts channels it
-   *  can deliver (email today). Returns both guardians. */
-  updateVaultGuardian: (
-    id: string,
-    ownerToken: string | null,
-    slot: number,
-    body: { contact: string; channel: "sms" | "email" | "whatsapp" },
-  ) =>
-    request<GuardianContactView[]>(
-      `/vaults/${id}/guardians/${slot}`,
-      { method: "PUT", body: JSON.stringify(body) },
-      ownerToken,
-    ),
   /** Owner-initiated vault deletion. The server clears its metadata
    *  (vault row + cascaded events and notifications).
    *  On-chain funds remain spendable by the owner — GhostKey never
@@ -1074,13 +947,6 @@ export const api = {
     }),
   createVaultFromXpub: (req: CreateVaultFromXpubRequest) =>
     request<CreatedVault>("/vaults/from-xpub", {
-      method: "POST",
-      body: JSON.stringify(req),
-    }),
-  /** Guardian vault (#81): heir + two guardians, spend branch
-   *  `heir AND (g1 OR g2)`. See `CreateVaultGuardianRequest`. */
-  createVaultGuardian: (req: CreateVaultGuardianRequest) =>
-    request<CreatedVault>("/vaults/guardian", {
       method: "POST",
       body: JSON.stringify(req),
     }),
@@ -1390,21 +1256,6 @@ export const api = {
   heirClaim: (token: string, req: HeirClaimRequest) =>
     request<BroadcastClaimResponse>(
       `/claim/${encodeURIComponent(token)}/heir-claim`,
-      { method: "POST", body: JSON.stringify(req) },
-    ),
-  /** Guardian vault (#81): fetch one guardian's sealed xprv blob. The
-   *  browser unwraps it locally with the guardian's claim token. */
-  getSealedGuardianXprv: (token: string) =>
-    request<SealedGuardianView>(
-      `/claim/${encodeURIComponent(token)}/sealed-guardian`,
-    ),
-  /** Guardian vault (#81): two-key claim. `token` is the heir token (the
-   *  vault's primary claim token, consumed here). Body carries both the
-   *  unwrapped heir and guardian account xprvs; the server signs with
-   *  both in memory and discards them. */
-  guardianClaim: (token: string, req: GuardianClaimRequest) =>
-    request<BroadcastClaimResponse>(
-      `/claim/${encodeURIComponent(token)}/guardian-claim`,
       { method: "POST", body: JSON.stringify(req) },
     ),
   /**

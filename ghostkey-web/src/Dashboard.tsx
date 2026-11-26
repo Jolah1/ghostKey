@@ -12,8 +12,8 @@
  *   - "Build wealth that outlives you": the heirs, the wait, the last
  *     check-in, with heir management one tap away
  *
- * Anything that needs fixing (unconfirmed email, unreachable guardian,
- * overdue check-in, frozen or claimed share) still comes before savings.
+ * Anything that needs fixing (unconfirmed email, overdue check-in,
+ * frozen or claimed share) still comes before savings.
  *
  * If there is no active vault on this device, we offer the two paths
  * out: set one up, or sign in with email + password.
@@ -418,7 +418,6 @@ export function Dashboard({ onNavigate }: Props) {
   const isClaiming =
     vault?.status === "timelock_started" || vault?.status === "claiming";
   const heirNotice = heirReachNotice(vault);
-  const guardiansToFix = guardianReachNotice(vault);
   const isClosed = vault?.status === "claimed";
   // Not funded yet: the check-in clock hasn't started, so no deadline
   // is "past" and none of the check-in affordances apply.
@@ -481,34 +480,6 @@ export function Dashboard({ onNavigate }: Props) {
             {vault && !isClosed && !isClaiming && vault.owner_contact_verified === false ? (
               <div className="mb-5">
                 <ConfirmEmailCard vaultId={vault.id} ownerToken={ownerToken} />
-              </div>
-            ) : null}
-
-            {guardiansToFix > 0 ? (
-              <div className="mb-5">
-                <div
-                  className="flex items-center justify-between gap-3 rounded-xl border border-app px-4 py-3"
-                  style={{ background: "var(--warning-tint)", color: "var(--warning)" }}
-                  role="alert"
-                  data-testid="guardian-reach-card"
-                >
-                  <p className="text-sm text-[var(--text)]">
-                    <span className="font-semibold">
-                      {guardiansToFix === 1
-                        ? "We can't reach one of your guardians."
-                        : `We can't reach ${guardiansToFix} of your guardians.`}
-                    </span>{" "}
-                    Your heir needs a guardian to claim, so add an email for
-                    them now.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => onNavigate("heir-contact")}
-                    className="shrink-0 text-xs font-medium text-[var(--text)] underline underline-offset-2"
-                  >
-                    Fix guardians
-                  </button>
-                </div>
               </div>
             ) : null}
 
@@ -2226,26 +2197,6 @@ const pushDismissKey = (vaultId: string) => `gk:pushDismissed:${vaultId}`;
  * out, and fixing the address then would not send it again, so the card
  * would reassure the owner about something it can't fix.
  */
-/**
- * How many guardians need fixing, or 0 when the card shouldn't show
- * (#81). A guardian vault can only be claimed once the guardians get
- * their links, so an unreachable guardian is a claim that would stall.
- * Hidden once a claim is underway, for the same reason as the heir card.
- */
-export function guardianReachNotice(
-  vault: Pick<VaultView, "status" | "guardians_unreachable"> | null,
-): number {
-  if (!vault) return 0;
-  if (
-    vault.status === "claimed" ||
-    vault.status === "claiming" ||
-    vault.status === "timelock_started"
-  ) {
-    return 0;
-  }
-  return Math.max(0, vault.guardians_unreachable ?? 0);
-}
-
 export function heirReachNotice(
   vault: Pick<VaultView, "status" | "heir_reachability" | "drill_started_at"> | null,
 ): "unreachable" | "unconfirmed" | null {

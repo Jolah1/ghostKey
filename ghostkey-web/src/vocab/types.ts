@@ -197,31 +197,6 @@ export interface ClaimCommonVocab {
   confirmDescription: string;
 }
 
-export interface GuardianVocab {
-  sentEyebrow: string;
-  sentTitle: string;
-  eyebrow: string;
-  greeting: (heir: string, isHeir: boolean) => string;
-  heirBody: (heir: string) => string;
-  guardianBody: (heir: string) => string;
-  bringLink: (needLabel: string) => string;
-  heirLinkInstructions: string;
-  guardianLinkInstructions: string;
-  bothLinksReady: string;
-  pasteLink: (needLabel: string) => string;
-  linkHint: string;
-  checking: string;
-  addLink: string;
-  confirmDescription: string;
-  errInvalidLink: string;
-  errSameLink: string;
-  errDifferentVault: string;
-  errWrongRoleHeir: string;
-  errWrongRoleGuardian: string;
-  errAlreadyUsed: string;
-  errCheckFailed: string;
-}
-
 export interface DerivedClaimVocab {
   confirmEmail: (email: string) => string;
   stopAndContact: string;
@@ -364,7 +339,6 @@ export interface Vocab {
   claim: ClaimVocab;
   drill: DrillVocab;
   claimCommon: ClaimCommonVocab;
-  guardian: GuardianVocab;
   derivedClaim: DerivedClaimVocab;
   manualClaim: ManualClaimVocab;
   broadcastSuccess: BroadcastSuccessVocab;
