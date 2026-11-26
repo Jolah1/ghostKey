@@ -10,6 +10,7 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { createServer, type Server } from "node:http";
+import { prodHeaders } from "./prodHeaders";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, extname, join, normalize, resolve } from "node:path";
@@ -41,7 +42,7 @@ test.beforeAll(async () => {
     const rel = path === "/" ? "index.html" : path.slice(1);
     const file = normalize(join(dist, rel));
     const target = file.startsWith(dist) && existsSync(file) ? file : join(dist, "index.html");
-    res.writeHead(200, { "content-type": MIME[extname(target)] ?? "application/octet-stream" });
+    res.writeHead(200, { ...prodHeaders, "content-type": MIME[extname(target)] ?? "application/octet-stream" });
     res.end(readFileSync(target));
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
