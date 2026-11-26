@@ -759,6 +759,7 @@ mod http_tests {
             format!("/claim/{token}/heir-derivation-params"),
             format!("/claim/{token}/video"),
             format!("/claim/{token}/unlock-estimate"),
+            format!("/claim/{token}/coins"),
         ];
         for uri in gets {
             let resp = routes::router(state.clone())
@@ -778,10 +779,10 @@ mod http_tests {
                 serde_json::json!({"signed_psbt_b64": "AAAA"}),
             ),
             (
-                format!("/claim/{token}/heir-claim"),
+                format!("/claim/{token}/claim-signed"),
                 serde_json::json!({
                     "destination": "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
-                    "heir_xprv": "tprv-fake"
+                    "tx_hex": "00"
                 }),
             ),
         ];

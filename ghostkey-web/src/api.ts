@@ -334,7 +334,7 @@ export interface LastBalanceView extends VaultBalanceView {
   checked_at: string;
 }
 
-/** Response from `POST /vaults/:id/send` — the owner spend flow. */
+/** Response from `POST /vaults/:id/send/signed`: the owner's send. */
 export interface OwnerSendResponse {
   txid: string;
   explorer_url: string;
@@ -546,34 +546,6 @@ export interface SealedHeirView {
   /** Present when the key is locked with an heir code: the heir types
    *  the code and the browser re-derives the key with these. */
   heir_code?: HeirCodeView;
-}
-
-/**
- * One-shot heir claim: the browser ships the just-unwrapped heir
- * account xprv over TLS along with the destination address. The
- * server builds, signs, and broadcasts in a single function scope;
- * the xprv is held in memory only, never written to disk or logs.
- *
- * Why ship the xprv at all? At the moment of this call the on-chain
- * timelock has matured and the only key in scope is the heir's. An
- * attacker who briefly compromises the server could only redirect
- * funds to a Bitcoin address Bitcoin's UTXO set then records
- * publicly — the same threat surface a hardware wallet signer has
- * when its host machine is compromised. We accept that exposure in
- * exchange for not shipping a Taproot script-path PSBT signer to the
- * browser.
- *
- * Backed by
- * `crates/ghostkey-server/src/psbt_routes.rs::HeirClaimRequest`.
- */
-export interface HeirClaimRequest {
-  destination: string;
-  fee_rate_sat_per_vb?: number | null;
-  /** Heir account xprv at `m/86'/coin'/0'`, base58 (`tprv...` /
-   *  `xprv...`). The browser unwraps this from the sealed blob via
-   *  the URL-fragment claim token; the server uses it once and
-   *  discards. */
-  heir_xprv: string;
 }
 
 /** Cached BTC/USD spot price for fiat display. Backed by
@@ -1045,23 +1017,6 @@ export const api = {
       { method: "POST", body: JSON.stringify(body) },
       ownerToken,
     ),
-  /** Deprecated: sends the unlocked key to the server. Kept only until
-   *  every open app has the browser-signed path; see #442. */
-  ownerSend: (
-    id: string,
-    ownerToken: string,
-    body: {
-      destination: string;
-      amount_sat?: number;
-      fee_rate_sat_per_vb?: number;
-      owner_xprv: string;
-    },
-  ) =>
-    request<OwnerSendResponse>(
-      `/vaults/${id}/send`,
-      { method: "POST", body: JSON.stringify(body) },
-      ownerToken,
-    ),
   /** Watch-only balance of the vault, synced from Esplora. Public:
    *  the descriptor's addresses are public, and the chain is public.
    *  Owners use this from the dashboard right after funding to confirm
@@ -1293,9 +1248,6 @@ export const api = {
     request<HeirDerivationParamsView>(
       `/claim/${encodeURIComponent(token)}/heir-derivation-params`,
     ),
-  /** Password-vault flow: one-shot build + sign + broadcast. The
-   *  server uses the supplied heir_xprv in memory only and discards
-   *  it after the response is sent. */
   /** The vault's confirmed history, so the heir's browser can sign the
    *  claim itself (#390). Same claim-link checks as the claim. */
   getClaimCoins: (token: string) =>
@@ -1314,13 +1266,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  /** Deprecated: sends the heir's key to the server. Kept only until every
-   *  open claim page has the browser-signed path; see #390. */
-  heirClaim: (token: string, req: HeirClaimRequest) =>
-    request<BroadcastClaimResponse>(
-      `/claim/${encodeURIComponent(token)}/heir-claim`,
-      { method: "POST", body: JSON.stringify(req) },
-    ),
   /**
    * Privacy-preserving landing-page analytics. Fire-and-forget — never
    * await this in a render path. The server returns 204 and tolerates

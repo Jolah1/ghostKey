@@ -20,9 +20,9 @@
  *     • Password-vault flow (PasswordVaultClaim, default for new
  *       vaults): the heir pastes a Bitcoin address from any receive-
  *       capable wallet. The browser unwraps the heir xprv locally
- *       from the URL fragment and POSTs it to /heir-claim, where the
- *       server builds + signs + broadcasts in one shot. No PSBT, no
- *       Sparrow, no signing in another app.
+ *       and signs the claim itself, then POSTs only the signed
+ *       transaction to /claim-signed. No PSBT, no Sparrow, no signing
+ *       in another app, and the server never sees the key.
  *
  *     • PSBT-handoff flow (ManualPsbtClaim, reachable when
  *       /sealed-heir returns 422): the heir holds their own key (Door B)
@@ -774,9 +774,9 @@ function destinationHint(
  *      crypto redesign): the heir's xprv is sealed server-side under
  *      HKDF(claim_token). The browser reads the token from the URL
  *      fragment, fetches the sealed blob via /claim/:token/sealed-heir,
- *      unwraps locally, and POSTs to /claim/:token/heir-claim, which
- *      builds + signs + broadcasts in one shot. No wallet install
- *      required on the heir's side.
+ *      unwraps locally, signs the claim in the browser, and POSTs only
+ *      the signed transaction to /claim/:token/claim-signed. No wallet
+ *      install required on the heir's side.
  *
  *   2. Legacy PSBT-handoff flow (for vaults created before the
  *      redesign): the server cannot produce a sealed-heir view (the
@@ -1240,9 +1240,8 @@ function PasswordVaultClaim({
  * Claim flow for vaults where the heir's xpub was server-derived
  * from an email. The heir doesn't need any setup ahead of time: we
  * recompute their BIP86 mnemonic + xprv locally from the server's
- * `vault_secret`, ship the xprv to the heir-claim endpoint (held
- * in memory only there), and then show the heir the 12-word
- * mnemonic so they can record it.
+ * `vault_secret`, sign the claim in the browser, and then show the
+ * heir the 12-word mnemonic so they can record it.
  *
  * Why also show the mnemonic? The heir-claim flow sweeps to a
  * destination address; once the funds land there, the derived key
