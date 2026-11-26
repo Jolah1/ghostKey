@@ -236,6 +236,16 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
             "/vaults/:id/claim-token",
             get(crate::video_routes::get_claim_token),
         )
+        // Move an older vault to an heir code (the video travels with it,
+        // hence this body limit), and "I gave them the code".
+        .route(
+            "/vaults/:id/heir-code/upgrade",
+            get(crate::heir_code_routes::get_upgrade_kit).post(crate::heir_code_routes::upgrade),
+        )
+        .route(
+            "/vaults/:id/heir-code/shared",
+            post(crate::heir_code_routes::mark_shared),
+        )
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024));
 
     // Routes whose owner-auth or one-tap token already gates abuse,
@@ -716,6 +726,13 @@ pub struct VaultView {
     /// owner-authenticated `GET /vaults/:id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heir_reachability: Option<String>,
+    /// Where the vault stands with the heir code: `upgrade` (can move
+    /// from a kept link secret to a code), `unshared` (the owner hasn't
+    /// confirmed giving the code), `shared`. See
+    /// `heir_code_routes::heir_code_state`. Only on the owner's
+    /// `GET /vaults/:id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heir_code_state: Option<String>,
     /// The vault's descriptor pair (receive + change). Only populated
     /// on the owner-authenticated `GET /vaults/:id` — list/create
     /// responses leave them `None`. The dashboard embeds these in the
@@ -1008,6 +1025,7 @@ async fn create_vault(
                 activation_held: None,
                 heir_pending: None,
                 heir_reachability: None,
+                heir_code_state: None,
                 descriptor_external: None,
                 descriptor_internal: None,
                 has_trusted_contact: None,
@@ -1191,7 +1209,7 @@ pub struct HeirCodeSeal {
 }
 
 impl HeirCodeSeal {
-    fn validate(&self) -> Result<(), ApiError> {
+    pub(crate) fn validate(&self) -> Result<(), ApiError> {
         if self.kdf_mem_kib < 1024 || self.kdf_iters < 1 {
             return Err(ApiError::Validation(
                 "heir code kdf parameters are below the minimum".into(),
@@ -1842,6 +1860,7 @@ async fn create_vault_from_xpub(
                 activation_held: None,
                 heir_pending: None,
                 heir_reachability: None,
+                heir_code_state: None,
                 // Return the public descriptor pair so the setup browser
                 // can build the heir envelope (block A) immediately,
                 // without a second round-trip. Watch-only; no secrets.
@@ -2805,6 +2824,9 @@ async fn get_vault(
         row.heir_contact_verified_at.is_some(),
         row.heir_unreachable_alerted_at.is_some(),
     );
+    let heir_code_state = crate::heir_code_routes::load_heir_code_state(&state.db, &row.id)
+        .await?
+        .map(str::to_string);
     let activation_held = row.status == "unfunded"
         && row.chain_has_unspent == Some(1)
         && crate::scheduler::owner_email_unconfirmed(
@@ -2843,6 +2865,7 @@ async fn get_vault(
         activation_held: Some(activation_held),
         heir_pending: Some(row.heir_pending == 1),
         heir_reachability: heir_reachability.map(str::to_string),
+        heir_code_state,
         descriptor_external: Some(row.descriptor_external),
         descriptor_internal: Some(row.descriptor_internal),
         has_trusted_contact: Some(row.has_trusted_contact == 1),
@@ -5659,6 +5682,163 @@ mod tests {
         assert_eq!(blobs.heir_code_owner_ct_b64.as_deref(), Some("Y29kZWN0"));
         assert_eq!(blobs.heir_code_owner_nonce_b64.as_deref(), Some("Y29kZW5u"));
         assert_eq!(blobs.heir_code.map(|k| k.kdf_iters), Some(2));
+    }
+
+    /// An older vault (heir key locked under a kept claim token) moves to
+    /// an heir code: the owner gets the token and locked key once, sends
+    /// back the code-locked key and video, and the server forgets the
+    /// token in the same step. Refused once done, or under a live claim.
+    #[tokio::test]
+    async fn an_older_vault_moves_to_an_heir_code_and_forgets_the_token() {
+        use crate::heir_code_routes::{
+            get_upgrade_kit, mark_shared, upgrade, HeirCodeUpgradeRequest, SealedVideo,
+        };
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let sealed = sealed_setup(
+            &"a".repeat(64),
+            Some("b2xkY3Q".into()),
+            Some("b2xkbm4".into()),
+            Some("old-claim-token".into()),
+        );
+        let (_, created) =
+            create_vault_from_xpub(State(state.clone()), Json(door_b_request(sealed)))
+                .await
+                .expect("create an older vault");
+        let id = created.vault.id.clone();
+        let owner = || OwnerAuth {
+            vault_id: id.clone(),
+        };
+        sqlx::query(
+            "INSERT INTO vault_videos (vault_id, video_ct_b64, video_nonce_b64, mime, \
+             owner_sig_b64, signed_sha256_hex, created_at) \
+             VALUES (?, 'b2xkdmlk', 'b2xkdm4', 'video/webm', 'c2ln', 'abcd', '2026-01-01T00:00:00Z')",
+        )
+        .bind(&id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            crate::heir_code_routes::load_heir_code_state(&state.db, &id)
+                .await
+                .unwrap(),
+            Some("upgrade")
+        );
+
+        let kit = get_upgrade_kit(owner(), State(state.clone()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(kit.claim_token_b64, "old-claim-token");
+        assert_eq!(kit.heir_xprv_ct_b64, "b2xkY3Q");
+        assert_eq!(
+            kit.video.as_ref().map(|v| v.video_ct_b64.as_str()),
+            Some("b2xkdmlk")
+        );
+
+        let request = |video: Option<SealedVideo>| HeirCodeUpgradeRequest {
+            heir_xprv_ct_b64: "bmV3Y3Q".into(),
+            heir_xprv_nonce_b64: "bmV3bm4".into(),
+            heir_code: heir_code_seal(),
+            video,
+        };
+        // Leaving the video behind would make it unplayable: refused.
+        let err = upgrade(owner(), State(state.clone()), Json(request(None)))
+            .await
+            .expect_err("video must come along");
+        assert!(matches!(err, ApiError::Validation(_)), "got {err:?}");
+
+        let video = SealedVideo {
+            video_ct_b64: "bmV3dmlk".into(),
+            video_nonce_b64: "bmV3dm4".into(),
+        };
+        upgrade(owner(), State(state.clone()), Json(request(Some(video))))
+            .await
+            .expect("upgrade");
+
+        type Row = (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+        let row: Row = sqlx::query_as(
+            "SELECT claim_token_at_rest_b64, claim_token_hash, heir_xprv_sealed_ct_b64, \
+                    heir_code_check_ct_b64 FROM vaults WHERE id = ?",
+        )
+        .bind(&id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert!(row.0.is_none() && row.1.is_none(), "the token is gone");
+        assert_eq!(row.2.as_deref(), Some("bmV3Y3Q"));
+        assert_eq!(row.3.as_deref(), Some("Y2hlY2tjdA"));
+        let (vct, sig): (String, String) = sqlx::query_as(
+            "SELECT video_ct_b64, owner_sig_b64 FROM vault_videos WHERE vault_id = ?",
+        )
+        .bind(&id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(vct, "bmV3dmlk");
+        assert_eq!(
+            sig, "c2ln",
+            "the owner's signature on the clip is unchanged"
+        );
+
+        // The token can't be fetched any more, and the upgrade can't rerun.
+        let gone = crate::video_routes::get_claim_token(owner(), State(state.clone())).await;
+        assert!(matches!(gone, Err(ApiError::NotFound)));
+        assert!(matches!(
+            get_upgrade_kit(owner(), State(state.clone())).await,
+            Err(ApiError::Conflict(_))
+        ));
+
+        // Ask until the owner says they gave the code.
+        assert_eq!(
+            crate::heir_code_routes::load_heir_code_state(&state.db, &id)
+                .await
+                .unwrap(),
+            Some("unshared")
+        );
+        mark_shared(owner(), State(state.clone())).await.unwrap();
+        assert_eq!(
+            crate::heir_code_routes::load_heir_code_state(&state.db, &id)
+                .await
+                .unwrap(),
+            Some("shared")
+        );
+    }
+
+    #[tokio::test]
+    async fn no_upgrade_under_a_claim_that_is_underway() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let sealed = sealed_setup(
+            &"b".repeat(64),
+            Some("b2xkY3Q".into()),
+            Some("b2xkbm4".into()),
+            Some("live-claim-token".into()),
+        );
+        let (_, created) =
+            create_vault_from_xpub(State(state.clone()), Json(door_b_request(sealed)))
+                .await
+                .unwrap();
+        let id = created.vault.id.clone();
+        sqlx::query("UPDATE vaults SET status = 'timelock_started' WHERE id = ?")
+            .bind(&id)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let err = crate::heir_code_routes::get_upgrade_kit(
+            OwnerAuth {
+                vault_id: id.clone(),
+            },
+            State(state.clone()),
+        )
+        .await
+        .expect_err("the heir may already have their link");
+        assert!(matches!(err, ApiError::Conflict(_)), "got {err:?}");
     }
 
     #[tokio::test]

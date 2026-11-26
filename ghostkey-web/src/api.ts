@@ -74,6 +74,12 @@ export interface VaultView {
    *  Absent when the heir isn't on email, because only email tells us
    *  a message arrived. Only on the owner `GET /vaults/:id`. */
   heir_reachability?: "unreachable" | "unconfirmed" | "confirmed" | null;
+  /** Where the vault stands with the heir code. `upgrade`: an older
+   *  vault whose heir key GhostKey could still open; it can move to a
+   *  code. `unshared`: the owner hasn't confirmed giving the code.
+   *  `shared`. Absent when there's no heir key here, or a claim is
+   *  underway. Only on the owner `GET /vaults/:id`. */
+  heir_code_state?: "upgrade" | "unshared" | "shared" | null;
   /** Whether a trusted contact is on file. Gates the panic-stop
    *  copy's "your trusted contact will be alerted" promise — only
    *  rendered when true (issue #70). Absent on list/create
@@ -214,6 +220,28 @@ export interface HeirCodeView {
   kdf_iters: number;
   check_ct_b64: string;
   check_nonce_b64: string;
+}
+
+/** A video message, locked. */
+export interface SealedVideoBody {
+  video_ct_b64: string;
+  video_nonce_b64: string;
+}
+
+/** `GET /vaults/:id/heir-code/upgrade`. */
+export interface HeirCodeUpgradeKit {
+  claim_token_b64: string;
+  heir_xprv_ct_b64: string;
+  heir_xprv_nonce_b64: string;
+  video: SealedVideoBody | null;
+}
+
+/** `POST /vaults/:id/heir-code/upgrade`. */
+export interface HeirCodeUpgradeBody {
+  heir_xprv_ct_b64: string;
+  heir_xprv_nonce_b64: string;
+  heir_code: HeirCodeSealBody;
+  video?: SealedVideoBody;
 }
 
 /** How an heir key was locked with an heir code, plus the code sealed
@@ -1123,6 +1151,21 @@ export const api = {
    *  for Door B / legacy vaults, which store no token at rest. */
   getVaultClaimToken: (id: string, ownerToken: string | null) =>
     request<ClaimTokenView>(`/vaults/${id}/claim-token`, {}, ownerToken),
+  /** Owner-only: what the browser needs to move an older vault to an
+   *  heir code (the kept link secret, the key and video locked under it). */
+  getHeirCodeUpgradeKit: (id: string, ownerToken: string | null) =>
+    request<HeirCodeUpgradeKit>(`/vaults/${id}/heir-code/upgrade`, {}, ownerToken),
+  /** Owner-only: swap in the code-locked key (and video); the server
+   *  forgets the link secret in the same step. */
+  upgradeToHeirCode: (id: string, ownerToken: string | null, body: HeirCodeUpgradeBody) =>
+    request<null>(
+      `/vaults/${id}/heir-code/upgrade`,
+      { method: "POST", body: JSON.stringify(body) },
+      ownerToken,
+    ),
+  /** Owner-only: "I gave them the code." Stops the dashboard asking. */
+  markHeirCodeShared: (id: string, ownerToken: string | null) =>
+    request<null>(`/vaults/${id}/heir-code/shared`, { method: "POST" }, ownerToken),
   /** Store the owner's encrypted video message (#85). OwnerAuth via the
    *  freshly-issued owner_token. The clip is sealed under the claim-token
    *  KEK and signed with the owner key client-side; the server only ever

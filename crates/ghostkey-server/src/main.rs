@@ -32,6 +32,7 @@ mod deliverability;
 mod delivery;
 mod demo;
 mod drill;
+mod heir_code_routes;
 mod newsletter;
 mod notifier;
 mod panic;
