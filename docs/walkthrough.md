@@ -112,58 +112,51 @@ check in. It:
 
 ### Step 2: the heir opens the link
 
-[`ghostkey-web/src/Claim.tsx`](../ghostkey-web/src/Claim.tsx) (or
-the routed claim view) hits `GET /claim/:token` on the server.
+[`ghostkey-web/src/ClaimPage.tsx`](../ghostkey-web/src/ClaimPage.tsx)
+hits `GET /claim/:token` on the server.
 
 The server returns one of five states: loading, not found, already
 used, not ready (timelock hasn't elapsed yet), or claimable. The UI
 renders accordingly.
 
 If the vault was created via the password wizard (most common for
-non-Bitcoiners), the server also has a sealed heir xprv: the
-private key encrypted with a KEK derived from the claim token. The
-browser will need this in step 3.
+non-Bitcoiners), the server also holds a locked copy of the heir's
+private key. On current vaults it is locked under the heir code: five
+words the owner gave the heir, which the server never sees.
 
-### Step 3: the heir provides a destination address
+### Step 3: the heir unlocks the key and picks an address
 
-The heir pastes a Bitcoin address from any wallet they control:
-hardware wallet, Sparrow, Cake, whatever. The browser unwraps the
-sealed heir xprv using HKDF over the claim token, then ships the
-xprv over TLS to the server's `POST /claim/:token/heir-claim`
-endpoint along with the destination.
+The heir types the heir code, and the browser fetches the locked key
+from `GET /claim/:token/sealed-heir` and opens it locally. The heir
+then pastes a Bitcoin address from any wallet they control: hardware
+wallet, Sparrow, Cake, whatever.
 
-### Step 4: the server signs and broadcasts
+### Step 4: the browser signs, the server broadcasts
 
-`heir_claim` lives in
-[`crates/ghostkey-server/src/psbt_routes.rs`](../crates/ghostkey-server/src/psbt_routes.rs).
-It:
+The browser fetches the vault's confirmed history from
+`GET /claim/:token/coins`, then builds and signs the claim itself with
+`ghostkey-core` compiled to WebAssembly (script-path spend,
+`nSequence = N` for BIP68). It posts only the finished transaction to
+`POST /claim/:token/claim-signed`.
 
-1. Reconstructs the heir-side BDK wallet from the stored descriptor.
-2. Calls `ghostkey_core::psbt::build_heir_claim` (script-path
-   selection, `nSequence = N` for BIP68).
-3. Signs in memory with the xprv received in the request.
-4. Broadcasts via the configured Esplora endpoint.
-5. Atomically marks the claim token consumed (the
+`heir_claim_signed` in
+[`crates/ghostkey-server/src/psbt_routes.rs`](../crates/ghostkey-server/src/psbt_routes.rs):
+
+1. Checks the transaction spends only this vault's coins and pays
+   only the address the heir gave.
+2. Atomically marks the claim token consumed (the
    `claim_token_used_at IS NULL` predicate is the CAS gate that
    prevents double-spend races).
-6. Drops the xprv when the function returns. It is never written
-   to disk or tracing output.
+3. Broadcasts via the configured Esplora endpoint, and releases the
+   token if the broadcast fails.
 
-**This is the "narrow server-signing exception" mentioned in the
-intro.** During the seconds this call takes, a compromised server
-could redirect the funds. We accept this because:
-
-- The timelock has already matured by this point: only the heir
-  benefits from spending the UTXO.
-- The on-chain trail is public; theft is detectable immediately.
-- Re-implementing Taproot script-path PSBT signing in the browser
-  is a significant chunk of audited cryptography we didn't want to
-  ship before getting the product validated.
+The server never sees the heir's key. Owner sends work the same way
+(`POST /vaults/:id/send/signed`).
 
 A second claim flow (the legacy two-step `build-psbt` +
-`broadcast`) exists for heirs who own Bitcoin and want to sign
-with their own wallet. It uses the same PSBT machinery without the
-server-signing step. CLI-created vaults default to this flow.
+`broadcast`) exists for heirs who hold their own key and want to sign
+with their own wallet. It uses the same PSBT machinery. CLI-created
+vaults default to this flow.
 
 ---
 
@@ -172,9 +165,8 @@ server-signing step. CLI-created vaults default to this flow.
 These come up a lot in contributor questions. The answer is "no,
 on purpose":
 
-- **No custody.** The server never holds plaintext owner keys in
-  steady state. The one exception (above) is bounded to a single
-  request scope.
+- **No custody.** The server never holds plaintext owner or heir
+  keys. Sends and claims are signed in the browser.
 - **No KYC.** No emails or addresses are validated against an
   identity provider. We encrypt the contact at rest and use it
   only to deliver reminders.

@@ -89,7 +89,7 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
     //   primarily limits inbox abuse. Own bucket: 30 burst, ~30/min.
     //
     //   CLAIM: covers the heir-claim flow (resolve, build-psbt,
-    //   broadcast, heir-claim, sealed-heir, derivation-params). The
+    //   broadcast, claim-signed, sealed-heir, derivation-params). The
     //   token is 256 bits so brute force is infeasible — this
     //   limiter exists to cap the *cost* of an attacker probing
     //   with a known-good token (Esplora full-scan is expensive).
@@ -185,10 +185,6 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
         .route(
             "/claim/:token/heir-derivation-params",
             get(crate::psbt_routes::get_heir_derivation_params),
-        )
-        .route(
-            "/claim/:token/heir-claim",
-            post(crate::psbt_routes::heir_claim),
         )
         .route("/claim/:token/coins", get(crate::psbt_routes::claim_coins))
         .route(
@@ -333,7 +329,6 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
             "/vaults/:id/lightning/broadcast",
             post(crate::psbt_routes::relay_vault_deposit),
         )
-        .route("/vaults/:id/send", post(crate::psbt_routes::owner_send))
         .route(
             "/vaults/:id/coins",
             get(crate::psbt_routes::get_spend_coins),
