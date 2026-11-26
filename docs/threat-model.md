@@ -83,6 +83,7 @@ Same shape as A1, owned by the heir.
   → `derive_heir_seed`,
   [`ghostkey-web/src/crypto/heirKey.ts`](../ghostkey-web/src/crypto/heirKey.ts).
 
+*Retired 2026-11-25: guardian vaults are no longer offered and their code is removed. Kept for the record.*
 In a **guardian vault** (for an underage heir) the policy is
 `heir AND (g1 OR g2) AND older(N)`, optionally gated by an absolute
 `after(H)` unlock height. A claim needs the heir's signature plus
@@ -252,12 +253,12 @@ The claim link is a bearer credential. An attacker who reads the
 heir's email or SMS history (e.g. an in-house messaging-platform
 admin) can replay it.
 
-### Att-9. A colluding guardian (guardian vaults)
+### Att-9. A colluding guardian (guardian vaults, retired 2026-11-25)
 A guardian who keeps a copy of the underage heir's key, or who can
 coerce the heir, after the timelock matures. One guardian plus the
 heir's key is a valid claim by design, so this is a trust the owner
 places in the guardians they pick, not a flaw the script can remove.
-Bounded under [R10](#r10-guardian-collusion-is-bounded-not-eliminated).
+Bounded under [R10](#r10-guardian-collusion-is-bounded-not-eliminated-retired-2026-11-25).
 
 ---
 
@@ -514,7 +515,7 @@ seed-derived xprv. PSBT export / import for air-gapped or hardware
 signing is on the roadmap but not built. Until it is, the CLI is
 the trust anchor for owners who chose the CLI path.
 
-### R10. Guardian collusion is bounded, not eliminated
+### R10. Guardian collusion is bounded, not eliminated (retired 2026-11-25)
 The guardian policy `heir AND (g1 OR g2) AND older(N)` raises the bar
 from one key to two cooperating parties (the heir plus one guardian),
 but it cannot stop a guardian who already holds the underage heir's

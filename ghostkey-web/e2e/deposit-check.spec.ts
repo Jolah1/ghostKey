@@ -55,7 +55,7 @@ test.afterAll(async () => {
 
 type Case = { name: string; network: string; descriptor_external: string; descriptor_internal: string; external: string[] };
 const mine = (fixtures as Case[]).find((c) => c.name === "standard" && c.network === "signet")!;
-const someoneElses = (fixtures as Case[]).find((c) => c.name === "guardian" && c.network === "signet")!;
+const someoneElses = (fixtures as Case[]).find((c) => c.name === "standard-1-block" && c.network === "signet")!;
 const VAULT_ID = "v-deposit";
 const FUTURE = new Date(Date.now() + 21 * 86400_000).toISOString();
 

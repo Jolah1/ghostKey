@@ -14,9 +14,7 @@
 
 use bitcoin::bip32::Xpriv;
 use bitcoin::Network;
-use ghostkey_core::descriptor::{
-    build_descriptor_pair, build_guardian_descriptor_pair, build_standard_descriptor_from_fragments,
-};
+use ghostkey_core::descriptor::{build_descriptor_pair, build_standard_descriptor_from_fragments};
 use ghostkey_core::keys::{account_xpub, descriptor_key_fragment, Chain};
 use ghostkey_wasm::derive_addresses_json;
 use serde_json::{json, Value};
@@ -49,8 +47,6 @@ fn build() -> Value {
     for (net, net_s) in [(Network::Bitcoin, "bitcoin"), (Network::Signet, "signet")] {
         let owner = key(0x11, net);
         let heir = key(0x12, net);
-        let g1 = key(0x13, net);
-        let g2 = key(0x14, net);
 
         let std_pair = build_descriptor_pair(&owner.0, &owner.1, &heir.0, &heir.1, 4320).unwrap();
         cases.push(case(
@@ -86,37 +82,6 @@ fn build() -> Value {
             net_s,
             &liana_short.external,
             &liana_short.internal,
-        ));
-
-        let guardian = build_guardian_descriptor_pair(
-            &owner.0, &owner.1, &heir.0, &heir.1, &g1.0, &g1.1, &g2.0, &g2.1, 4320, None,
-        )
-        .unwrap();
-        cases.push(case(
-            "guardian",
-            net_s,
-            &guardian.external,
-            &guardian.internal,
-        ));
-
-        let dated = build_guardian_descriptor_pair(
-            &owner.0,
-            &owner.1,
-            &heir.0,
-            &heir.1,
-            &g1.0,
-            &g1.1,
-            &g2.0,
-            &g2.1,
-            4320,
-            Some(900_000),
-        )
-        .unwrap();
-        cases.push(case(
-            "guardian-dated",
-            net_s,
-            &dated.external,
-            &dated.internal,
         ));
     }
     Value::Array(cases)

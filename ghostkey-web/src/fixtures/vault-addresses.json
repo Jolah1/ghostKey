@@ -64,38 +64,6 @@
     "network": "bitcoin"
   },
   {
-    "descriptor_external": "tr(50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0,or_d(pk([71348c8a/86'/0'/0']xpub6DFZDsNy61s3bCWp3BF23fQjtMsxE43ftjhQb3EPRJjdMwcdD5uvUmxxU8G1TS39WQJKVu2AvwEUcBQVeA5rT7UB5vurwMAQE82896hBWVd/0/*),and_v(v:pk([df614949/86'/0'/0']xpub6D5G1c3GKxJp4se2Bh7yMU1eApYaBsDzaVNve7uRbDEs8G613AZGyqFjiJF8jXPhQ9cEM85R8nV9EzkzRJNhCjmPmEHWXRZoN7y36LGTBwB/0/*),and_v(v:older(4320),or_b(pk([bdc5423a/86'/0'/0']xpub6DX72NA7D2DadAG5UoqEY5G41RRuHX5cbxTegQHVdXVWsHt5RWbJLejBm662jN596T2ees5KQZaRNxb2jL1k1vCrNRrjuyFUvWNo2Ba3NbW/0/*),s:pk([7d626ae5/86'/0'/0']xpub6CejGQjc9QikeYnGAotDfgVqBuSpxqFuYTZHokLMDkFVgcr88G6HWm7LJHW4DpHbGJAYFYxxRiT92rmF4j36ZKywK79oVQR6Ukqj4okypma/0/*))))))",
-    "descriptor_internal": "tr(50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0,or_d(pk([71348c8a/86'/0'/0']xpub6DFZDsNy61s3bCWp3BF23fQjtMsxE43ftjhQb3EPRJjdMwcdD5uvUmxxU8G1TS39WQJKVu2AvwEUcBQVeA5rT7UB5vurwMAQE82896hBWVd/1/*),and_v(v:pk([df614949/86'/0'/0']xpub6D5G1c3GKxJp4se2Bh7yMU1eApYaBsDzaVNve7uRbDEs8G613AZGyqFjiJF8jXPhQ9cEM85R8nV9EzkzRJNhCjmPmEHWXRZoN7y36LGTBwB/1/*),and_v(v:older(4320),or_b(pk([bdc5423a/86'/0'/0']xpub6DX72NA7D2DadAG5UoqEY5G41RRuHX5cbxTegQHVdXVWsHt5RWbJLejBm662jN596T2ees5KQZaRNxb2jL1k1vCrNRrjuyFUvWNo2Ba3NbW/1/*),s:pk([7d626ae5/86'/0'/0']xpub6CejGQjc9QikeYnGAotDfgVqBuSpxqFuYTZHokLMDkFVgcr88G6HWm7LJHW4DpHbGJAYFYxxRiT92rmF4j36ZKywK79oVQR6Ukqj4okypma/1/*))))))",
-    "external": [
-      "bc1p3n3s63cxkr87665wmvaa69txhham7v4a2pe55ev7uc49ukwm9gdsc5ev2t",
-      "bc1pat9ef9qqnee0swatpdhn37xztplhdqvzekqjwnm3ccjlpg5q0qxs0k8suq",
-      "bc1pgpm9efqzea7xem5ekd8yw3ul9hwtxeg5zpypnqgp5kzstfcjsvdseag8my"
-    ],
-    "internal": [
-      "bc1phewlunkr7jl8lgvrk7d6jtsq926e3x397vg537wxe5ncz536yvksv7jw9c",
-      "bc1pfvtans0r3c4k830yvkjrm2n6gv08rdln0yzndsh8mp6mj9ue3f3sqplj53",
-      "bc1pe8wn2qkxukt2gdc40ukhq5lr7da4urn54q7lq43etjp4wh9t238qg0pj7t"
-    ],
-    "name": "guardian",
-    "network": "bitcoin"
-  },
-  {
-    "descriptor_external": "tr(50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0,or_d(pk([71348c8a/86'/0'/0']xpub6DFZDsNy61s3bCWp3BF23fQjtMsxE43ftjhQb3EPRJjdMwcdD5uvUmxxU8G1TS39WQJKVu2AvwEUcBQVeA5rT7UB5vurwMAQE82896hBWVd/0/*),and_v(v:pk([df614949/86'/0'/0']xpub6D5G1c3GKxJp4se2Bh7yMU1eApYaBsDzaVNve7uRbDEs8G613AZGyqFjiJF8jXPhQ9cEM85R8nV9EzkzRJNhCjmPmEHWXRZoN7y36LGTBwB/0/*),and_v(v:older(4320),and_v(v:after(900000),or_b(pk([bdc5423a/86'/0'/0']xpub6DX72NA7D2DadAG5UoqEY5G41RRuHX5cbxTegQHVdXVWsHt5RWbJLejBm662jN596T2ees5KQZaRNxb2jL1k1vCrNRrjuyFUvWNo2Ba3NbW/0/*),s:pk([7d626ae5/86'/0'/0']xpub6CejGQjc9QikeYnGAotDfgVqBuSpxqFuYTZHokLMDkFVgcr88G6HWm7LJHW4DpHbGJAYFYxxRiT92rmF4j36ZKywK79oVQR6Ukqj4okypma/0/*)))))))",
-    "descriptor_internal": "tr(50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0,or_d(pk([71348c8a/86'/0'/0']xpub6DFZDsNy61s3bCWp3BF23fQjtMsxE43ftjhQb3EPRJjdMwcdD5uvUmxxU8G1TS39WQJKVu2AvwEUcBQVeA5rT7UB5vurwMAQE82896hBWVd/1/*),and_v(v:pk([df614949/86'/0'/0']xpub6D5G1c3GKxJp4se2Bh7yMU1eApYaBsDzaVNve7uRbDEs8G613AZGyqFjiJF8jXPhQ9cEM85R8nV9EzkzRJNhCjmPmEHWXRZoN7y36LGTBwB/1/*),and_v(v:older(4320),and_v(v:after(900000),or_b(pk([bdc5423a/86'/0'/0']xpub6DX72NA7D2DadAG5UoqEY5G41RRuHX5cbxTegQHVdXVWsHt5RWbJLejBm662jN596T2ees5KQZaRNxb2jL1k1vCrNRrjuyFUvWNo2Ba3NbW/1/*),s:pk([7d626ae5/86'/0'/0']xpub6CejGQjc9QikeYnGAotDfgVqBuSpxqFuYTZHokLMDkFVgcr88G6HWm7LJHW4DpHbGJAYFYxxRiT92rmF4j36ZKywK79oVQR6Ukqj4okypma/1/*)))))))",
-    "external": [
-      "bc1ptnxraex9tp9vd0pfv5vfw6m3yat5ugmp6exuptkkgemgvqrlwlaqsqj8xa",
-      "bc1pnkpq86rz2463qhd63ag3sptjuzjwa79zjmnngxsukfljmprzhhhq5crrd5",
-      "bc1pe842dzksj8srjr0j6d4atew0tcksr95lwlldlyjfcqex8kurng3s7d4nlu"
-    ],
-    "internal": [
-      "bc1pwt3qg9puzn96960vvzzwvj5psu64g27prx6cntkye8pqpr776e5q76gym2",
-      "bc1pn76l050mr0ruzd6k32k8d36szcw4l8slacqysdgnzwrtawsf8q8q57qas2",
-      "bc1pec9mvnz8mnal54n3cxtc36kaw93ccp9keaedzju6l0syy0hfpf6srz932x"
-    ],
-    "name": "guardian-dated",
-    "network": "bitcoin"
-  },
-  {
     "descriptor_external": "tr(50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0,or_d(pk([71348c8a/86'/1'/0']tpubDDUsQgYyM6ZFoPMN8ktqG9d37Hn2SjG9sSa1mri5GdTBW2L3Z8CPaoCbJ6jLcEjzuLRWg13bkSZXGzv6WYiFsVGprjN48uhSt7hUvXRmtrf/0/*),and_v(v:pk([df614949/86'/1'/0']tpubDDVSLfWt84GCUagjoJrcL9NoCa8YD7B9J45KpqExgfUb3td61Eswx9hahs1eYGzX7iUBWCjY7Ery2Pmv788ijATbdZESLMAgabzQovNftRT/0/*),older(4320))))",
     "descriptor_internal": "tr(50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0,or_d(pk([71348c8a/86'/1'/0']tpubDDUsQgYyM6ZFoPMN8ktqG9d37Hn2SjG9sSa1mri5GdTBW2L3Z8CPaoCbJ6jLcEjzuLRWg13bkSZXGzv6WYiFsVGprjN48uhSt7hUvXRmtrf/1/*),and_v(v:pk([df614949/86'/1'/0']tpubDDVSLfWt84GCUagjoJrcL9NoCa8YD7B9J45KpqExgfUb3td61Eswx9hahs1eYGzX7iUBWCjY7Ery2Pmv788ijATbdZESLMAgabzQovNftRT/1/*),older(4320))))",
     "external": [
@@ -157,38 +125,6 @@
       "tb1p39ssnhqj6hp0zkgfytdfs0a8f920jkvgx0q8xvuq76gmwx9kyqdsgeunyh"
     ],
     "name": "liana-1-block",
-    "network": "signet"
-  },
-  {
-    "descriptor_external": "tr(50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0,or_d(pk([71348c8a/86'/1'/0']tpubDDUsQgYyM6ZFoPMN8ktqG9d37Hn2SjG9sSa1mri5GdTBW2L3Z8CPaoCbJ6jLcEjzuLRWg13bkSZXGzv6WYiFsVGprjN48uhSt7hUvXRmtrf/0/*),and_v(v:pk([df614949/86'/1'/0']tpubDDVSLfWt84GCUagjoJrcL9NoCa8YD7B9J45KpqExgfUb3td61Eswx9hahs1eYGzX7iUBWCjY7Ery2Pmv788ijATbdZESLMAgabzQovNftRT/0/*),and_v(v:older(4320),or_b(pk([bdc5423a/86'/1'/0']tpubDDbExyXPWJn4Fx6u2xNN3gdywSKFneRz8JugbDHLMtuYEM9GQP8u5z6d5fTCLp7cmQmvAR8C8ks2NVeqQNVcEbA1Q2vwJ4tgTz6xbutyNSo/0/*),s:pk([7d626ae5/86'/1'/0']tpubDCVyw29bWVjgYubLrtoaXb38q7XbJCvT2qXULWeMr3pBqa1x27kzL7UGtBUMEE9bDtDgFk24GUggdtMeQ3ANis4Anshvnod4ZbkzAX6WgHA/0/*))))))",
-    "descriptor_internal": "tr(50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0,or_d(pk([71348c8a/86'/1'/0']tpubDDUsQgYyM6ZFoPMN8ktqG9d37Hn2SjG9sSa1mri5GdTBW2L3Z8CPaoCbJ6jLcEjzuLRWg13bkSZXGzv6WYiFsVGprjN48uhSt7hUvXRmtrf/1/*),and_v(v:pk([df614949/86'/1'/0']tpubDDVSLfWt84GCUagjoJrcL9NoCa8YD7B9J45KpqExgfUb3td61Eswx9hahs1eYGzX7iUBWCjY7Ery2Pmv788ijATbdZESLMAgabzQovNftRT/1/*),and_v(v:older(4320),or_b(pk([bdc5423a/86'/1'/0']tpubDDbExyXPWJn4Fx6u2xNN3gdywSKFneRz8JugbDHLMtuYEM9GQP8u5z6d5fTCLp7cmQmvAR8C8ks2NVeqQNVcEbA1Q2vwJ4tgTz6xbutyNSo/1/*),s:pk([7d626ae5/86'/1'/0']tpubDCVyw29bWVjgYubLrtoaXb38q7XbJCvT2qXULWeMr3pBqa1x27kzL7UGtBUMEE9bDtDgFk24GUggdtMeQ3ANis4Anshvnod4ZbkzAX6WgHA/1/*))))))",
-    "external": [
-      "tb1pf6u9sap2ry07yqn68tm6nzsvcfl9eqc5etcyc005semm5vs778ns6gfpkk",
-      "tb1p8c80t636t89pd4lvysh24cksajk32l5sqxss7r86lkpzr559d2gq3t2pgd",
-      "tb1pmltj6rgks3kvw4f802k587argcazsp5s3t0ye0xmgnygw9u2wkyseupavs"
-    ],
-    "internal": [
-      "tb1pae8z7jjrxgym0zt44mglqzvyjltk779f5hjpg94a7pm0zumm7xvqyfejld",
-      "tb1pw6krp6vg69dqgtaja9z5wh575ssss2w4gu4290ey55hkkq54q2uq27magy",
-      "tb1pnufcd53q082xrw6tqqemhc3ass6fwm0sak6qt7v55hyf8a8lr6zqyhje5m"
-    ],
-    "name": "guardian",
-    "network": "signet"
-  },
-  {
-    "descriptor_external": "tr(50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0,or_d(pk([71348c8a/86'/1'/0']tpubDDUsQgYyM6ZFoPMN8ktqG9d37Hn2SjG9sSa1mri5GdTBW2L3Z8CPaoCbJ6jLcEjzuLRWg13bkSZXGzv6WYiFsVGprjN48uhSt7hUvXRmtrf/0/*),and_v(v:pk([df614949/86'/1'/0']tpubDDVSLfWt84GCUagjoJrcL9NoCa8YD7B9J45KpqExgfUb3td61Eswx9hahs1eYGzX7iUBWCjY7Ery2Pmv788ijATbdZESLMAgabzQovNftRT/0/*),and_v(v:older(4320),and_v(v:after(900000),or_b(pk([bdc5423a/86'/1'/0']tpubDDbExyXPWJn4Fx6u2xNN3gdywSKFneRz8JugbDHLMtuYEM9GQP8u5z6d5fTCLp7cmQmvAR8C8ks2NVeqQNVcEbA1Q2vwJ4tgTz6xbutyNSo/0/*),s:pk([7d626ae5/86'/1'/0']tpubDCVyw29bWVjgYubLrtoaXb38q7XbJCvT2qXULWeMr3pBqa1x27kzL7UGtBUMEE9bDtDgFk24GUggdtMeQ3ANis4Anshvnod4ZbkzAX6WgHA/0/*)))))))",
-    "descriptor_internal": "tr(50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0,or_d(pk([71348c8a/86'/1'/0']tpubDDUsQgYyM6ZFoPMN8ktqG9d37Hn2SjG9sSa1mri5GdTBW2L3Z8CPaoCbJ6jLcEjzuLRWg13bkSZXGzv6WYiFsVGprjN48uhSt7hUvXRmtrf/1/*),and_v(v:pk([df614949/86'/1'/0']tpubDDVSLfWt84GCUagjoJrcL9NoCa8YD7B9J45KpqExgfUb3td61Eswx9hahs1eYGzX7iUBWCjY7Ery2Pmv788ijATbdZESLMAgabzQovNftRT/1/*),and_v(v:older(4320),and_v(v:after(900000),or_b(pk([bdc5423a/86'/1'/0']tpubDDbExyXPWJn4Fx6u2xNN3gdywSKFneRz8JugbDHLMtuYEM9GQP8u5z6d5fTCLp7cmQmvAR8C8ks2NVeqQNVcEbA1Q2vwJ4tgTz6xbutyNSo/1/*),s:pk([7d626ae5/86'/1'/0']tpubDCVyw29bWVjgYubLrtoaXb38q7XbJCvT2qXULWeMr3pBqa1x27kzL7UGtBUMEE9bDtDgFk24GUggdtMeQ3ANis4Anshvnod4ZbkzAX6WgHA/1/*)))))))",
-    "external": [
-      "tb1pj8ky0ta4m2jtsczsgv4nuzudn30czr393rvht9s0rhkn8n6kkt5q7wh0k8",
-      "tb1pvcqh0tvkvhzyr3kgyq62f3tq50gydvgquclrary949pyel2v4jhqsgzrv0",
-      "tb1p9u2n66ll2d5qhv8g6w9n60fw9nmnal9p8gpt9q3qkvpswntewsxqemd7x7"
-    ],
-    "internal": [
-      "tb1p039z4hlwzy7jrr9nfttsnrmlsrfte94jnlfr7sr59ewzp7e4dh0s647wft",
-      "tb1pnfjq3c8w6ssrmycslhd66kwrtgmzffe0dtukugu3z72z53etzmys2w588n",
-      "tb1pcvahnnfcx7cqswvk8cpj78cg8erj4nzulkhkmmza7nfphj2rg9hqfqvl8k"
-    ],
-    "name": "guardian-dated",
     "network": "signet"
   }
 ]

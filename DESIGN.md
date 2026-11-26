@@ -140,15 +140,9 @@ This is the most important section in the document. If you read one thing and re
 
 This is not a promise. It is a structural property of the software. The server binary has no code path that touches a private key. Anything that touches keys lives in `ghostkey-core` (descriptors) or `ghostkey-cli` (signing) or the heir's own wallet (the actual signature). If this boundary is ever blurred in a pull request, it should be treated as a security defect.
 
-### Guardian vaults (underage heirs)
+### Guardian vaults (retired)
 
-A normal vault leaves everything to one heir. That assumes the heir can safely hold a key. For a young child that is not true, so GhostKey has a second vault shape built for it.
-
-The spending policy becomes `heir AND (g1 OR g2) AND older(N)`: a claim needs the child-heir's key plus exactly one of two guardian keys, and only after the relative timelock. No single guardian can ever act alone, and losing one guardian key does not strand the heir, because either guardian can stand in. The owner can still move the funds at any time while alive.
-
-An optional unlock-year adds an absolute timelock, `after(H)`, so the funds cannot move before a chosen block height no matter what the guardians do. This is how an owner says "not before my child turns 18" in a way the Bitcoin network enforces rather than a person.
-
-The honest limit: the guardian quorum raises the bar from one key to two cooperating people, but it cannot stop a guardian who already holds the child's key from claiming once the timelock matures. Picking two guardians who do not trust each other is the load-bearing decision, the same way master-key custody is for F2. The full write-up is accepted risk R10 in the threat model.
+Guardian vaults (a child heir plus one of two guardians) were removed on 2026-11-25. Their claim needed two keys at once, which kept a signing step on the server, and their shape can never be opened in Liana. A parent names a trusted adult as heir instead.
 
 ---
 

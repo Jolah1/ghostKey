@@ -61,8 +61,6 @@ The owner can already spend at any time, so giving the owner the key path adds n
 - **Owner spends are cheaper.** One signature, with no script or control block.
 - **Owner spends are private.** On-chain they look like any single-key Taproot wallet. The heir's script only appears if the heir claims.
 
-Guardian vaults keep the NUMS internal key: their claim rule can't be expressed in Liana's format, so there's nothing to gain.
-
 ### What checking in actually does on-chain
 
 The server-side heartbeat button records a deadline reset for reminder purposes. The real on-chain check-in is a Bitcoin transaction (built by the CLI's `check-in` command) that spends the vault UTXO back into a fresh vault address with the same script. That fresh UTXO has a new confirmation count, so the heir's countdown restarts from zero.
@@ -199,39 +197,22 @@ Heir claim page (`/claim/:token`): five states: loading, not found, already used
 
 | Compromised | Can do | Cannot do |
 |---|---|---|
-| GhostKey server + production master key | Record false check-ins, suppress alarms, decrypt contacts, and reconstruct current Door A / browser-created guardian claim keys now | Spend through a timelocked branch before CSV maturity; reconstruct a Door B heir key |
+| GhostKey server + production master key | Record false check-ins, suppress alarms, decrypt contacts, and reconstruct current Door A claim keys now | Spend through a timelocked branch before CSV maturity; reconstruct a Door B heir key |
 | GhostKey server (during a password-vault heir claim) | Briefly hold the heir xprv in process memory for the duration of one `POST /claim/:token/heir-claim` call | Persist the xprv: never touches disk or logs; dropped at end of scope. See [Server-side signing exception](#server-side-signing-exception). |
-| GhostKey master key (`GHOSTKEY_MASTER_KEY`) + DB leak | Decrypt every sealed contact; recover stored Door A / guardian claim tokens and their sealed keys; recompute legacy F2 heir keys | Touch funds through those branches before the on-chain timelock matures; derive a Door B heir key |
+| GhostKey master key (`GHOSTKEY_MASTER_KEY`) + DB leak | Decrypt every sealed contact; recover stored Door A claim tokens and their sealed keys; recompute legacy F2 heir keys | Touch funds through those branches before the on-chain timelock matures; derive a Door B heir key |
 | Hosted frontend, deployment account, or same-origin script compromised | Capture passwords and keys while the user creates/unlocks them; alter destinations and transactions shown in the UI | Recover secrets from a user who does not load or interact with the compromised bundle; bypass Bitcoin signature/timelock rules |
 | Heir's key (timelock active) | Nothing useful | Spend: mempool rejects as non-BIP68-final |
 | Heir's key (timelock expired, owner gone) | Claim, as intended | — |
 | Owner's key | Spend or move funds, as the owner always could | — |
-| A colluding guardian (guardian vaults) | Co-sign a claim together with the child-heir's key once the timelock matures | Claim alone (the policy requires the heir's signature and only one of two guardians); act while the timelock is active or before the optional `after(H)` unlock height |
 | Network observer | See broadcasts after they're public | See script structure before first spend (Taproot hides it) |
 
 The guarantee everything else rests on:
 
 > The heir cannot move the UTXO sooner than N blocks after its last confirmation. The owner can move it any time.
 
-### Guardian vaults
+### Guardian vaults (retired)
 
-A guardian vault is a second descriptor shape for an heir too young to hold a key alone. The single-heir leaf `and_v(v:pk(HEIR),older(N))` is replaced by:
-
-```
-or_d(pk(OWNER),and_v(v:pk(HEIR),and_v(v:older(N),or_b(pk(G1),s:pk(G2)))))
-```
-
-A claim spend therefore needs the heir's signature plus exactly one of the two guardian signatures, after the relative timelock `older(N)`. No single guardian can spend, and either guardian can stand in for the other, so losing one guardian key does not strand the heir. The owner branch (`pk(OWNER)`) is unchanged, so the owner can still move funds at any time.
-
-An optional unlock-year wraps the guardian quorum in an absolute timelock:
-
-```
-or_d(pk(OWNER),and_v(v:pk(HEIR),and_v(v:older(N),and_v(v:after(H),or_b(pk(G1),s:pk(G2))))))
-```
-
-Here `after(H)` is a `nLockTime` block-height CLTV (validated below `MAX_CLTV_HEIGHT` = 500,000,000 so it is always read as a height, never a timestamp). The claim PSBT sets `nLockTime` to the current tip height. Both descriptors live in `crates/ghostkey-core/src/descriptor.rs` (`build_guardian_descriptor_string` / `build_guardian_descriptor_pair`); the two-signature claim path is in `crates/ghostkey-core/src/psbt.rs` (`build_guardian_claim`). The server creates these vaults via `POST /vaults/guardian` and, on trigger, the scheduler delivers three claim links: one to the heir and one to each guardian.
-
-The new trust surface is guardian collusion, covered in the threat model (asset A2, attacker Att-9, accepted risk R10).
+Guardian vaults (`heir AND (g1 OR g2) AND older(N)`, for a child heir) were removed on 2026-11-25: the two-key claim kept a signing step on the server, and the shape can't be opened in Liana. The `vault_guardian_keys` table stays until the last such vault is deleted (it cascades on vault delete); the scheduler never issues a claim link for a `vault_kind = 'guardian'` row.
 
 ### Server-side signing exception
 

@@ -216,8 +216,7 @@ async fn enqueue_drill_invite(
 }
 
 /// Resolve a drill token into the claim page's view. Called by
-/// `routes::resolve_claim` after the real heir and guardian lookups
-/// both miss. Marks the first open (abandonment visibility) but never
+/// `routes::resolve_claim` after the real heir lookup misses. Marks the first open (abandonment visibility) but never
 /// touches claim-challenge or claim-token state.
 pub(crate) async fn resolve_drill_claim(
     state: &AppState,
@@ -236,15 +235,14 @@ pub(crate) async fn resolve_drill_claim(
         Option<String>, // heir_contact_ciphertext
         Option<String>, // heir_contact_nonce
         Option<String>, // heir_contact_channel
-        String,         // vault_kind
     );
     let row: Option<DrillRow> = sqlx::query_as(
         r#"SELECT id, label, network, status, timelock_blocks,
                   next_deadline_at, drill_token_hash, drill_opened_at,
                   heir_contact_ciphertext, heir_contact_nonce,
-                  heir_contact_channel, vault_kind
+                  heir_contact_channel
              FROM vaults
-            WHERE drill_token_hash = ?"#,
+            WHERE drill_token_hash = ? AND vault_kind = 'standard'"#,
     )
     .bind(&hash)
     .fetch_optional(&state.db)
@@ -261,7 +259,6 @@ pub(crate) async fn resolve_drill_claim(
         heir_ct,
         heir_nn,
         heir_channel,
-        vault_kind,
     )) = row
     else {
         return Err(ApiError::NotFound);
@@ -307,9 +304,6 @@ pub(crate) async fn resolve_drill_claim(
         // No safety wait in a rehearsal: the page explains the waits
         // instead of imposing them.
         claim_available_at: None,
-        vault_kind,
-        token_role: "heir".to_string(),
-        guardian_slot: None,
         drill: true,
         // A rehearsal never broadcasts anything.
         claimed_txid: None,
@@ -649,7 +643,6 @@ mod http_tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let v = body_json(resp).await;
         assert_eq!(v["drill"], true);
-        assert_eq!(v["token_role"], "heir");
         assert_eq!(v["heir_display_name"], "Fola");
 
         // The rehearsal must not start the real claim machinery.
@@ -692,7 +685,6 @@ mod http_tests {
         let gets = [
             format!("/claim/{token}/sealed-heir"),
             format!("/claim/{token}/heir-derivation-params"),
-            format!("/claim/{token}/sealed-guardian"),
             format!("/claim/{token}/video"),
             format!("/claim/{token}/unlock-estimate"),
         ];
