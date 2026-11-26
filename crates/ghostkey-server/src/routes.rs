@@ -1184,6 +1184,10 @@ pub struct HeirCodeSeal {
     /// show it again. Opaque to the server.
     pub owner_ct_b64: String,
     pub owner_nonce_b64: String,
+    /// A fixed phrase sealed under a key derived from the code key, so a
+    /// practice run can check a typed code without the heir's key.
+    pub check_ct_b64: String,
+    pub check_nonce_b64: String,
 }
 
 impl HeirCodeSeal {
@@ -1197,6 +1201,8 @@ impl HeirCodeSeal {
             ("heir_code.salt_b64", &self.salt_b64),
             ("heir_code.owner_ct_b64", &self.owner_ct_b64),
             ("heir_code.owner_nonce_b64", &self.owner_nonce_b64),
+            ("heir_code.check_ct_b64", &self.check_ct_b64),
+            ("heir_code.check_nonce_b64", &self.check_nonce_b64),
         ] {
             if v.trim().is_empty() {
                 return Err(ApiError::Validation(format!("{name} must not be empty")));
@@ -1214,13 +1220,16 @@ async fn store_heir_code(
     sqlx::query(
         "UPDATE vaults SET heir_code_salt_b64 = ?, heir_code_kdf_mem_kib = ?, \
                            heir_code_kdf_iters = ?, heir_code_owner_sealed_ct_b64 = ?, \
-                           heir_code_owner_sealed_nonce = ? WHERE id = ?",
+                           heir_code_owner_sealed_nonce = ?, heir_code_check_ct_b64 = ?, \
+                           heir_code_check_nonce = ? WHERE id = ?",
     )
     .bind(&code.salt_b64)
     .bind(code.kdf_mem_kib)
     .bind(code.kdf_iters)
     .bind(&code.owner_ct_b64)
     .bind(&code.owner_nonce_b64)
+    .bind(&code.check_ct_b64)
+    .bind(&code.check_nonce_b64)
     .bind(id)
     .execute(db)
     .await?;
@@ -5589,6 +5598,8 @@ mod tests {
             kdf_iters: 2,
             owner_ct_b64: "Y29kZWN0".into(),
             owner_nonce_b64: "Y29kZW5u".into(),
+            check_ct_b64: "Y2hlY2tjdA".into(),
+            check_nonce_b64: "Y2hlY2tubg".into(),
         }
     }
 
@@ -5640,6 +5651,8 @@ mod tests {
                 salt_b64: "c2FsdHNhbHQ".into(),
                 kdf_mem_kib: 19_456,
                 kdf_iters: 2,
+                check_ct_b64: "Y2hlY2tjdA".into(),
+                check_nonce_b64: "Y2hlY2tubg".into(),
             })
         );
         let blobs = load_sealed_blobs(&state.db, &id).await.unwrap();
@@ -5673,6 +5686,14 @@ mod tests {
                 Box::new(|s| {
                     s.claim_token_b64 = None;
                     s.heir_code = None;
+                }),
+            ),
+            (
+                "an heir code without its check value",
+                Box::new(|s| {
+                    let mut c = heir_code_seal();
+                    c.check_ct_b64 = " ".into();
+                    s.heir_code = Some(c);
                 }),
             ),
             (

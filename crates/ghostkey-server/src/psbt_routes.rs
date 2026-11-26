@@ -769,6 +769,11 @@ pub struct HeirCodeKdf {
     pub salt_b64: String,
     pub kdf_mem_kib: i64,
     pub kdf_iters: i64,
+    /// The check phrase sealed under the code's check key: a typed code
+    /// that opens it is right. Costs a guesser the same Argon2id as the
+    /// heir's key, and opens nothing else.
+    pub check_ct_b64: String,
+    pub check_nonce_b64: String,
 }
 
 /// The heir-code parameters for a vault, if its heir key is sealed
@@ -777,18 +782,34 @@ pub(crate) async fn heir_code_kdf(
     db: &sqlx::SqlitePool,
     vault_id: &str,
 ) -> Result<Option<HeirCodeKdf>, ApiError> {
-    let row: Option<(Option<String>, Option<i64>, Option<i64>)> = sqlx::query_as(
-        "SELECT heir_code_salt_b64, heir_code_kdf_mem_kib, heir_code_kdf_iters \
+    type Row = (
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+    );
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT heir_code_salt_b64, heir_code_kdf_mem_kib, heir_code_kdf_iters, \
+                heir_code_check_ct_b64, heir_code_check_nonce \
            FROM vaults WHERE id = ?",
     )
     .bind(vault_id)
     .fetch_optional(db)
     .await?;
     Ok(match row {
-        Some((Some(salt_b64), Some(kdf_mem_kib), Some(kdf_iters))) => Some(HeirCodeKdf {
+        Some((
+            Some(salt_b64),
+            Some(kdf_mem_kib),
+            Some(kdf_iters),
+            Some(check_ct_b64),
+            Some(check_nonce_b64),
+        )) => Some(HeirCodeKdf {
             salt_b64,
             kdf_mem_kib,
             kdf_iters,
+            check_ct_b64,
+            check_nonce_b64,
         }),
         _ => None,
     })

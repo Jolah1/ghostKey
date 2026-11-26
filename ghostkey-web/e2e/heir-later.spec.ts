@@ -21,7 +21,7 @@ import { dirname, extname, join, normalize, resolve } from "node:path";
 import { HDKey } from "@scure/bip32";
 import { bip32Versions, generateParty } from "../src/crypto/keygen";
 import { b64decode, deriveOwnerKek, openWithKey, sealWithKey } from "../src/crypto/sealing";
-import { deriveHeirCodeKek, openHeirXprv } from "../src/crypto/heirCode";
+import { checkHeirCode, deriveHeirCodeKek, openHeirXprv } from "../src/crypto/heirCode";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dist = resolve(__dirname, "..", "dist");
@@ -229,6 +229,10 @@ test("setup with an heir: the key is locked with an heir code; the server gets n
     nonce: body.sealed.heir_xprv_nonce_b64,
   });
   expect(HDKey.fromExtendedKey(heirXprv, bip32Versions("signet")).publicExtendedKey).toBe(body.heir.xpub);
+  // A practice run can confirm the code from the check value alone.
+  expect(() =>
+    checkHeirCode(codeKek, { ct_b64: body.sealed.heir_code.check_ct_b64, nonce_b64: body.sealed.heir_code.check_nonce_b64 }),
+  ).not.toThrow();
 
   // The owner's copy of the code opens with their password.
   const kek = await deriveOwnerKek(PASSWORD, b64decode(body.sealed.password_salt_b64), {

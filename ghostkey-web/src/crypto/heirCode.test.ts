@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  checkHeirCode,
   deriveHeirCodeKek,
   generateHeirCode,
   heirCodeForDisplay,
@@ -47,6 +48,13 @@ describe("heir code", () => {
 
     const wrong = await deriveHeirCodeKek(generateHeirCode(), kdf);
     expect(() => openHeirXprv(wrong, blob)).toThrow();
+
+    // The check value says "right code" without the heir key, and only
+    // for the right code (the practice run uses this).
+    const check = { ct_b64: lock.heir_code.check_ct_b64, nonce_b64: lock.heir_code.check_nonce_b64 };
+    expect(() => checkHeirCode(kek, check)).not.toThrow();
+    expect(() => checkHeirCode(wrong, check)).toThrow();
+    expect(() => openHeirXprv(kek, { v: 1, ct: check.ct_b64, nonce: check.nonce_b64 })).toThrow();
 
     const ownerBlob = { v: 1 as const, ct: lock.heir_code.owner_ct_b64, nonce: lock.heir_code.owner_nonce_b64 };
     expect(openOwnerHeirCode(ownerKek, ownerBlob)).toBe(lock.code);

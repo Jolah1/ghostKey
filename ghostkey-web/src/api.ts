@@ -206,6 +206,16 @@ export interface SealedSetup {
   heir_code?: HeirCodeSealBody;
 }
 
+/** What the server says about an heir code: how to turn it into a key,
+ *  and the sealed check phrase. Mirrors `psbt_routes.rs::HeirCodeKdf`. */
+export interface HeirCodeView {
+  salt_b64: string;
+  kdf_mem_kib: number;
+  kdf_iters: number;
+  check_ct_b64: string;
+  check_nonce_b64: string;
+}
+
 /** How an heir key was locked with an heir code, plus the code sealed
  *  under the owner's password so the owner can show it again. Mirrors
  *  `routes.rs::HeirCodeSeal`. */
@@ -215,6 +225,9 @@ export interface HeirCodeSealBody {
   kdf_iters: number;
   owner_ct_b64: string;
   owner_nonce_b64: string;
+  /** The check phrase sealed under the code's check key. */
+  check_ct_b64: string;
+  check_nonce_b64: string;
 }
 
 /** One vault entry returned after one-time recovery-link exchange. */
@@ -264,7 +277,7 @@ export interface SealedBlobsView {
    *  how the code turns into a key (to seal a new video message). */
   heir_code_owner_ct_b64?: string | null;
   heir_code_owner_nonce_b64?: string | null;
-  heir_code?: { salt_b64: string; kdf_mem_kib: number; kdf_iters: number } | null;
+  heir_code?: HeirCodeView | null;
 }
 
 /** First external (receive) address derived from the vault descriptor.
@@ -355,7 +368,7 @@ export interface ClaimView {
   claimed_explorer_url?: string | null;
   /** Present when the heir's key is locked with an heir code: the page
    *  asks for the code, and opens the video with it. */
-  heir_code?: { salt_b64: string; kdf_mem_kib: number; kdf_iters: number } | null;
+  heir_code?: HeirCodeView | null;
 }
 
 /** Response from `POST /vaults/:id/drill` (#223). */
@@ -501,7 +514,7 @@ export interface SealedHeirView {
   descriptor_internal: string;
   /** Present when the key is locked with an heir code: the heir types
    *  the code and the browser re-derives the key with these. */
-  heir_code?: { salt_b64: string; kdf_mem_kib: number; kdf_iters: number };
+  heir_code?: HeirCodeView;
 }
 
 /**

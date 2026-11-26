@@ -75,6 +75,44 @@ export interface HeirCodeKdf {
   salt_b64: string;
   kdf_mem_kib: number;
   kdf_iters: number;
+  /** The check phrase sealed under the code's check key (see
+   *  `checkHeirCode`). Absent only where the caller doesn't need it. */
+  check_ct_b64?: string;
+  check_nonce_b64?: string;
+}
+
+const CHECK_PHRASE = "ghostkey heir code check v1";
+
+/** A key from the code key that can only open the check phrase. */
+function heirCheckKey(codeKek: Uint8Array): Uint8Array {
+  return hkdf(sha256, codeKek, new Uint8Array(0), new TextEncoder().encode("ghostkey/heir-code-check/v1"), 32);
+}
+
+/** Seal the check phrase, so a typed code can be tested later without
+ *  touching the heir's key (the practice run). */
+function sealHeirCheck(codeKek: Uint8Array): SealedBlob {
+  const key = heirCheckKey(codeKek);
+  try {
+    return sealWithKey(key, new TextEncoder().encode(CHECK_PHRASE));
+  } finally {
+    key.fill(0);
+  }
+}
+
+/**
+ * Is this the right code? Opens the check phrase with the code's key.
+ * Throws when it's wrong. Never touches the heir's Bitcoin key.
+ */
+export function checkHeirCode(codeKek: Uint8Array, check: { ct_b64: string; nonce_b64: string }): void {
+  const key = heirCheckKey(codeKek);
+  try {
+    const phrase = new TextDecoder().decode(
+      openWithKey(key, { v: 1, ct: check.ct_b64, nonce: check.nonce_b64 }),
+    );
+    if (phrase !== CHECK_PHRASE) throw new Error("heir code check phrase mismatch");
+  } finally {
+    key.fill(0);
+  }
 }
 
 const DEFAULT_KDF = { memKiB: 64 * 1024, iters: 3 };
@@ -170,6 +208,7 @@ export async function lockHeirKey(
   const code = generateHeirCode();
   const { sealed, codeKek } = await sealWithFreshCodeKek(code, heirXprv, onProgress);
   const videoKey = heirVideoKey(codeKek);
+  const check = sealHeirCheck(codeKek);
   codeKek.fill(0);
   const ownerCopy = sealWithKey(ownerKek, new TextEncoder().encode(code));
   return {
@@ -184,6 +223,8 @@ export async function lockHeirKey(
       kdf_iters: sealed.password_kdf_iters,
       owner_ct_b64: ownerCopy.ct,
       owner_nonce_b64: ownerCopy.nonce,
+      check_ct_b64: check.ct,
+      check_nonce_b64: check.nonce,
     },
   };
 }
