@@ -151,6 +151,24 @@ export const en: Vocab = {
     doneBody: "The person who set this up will see that the practice worked. Nothing moved and nothing changed. If the real day ever comes, it will look exactly like what you just walked through.",
     doneClose: "You can close this page.",
   },
+  heirCode: {
+    label: "Your heir code",
+    hint: "The five words the person who set this up gave you. Spaces and capitals don't matter.",
+    placeholder: "five words",
+    wrong: "That code doesn't match. Check each word and try again.",
+    unlock: "Unlock",
+    checking: (pct) => `Checking… ${pct}%`,
+    claimTitle: "Enter your heir code",
+    claimBody: "The person who set this up gave you five words. They unlock what's yours. GhostKey never sees them.",
+    videoLocked: "There's a video message for you. Enter your heir code to watch it.",
+    videoUnlock: "Watch the message",
+    drillTitle: "Try your heir code",
+    drillBody: "On the real day you'll need the five words you were given. Type them here to check they work. Nothing gets unlocked today.",
+    drillCheck: "Check my code",
+    drillOk: "Your code works. Keep it safe and private.",
+    drillMissing: "I don't have the code",
+    drillMissingBody: "That's okay. When you finish, we'll tell the person who set this up to give it to you again.",
+  },
   claimCommon: {
     whatIsBeingPassedOn: "What's being passed on",
     defaultLabel: "A Bitcoin inheritance",
@@ -345,6 +363,8 @@ export const en: Vocab = {
     errorSendingFailed: "Sending failed. Your vault is fine. Try again in a moment.",
     lineCompleted: (who, when) =>
       when ? `${who} completed a practice claim on ${when}.` : `${who} completed a practice claim.`,
+    codeWorked: (who) => `${who}'s heir code worked.`,
+    codeMissing: (who) => `${who} doesn't have their heir code. Show it again and give it to them.`,
     lineOpened: (who, when) =>
       when
         ? `${who} opened the practice link on ${when} but hasn't finished it.`

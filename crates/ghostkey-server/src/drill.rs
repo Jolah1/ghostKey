@@ -29,7 +29,7 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::Json;
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::auth::OwnerAuth;
 use crate::crypto::{claim_token_matches, hash_claim_token, issue_claim_token};
@@ -50,6 +50,15 @@ pub struct DrillStartResponse {
     /// the owner already holds the keys, and a drill token cannot reach
     /// key material or move coins on any endpoint.
     pub claim_url: String,
+}
+
+/// What the heir did with their heir code in the practice run. Sent only
+/// on vaults with a code; older apps send no body at all.
+#[derive(Debug, Deserialize)]
+pub struct DrillCompleteRequest {
+    /// `ok`: the code opened the check value in their browser.
+    /// `missing`: they said they don't have it.
+    pub heir_code: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -92,7 +101,8 @@ pub async fn start_drill(
               SET drill_token_hash   = ?,
                   drill_started_at   = ?,
                   drill_opened_at    = NULL,
-                  drill_completed_at = NULL
+                  drill_completed_at = NULL,
+                  drill_code_ok      = NULL
             WHERE id = ?"#,
     )
     .bind(&issued.hash_hex)
@@ -319,7 +329,16 @@ pub(crate) async fn resolve_drill_claim(
 pub async fn complete_drill(
     State(state): State<Arc<AppState>>,
     Path(token): Path<String>,
+    body: Option<Json<DrillCompleteRequest>>,
 ) -> Result<Json<DrillCompleteResponse>, ApiError> {
+    // The server can't check the code (it never knows it); the heir's
+    // browser did, against the check value. Anything else reads as "not
+    // tested".
+    let code_ok = match body.as_ref().and_then(|b| b.heir_code.as_deref()) {
+        Some("ok") => Some(true),
+        Some("missing") => Some(false),
+        _ => None,
+    };
     let hash = hash_claim_token(&token);
     type Row = (
         String,         // id
@@ -358,18 +377,57 @@ pub async fn complete_drill(
     }
 
     let now = Utc::now();
+    // Only a vault with an heir code records a code result.
+    let has_code: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT heir_code_salt_b64 IS NOT NULL FROM vaults WHERE id = ?",
+    )
+    .bind(&vault_id)
+    .fetch_one(&state.db)
+    .await?
+        == 1;
+    let code_ok = code_ok.filter(|_| has_code);
     let marked = sqlx::query(
-        "UPDATE vaults SET drill_completed_at = ? \
+        "UPDATE vaults SET drill_completed_at = ?, drill_code_ok = ? \
           WHERE id = ? AND drill_completed_at IS NULL",
     )
     .bind(now.to_rfc3339())
+    .bind(code_ok.map(i64::from))
     .bind(&vault_id)
     .execute(&state.db)
     .await?;
     if marked.rows_affected() > 0 {
-        record_event(&state.db, &vault_id, "drill_completed", None).await?;
-        notify_owner_drill_completed(&state, &vault_id, heir_ct, heir_nn, own_ct, own_nn, own_ch)
-            .await;
+        // The code working is proof the heir has it; not having it means
+        // Home should ask the owner to give it again.
+        match code_ok {
+            Some(true) => {
+                sqlx::query(
+                    "UPDATE vaults SET heir_code_shared_at = COALESCE(heir_code_shared_at, ?) \
+                      WHERE id = ?",
+                )
+                .bind(now.to_rfc3339())
+                .bind(&vault_id)
+                .execute(&state.db)
+                .await?;
+            }
+            Some(false) => {
+                sqlx::query("UPDATE vaults SET heir_code_shared_at = NULL WHERE id = ?")
+                    .bind(&vault_id)
+                    .execute(&state.db)
+                    .await?;
+            }
+            None => {}
+        }
+        record_event(
+            &state.db,
+            &vault_id,
+            "drill_completed",
+            code_ok.map(|ok| serde_json::json!({ "heir_code_ok": ok })),
+        )
+        .await?;
+        notify_owner_drill_completed(
+            &state, &vault_id, code_ok, heir_ct, heir_nn, own_ct, own_nn, own_ch,
+        )
+        .await;
     }
 
     Ok(Json(DrillCompleteResponse { completed_at: now }))
@@ -378,9 +436,11 @@ pub async fn complete_drill(
 /// Best-effort "your heir did it" note to the owner. A delivery
 /// failure must not fail the heir's completion — the fact is already
 /// recorded on the vault.
+#[allow(clippy::too_many_arguments)]
 async fn notify_owner_drill_completed(
     state: &AppState,
     vault_id: &str,
+    code_ok: Option<bool>,
     heir_ct: Option<String>,
     heir_nn: Option<String>,
     own_ct: Option<String>,
@@ -405,9 +465,19 @@ async fn notify_owner_drill_completed(
         .flatten()
         .and_then(|c| c.name)
         .unwrap_or_else(|| "Your heir".to_string());
+    let code_line = match code_ok {
+        Some(true) => format!("{heir_name} also entered their heir code, and it worked.\n\n"),
+        Some(false) => format!(
+            "One thing to fix: {heir_name} doesn't have their heir code. Without it \
+             they can't claim. Sign in, open your heir's page, tap Show the code, and \
+             give it to them again.\n\n"
+        ),
+        None => String::new(),
+    };
     let body = format!(
         "Good news. {heir_name} just finished the practice claim you \
          sent.\n\n\
+         {code_line}\
          Nothing moved and your vault is unchanged. The real claim will \
          look exactly like what they walked through today.\n\n\
          From GhostKey\n"
@@ -765,6 +835,81 @@ mod http_tests {
         .unwrap();
         assert_eq!(status, "ok");
         assert!(used.is_none());
+    }
+
+    async fn code_columns(db: &SqlitePool, id: &str) -> (Option<i64>, Option<String>) {
+        sqlx::query_as("SELECT drill_code_ok, heir_code_shared_at FROM vaults WHERE id = ?")
+            .bind(id)
+            .fetch_one(db)
+            .await
+            .unwrap()
+    }
+
+    /// The practice run tests the heir code: "ok" proves the heir has it
+    /// (Home stops asking), "missing" sends the owner back to give it
+    /// again. A new practice clears the old result. A vault without a
+    /// code records nothing, whatever the page sends.
+    #[tokio::test]
+    async fn drill_records_whether_the_heir_had_their_code() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault_with_heir(&state.db, "vault-dr-code", &issued.hash_hex, "ok").await;
+        sqlx::query(
+            "UPDATE vaults SET heir_code_salt_b64 = 'c2FsdA', heir_code_shared_at = '2026-01-01T00:00:00Z' \
+              WHERE id = 'vault-dr-code'",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let token = start_drill(&state, "vault-dr-code", &issued.token).await;
+        let resp = routes::router(state.clone())
+            .oneshot(post(
+                &format!("/claim/{token}/drill-complete"),
+                None,
+                Some(serde_json::json!({ "heir_code": "missing" })),
+            ))
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            code_columns(&state.db, "vault-dr-code").await,
+            (Some(0), None)
+        );
+
+        let token = start_drill(&state, "vault-dr-code", &issued.token).await;
+        assert_eq!(
+            code_columns(&state.db, "vault-dr-code").await.0,
+            None,
+            "a new practice starts clean"
+        );
+        routes::router(state.clone())
+            .oneshot(post(
+                &format!("/claim/{token}/drill-complete"),
+                None,
+                Some(serde_json::json!({ "heir_code": "ok" })),
+            ))
+            .await
+            .expect("response");
+        let (ok, shared) = code_columns(&state.db, "vault-dr-code").await;
+        assert_eq!(ok, Some(1));
+        assert!(shared.is_some(), "a working code proves the heir has it");
+
+        // No code on this vault: nothing recorded.
+        insert_vault_with_heir(&state.db, "vault-dr-nocode", &issued.hash_hex, "ok").await;
+        let token = start_drill(&state, "vault-dr-nocode", &issued.token).await;
+        routes::router(state.clone())
+            .oneshot(post(
+                &format!("/claim/{token}/drill-complete"),
+                None,
+                Some(serde_json::json!({ "heir_code": "ok" })),
+            ))
+            .await
+            .expect("response");
+        assert_eq!(
+            code_columns(&state.db, "vault-dr-nocode").await,
+            (None, None)
+        );
     }
 
     #[tokio::test]

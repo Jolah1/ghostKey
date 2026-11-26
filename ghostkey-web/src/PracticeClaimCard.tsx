@@ -29,6 +29,8 @@ export interface DrillProgress {
   drill_started_at?: string | null;
   drill_opened_at?: string | null;
   drill_completed_at?: string | null;
+  /** Heir-code vaults: did the heir's code work in the practice? */
+  drill_code_ok?: boolean | null;
 }
 
 /** How the practice notification was sent (email, SMS, WhatsApp, or
@@ -92,7 +94,10 @@ export function drillStatusLine(
 ): string {
   if (progress.drill_completed_at) {
     const when = fmtDay(progress.drill_completed_at);
-    return pc.lineCompleted(who, when);
+    const line = pc.lineCompleted(who, when);
+    if (progress.drill_code_ok === true) return `${line} ${pc.codeWorked(who)}`;
+    if (progress.drill_code_ok === false) return `${line} ${pc.codeMissing(who)}`;
+    return line;
   }
   if (progress.drill_opened_at) {
     const when = fmtDay(progress.drill_opened_at);

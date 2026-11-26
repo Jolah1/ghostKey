@@ -13,6 +13,7 @@ import { createContext, useContext, useState, type ReactNode } from "react";
 
 import { deriveHeirCodeKek, looksLikeHeirCode, type HeirCodeKdf } from "./crypto/heirCode";
 import { Button, Field, InlineAlert } from "./ui";
+import { useVocab } from "./vocab";
 
 interface HeirCodeState {
   kdf: HeirCodeKdf;
@@ -42,14 +43,13 @@ export function useHeirCode(): HeirCodeState | null {
  * if it doesn't open what it should; only then is the key kept.
  */
 export function HeirCodeEntry({
-  ownerName,
   check,
-  submitLabel = "Unlock",
+  submitLabel,
 }: {
-  ownerName: string;
   check: (codeKek: Uint8Array) => void | Promise<void>;
   submitLabel?: string;
 }) {
+  const h = useVocab().heirCode;
   const ctx = useHeirCode();
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
@@ -70,7 +70,7 @@ export function HeirCodeEntry({
       ctx.setCodeKek(kek);
       kek = null;
     } catch {
-      setError("That code doesn't match. Check each word and try again.");
+      setError(h.wrong);
     } finally {
       kek?.fill(0);
       setBusy(false);
@@ -85,11 +85,7 @@ export function HeirCodeEntry({
         void onSubmit();
       }}
     >
-      <Field
-        label="Your heir code"
-        htmlFor="heir-code-input"
-        hint={`The five words ${ownerName} gave you. Spaces or capitals don't matter.`}
-      >
+      <Field label={h.label} htmlFor="heir-code-input" hint={h.hint}>
         <input
           id="heir-code-input"
           className="input font-mono"
@@ -99,7 +95,7 @@ export function HeirCodeEntry({
           autoCapitalize="none"
           autoCorrect="off"
           spellCheck={false}
-          placeholder="five words"
+          placeholder={h.placeholder}
         />
       </Field>
       {error && (
@@ -109,7 +105,7 @@ export function HeirCodeEntry({
       )}
       <div className="mt-3">
         <Button type="submit" disabled={!ready || busy}>
-          {busy ? `Checking… ${pct}%` : submitLabel}
+          {busy ? h.checking(pct) : (submitLabel ?? h.unlock)}
         </Button>
       </div>
     </form>

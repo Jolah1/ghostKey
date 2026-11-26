@@ -20,6 +20,7 @@ import { b64decode } from "./crypto/sealing";
 import { decryptAndVerifyVideo, type VideoLock } from "./crypto/video";
 import { heirVideoKey } from "./crypto/heirCode";
 import { HeirCodeEntry, useHeirCode } from "./HeirCodeEntry";
+import { useVocab } from "./vocab";
 import { InlineAlert } from "./ui";
 import {
   captureVideoPoster,
@@ -62,6 +63,7 @@ export function HeirVideoMessage({ token }: { token: string }) {
   const [state, setState] = useState<State>({ kind: "loading" });
   const urlRef = useRef<string | null>(null);
   const heirCode = useHeirCode();
+  const h = useVocab().heirCode;
   const codeKek = heirCode?.codeKek ?? null;
   const usesCode = heirCode !== null;
 
@@ -134,12 +136,9 @@ export function HeirVideoMessage({ token }: { token: string }) {
     return (
       <div className="mb-6 rounded-2xl border border-app p-5">
         <h2 className="text-lg font-semibold">A message left for you</h2>
-        <p className="text-app-subtle mt-2 text-sm">
-          There's a video message for you. Enter your heir code to watch it.
-        </p>
+        <p className="text-app-subtle mt-2 text-sm">{h.videoLocked}</p>
         <HeirCodeEntry
-          ownerName="the person who set this up"
-          submitLabel="Watch the message"
+          submitLabel={h.videoUnlock}
           check={(kek) => {
             // Throws on a wrong code (the clip won't open).
             openClip(view, { videoKey: heirVideoKey(kek) });

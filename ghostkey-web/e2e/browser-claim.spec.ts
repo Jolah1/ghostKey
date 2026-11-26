@@ -12,7 +12,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { deriveClaimKek, sealWithKey } from "../src/crypto/sealing";
-import { deriveHeirCodeKek } from "../src/crypto/heirCode";
+import { deriveHeirCodeKek, sealHeirCheck } from "../src/crypto/heirCode";
 import { HDKey } from "@scure/bip32";
 import { bip32Versions } from "../src/crypto/keygen";
 import { Transaction, OutScript, Address, TEST_NETWORK } from "@scure/btc-signer";
@@ -186,3 +186,68 @@ async function expectNoSerious(page: Page) {
   const serious = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
   expect(serious.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
 }
+
+/** A practice link on an heir-code vault. Records what the page sends. */
+async function mockPractice(page: Page) {
+  const token = Buffer.from(new Uint8Array(32).fill(8)).toString("base64");
+  const kek = await deriveHeirCodeKek(HEIR_CODE, CODE_KDF);
+  const check = sealHeirCheck(kek);
+  const seen = { completeBody: undefined as unknown, completed: false };
+  const at = `/claim/${token}`;
+  await page.route("**/api/**", (route) => {
+    const req = route.request();
+    const p = decodeURIComponent(new URL(req.url()).pathname.replace(/^\/api/, ""));
+    if (p === "/health") return route.fulfill(json({ ok: true, version: "e2e", demo_mode: false, default_network: "regtest", email_enabled: true }));
+    if (p === at)
+      return route.fulfill(
+        json({
+          vault_id: "v-drill", label: "Savings", network: "regtest", status: "ok",
+          timelock_blocks: fixture.timelock_blocks, next_deadline_at: PAST, heir_channel: "email",
+          heir_display_name: "Ada", drill: true,
+          heir_code: { ...CODE_KDF, check_ct_b64: check.ct, check_nonce_b64: check.nonce },
+        }),
+      );
+    if (p === `${at}/drill-complete`) {
+      seen.completed = true;
+      seen.completeBody = req.postData() ? req.postDataJSON() : null;
+      return route.fulfill(json({ completed_at: new Date().toISOString() }));
+    }
+    return route.fulfill(json({ error: "not mocked" }, 404));
+  });
+  return { token, seen };
+}
+
+test("the practice run tests the heir code without unlocking anything", async ({ page }) => {
+  test.setTimeout(120_000);
+  const { token, seen } = await mockPractice(page);
+  await page.goto(`${base}/#/claim/${token}`);
+  await page.getByRole("button", { name: "Show me how it works" }).click();
+  const box = page.getByTestId("drill-code");
+  await expect(box.getByText("Try your heir code")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Finish the practice" })).toBeDisabled();
+  await expectNoSerious(page);
+
+  await box.getByLabel("Your heir code").fill("river garden mango seven bird");
+  await box.getByRole("button", { name: "Check my code" }).click();
+  await expect(box.getByText("That code doesn't match. Check each word and try again.")).toBeVisible();
+
+  await box.getByLabel("Your heir code").fill("RIVER garden, mango seven lamp");
+  await box.getByRole("button", { name: "Check my code" }).click();
+  await expect(box.getByText("Your code works. Keep it safe and private.")).toBeVisible();
+  await page.getByRole("button", { name: "Finish the practice" }).click();
+  await expect.poll(() => seen.completed).toBe(true);
+  expect(seen.completeBody).toEqual({ heir_code: "ok" });
+  expect(JSON.stringify(seen.completeBody)).not.toContain("river");
+});
+
+test("the practice run tells the owner when the heir has no code", async ({ page }) => {
+  test.setTimeout(60_000);
+  const { token, seen } = await mockPractice(page);
+  await page.goto(`${base}/#/claim/${token}`);
+  await page.getByRole("button", { name: "Show me how it works" }).click();
+  await page.getByRole("button", { name: "I don't have the code" }).click();
+  await expect(page.getByText("That's okay. When you finish, we'll tell the person who set this up to give it to you again.")).toBeVisible();
+  await page.getByRole("button", { name: "Finish the practice" }).click();
+  await expect.poll(() => seen.completed).toBe(true);
+  expect(seen.completeBody).toEqual({ heir_code: "missing" });
+});

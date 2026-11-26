@@ -77,7 +77,7 @@ import {
   looksLikeLightningDestination,
 } from "./address";
 import { b64decode, unsealHeirXprv } from "./crypto/sealing";
-import { openHeirXprv } from "./crypto/heirCode";
+import { checkHeirCode, openHeirXprv } from "./crypto/heirCode";
 import { HeirCodeEntry, HeirCodeProvider, useHeirCode } from "./HeirCodeEntry";
 import { deriveHeirKey } from "./crypto/heirKey";
 import type { Network } from "./crypto/keygen";
@@ -309,12 +309,17 @@ function DrillFlow({ view, token }: { view: ClaimView; token: string }) {
   const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const name = view.heir_display_name;
+  // Heir-code vaults: the practice tests the code against the check
+  // value, in this browser. Nothing gets unlocked.
+  const h = v.heirCode;
+  const codeCheck = view.heir_code;
+  const [codeResult, setCodeResult] = useState<"ok" | "missing" | null>(null);
 
   const finish = async () => {
     setFinishing(true);
     setError(null);
     try {
-      await api.completeDrill(token);
+      await api.completeDrill(token, codeCheck ? (codeResult ?? undefined) : undefined);
       setStep("done");
     } catch (e) {
       setError(e);
@@ -367,9 +372,43 @@ function DrillFlow({ view, token }: { view: ClaimView; token: string }) {
               <p className="mt-1 text-sm text-muted">{d.walkthroughStep3Body}</p>
             </li>
           </ol>
+          {codeCheck && (
+            <div className="mt-6 card-flat p-4" data-testid="drill-code">
+              <p className="font-bold">{h.drillTitle}</p>
+              <p className="mt-1 text-sm text-muted">{h.drillBody}</p>
+              {codeResult === "ok" ? (
+                <div className="mt-3">
+                  <InlineAlert tone="ok">{h.drillOk}</InlineAlert>
+                </div>
+              ) : codeResult === "missing" ? (
+                <p className="mt-3 text-sm text-muted">{h.drillMissingBody}</p>
+              ) : (
+                <>
+                  <HeirCodeEntry
+                    submitLabel={h.drillCheck}
+                    check={(kek) => {
+                      // Throws on a wrong code. Opens only the check value.
+                      checkHeirCode(kek, {
+                        ct_b64: codeCheck.check_ct_b64,
+                        nonce_b64: codeCheck.check_nonce_b64,
+                      });
+                      setCodeResult("ok");
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="mt-3 text-sm text-muted underline underline-offset-2"
+                    onClick={() => setCodeResult("missing")}
+                  >
+                    {h.drillMissing}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
           {error != null && <ClaimErrorBlock error={error} context="resolve" />}
           <div className="mt-6">
-            <Button onClick={finish} disabled={finishing}>
+            <Button onClick={finish} disabled={finishing || (Boolean(codeCheck) && codeResult === null)}>
               {finishing ? d.walkthroughFinishing : d.walkthroughFinish}
             </Button>
           </div>
@@ -397,7 +436,13 @@ function Resolved({ view, token }: { view: ClaimView; token: string }) {
   // clip is sealed under the real claim token and stays private until
   // the real day), no waits, nothing to move.
   if (view.drill) {
-    return <DrillFlow view={view} token={token} />;
+    return view.heir_code ? (
+      <HeirCodeProvider kdf={view.heir_code}>
+        <DrillFlow view={view} token={token} />
+      </HeirCodeProvider>
+    ) : (
+      <DrillFlow view={view} token={token} />
+    );
   }
   // Decide which sub-flow to show based on vault status. The switch
   // is exhaustive over today's `VaultStatus` union; the `default`
@@ -1025,14 +1070,10 @@ function PasswordVaultClaim({
       {locked ? (
         <div className="mt-10">
           <h2 className="font-display text-2xl font-bold tracking-tight">
-            Enter your heir code
+            {v.heirCode.claimTitle}
           </h2>
-          <p className="mt-2 text-sm text-soft">
-            The person who set this up gave you five words. They unlock
-            what's yours. GhostKey never sees them.
-          </p>
+          <p className="mt-2 text-sm text-soft">{v.heirCode.claimBody}</p>
           <HeirCodeEntry
-            ownerName="the person who set this up"
             check={(kek) => {
               // Throws on a wrong code (the key won't open).
               openKey(kek);

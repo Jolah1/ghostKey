@@ -134,6 +134,26 @@ export interface ClaimVocab {
   footer: string;
 }
 
+/** The heir code on the heir's pages (claim, video, practice). */
+export interface HeirCodeVocab {
+  label: string;
+  hint: string;
+  placeholder: string;
+  wrong: string;
+  unlock: string;
+  checking: (pct: number) => string;
+  claimTitle: string;
+  claimBody: string;
+  videoLocked: string;
+  videoUnlock: string;
+  drillTitle: string;
+  drillBody: string;
+  drillCheck: string;
+  drillOk: string;
+  drillMissing: string;
+  drillMissingBody: string;
+}
+
 export interface DrillVocab {
   bannerTitle: string;
   bannerBody: string;
@@ -310,6 +330,9 @@ export interface PracticeCardVocab {
   errorRealClaimUnderway: string;
   errorSendingFailed: string;
   lineCompleted: (who: string, when: string | null) => string;
+  /** Appended after lineCompleted on heir-code vaults. */
+  codeWorked: (who: string) => string;
+  codeMissing: (who: string) => string;
   lineOpened: (who: string, when: string | null) => string;
   lineSent: (who: string, when: string | null) => string;
   lineIdle: (who: string, noun: string) => string;
@@ -338,6 +361,7 @@ export interface Vocab {
   status: (s: VaultStatus) => StatusCopy;
   claim: ClaimVocab;
   drill: DrillVocab;
+  heirCode: HeirCodeVocab;
   claimCommon: ClaimCommonVocab;
   derivedClaim: DerivedClaimVocab;
   manualClaim: ManualClaimVocab;
