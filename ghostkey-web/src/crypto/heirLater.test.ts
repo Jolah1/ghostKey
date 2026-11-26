@@ -1,21 +1,28 @@
 import { describe, expect, it } from "vitest";
 import { generateParty } from "./keygen";
 import {
-  b64decode,
   b64encode,
   deriveOwnerKek,
   sealVaultSecretsHeirLater,
   sealWithKey,
-  unsealHeirXprv,
   unsealOwner,
 } from "./sealing";
+import { deriveHeirCodeKek, openHeirXprv } from "./heirCode";
 import {
   HeirKeyMismatchError,
   WrongPasswordError,
   heirKeyMatches,
   resealHeirForClaim,
   xpubFromFragment,
+  type ClaimSealedHeir,
 } from "./heirLater";
+
+/** What the heir does at claim: turn the code into a key, open theirs. */
+async function openWithCode(out: ClaimSealedHeir): Promise<string> {
+  const { salt_b64, kdf_mem_kib, kdf_iters } = out.body.heir_code;
+  const kek = await deriveHeirCodeKek(out.code, { salt_b64, kdf_mem_kib, kdf_iters });
+  return openHeirXprv(kek, { v: 1, ct: out.body.heir_xprv_ct_b64, nonce: out.body.heir_xprv_nonce_b64 });
+}
 
 // Small Argon2 parameters: the maths is the same, the test stays fast.
 const MEM = 1024;
@@ -47,17 +54,12 @@ describe("choosing an heir later", () => {
     expect(heirKeyMatches(heir.xprv, fragment(stranger), "signet")).toBe(false);
   });
 
-  it("re-seals the heir key so the claim link opens it", async () => {
+  it("locks the heir key with a fresh heir code that opens it", async () => {
     const sealed = { ...(await ownerSealed(heir.xprv)), heirFragment: fragment(heir), network: "signet" as const };
     const out = await resealHeirForClaim(PASSWORD, sealed);
-    const opened = unsealHeirXprv(b64decode(out.claim_token_b64), {
-      v: 1,
-      ct: out.heir_xprv_ct_b64,
-      nonce: out.heir_xprv_nonce_b64,
-    });
-    expect(opened).toBe(heir.xprv);
-    expect(b64decode(out.claim_token_b64)).toHaveLength(32);
-  });
+    expect(out.body).not.toHaveProperty("claim_token_b64");
+    expect(await openWithCode(out)).toBe(heir.xprv);
+  }, 30_000);
 
   it("refuses a wrong password", async () => {
     const sealed = { ...(await ownerSealed(heir.xprv)), heirFragment: fragment(heir), network: "signet" as const };
@@ -95,12 +97,6 @@ describe("choosing an heir later", () => {
       heirFragment: fragment(heir),
       network: "signet",
     });
-    expect(
-      unsealHeirXprv(b64decode(out.claim_token_b64), {
-        v: 1,
-        ct: out.heir_xprv_ct_b64,
-        nonce: out.heir_xprv_nonce_b64,
-      }),
-    ).toBe(heir.xprv);
+    expect(await openWithCode(out)).toBe(heir.xprv);
   }, 30_000);
 });

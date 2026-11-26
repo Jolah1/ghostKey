@@ -3,11 +3,11 @@
  *
  * The owner types a name, an email and their password. This browser
  * fetches the heir key sealed under that password, opens it, checks it
- * is the heir key in this vault's descriptor, and re-seals it under a
- * fresh claim token (see crypto/heirLater.ts). The server then stores it
- * exactly as if the heir had been chosen at setup, and the check-in clock
- * starts. Nothing is sent if the password is wrong or the key doesn't
- * match.
+ * is the heir key in this vault's descriptor, and locks it with a fresh
+ * heir code (see crypto/heirLater.ts). The server then stores it exactly
+ * as if the heir had been chosen at setup, and the check-in clock starts.
+ * The owner sees the heir card with the code before the card closes.
+ * Nothing is sent if the password is wrong or the key doesn't match.
  */
 import { useId, useState } from "react";
 import { ApiError, api } from "./api";
@@ -19,6 +19,7 @@ import {
   resealHeirForClaim,
 } from "./crypto/heirLater";
 import { getVaultMeta, saveVaultMeta } from "./vaultStore";
+import { HeirCodeCard } from "./HeirCodeCard";
 
 const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -44,6 +45,8 @@ export function ChooseHeirCard({
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // Set once the heir is saved: the card shows their code until Done.
+  const [chosen, setChosen] = useState<{ name: string; code: string } | null>(null);
 
   async function submit() {
     const n = name.trim();
@@ -80,7 +83,7 @@ export function ChooseHeirCard({
         name: n,
         contact: e,
         channel: "email",
-        ...sealed,
+        ...sealed.body,
       });
       const meta = getVaultMeta(vaultId);
       if (meta) {
@@ -91,7 +94,7 @@ export function ChooseHeirCard({
         });
       }
       setPassword("");
-      onChosen();
+      setChosen({ name: n, code: sealed.code });
     } catch (err) {
       setError(
         err instanceof WrongPasswordError || err instanceof HeirKeyMismatchError
@@ -103,6 +106,24 @@ export function ChooseHeirCard({
     } finally {
       setBusy(false);
     }
+  }
+
+  if (chosen) {
+    return (
+      <section className="card-flat p-5" data-testid="choose-heir">
+        <p className="font-medium">{chosen.name} is your heir</p>
+        <p className="mt-1 text-sm text-muted">
+          If you stop signing in, we email {chosen.name} a link. To open it
+          they need this code. Only you and they know it.
+        </p>
+        <div className="mt-4">
+          <HeirCodeCard heirName={chosen.name} code={chosen.code} />
+        </div>
+        <Button className="mt-4" onClick={onChosen}>
+          Done
+        </Button>
+      </section>
+    );
   }
 
   return (

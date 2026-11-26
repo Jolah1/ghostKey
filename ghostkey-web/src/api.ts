@@ -188,8 +188,9 @@ export interface SealedSetup {
   owner_token_nonce_b64: string;
 
   /** Absent for Door B vaults (heir holds their own key; the server
-   *  stores nothing that can spend). Present with `claim_token_b64`, or
-   *  both absent, never one without the other. */
+   *  stores nothing that can spend). When present, exactly one of
+   *  `heir_code` (new vaults) or `claim_token_b64` (older apps) says
+   *  how it was locked. */
   heir_xprv_ct_b64?: string;
   heir_xprv_nonce_b64?: string;
 
@@ -201,6 +202,32 @@ export interface SealedSetup {
    *  KEK. Sent alone: no claim token, no heir contact. */
   heir_xprv_owner_ct_b64?: string;
   heir_xprv_owner_nonce_b64?: string;
+  /** The heir key is locked with an heir code. No claim token is sent. */
+  heir_code?: HeirCodeSealBody;
+}
+
+/** What the server says about an heir code: how to turn it into a key,
+ *  and the sealed check phrase. Mirrors `psbt_routes.rs::HeirCodeKdf`. */
+export interface HeirCodeView {
+  salt_b64: string;
+  kdf_mem_kib: number;
+  kdf_iters: number;
+  check_ct_b64: string;
+  check_nonce_b64: string;
+}
+
+/** How an heir key was locked with an heir code, plus the code sealed
+ *  under the owner's password so the owner can show it again. Mirrors
+ *  `routes.rs::HeirCodeSeal`. */
+export interface HeirCodeSealBody {
+  salt_b64: string;
+  kdf_mem_kib: number;
+  kdf_iters: number;
+  owner_ct_b64: string;
+  owner_nonce_b64: string;
+  /** The check phrase sealed under the code's check key. */
+  check_ct_b64: string;
+  check_nonce_b64: string;
 }
 
 /** One vault entry returned after one-time recovery-link exchange. */
@@ -246,6 +273,11 @@ export interface SealedBlobsView {
   heir_xprv_owner_ct_b64?: string | null;
   heir_xprv_owner_nonce_b64?: string | null;
   heir_xpub_fragment_external?: string | null;
+  /** Heir-code vaults: the code sealed under the owner's password, and
+   *  how the code turns into a key (to seal a new video message). */
+  heir_code_owner_ct_b64?: string | null;
+  heir_code_owner_nonce_b64?: string | null;
+  heir_code?: HeirCodeView | null;
 }
 
 /** First external (receive) address derived from the vault descriptor.
@@ -334,6 +366,9 @@ export interface ClaimView {
   claimed_txid?: string | null;
   /** Explorer link for `claimed_txid`. */
   claimed_explorer_url?: string | null;
+  /** Present when the heir's key is locked with an heir code: the page
+   *  asks for the code, and opens the video with it. */
+  heir_code?: HeirCodeView | null;
 }
 
 /** Response from `POST /vaults/:id/drill` (#223). */
@@ -477,6 +512,9 @@ export interface SealedHeirView {
    *  self-contained recovery file (block B) it can sign offline. */
   descriptor_external: string;
   descriptor_internal: string;
+  /** Present when the key is locked with an heir code: the heir types
+   *  the code and the browser re-derives the key with these. */
+  heir_code?: HeirCodeView;
 }
 
 /**
@@ -1060,7 +1098,8 @@ export const api = {
       channel?: "email";
       heir_xprv_ct_b64: string;
       heir_xprv_nonce_b64: string;
-      claim_token_b64: string;
+      claim_token_b64?: string;
+      heir_code?: HeirCodeSealBody;
       from_name?: string | null;
       heir_note?: string | null;
     },

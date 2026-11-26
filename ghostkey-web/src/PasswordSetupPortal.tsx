@@ -100,7 +100,6 @@ import {
 } from "./useChannelCapability";
 import {
   buildHeirEnvelope,
-  downloadHeirEnvelope,
   type HeirEnvelope,
 } from "./independenceProof";
 import {
@@ -119,9 +118,9 @@ import {
   sealVaultSecretsHeirLater,
   sealWithKey,
   hashEmailForLookup,
-  b64encode,
 } from "./crypto/sealing";
-import { randomBytes } from "@noble/hashes/utils.js";
+import { lockHeirKey, type HeirKeyLock } from "./crypto/heirCode";
+import { HeirCodeCard } from "./HeirCodeCard";
 import { formatAmount, useFiatLine, useUnit } from "./units";
 import {
   DEFAULT_CADENCE_ID,
@@ -384,6 +383,8 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
            *  xprv is in memory. Absent for F2 no-wallet heirs and on
            *  best-effort build failure. */
           envelope?: HeirEnvelope;
+          /** The heir code, shown on the heir card. Absent for Door B. */
+          heirCode?: string;
         }>;
         /** Made without an heir: the owner chooses one later. */
         heirLater?: boolean;
@@ -548,7 +549,6 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
     // `finally` even if something throws partway through.
     let ownerParty: ReturnType<typeof generateParty> | null = null;
     const heirParties: Array<ReturnType<typeof generateParty>> = [];
-    const claimTokens: Uint8Array[] = [];
     let ownerKek: Uint8Array | null = null;
 
     try {
@@ -671,12 +671,10 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
       // owner xpub; the same keypath spend works across all of them.
       ownerParty = generateParty(network);
 
-      // (b) Mint heir keys + claim token per heir. Heir xprvs are
-      // independent so a compromise of one heir's claim link doesn't
-      // touch the others.
+      // (b) Mint one heir key per heir. Each is locked with its own heir
+      // code below, so one heir's code opens nothing of another's.
       for (let i = 0; i < draft.heirs.length; i++) {
         heirParties.push(generateParty(network));
-        claimTokens.push(randomBytes(32));
       }
 
       // (c) Hash the owner email for cross-device lookup. Shared
@@ -705,13 +703,13 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
         heirName: string;
         address: string | null;
         envelope?: HeirEnvelope;
+        heirCode?: string;
       }> = [];
 
       // (f) Per-heir loop: seal, POST, persist.
       for (let i = 0; i < draft.heirs.length; i++) {
         const heir = draft.heirs[i];
         const heirParty = heirParties[i];
-        const claimToken = claimTokens[i];
 
         // Placeholder owner-token slot — server returns the real
         // one in the response, we re-seal it in (g) per vault.
@@ -727,7 +725,6 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           ownerXprv: ownerParty.xprv,
           heirXprv: heirParty.xprv,
           ownerToken: tokenPlaceholder,
-          claimTokenRaw: claimToken,
           keepOwnerKek: true,
           onProgress: (p) => setKdfProgress(Math.round(p * 100)),
         });
@@ -746,6 +743,17 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
         // flow). Door A is the default: seal the generated heir key.
         const doorB = Boolean(heir.ownKey) && isValidHeirXpub(heir.heirXpub);
 
+        // Door A: lock the heir's key with a fresh heir code (option a).
+        // The server gets the locked key and nothing that opens it; the
+        // code goes on the heir card, for the owner to hand over.
+        let heirLock: HeirKeyLock | undefined;
+        if (!doorB) {
+          setKdfProgress(0);
+          heirLock = await lockHeirKey(heirParty.xprv, sealed._owner_kek!, (p) =>
+            setKdfProgress(Math.round(p * 100)),
+          );
+        }
+
         const sealedBody: SealedSetup = {
           password_salt_b64: sealed.password_salt,
           password_kdf_mem_kib: sealed.password_kdf_mem_kib,
@@ -755,16 +763,16 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           owner_token_ct_b64: sealed.owner_token.ct,
           owner_token_nonce_b64: sealed.owner_token.nonce,
           owner_email_hash: ownerEmailHash,
-          // Door A only: the heir's sealed key + the token it's sealed
-          // under. Omitted for Door B so the server stores nothing
-          // spendable and mints a fresh claim token at trigger time.
-          ...(doorB
-            ? {}
-            : {
-                heir_xprv_ct_b64: sealed.heir_xprv.ct,
-                heir_xprv_nonce_b64: sealed.heir_xprv.nonce,
-                claim_token_b64: b64encode(claimToken),
-              }),
+          // Door A: the heir's key locked with the heir code, and how.
+          // Omitted for Door B. Either way no claim token is sent: the
+          // scheduler mints the heir's link when it's needed.
+          ...(heirLock
+            ? {
+                heir_xprv_ct_b64: heirLock.heir_xprv_ct_b64,
+                heir_xprv_nonce_b64: heirLock.heir_xprv_nonce_b64,
+                heir_code: heirLock.heir_code,
+              }
+            : {}),
         };
 
         // Label disambiguates per-heir for the Dashboard list.
@@ -905,6 +913,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
                 descriptorInternal: resp.descriptor_internal,
                 heirName: heir.name.trim(),
                 heirXprv,
+                lock: heirLock ? { code: heirLock.code, sealed: heirLock.sealed } : undefined,
                 onProgress: (pp) => setKdfProgress(Math.round(pp * 100)),
               });
             }
@@ -918,6 +927,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           heirName: heir.name.trim(),
           address,
           envelope,
+          heirCode: heirLock?.code,
         });
 
         await saveInitialGoal(resp.id, resp.owner_token, draft.savingsGoal);
@@ -967,8 +977,6 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
         ownerParty = null;
       }
       heirParties.length = 0;
-      for (const t of claimTokens) wipe(t);
-      claimTokens.length = 0;
       if (ownerKek) wipe(ownerKek);
       setBusy(false);
     }
@@ -1895,13 +1903,14 @@ function StepFund({
       heirName: string;
       address: string | null;
       envelope?: HeirEnvelope;
+      heirCode?: string;
     }>;
     heirLater?: boolean;
   };
   network: Network;
 }) {
   const isGroup = created.vaults.length > 1;
-  const anyEnvelope = created.vaults.some((v) => v.envelope);
+  const anyHeirCard = created.vaults.some((v) => v.heirCode || v.envelope);
   return (
     <div>
       <h1 className="font-serif text-3xl md:text-4xl">
@@ -1973,96 +1982,30 @@ function StepFund({
         </InlineAlert>
       </div>
 
-      {anyEnvelope && (
+      {anyHeirCard && (
         <div className="mt-10">
           <h2 className="font-serif text-2xl">
-            Extra safety for {isGroup ? "your heirs" : "your heir"} (optional)
+            {isGroup ? "Give each heir their code" : "Give your heir their code"}
           </h2>
           <p className="mt-2 text-muted">
-            {isGroup ? "Each file below" : "This file"} lets{" "}
-            {isGroup ? "each heir" : "your heir"} reach the Bitcoin even if
-            GhostKey no longer exists. It's locked, and useless until the
-            waiting period passes, so it's safe to keep for them. Save it
-            somewhere they'll find it if you're gone, together with its
-            secret code. Without GhostKey, this is the only way they get in
-            on their own, so if it matters to you, do it now.
+            If you stop signing in, we email {isGroup ? "each heir" : "your heir"} a
+            link. To open it they need this code. Only you and they know it.
+            GhostKey never sees it, so we can't send it for you.
           </p>
           <div className="mt-6 flex flex-col gap-4">
             {created.vaults.map((v) =>
-              v.envelope ? (
-                <HeirEnvelopeCard
+              v.heirCode || v.envelope ? (
+                <HeirCodeCard
                   key={v.vaultId}
                   heirName={v.heirName}
+                  code={v.heirCode ?? v.envelope!.passphrase}
                   envelope={v.envelope}
-                  showHeading={isGroup}
                 />
               ) : null,
             )}
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-/**
- * One heir-envelope download card on the funding screen. Shows the
- * one-off passphrase once (we never persist it) and lets the owner
- * download the sealed file. Copy is deliberately blunt: the file and
- * the code only help together, and only if the owner is gone.
- */
-function HeirEnvelopeCard({
-  heirName,
-  envelope,
-  showHeading,
-}: {
-  heirName: string;
-  envelope: HeirEnvelope;
-  showHeading: boolean;
-}) {
-  const [copied, setCopied] = useState(false);
-  const [downloaded, setDownloaded] = useState(false);
-
-  async function copyCode() {
-    try {
-      await navigator.clipboard.writeText(envelope.passphrase);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Clipboard may be blocked; the owner can select the text instead.
-    }
-  }
-
-  return (
-    <div className="card-flat p-5">
-      {showHeading && (
-        <p className="font-serif text-lg">For {heirName || "your heir"}</p>
-      )}
-      <p className="text-xs uppercase tracking-wider text-dim">
-        Secret code, write it down with the file
-      </p>
-      <div className="mt-2 flex flex-wrap items-center gap-3">
-        <code className="select-all rounded bg-[var(--bg-elev)] px-3 py-2 font-mono text-sm">
-          {envelope.passphrase}
-        </code>
-        <Button variant="ghost" onClick={() => void copyCode()}>
-          {copied ? "Copied" : "Copy code"}
-        </Button>
-      </div>
-      <p className="mt-3 text-sm text-muted">
-        The file is locked with this code. We won't show the code again,
-        and we never store it. Keep them together.
-      </p>
-      <div className="mt-4">
-        <Button
-          onClick={() => {
-            downloadHeirEnvelope(envelope);
-            setDownloaded(true);
-          }}
-        >
-          {downloaded ? "Download again" : "Download the file"}
-        </Button>
-      </div>
     </div>
   );
 }

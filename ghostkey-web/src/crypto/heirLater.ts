@@ -14,17 +14,10 @@
  * would leave an heir with a link that can never claim.
  */
 import { HDKey } from "@scure/bip32";
-import { randomBytes } from "@noble/hashes/utils.js";
 import { bip32Versions, type Network } from "./keygen";
-import {
-  b64decode,
-  b64encode,
-  deriveClaimKek,
-  deriveOwnerKek,
-  openWithKey,
-  sealWithKey,
-  type SealedBlob,
-} from "./sealing";
+import { b64decode, deriveOwnerKek, openWithKey, type SealedBlob } from "./sealing";
+import { lockHeirKey } from "./heirCode";
+import type { HeirCodeSealBody } from "../api";
 
 /** The password didn't open the sealed heir key. */
 export class WrongPasswordError extends Error {
@@ -85,15 +78,20 @@ export interface OwnerSealedHeir {
   network: Network;
 }
 
+/** The chosen heir's key, locked with a fresh heir code: the fields for
+ *  `chooseHeir`, and the code to show the owner on the heir card. */
 export interface ClaimSealedHeir {
-  heir_xprv_ct_b64: string;
-  heir_xprv_nonce_b64: string;
-  claim_token_b64: string;
+  body: {
+    heir_xprv_ct_b64: string;
+    heir_xprv_nonce_b64: string;
+    heir_code: HeirCodeSealBody;
+  };
+  code: string;
 }
 
 /**
  * Open the owner-sealed heir key with the password, check it against the
- * descriptor, and re-seal it under a fresh claim token. Throws
+ * descriptor, and lock it with a fresh heir code. Throws
  * `WrongPasswordError` or `HeirKeyMismatchError`; never returns a seal of
  * a key that doesn't match.
  */
@@ -107,28 +105,28 @@ export async function resealHeirForClaim(
     iters: sealed.iters,
     onProgress,
   });
-  let heirXprv: string;
   try {
-    heirXprv = new TextDecoder().decode(openWithKey(kek, sealed.blob));
-  } catch {
-    throw new WrongPasswordError();
-  } finally {
-    kek.fill(0);
-  }
-  if (!heirKeyMatches(heirXprv, sealed.heirFragment, sealed.network)) {
-    throw new HeirKeyMismatchError();
-  }
-  const token = randomBytes(32);
-  const claimKek = deriveClaimKek(token);
-  try {
-    const blob = sealWithKey(claimKek, new TextEncoder().encode(heirXprv));
+    let heirXprv: string;
+    try {
+      heirXprv = new TextDecoder().decode(openWithKey(kek, sealed.blob));
+    } catch {
+      throw new WrongPasswordError();
+    }
+    if (!heirKeyMatches(heirXprv, sealed.heirFragment, sealed.network)) {
+      throw new HeirKeyMismatchError();
+    }
+    // The same password key seals the owner's copy of the code.
+    const lock = await lockHeirKey(heirXprv, kek, onProgress);
+    lock.videoKey.fill(0);
     return {
-      heir_xprv_ct_b64: blob.ct,
-      heir_xprv_nonce_b64: blob.nonce,
-      claim_token_b64: b64encode(token),
+      body: {
+        heir_xprv_ct_b64: lock.heir_xprv_ct_b64,
+        heir_xprv_nonce_b64: lock.heir_xprv_nonce_b64,
+        heir_code: lock.heir_code,
+      },
+      code: lock.code,
     };
   } finally {
-    claimKek.fill(0);
-    token.fill(0);
+    kek.fill(0);
   }
 }

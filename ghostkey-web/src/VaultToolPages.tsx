@@ -11,6 +11,7 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import type { Route } from "./App";
 import { api, ApiError } from "./api";
+import { ShowHeirCodeCard } from "./HeirCodeCard";
 import { useActiveVault } from "./useActiveVault";
 import { useToolDoneState } from "./toolStatus";
 import { VideoMessageCard } from "./VideoMessageCard";
@@ -395,7 +396,10 @@ export function HeirContactPage({ onNavigate }: PageProps) {
       onNavigate={onNavigate}
     >
       {ready && meta && ownerToken ? (
-        <HeirContactCard vaultId={meta.id} ownerToken={ownerToken} />
+        <>
+          <HeirContactCard vaultId={meta.id} ownerToken={ownerToken} />
+          <ShowHeirCodeCard vaultId={meta.id} ownerToken={ownerToken} heirName={meta.heir.name} />
+        </>
       ) : (
         <Fallback
           loading={loading}

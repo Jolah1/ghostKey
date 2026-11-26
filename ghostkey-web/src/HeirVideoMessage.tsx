@@ -7,13 +7,19 @@
  * real, signature-verified face; a scam link can't decrypt anything, and
  * a swapped/deepfake clip is flagged as not verified.
  *
+ * On an heir-code vault the clip is locked with a key from the heir code
+ * instead of the link, so it shows a locked card until the heir types
+ * the code. Opening the clip is what checks the code.
+ *
  * Renders nothing when the vault has no video (404) — it's optional.
  */
 import { useEffect, useRef, useState } from "react";
 
-import { api, ApiError } from "./api";
+import { api, ApiError, type ClaimVideoView } from "./api";
 import { b64decode } from "./crypto/sealing";
-import { decryptAndVerifyVideo } from "./crypto/video";
+import { decryptAndVerifyVideo, type VideoLock } from "./crypto/video";
+import { heirVideoKey } from "./crypto/heirCode";
+import { HeirCodeEntry, useHeirCode } from "./HeirCodeEntry";
 import { InlineAlert } from "./ui";
 import {
   captureVideoPoster,
@@ -25,6 +31,7 @@ type State =
   | { kind: "loading" }
   | { kind: "none" }
   | { kind: "error" }
+  | { kind: "locked"; view: ClaimVideoView }
   | {
       kind: "ready";
       url: string;
@@ -40,23 +47,41 @@ type State =
       filename: string;
     };
 
+function openClip(view: ClaimVideoView, lock: VideoLock) {
+  return decryptAndVerifyVideo({
+    lock,
+    ownerXpub: view.owner_xpub,
+    videoCtB64: view.video_ct_b64,
+    videoNonceB64: view.video_nonce_b64,
+    ownerSigB64: view.owner_sig_b64,
+    signedSha256Hex: view.signed_sha256_hex,
+  });
+}
+
 export function HeirVideoMessage({ token }: { token: string }) {
   const [state, setState] = useState<State>({ kind: "loading" });
   const urlRef = useRef<string | null>(null);
+  const heirCode = useHeirCode();
+  const codeKek = heirCode?.codeKek ?? null;
+  const usesCode = heirCode !== null;
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const view = await api.getClaimVideo(token);
-        const clip = decryptAndVerifyVideo({
-          claimTokenRaw: b64decode(token),
-          ownerXpub: view.owner_xpub,
-          videoCtB64: view.video_ct_b64,
-          videoNonceB64: view.video_nonce_b64,
-          ownerSigB64: view.owner_sig_b64,
-          signedSha256Hex: view.signed_sha256_hex,
-        });
+        if (cancelled) return;
+        let lock: VideoLock;
+        if (usesCode) {
+          if (!codeKek) {
+            setState({ kind: "locked", view });
+            return;
+          }
+          lock = { videoKey: heirVideoKey(codeKek) };
+        } else {
+          lock = { claimTokenRaw: b64decode(token) };
+        }
+        const clip = openClip(view, lock);
         if (cancelled) return;
         // Copy into a fresh ArrayBuffer-backed array so the Blob ctor's
         // BlobPart typing is satisfied regardless of the source buffer.
@@ -100,9 +125,29 @@ export function HeirVideoMessage({ token }: { token: string }) {
         urlRef.current = null;
       }
     };
-  }, [token]);
+  }, [token, usesCode, codeKek]);
 
   if (state.kind === "none") return null;
+
+  if (state.kind === "locked") {
+    const view = state.view;
+    return (
+      <div className="mb-6 rounded-2xl border border-app p-5">
+        <h2 className="text-lg font-semibold">A message left for you</h2>
+        <p className="text-app-subtle mt-2 text-sm">
+          There's a video message for you. Enter your heir code to watch it.
+        </p>
+        <HeirCodeEntry
+          ownerName="the person who set this up"
+          submitLabel="Watch the message"
+          check={(kek) => {
+            // Throws on a wrong code (the clip won't open).
+            openClip(view, { videoKey: heirVideoKey(kek) });
+          }}
+        />
+      </div>
+    );
+  }
 
   if (state.kind === "loading") {
     return (

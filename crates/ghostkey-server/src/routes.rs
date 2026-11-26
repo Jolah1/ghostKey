@@ -1163,6 +1163,77 @@ pub struct SealedSetup {
     /// seal once the owner picks someone.
     pub heir_xprv_owner_ct_b64: Option<String>,
     pub heir_xprv_owner_nonce_b64: Option<String>,
+
+    /// Heir code (option a): the heir's xprv in `heir_xprv_*` is sealed
+    /// under a code only the owner and heir know, not under a claim
+    /// token. When present, `claim_token_b64` must be absent: the server
+    /// keeps nothing that can open the heir key, and the scheduler mints
+    /// a hash-only claim link at trigger time.
+    #[serde(default)]
+    pub heir_code: Option<HeirCodeSeal>,
+}
+
+/// How an heir-code seal was made, so the heir's browser can re-derive
+/// the key from the code, plus the code itself sealed for the owner.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HeirCodeSeal {
+    pub salt_b64: String,
+    pub kdf_mem_kib: i64,
+    pub kdf_iters: i64,
+    /// The code sealed under the owner's password KEK, so the owner can
+    /// show it again. Opaque to the server.
+    pub owner_ct_b64: String,
+    pub owner_nonce_b64: String,
+    /// A fixed phrase sealed under a key derived from the code key, so a
+    /// practice run can check a typed code without the heir's key.
+    pub check_ct_b64: String,
+    pub check_nonce_b64: String,
+}
+
+impl HeirCodeSeal {
+    fn validate(&self) -> Result<(), ApiError> {
+        if self.kdf_mem_kib < 1024 || self.kdf_iters < 1 {
+            return Err(ApiError::Validation(
+                "heir code kdf parameters are below the minimum".into(),
+            ));
+        }
+        for (name, v) in [
+            ("heir_code.salt_b64", &self.salt_b64),
+            ("heir_code.owner_ct_b64", &self.owner_ct_b64),
+            ("heir_code.owner_nonce_b64", &self.owner_nonce_b64),
+            ("heir_code.check_ct_b64", &self.check_ct_b64),
+            ("heir_code.check_nonce_b64", &self.check_nonce_b64),
+        ] {
+            if v.trim().is_empty() {
+                return Err(ApiError::Validation(format!("{name} must not be empty")));
+            }
+        }
+        Ok(())
+    }
+}
+
+async fn store_heir_code(
+    db: &sqlx::SqlitePool,
+    id: &str,
+    code: &HeirCodeSeal,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        "UPDATE vaults SET heir_code_salt_b64 = ?, heir_code_kdf_mem_kib = ?, \
+                           heir_code_kdf_iters = ?, heir_code_owner_sealed_ct_b64 = ?, \
+                           heir_code_owner_sealed_nonce = ?, heir_code_check_ct_b64 = ?, \
+                           heir_code_check_nonce = ? WHERE id = ?",
+    )
+    .bind(&code.salt_b64)
+    .bind(code.kdf_mem_kib)
+    .bind(code.kdf_iters)
+    .bind(&code.owner_ct_b64)
+    .bind(&code.owner_nonce_b64)
+    .bind(&code.check_ct_b64)
+    .bind(&code.check_nonce_b64)
+    .bind(id)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 /// One *verified owner* per email — but an owner may have several heirs, each
@@ -1494,14 +1565,19 @@ async fn create_vault_from_xpub(
                 "owner_email_hash must be 64 hex characters".into(),
             ));
         }
-        // Heir sealed material and the claim token are coupled: the xprv
-        // is sealed under the token. They must be all-present (Door A) or
-        // all-absent (Door B). Reject a half-populated shape.
+        // The heir's sealed xprv comes with exactly one way to open it:
+        // a claim token (Door A, legacy) or an heir code (option a). With
+        // no sealed xprv, neither may be sent (Door B). Reject anything
+        // half-populated or with both.
         let heir_present = s.heir_xprv_ct_b64.is_some() && s.heir_xprv_nonce_b64.is_some();
-        if heir_present != s.claim_token_b64.is_some() {
+        let openers = usize::from(s.claim_token_b64.is_some()) + usize::from(s.heir_code.is_some());
+        if (heir_present && openers != 1) || (!heir_present && openers != 0) {
             return Err(ApiError::Validation(
-                "sealed heir xprv and claim token must be both present or both absent".into(),
+                "a sealed heir xprv needs exactly one of a claim token or an heir code".into(),
             ));
+        }
+        if let Some(code) = s.heir_code.as_ref() {
+            code.validate()?;
         }
         // Heir chosen later: the heir key is sealed for the owner only.
         // Nothing that could reach the heir branch may come with it.
@@ -1646,6 +1722,12 @@ async fn create_vault_from_xpub(
     .bind(&heir_intro_nn_b64)
     .execute(&state.db)
     .await?;
+
+    // Heir code: how the heir re-derives their key, and the code sealed
+    // for the owner. No claim token is stored; the link is minted later.
+    if let Some(code) = req.sealed.as_ref().and_then(|s| s.heir_code.as_ref()) {
+        store_heir_code(&state.db, &id, code).await?;
+    }
 
     // Heir chosen later: keep the owner-sealed heir key and hold the
     // check-in clock off until an heir is chosen.
@@ -2307,10 +2389,14 @@ pub struct ChooseHeirRequest {
     /// Defaults to email, the only channel delivered today.
     pub channel: Option<String>,
     /// The heir key, opened in the browser with the owner's password and
-    /// re-sealed under a fresh claim token (Door A).
+    /// re-sealed under an heir code (option a), or under a fresh claim
+    /// token (Door A, older apps). Exactly one of the two.
     pub heir_xprv_ct_b64: String,
     pub heir_xprv_nonce_b64: String,
-    pub claim_token_b64: String,
+    #[serde(default)]
+    pub claim_token_b64: Option<String>,
+    #[serde(default)]
+    pub heir_code: Option<HeirCodeSeal>,
     pub from_name: Option<String>,
     pub heir_note: Option<String>,
 }
@@ -2348,10 +2434,21 @@ async fn choose_heir(
         return Err(ApiError::Validation("contact must not be empty".into()));
     }
     validate_contact_shape(channel, contact)?;
+    if req.claim_token_b64.is_some() == req.heir_code.is_some() {
+        return Err(ApiError::Validation(
+            "send exactly one of a claim token or an heir code".into(),
+        ));
+    }
+    if let Some(code) = req.heir_code.as_ref() {
+        code.validate()?;
+    }
     for (field, v) in [
         ("heir_xprv_ct_b64", &req.heir_xprv_ct_b64),
         ("heir_xprv_nonce_b64", &req.heir_xprv_nonce_b64),
-        ("claim_token_b64", &req.claim_token_b64),
+        (
+            "claim_token_b64",
+            req.claim_token_b64.as_ref().unwrap_or(&"-".to_string()),
+        ),
     ] {
         if v.trim().is_empty() || v.len() > 4096 {
             return Err(ApiError::Validation(format!(
@@ -2397,15 +2494,23 @@ async fn choose_heir(
     })
     .to_string();
     let sealed_contact = seal_for_vault(&id, contact_blob.as_bytes())?;
-    let at_rest = crypto::seal_claim_token_at_rest(&id, &req.claim_token_b64)?;
-    let token_hash = crypto::hash_claim_token(&req.claim_token_b64);
+    // An heir code leaves the claim link unset: the scheduler mints a
+    // hash-only one when it's needed, and the server keeps nothing that
+    // opens the heir key.
+    let (at_rest, token_hash, issued_at) = match req.claim_token_b64.as_deref() {
+        Some(tok) => (
+            Some(crypto::seal_claim_token_at_rest(&id, tok)?),
+            Some(crypto::hash_claim_token(tok)),
+            Some(Utc::now().to_rfc3339()),
+        ),
+        None => (None, None, None),
+    };
     let intro = if from_name.is_some() || note.is_some() {
         let blob = serde_json::json!({ "from_name": from_name, "note": note }).to_string();
         Some(seal_for_vault(&id, blob.as_bytes())?)
     } else {
         None
     };
-    let now_s = Utc::now().to_rfc3339();
 
     // `AND heir_pending = 1` makes this a compare-and-swap: two tabs
     // choosing at once can't both write.
@@ -2431,7 +2536,7 @@ async fn choose_heir(
     .bind(&req.heir_xprv_nonce_b64)
     .bind(&at_rest)
     .bind(&token_hash)
-    .bind(&now_s)
+    .bind(&issued_at)
     .bind(&sealed_contact.ciphertext_b64)
     .bind(&sealed_contact.nonce_b64)
     .bind(channel)
@@ -2445,6 +2550,9 @@ async fn choose_heir(
         return Err(ApiError::Conflict(
             "This vault already has an heir. Use Add heir for someone else.".into(),
         ));
+    }
+    if let Some(code) = req.heir_code.as_ref() {
+        store_heir_code(&state.db, &id, code).await?;
     }
     record_event(
         &state.db,
@@ -3561,6 +3669,11 @@ pub struct ClaimView {
     /// Explorer link for `claimed_txid`, following the indexer this
     /// server is configured with (mempool.space on mainnet).
     pub claimed_explorer_url: Option<String>,
+    /// Present when the heir's key is locked with an heir code: how to
+    /// turn the code into a key. Not secret (a salt and cost settings).
+    /// The claim page asks for the code, and opens the video with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heir_code: Option<crate::psbt_routes::HeirCodeKdf>,
 }
 
 async fn resolve_claim(
@@ -3692,6 +3805,7 @@ async fn resolve_claim(
         Some(crate::psbt_routes::explorer_url(net, &txid))
     });
 
+    let heir_code = crate::psbt_routes::heir_code_kdf(&state.db, &vault_id).await?;
     Ok(Json(ClaimView {
         vault_id,
         label,
@@ -3703,6 +3817,7 @@ async fn resolve_claim(
         heir_display_name,
         claim_available_at,
         drill: false,
+        heir_code,
         claimed_explorer_url,
         claimed_txid,
     }))
@@ -4080,6 +4195,13 @@ pub struct SealedBlobsView {
     pub heir_xprv_owner_ct_b64: Option<String>,
     pub heir_xprv_owner_nonce_b64: Option<String>,
     pub heir_xpub_fragment_external: Option<String>,
+    /// Heir code vaults: the code sealed under the owner's password, so
+    /// the owner can show it again. `None` on every other vault.
+    pub heir_code_owner_ct_b64: Option<String>,
+    pub heir_code_owner_nonce_b64: Option<String>,
+    /// How the heir code turns into a key, so the owner's browser can
+    /// re-derive it (to seal a new video message). Not secret.
+    pub heir_code: Option<crate::psbt_routes::HeirCodeKdf>,
 }
 
 async fn load_sealed_blobs(pool: &sqlx::SqlitePool, id: &str) -> Result<SealedBlobsView, ApiError> {
@@ -4113,6 +4235,14 @@ async fn load_sealed_blobs(pool: &sqlx::SqlitePool, id: &str) -> Result<SealedBl
     .fetch_optional(pool)
     .await?;
     let row = row.ok_or(ApiError::NotFound)?;
+    let (heir_code_ct, heir_code_nonce): (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT heir_code_owner_sealed_ct_b64, heir_code_owner_sealed_nonce \
+           FROM vaults WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await?;
+    let heir_code = crate::psbt_routes::heir_code_kdf(pool, id).await?;
 
     let (salt, mem, iters, ox_ct, ox_n, ot_ct, ot_n) =
         match (row.1, row.2, row.3, row.4, row.5, row.6, row.7) {
@@ -4142,6 +4272,9 @@ async fn load_sealed_blobs(pool: &sqlx::SqlitePool, id: &str) -> Result<SealedBl
         heir_xprv_owner_ct_b64: row.11,
         heir_xprv_owner_nonce_b64: row.12,
         heir_xpub_fragment_external: if row.14 == 1 { row.13 } else { None },
+        heir_code_owner_ct_b64: heir_code_ct,
+        heir_code_owner_nonce_b64: heir_code_nonce,
+        heir_code,
     })
 }
 
@@ -5367,6 +5500,7 @@ mod tests {
             claim_token_b64,
             heir_xprv_owner_ct_b64: None,
             heir_xprv_owner_nonce_b64: None,
+            heir_code: None,
         }
     }
 
@@ -5450,6 +5584,139 @@ mod tests {
             let mut req = heir_later_request();
             mangle(&mut req);
             let result = create_vault_from_xpub(State(state.clone()), Json(req)).await;
+            assert!(
+                matches!(result, Err(ApiError::Validation(_))),
+                "{label} must be refused"
+            );
+        }
+    }
+
+    fn heir_code_seal() -> HeirCodeSeal {
+        HeirCodeSeal {
+            salt_b64: "c2FsdHNhbHQ".into(),
+            kdf_mem_kib: 19_456,
+            kdf_iters: 2,
+            owner_ct_b64: "Y29kZWN0".into(),
+            owner_nonce_b64: "Y29kZW5u".into(),
+            check_ct_b64: "Y2hlY2tjdA".into(),
+            check_nonce_b64: "Y2hlY2tubg".into(),
+        }
+    }
+
+    /// An heir-code vault (option a): the heir key sealed under a code
+    /// only the owner and heir know. No claim token, plain or sealed, is
+    /// kept: nothing the server holds opens the heir key. The heir's
+    /// view carries the code's KDF parameters, the owner's the code
+    /// sealed under their password.
+    #[tokio::test]
+    async fn an_heir_code_vault_keeps_nothing_that_opens_the_heir_key() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let mut sealed = sealed_setup(
+            &"e".repeat(64),
+            Some("aGVpcmN0".into()),
+            Some("aGVpcm5u".into()),
+            None,
+        );
+        sealed.heir_code = Some(heir_code_seal());
+        let (_, created) =
+            create_vault_from_xpub(State(state.clone()), Json(door_b_request(sealed)))
+                .await
+                .expect("create with an heir code");
+        let id = created.vault.id.clone();
+        type Row = (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+        let row: Row = sqlx::query_as(
+            "SELECT heir_xprv_sealed_ct_b64, claim_token_at_rest_b64, claim_token_hash, \
+                    heir_code_salt_b64 FROM vaults WHERE id = ?",
+        )
+        .bind(&id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(row.0.as_deref(), Some("aGVpcmN0"));
+        assert!(row.1.is_none(), "no claim token kept at rest");
+        assert!(row.2.is_none(), "the link is minted at trigger time");
+        assert_eq!(row.3.as_deref(), Some("c2FsdHNhbHQ"));
+
+        assert_eq!(
+            crate::psbt_routes::heir_code_kdf(&state.db, &id)
+                .await
+                .unwrap(),
+            Some(crate::psbt_routes::HeirCodeKdf {
+                salt_b64: "c2FsdHNhbHQ".into(),
+                kdf_mem_kib: 19_456,
+                kdf_iters: 2,
+                check_ct_b64: "Y2hlY2tjdA".into(),
+                check_nonce_b64: "Y2hlY2tubg".into(),
+            })
+        );
+        let blobs = load_sealed_blobs(&state.db, &id).await.unwrap();
+        assert_eq!(blobs.heir_code_owner_ct_b64.as_deref(), Some("Y29kZWN0"));
+        assert_eq!(blobs.heir_code_owner_nonce_b64.as_deref(), Some("Y29kZW5u"));
+        assert_eq!(blobs.heir_code.map(|k| k.kdf_iters), Some(2));
+    }
+
+    #[tokio::test]
+    async fn a_sealed_heir_key_needs_exactly_one_way_to_open_it() {
+        ensure_test_master_key();
+        type Mangle = Box<dyn Fn(&mut SealedSetup)>;
+        let cases: Vec<(&str, Mangle)> = vec![
+            (
+                "both a claim token and an heir code",
+                Box::new(|s| {
+                    s.claim_token_b64 = Some("dG9r".into());
+                    s.heir_code = Some(heir_code_seal());
+                }),
+            ),
+            (
+                "an heir code with no sealed key",
+                Box::new(|s| {
+                    s.heir_xprv_ct_b64 = None;
+                    s.heir_xprv_nonce_b64 = None;
+                    s.heir_code = Some(heir_code_seal());
+                }),
+            ),
+            (
+                "a sealed key with neither",
+                Box::new(|s| {
+                    s.claim_token_b64 = None;
+                    s.heir_code = None;
+                }),
+            ),
+            (
+                "an heir code without its check value",
+                Box::new(|s| {
+                    let mut c = heir_code_seal();
+                    c.check_ct_b64 = " ".into();
+                    s.heir_code = Some(c);
+                }),
+            ),
+            (
+                "a weak heir code KDF",
+                Box::new(|s| {
+                    let mut c = heir_code_seal();
+                    c.kdf_mem_kib = 64;
+                    s.heir_code = Some(c);
+                }),
+            ),
+        ];
+        for (label, mangle) in cases {
+            let state = fresh_state().await;
+            let mut sealed = sealed_setup(
+                &"f".repeat(64),
+                Some("aGVpcmN0".into()),
+                Some("aGVpcm5u".into()),
+                None,
+            );
+            sealed.heir_code = Some(heir_code_seal());
+            mangle(&mut sealed);
+            let result =
+                create_vault_from_xpub(State(state.clone()), Json(door_b_request(sealed))).await;
             assert!(
                 matches!(result, Err(ApiError::Validation(_))),
                 "{label} must be refused"
@@ -5879,7 +6146,7 @@ mod tests {
             .await
             .expect_err("heir-without-token must be rejected");
         assert!(
-            matches!(&err, ApiError::Validation(m) if m.contains("both present or both absent")),
+            matches!(&err, ApiError::Validation(m) if m.contains("exactly one of a claim token or an heir code")),
             "got {err:?}"
         );
 
@@ -5894,7 +6161,7 @@ mod tests {
             .await
             .expect_err("token-without-heir must be rejected");
         assert!(
-            matches!(&err, ApiError::Validation(m) if m.contains("both present or both absent")),
+            matches!(&err, ApiError::Validation(m) if m.contains("exactly one of a claim token or an heir code")),
             "got {err:?}"
         );
     }

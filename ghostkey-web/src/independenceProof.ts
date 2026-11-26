@@ -17,8 +17,8 @@
  *     stole the server's database row.
  */
 import { api, type VaultView } from "./api";
-import { sealUnderPassword } from "./crypto/sealing";
-import { wordlist } from "@scure/bip39/wordlists/english.js";
+import type { PasswordSealed } from "./crypto/sealing";
+import { generateHeirCode, sealHeirXprvUnderCode } from "./crypto/heirCode";
 
 const PLACEHOLDER = "__GHOSTKEY_KIT_DATA__";
 
@@ -154,6 +154,10 @@ export interface HeirEnvelopeParams {
   heirName: string;
   /** The heir's account xprv, live in memory only at setup time. */
   heirXprv: string;
+  /** The heir code and the key already locked with it (`lockHeirKey`).
+   *  The file then opens with the same code as the online claim, and no
+   *  second Argon2 pass runs. Without it, a fresh code is made. */
+  lock?: { code: string; sealed: PasswordSealed };
   /** Optional KDF progress callback (Argon2id seal runs ~1-3s). */
   onProgress?: (pct: number) => void;
 }
@@ -163,8 +167,7 @@ export interface HeirEnvelope {
   filename: string;
   /** The self-contained HTML, with the heir xprv sealed inside. */
   html: string;
-  /** The passphrase that unlocks it. Show once; the owner keeps it
-   *  with the file. We never persist it. */
+  /** The heir code that unlocks it, hyphen-joined. */
   passphrase: string;
 }
 
@@ -175,12 +178,9 @@ export interface HeirEnvelope {
  * via {@link downloadHeirEnvelope}.
  */
 export async function buildHeirEnvelope(p: HeirEnvelopeParams): Promise<HeirEnvelope> {
-  const passphrase = generatePassphrase();
-  const sealed = await sealUnderPassword(
-    passphrase,
-    new TextEncoder().encode(p.heirXprv),
-    p.onProgress,
-  );
+  const passphrase = p.lock?.code ?? generateHeirCode();
+  const sealed =
+    p.lock?.sealed ?? (await sealHeirXprvUnderCode(passphrase, p.heirXprv, p.onProgress));
 
   const data: KitData = {
     v: 1,
@@ -214,22 +214,3 @@ export function downloadHeirEnvelope(env: HeirEnvelope): void {
   triggerDownload(env.html, env.filename);
 }
 
-/**
- * A short, writable passphrase: five words from the BIP39 wordlist,
- * hyphen-joined. ~55 bits of entropy, hardened by the Argon2id seal —
- * unbruteforceable in practice for a timelocked secret, while still
- * being something a person can copy onto paper. Uses the platform
- * CSPRNG with rejection sampling to avoid modulo bias.
- */
-function generatePassphrase(words = 5): string {
-  const n = wordlist.length; // 2048
-  const max = Math.floor(0x100000000 / n) * n;
-  const out: string[] = [];
-  const buf = new Uint32Array(1);
-  while (out.length < words) {
-    crypto.getRandomValues(buf);
-    if (buf[0] >= max) continue; // reject to keep the distribution uniform
-    out.push(wordlist[buf[0] % n]);
-  }
-  return out.join("-");
-}

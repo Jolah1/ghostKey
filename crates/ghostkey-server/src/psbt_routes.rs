@@ -755,6 +755,64 @@ pub struct SealedHeirView {
     /// offline. No private material — safe for any valid claim token.
     pub descriptor_external: String,
     pub descriptor_internal: String,
+    /// Present when the key is sealed under an heir code (option a): the
+    /// heir types the code and the browser re-derives the key with these
+    /// parameters. Absent when the key is sealed under the claim token.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heir_code: Option<HeirCodeKdf>,
+}
+
+/// How to turn the heir code into the key that opens the heir's xprv
+/// (Argon2id, the same scheme as the heir file).
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct HeirCodeKdf {
+    pub salt_b64: String,
+    pub kdf_mem_kib: i64,
+    pub kdf_iters: i64,
+    /// The check phrase sealed under the code's check key: a typed code
+    /// that opens it is right. Costs a guesser the same Argon2id as the
+    /// heir's key, and opens nothing else.
+    pub check_ct_b64: String,
+    pub check_nonce_b64: String,
+}
+
+/// The heir-code parameters for a vault, if its heir key is sealed
+/// under a code.
+pub(crate) async fn heir_code_kdf(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+) -> Result<Option<HeirCodeKdf>, ApiError> {
+    type Row = (
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+    );
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT heir_code_salt_b64, heir_code_kdf_mem_kib, heir_code_kdf_iters, \
+                heir_code_check_ct_b64, heir_code_check_nonce \
+           FROM vaults WHERE id = ?",
+    )
+    .bind(vault_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(match row {
+        Some((
+            Some(salt_b64),
+            Some(kdf_mem_kib),
+            Some(kdf_iters),
+            Some(check_ct_b64),
+            Some(check_nonce_b64),
+        )) => Some(HeirCodeKdf {
+            salt_b64,
+            kdf_mem_kib,
+            kdf_iters,
+            check_ct_b64,
+            check_nonce_b64,
+        }),
+        _ => None,
+    })
 }
 
 /// Friendly, plain-text wait message for a not-yet-matured claim. The
@@ -923,6 +981,7 @@ pub async fn get_sealed_heir_xprv(
     let nonce = row.6.ok_or_else(|| {
         ApiError::Validation("vault has heir_xprv_sealed_ct without nonce".into())
     })?;
+    let heir_code = heir_code_kdf(&state.db, &row.0).await?;
     Ok(Json(SealedHeirView {
         vault_id: row.0,
         network: row.1,
@@ -931,6 +990,7 @@ pub async fn get_sealed_heir_xprv(
         heir_xprv_nonce_b64: nonce,
         descriptor_external: row.7,
         descriptor_internal: row.8,
+        heir_code,
     }))
 }
 

@@ -95,10 +95,9 @@ export interface SealedVaultSecrets {
    *  owner recover their bearer credential on any device from
    *  email+password. */
   owner_token: SealedBlob;
-  /** Heir's account xprv, sealed under HKDF(claim_token). Door A stores
-   *  that token reversibly under the server master key for later delivery;
-   *  Door B sends no heir xprv or setup-time claim token to the server. */
-  heir_xprv: SealedBlob;
+  /** Heir's account xprv, sealed under HKDF(claim_token). Only when a
+   *  claim token was passed; heir-code vaults lock it separately. */
+  heir_xprv?: SealedBlob;
 }
 
 const ARGON_MEM_KIB = 64 * 1024; // 64 MiB
@@ -318,7 +317,10 @@ export interface SealAllInput {
   ownerXprv: string;
   heirXprv: string;
   ownerToken: string;
-  claimTokenRaw: Uint8Array;
+  /** Door A (older apps): seal the heir key under this claim token.
+   *  Leave it out when the heir key is locked with an heir code instead
+   *  (see ./heirCode.ts); then `heir_xprv` is absent. */
+  claimTokenRaw?: Uint8Array;
   onProgress?: (pct: number) => void;
   /**
    * When true, the returned object carries `_owner_kek` — a 32-byte
@@ -342,14 +344,15 @@ export async function sealVaultSecrets(
   const kek = await deriveOwnerKek(input.password, salt, {
     onProgress: input.onProgress,
   });
-  const claimKek = deriveClaimKek(input.claimTokenRaw);
-
   const owner_xprv = sealWithKey(kek, enc.encode(input.ownerXprv));
   const owner_token = sealWithKey(kek, enc.encode(input.ownerToken));
-  const heir_xprv = sealWithKey(claimKek, enc.encode(input.heirXprv));
-
-  // Always wipe the claim KEK — caller never needs it again.
-  claimKek.fill(0);
+  let heir_xprv: SealedBlob | undefined;
+  if (input.claimTokenRaw) {
+    const claimKek = deriveClaimKek(input.claimTokenRaw);
+    heir_xprv = sealWithKey(claimKek, enc.encode(input.heirXprv));
+    // Always wipe the claim KEK: the caller never needs it again.
+    claimKek.fill(0);
+  }
 
   const out: SealedVaultSecrets & { _owner_kek?: Uint8Array } = {
     password_salt: b64encode(salt),
