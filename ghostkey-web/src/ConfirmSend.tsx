@@ -28,6 +28,7 @@ export function ConfirmSend({
   amountLabel,
   networkLabel,
   feeLabel,
+  rows = [],
   busy = false,
   confirmLabel = "Yes, send it",
   showHeading = true,
@@ -45,6 +46,8 @@ export function ConfirmSend({
   /** Optional fee-rate playback (e.g. "2 sat/vB"). Omitted where the
    *  server picks the fee and the user never set one. */
   feeLabel?: string;
+  /** More label/value lines under the network (fee, what's left). */
+  rows?: { label: string; value: string }[];
   /** Disables both buttons while the send is in flight. */
   busy?: boolean;
   /** Confirm-button text; callers swap it for progress ("Sending…"). */
@@ -79,6 +82,12 @@ export function ConfirmSend({
             <dt className="text-muted">Network</dt>
             <dd className="text-[var(--text)]">{networkLabel}</dd>
           </div>
+          {rows.map((r) => (
+            <div key={r.label} className="flex justify-between gap-3">
+              <dt className="text-muted">{r.label}</dt>
+              <dd className="text-[var(--text)]">{r.value}</dd>
+            </div>
+          ))}
           {feeLabel ? (
             <div className="flex justify-between gap-3">
               <dt className="text-muted">Fee rate</dt>

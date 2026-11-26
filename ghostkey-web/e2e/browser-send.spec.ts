@@ -68,7 +68,8 @@ const REGTEST = { ...TEST_NETWORK, bech32: "bcrt" };
 
 /** Mocks the server for one funded vault. `seen` collects what the
  *  browser sent, so a test can check the key never left it. */
-async function mockVault(page: Page) {
+async function mockVault(page: Page, opts: { busyCoinsOnce?: boolean } = {}) {
+  let busyLeft = opts.busyCoinsOnce ? 1 : 0;
   const seen: { bodies: string[]; signedBody: { tx_hex: string; destination: string } | null; oldSendCalled: boolean } = {
     bodies: [],
     signedBody: null,
@@ -105,6 +106,12 @@ async function mockVault(page: Page) {
           owner_token_ct_b64: tok.ct, owner_token_nonce_b64: tok.nonce, network: "regtest", timelock_blocks: fixture.timelock_blocks,
         }),
       );
+    if (p === "/vaults/v-send/coins" && busyLeft > 0) {
+      busyLeft--;
+      return route.fulfill(
+        json({ error: "validation: The Bitcoin network lookup is busy right now (HTTP 429 on full_scan). Try again in a minute." }, 400),
+      );
+    }
     if (p === "/vaults/v-send/coins")
       return route.fulfill(
         json({
@@ -149,10 +156,15 @@ test("a send is signed in the browser: the server never sees the key", async ({ 
   await expect(page.getByRole("heading", { name: "Send to" })).toBeVisible();
   await page.getByLabel("Bitcoin address").fill(fixture.recipient);
   await page.getByRole("button", { name: "Next" }).click();
-  await expect(page.getByRole("heading", { name: "Check it" })).toBeVisible();
+  // The password comes before the check, so the check shows the real fee.
+  await page.getByLabel("Enter your password").fill(PASSWORD);
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(page.getByRole("heading", { name: "Check it" })).toBeVisible({ timeout: 90_000 });
   await expect(page.getByText(fixture.recipient)).toBeVisible();
-  await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel("Enter your password to send").fill(PASSWORD);
+  await expect(page.getByText("Network fee")).toBeVisible();
+  await expect(page.getByText("Left in your savings")).toBeVisible();
+  // Nothing has gone out yet.
+  expect(seen.signedBody).toBeNull();
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(page.getByText(/Sent ✓/)).toBeVisible({ timeout: 90_000 });
 
@@ -192,9 +204,15 @@ test("an amount can be typed in dollars, and back steps back without losing it",
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByLabel("Bitcoin address").fill(fixture.recipient);
   await page.getByRole("button", { name: "Next" }).click();
-  await expect(page.getByText(/1,000 sats/)).toBeVisible();
-  await page.getByRole("button", { name: "Continue" }).click();
-  await page.getByLabel("Enter your password to send").fill(PASSWORD);
+  await page.getByLabel("Enter your password").fill(PASSWORD);
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(page.getByText(/^1,000 sats/)).toBeVisible({ timeout: 90_000 });
+  // Fee and what's left come from the signed transaction itself.
+  const fee = await page.getByText("Network fee").locator("xpath=following-sibling::dd").textContent();
+  const left = await page.getByText("Left in your savings").locator("xpath=following-sibling::dd").textContent();
+  const n = (t: string | null) => Number((t ?? "").replace(/[^0-9]/g, ""));
+  expect(n(fee)).toBeGreaterThan(0);
+  expect(n(left)).toBe(1_000_000 - 1_000 - n(fee));
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(page.getByText(/Sent ✓/)).toBeVisible({ timeout: 90_000 });
 
@@ -205,4 +223,20 @@ test("an amount can be typed in dollars, and back steps back without losing it",
     (o) => bytesToHex(o.script!) === want,
   );
   expect(paid?.amount).toBe(1000n);
+});
+
+test("a busy network lookup is retried quietly, not shown as an error", async ({ page }) => {
+  test.setTimeout(120_000);
+  const seen = await mockVault(page, { busyCoinsOnce: true });
+  await page.goto(`${base}/#/send`);
+  await page.getByRole("button", { name: "Send all" }).click();
+  await page.getByLabel("Bitcoin address").fill(fixture.recipient);
+  await page.getByRole("button", { name: "Next" }).click();
+  await page.getByLabel("Enter your password").fill(PASSWORD);
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(page.getByRole("heading", { name: "Check it" })).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByText(/busy right now|validation:/)).toHaveCount(0);
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(page.getByText(/Sent ✓/)).toBeVisible({ timeout: 90_000 });
+  expect(seen.signedBody).not.toBeNull();
 });

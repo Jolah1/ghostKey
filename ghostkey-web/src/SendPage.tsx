@@ -23,8 +23,10 @@ import { fiatAmount, formatAmount, useFiat, useUnit } from "./units";
 import { unlockErrorMessage } from "./unlockErrors";
 import { useActiveVault } from "./useActiveVault";
 import { getVaultMeta } from "./vaultStore";
+import { Address, NETWORK, OutScript, TEST_NETWORK, Transaction } from "@scure/btc-signer";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
-type Step = "amount" | "address" | "review" | "password" | "done";
+type Step = "amount" | "address" | "password" | "review" | "done";
 
 const TITLES: Record<Step, string> = {
   amount: "How much?",
@@ -33,6 +35,38 @@ const TITLES: Record<Step, string> = {
   password: "Your password",
   done: "Sent ✓",
 };
+
+/** Sats the signed transaction pays to `address`. */
+function paidTo(txHex: string, address: string, network: string): number {
+  const net =
+    network === "bitcoin"
+      ? NETWORK
+      : network === "regtest"
+        ? { ...TEST_NETWORK, bech32: "bcrt" }
+        : TEST_NETWORK;
+  const want = bytesToHex(OutScript.encode(Address(net).decode(address)));
+  const tx = Transaction.fromRaw(hexToBytes(txHex));
+  let sats = 0n;
+  for (let i = 0; i < tx.outputsLength; i++) {
+    const o = tx.getOutput(i);
+    if (o.script && bytesToHex(o.script) === want) sats += o.amount ?? 0n;
+  }
+  return Number(sats);
+}
+
+/** The public explorers rate-limit. One quiet retry after a short wait
+ *  saves people from an error that usually clears by itself. */
+async function retryIfBusy<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (e) {
+    const busy =
+      e instanceof ApiError && /busy right now|temporarily unavailable|HTTP (429|5\d\d)/i.test(e.message);
+    if (!busy) throw e;
+    await new Promise((r) => setTimeout(r, 4000));
+    return call();
+  }
+}
 
 interface Coins {
   confirmed_sat: number;
@@ -59,7 +93,14 @@ export function SendPage({ onNavigate }: { onNavigate: (r: Route) => void }) {
   const [sendAll, setSendAll] = useState(false);
   const [destination, setDestination] = useState("");
   const [password, setPassword] = useState("");
-  const [phase, setPhase] = useState<"idle" | "unlocking" | "sending">("idle");
+  const [phase, setPhase] = useState<"idle" | "unlocking" | "signing" | "sending">("idle");
+  // Signed but not sent: what the check screen shows.
+  const [signed, setSigned] = useState<{
+    txHex: string;
+    sentSat: number;
+    feeSat: number;
+    leftSat: number;
+  } | null>(null);
   const [unlockPct, setUnlockPct] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<OwnerSendResponse | null>(null);
@@ -70,8 +111,7 @@ export function SendPage({ onNavigate }: { onNavigate: (r: Route) => void }) {
   useEffect(() => {
     if (!activeId || !ownerToken) return;
     let live = true;
-    api
-      .getSpendCoins(activeId, ownerToken)
+    retryIfBusy(() => api.getSpendCoins(activeId, ownerToken))
       .then((c) => live && setCoins(c))
       .catch(() => {});
     api
@@ -143,7 +183,10 @@ export function SendPage({ onNavigate }: { onNavigate: (r: Route) => void }) {
     setAmountIn(to);
   }
 
-  async function onSend() {
+  // Step 1 of the send, at the password: unlock, sign, and work out the
+  // exact amounts. Nothing is broadcast yet, so the check screen can show
+  // the real fee and what stays saved before anything moves.
+  async function onSign() {
     if (!activeId || !ownerToken || !vault) return;
     setError(null);
     setPhase("unlocking");
@@ -167,11 +210,11 @@ export function SendPage({ onNavigate }: { onNavigate: (r: Route) => void }) {
       return;
     }
 
-    setPhase("sending");
+    setPhase("signing");
     try {
       // The signer (ghostkey-core in wasm) is large, so it loads only now.
       const [fresh, signer] = await Promise.all([
-        api.getSpendCoins(activeId, ownerToken),
+        retryIfBusy(() => api.getSpendCoins(activeId, ownerToken)),
         import("./kit/signer"),
       ]);
       if (fresh.confirmed_sat === 0) {
@@ -189,7 +232,7 @@ export function SendPage({ onNavigate }: { onNavigate: (r: Route) => void }) {
       if (!descriptorExternal || !descriptorInternal) {
         throw new Error("Couldn't load your vault's details. Try again.");
       }
-      const signed = await signer.signSweep({
+      const tx = await signer.signSweep({
         role: "owner",
         descriptor_external: descriptorExternal,
         descriptor_internal: descriptorInternal,
@@ -202,13 +245,36 @@ export function SendPage({ onNavigate }: { onNavigate: (r: Route) => void }) {
         amount_sat: amountSat,
         fee_rate_sat_vb: fresh.fee_rate_sat_per_vb,
       });
-      const res = await api.ownerSendSigned(activeId, ownerToken, {
-        tx_hex: signed.tx_hex,
-        destination: destination.trim(),
+      const sent = paidTo(tx.tx_hex, destination.trim(), network);
+      setSigned({
+        txHex: tx.tx_hex,
+        sentSat: sent,
+        feeSat: tx.fee_sat,
+        leftSat: Math.max(0, fresh.confirmed_sat + fresh.unconfirmed_sat - sent - tx.fee_sat),
       });
       setPassword("");
+      go("review");
+    } catch (e) {
+      setError(e instanceof ApiError || e instanceof Error ? e.message : String(e));
+    } finally {
+      setPhase("idle");
+    }
+  }
+
+  // Step 2, at the check screen: broadcast what was signed.
+  async function onSend() {
+    if (!activeId || !ownerToken || !signed) return;
+    setError(null);
+    setPhase("sending");
+    try {
+      const res = await retryIfBusy(() =>
+        api.ownerSendSigned(activeId, ownerToken, {
+          tx_hex: signed.txHex,
+          destination: destination.trim(),
+        }),
+      );
       setResult(res);
-      // Replace the password step, so back doesn't land on it.
+      // Replace the check step, so back doesn't land on it.
       window.history.replaceState({ gkSend: "done" }, "", window.location.href);
       setStep("done");
       window.scrollTo(0, 0);
@@ -235,7 +301,7 @@ export function SendPage({ onNavigate }: { onNavigate: (r: Route) => void }) {
   }
 
   const busy = phase !== "idle";
-  const stepBack = step === "amount" || step === "done" ? undefined : "Back";
+  const stepBack = step === "done" ? "Close" : step === "amount" ? undefined : "Back";
 
   return (
     <PageShell
@@ -345,7 +411,7 @@ export function SendPage({ onNavigate }: { onNavigate: (r: Route) => void }) {
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (addrShapeOk && addrNetworkOk) go("review");
+            if (addrShapeOk && addrNetworkOk) go("password");
           }}
         >
           <p className="text-sm text-muted">
@@ -392,27 +458,15 @@ export function SendPage({ onNavigate }: { onNavigate: (r: Route) => void }) {
         </form>
       ) : null}
 
-      {step === "review" ? (
-        <ConfirmSend
-          destination={destination}
-          amountLabel={sendAll ? "Everything, less the network fee" : amountLabel(amountSat ?? 0)}
-          networkLabel={network === "bitcoin" ? "Bitcoin" : `${network} network`}
-          confirmLabel="Continue"
-          showHeading={false}
-          onConfirm={() => go("password")}
-          onBack={back}
-        />
-      ) : null}
-
       {step === "password" ? (
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (password && !busy) void onSend();
+            if (password && !busy) void onSign();
           }}
         >
           <label className="block">
-            <span className="text-sm">Enter your password to send</span>
+            <span className="text-sm">Enter your password</span>
             <input
               type="password"
               value={password}
@@ -431,12 +485,46 @@ export function SendPage({ onNavigate }: { onNavigate: (r: Route) => void }) {
             <Button type="submit" disabled={!password} loading={busy}>
               {phase === "unlocking"
                 ? `Unlocking… ${unlockPct}%`
-                : phase === "sending"
-                  ? "Sending…"
-                  : "Send"}
+                : phase === "signing"
+                  ? "Getting it ready…"
+                  : "Next"}
             </Button>
           </div>
         </form>
+      ) : null}
+
+      {step === "review" ? (
+        signed ? (
+          <>
+            <ConfirmSend
+              destination={destination}
+              amountLabel={amountLabel(signed.sentSat)}
+              networkLabel={network === "bitcoin" ? "Bitcoin" : `${network} network`}
+              rows={[
+                { label: "Network fee", value: formatAmount(signed.feeSat, unit) },
+                { label: "Left in your savings", value: formatAmount(signed.leftSat, unit) },
+              ]}
+              confirmLabel={phase === "sending" ? "Sending…" : "Send"}
+              busy={busy}
+              showHeading={false}
+              onConfirm={() => void onSend()}
+              onBack={back}
+            />
+            {signed.feeSat * 5 > signed.sentSat ? (
+              <p className="mt-4 text-sm text-muted">
+                The fee is {Math.round((signed.feeSat / signed.sentSat) * 100)}% of this send. It
+                costs the same for a bigger send.
+              </p>
+            ) : null}
+            {error ? (
+              <p className="mt-3 text-sm text-alarm" role="alert">
+                {error}
+              </p>
+            ) : null}
+          </>
+        ) : (
+          <p className="text-sm text-muted">Go back and enter your password again.</p>
+        )
       ) : null}
 
       {step === "done" && result ? (
@@ -446,7 +534,9 @@ export function SendPage({ onNavigate }: { onNavigate: (r: Route) => void }) {
           </p>
           <p className="mt-1 text-sm text-muted">
             Network fee {formatAmount(result.fee_sat, unit)}.{" "}
-            {result.remaining_sat > 0 ? "The rest stays saved." : "Your savings are now empty."}
+            {(signed?.leftSat ?? result.remaining_sat) > 0
+              ? `${formatAmount(signed?.leftSat ?? result.remaining_sat, unit)} stays in your savings.`
+              : "Your savings are now empty."}
           </p>
           {savings?.goals?.length ? (
             <SpendFromGoal
@@ -458,7 +548,7 @@ export function SendPage({ onNavigate }: { onNavigate: (r: Route) => void }) {
             />
           ) : null}
           <div className="mt-8 flex flex-wrap items-center gap-4">
-            <Button onClick={() => onNavigate("dashboard")}>Back to home</Button>
+            <Button onClick={() => onNavigate("dashboard")}>Done</Button>
             <a
               href={result.explorer_url}
               target="_blank"
