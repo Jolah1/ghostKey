@@ -17,13 +17,14 @@ import { randomBytes } from "@noble/hashes/utils.js";
 import {
   b64decode,
   b64encode,
+  deriveClaimKek,
   deriveOwnerKek,
   openWithKey,
   sealWithKey,
   type PasswordSealed,
   type SealedBlob,
 } from "./sealing";
-import type { HeirCodeSealBody } from "../api";
+import type { HeirCodeSealBody, HeirCodeUpgradeBody, HeirCodeUpgradeKit } from "../api";
 
 export const HEIR_CODE_WORDS = 5;
 const WORDS = new Set(wordlist);
@@ -232,4 +233,74 @@ export async function lockHeirKey(
 /** Open the owner's sealed copy of the code (Settings, "show the code"). */
 export function openOwnerHeirCode(ownerKek: Uint8Array, blob: SealedBlob): string {
   return new TextDecoder().decode(openWithKey(ownerKek, blob));
+}
+
+/** The password didn't open this vault. */
+export class WrongOwnerPasswordError extends Error {
+  constructor() {
+    super("That password doesn't match this vault.");
+    this.name = "WrongOwnerPasswordError";
+  }
+}
+
+/**
+ * Move an older vault to an heir code, in this browser. Checks the
+ * password (it must open the owner's own key), opens the heir key and the
+ * video with the kept link secret, and locks both again with a fresh heir
+ * code. Returns what the server stores, and the code for the heir card.
+ */
+export async function relockWithHeirCode(input: {
+  password: string;
+  owner: {
+    password_salt_b64: string;
+    password_kdf_mem_kib: number;
+    password_kdf_iters: number;
+    owner_xprv_ct_b64: string;
+    owner_xprv_nonce_b64: string;
+  };
+  kit: HeirCodeUpgradeKit;
+  onProgress?: (pct: number) => void;
+}): Promise<{ body: HeirCodeUpgradeBody; code: string }> {
+  const { owner, kit } = input;
+  const ownerKek = await deriveOwnerKek(input.password, b64decode(owner.password_salt_b64), {
+    memKiB: owner.password_kdf_mem_kib,
+    iters: owner.password_kdf_iters,
+    onProgress: input.onProgress ? (p) => input.onProgress!(p / 2) : undefined,
+  });
+  const linkKek = deriveClaimKek(b64decode(kit.claim_token_b64));
+  let lock: HeirKeyLock | undefined;
+  try {
+    try {
+      openWithKey(ownerKek, { v: 1, ct: owner.owner_xprv_ct_b64, nonce: owner.owner_xprv_nonce_b64 });
+    } catch {
+      throw new WrongOwnerPasswordError();
+    }
+    const heirXprv = new TextDecoder().decode(
+      openWithKey(linkKek, { v: 1, ct: kit.heir_xprv_ct_b64, nonce: kit.heir_xprv_nonce_b64 }),
+    );
+    lock = await lockHeirKey(
+      heirXprv,
+      ownerKek,
+      input.onProgress ? (p) => input.onProgress!(0.5 + p / 2) : undefined,
+    );
+    let video: { video_ct_b64: string; video_nonce_b64: string } | undefined;
+    if (kit.video) {
+      const clip = openWithKey(linkKek, { v: 1, ct: kit.video.video_ct_b64, nonce: kit.video.video_nonce_b64 });
+      const relocked = sealWithKey(lock.videoKey, clip);
+      video = { video_ct_b64: relocked.ct, video_nonce_b64: relocked.nonce };
+    }
+    return {
+      body: {
+        heir_xprv_ct_b64: lock.heir_xprv_ct_b64,
+        heir_xprv_nonce_b64: lock.heir_xprv_nonce_b64,
+        heir_code: lock.heir_code,
+        ...(video ? { video } : {}),
+      },
+      code: lock.code,
+    };
+  } finally {
+    ownerKek.fill(0);
+    linkKek.fill(0);
+    lock?.videoKey.fill(0);
+  }
 }

@@ -42,6 +42,7 @@ import {
   type SavingsView,
   type ChallengeView,
 } from "./api";
+import { HeirCodeNotice } from "./HeirCodeNotice";
 import { countdown, parseRfc } from "./time";
 import {
   getActiveVaultId,
@@ -488,6 +489,22 @@ export function Dashboard({ onNavigate }: Props) {
                 <HeirReachCard
                   kind={heirNotice}
                   heirName={meta.heir.name}
+                  onNavigate={onNavigate}
+                />
+              </div>
+            ) : null}
+
+            {/* The heir code (option a): move an older vault to one, or
+                ask until the owner says they gave it. */}
+            {ownerToken &&
+            (vault?.heir_code_state === "upgrade" || vault?.heir_code_state === "unshared") ? (
+              <div className="mb-5">
+                <HeirCodeNotice
+                  vaultId={meta.id}
+                  ownerToken={ownerToken}
+                  heirName={meta.heir.name}
+                  state={vault.heir_code_state}
+                  onChanged={() => void refresh()}
                   onNavigate={onNavigate}
                 />
               </div>

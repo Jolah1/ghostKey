@@ -117,6 +117,7 @@ export function ShowHeirCodeCard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [code, setCode] = useState<string | null>(null);
+  const [given, setGiven] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -166,9 +167,30 @@ export function ShowHeirCodeCard({
     return (
       <div className="mt-6">
         <HeirCodeCard heirName={heirName} code={code} />
-        <Button className="mt-3" variant="ghost" onClick={() => setCode(null)}>
-          Hide the code
-        </Button>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {given ? (
+            <p className="text-sm text-muted">Noted. We won't ask again.</p>
+          ) : (
+            <Button
+              onClick={() =>
+                void api
+                  .markHeirCodeShared(vaultId, ownerToken)
+                  .then(() => setGiven(true))
+                  .catch(() => setError("Couldn't save that. Try again."))
+              }
+            >
+              I've given it to {who}
+            </Button>
+          )}
+          <Button variant="ghost" onClick={() => setCode(null)}>
+            Hide the code
+          </Button>
+        </div>
+        {error && (
+          <div className="mt-3">
+            <InlineAlert tone="alarm">{error}</InlineAlert>
+          </div>
+        )}
       </div>
     );
   }

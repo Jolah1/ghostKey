@@ -20,8 +20,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { HDKey } from "@scure/bip32";
 import { bip32Versions, generateParty } from "../src/crypto/keygen";
-import { b64decode, deriveOwnerKek, openWithKey, sealWithKey } from "../src/crypto/sealing";
-import { checkHeirCode, deriveHeirCodeKek, openHeirXprv } from "../src/crypto/heirCode";
+import { b64decode, deriveClaimKek, deriveOwnerKek, openWithKey, sealWithKey } from "../src/crypto/sealing";
+import { checkHeirCode, deriveHeirCodeKek, heirVideoKey, openHeirXprv } from "../src/crypto/heirCode";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dist = resolve(__dirname, "..", "dist");
@@ -382,3 +382,108 @@ async function expectNoSerious(page: Page, include?: string) {
   const serious = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
   expect(serious.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
 }
+
+test("Home: an older vault switches to an heir code; GhostKey forgets the link secret", async ({ page }) => {
+  test.setTimeout(120_000);
+  const heir = generateParty("signet");
+  const salt = new Uint8Array(16).fill(4);
+  const ownerKek = await deriveOwnerKek(PASSWORD, salt, { memKiB: 1024, iters: 1 });
+  const ownerBlob = sealWithKey(ownerKek, new TextEncoder().encode("owner-xprv"));
+  // The older vault: heir key and video locked under the kept claim token.
+  const token = new Uint8Array(32).fill(6);
+  const linkKek = deriveClaimKek(token);
+  const heirBlob = sealWithKey(linkKek, new TextEncoder().encode(heir.xprv));
+  const videoBlob = sealWithKey(linkKek, new TextEncoder().encode("a message for Ada"));
+
+  let state: "upgrade" | "unshared" | "shared" = "upgrade";
+  let upgradeBody: any = null;
+  let sharedPosts = 0;
+  await page.route("**/api/**", (route) => {
+    const req = route.request();
+    const p = new URL(req.url()).pathname.replace(/^\/api/, "");
+    if (p === "/health") return route.fulfill(json(HEALTH));
+    if (p === "/vaults/v-old")
+      return route.fulfill(
+        json({
+          id: "v-old", label: "Ada's inheritance", network: "signet", timelock_blocks: 12960,
+          checkin_period_secs: 2_592_000, grace_period_secs: 604_800, status: "ok",
+          created_at: PAST, last_checkin_at: PAST,
+          next_deadline_at: new Date(Date.now() + 60 * 86400_000).toISOString(),
+          claim_eligible_at: null, owner_contact_verified: true, heir_pending: false,
+          heir_code_state: state,
+        }),
+      );
+    if (p === "/vaults/v-old/balance")
+      return route.fulfill(json({ vault_id: "v-old", network: "signet", confirmed_sat: 50_000, unconfirmed_sat: 0, total_sat: 50_000 }));
+    if (p === "/vaults/v-old/events") return route.fulfill(json([]));
+    if (p === "/vaults/v-old/sealed-blobs")
+      return route.fulfill(
+        json({
+          vault_id: "v-old", password_salt_b64: Buffer.from(salt).toString("base64"),
+          password_kdf_mem_kib: 1024, password_kdf_iters: 1,
+          owner_xprv_ct_b64: ownerBlob.ct, owner_xprv_nonce_b64: ownerBlob.nonce,
+          owner_token_ct_b64: "x", owner_token_nonce_b64: "x", network: "signet", timelock_blocks: 12960,
+        }),
+      );
+    if (p === "/vaults/v-old/heir-code/upgrade" && req.method() === "GET")
+      return route.fulfill(
+        json({
+          claim_token_b64: Buffer.from(token).toString("base64"),
+          heir_xprv_ct_b64: heirBlob.ct, heir_xprv_nonce_b64: heirBlob.nonce,
+          video: { video_ct_b64: videoBlob.ct, video_nonce_b64: videoBlob.nonce },
+        }),
+      );
+    if (p === "/vaults/v-old/heir-code/upgrade" && req.method() === "POST") {
+      upgradeBody = req.postDataJSON();
+      state = "unshared";
+      return route.fulfill({ status: 204, body: "" });
+    }
+    if (p === "/vaults/v-old/heir-code/shared" && req.method() === "POST") {
+      sharedPosts += 1;
+      state = "shared";
+      return route.fulfill({ status: 204, body: "" });
+    }
+    return route.fulfill(json({}, 404));
+  });
+  await page.addInitScript(() => {
+    const meta = {
+      id: "v-old", label: "Ada's inheritance", owner: { address: "owner@example.com" },
+      heir: { name: "Ada", email: "ada@example.com", address: "" },
+      createdAt: new Date().toISOString(), ownerToken: "e2e-owner-token", groupId: null,
+    };
+    window.localStorage.setItem("gk:vaults", JSON.stringify({ "v-old": meta }));
+    window.localStorage.setItem("gk:activeVaultId", "v-old");
+    window.localStorage.setItem("gk:lastActivityAt", String(Date.now()));
+  });
+
+  await page.goto(`${base}/#/dashboard`);
+  const card = page.getByTestId("heir-code-notice");
+  await expect(card.getByText("Make Ada's access private")).toBeVisible();
+  await card.getByRole("button", { name: "Switch to a code" }).click();
+  await expectNoSerious(page, '[data-testid="heir-code-notice"]');
+
+  // A wrong password changes nothing.
+  await card.getByLabel("Your password").fill("not-the-password");
+  await card.getByRole("button", { name: "Switch", exact: true }).click();
+  await expect(card.getByText("That password doesn't match this vault.")).toBeVisible();
+  expect(upgradeBody).toBeNull();
+
+  await card.getByLabel("Your password").fill(PASSWORD);
+  await card.getByRole("button", { name: "Switch", exact: true }).click();
+  await expect.poll(() => upgradeBody, { timeout: 60_000 }).not.toBeNull();
+  const code = (await card.getByTestId("heir-code").textContent())!.trim();
+  expect(code.split(" ")).toHaveLength(5);
+  expect(JSON.stringify(upgradeBody)).not.toContain(code.split(" ").join("-"));
+  expect(upgradeBody.claim_token_b64).toBeUndefined();
+
+  // The new code opens the same heir key, and the video came along.
+  const codeKek = await deriveHeirCodeKek(code, upgradeBody.heir_code);
+  expect(openHeirXprv(codeKek, { v: 1, ct: upgradeBody.heir_xprv_ct_b64, nonce: upgradeBody.heir_xprv_nonce_b64 })).toBe(heir.xprv);
+  expect(
+    openHeirXprv(heirVideoKey(codeKek), { v: 1, ct: upgradeBody.video.video_ct_b64, nonce: upgradeBody.video.video_nonce_b64 }),
+  ).toBe("a message for Ada");
+
+  await card.getByRole("button", { name: "I've given it to Ada" }).click();
+  await expect.poll(() => sharedPosts).toBe(1);
+  await expect(page.getByTestId("heir-code-notice")).toHaveCount(0);
+});
