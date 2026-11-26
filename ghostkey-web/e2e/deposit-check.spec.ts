@@ -109,7 +109,7 @@ async function setup(page: Page, serverAddress: string, via: "hero" | "nav" = "h
     await page.goto(`${base}/#/dashboard`);
     await page.getByTestId("savings-hero").getByRole("button", { name: "Add money" }).click();
   } else {
-    // Any page will do: the nav's Add money opens the same card in a popup.
+    // Any page will do: the nav's Add money opens the Add money page.
     await page.goto(`${base}/#/activity`);
     await page.getByRole("banner").getByRole("button", { name: "Add money" }).click();
   }
@@ -128,11 +128,13 @@ test("an address that isn't this vault's is refused, never shown", async ({ page
   await expect(page.getByRole("img", { name: /QR code/ })).toHaveCount(0);
 });
 
-test("Add money in the nav opens the same checked address on any page", async ({ page }) => {
+test("Add money in the nav opens its own page from any page, and back returns", async ({ page }) => {
   await setup(page, mine.external[0], "nav");
-  const dialog = page.getByRole("dialog", { name: "Add money" });
-  await expect(dialog.getByTestId("deposit-check")).toHaveText(/Checked on this device/);
-  await expect(dialog.getByText(mine.external[0])).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(dialog).toHaveCount(0);
+  await expect(page).toHaveURL(/#\/add-money$/);
+  await expect(page.getByRole("heading", { name: "Add money" })).toBeVisible();
+  await expect(page.getByTestId("deposit-check")).toHaveText(/Checked on this device/);
+  await expect(page.getByText(mine.external[0])).toBeVisible();
+  // The phone's back button goes back a page, not out of the app.
+  await page.goBack();
+  await expect(page).toHaveURL(/#\/activity$/);
 });

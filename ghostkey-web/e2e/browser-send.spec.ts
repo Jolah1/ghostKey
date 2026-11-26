@@ -66,21 +66,25 @@ const FUTURE = new Date(Date.now() + 30 * 86400_000).toISOString();
 const PAST = new Date(Date.now() - 30 * 86400_000).toISOString();
 const REGTEST = { ...TEST_NETWORK, bech32: "bcrt" };
 
-test("a send is signed in the browser: the server never sees the key", async ({ page }) => {
-  test.setTimeout(120_000);
+/** Mocks the server for one funded vault. `seen` collects what the
+ *  browser sent, so a test can check the key never left it. */
+async function mockVault(page: Page) {
+  const seen: { bodies: string[]; signedBody: { tx_hex: string; destination: string } | null; oldSendCalled: boolean } = {
+    bodies: [],
+    signedBody: null,
+    oldSendCalled: false,
+  };
   const salt = new Uint8Array(16).fill(5);
   const kek = await deriveOwnerKek(PASSWORD, salt, { memKiB: 1024, iters: 1 });
   const xprv = sealWithKey(kek, new TextEncoder().encode(fixture.account_xprv));
   const tok = sealWithKey(kek, new TextEncoder().encode("e2e-owner-token"));
-  const bodies: string[] = [];
-  let signedBody: { tx_hex: string; destination: string } | null = null;
-  let oldSendCalled = false;
 
   await page.route("**/api/**", (route) => {
     const req = route.request();
     const p = new URL(req.url()).pathname.replace(/^\/api/, "");
     const body = req.postData();
-    if (body) bodies.push(body);
+    if (body) seen.bodies.push(body);
+    if (p === "/price") return route.fulfill(json({ usd_per_btc: 100_000, ngn_per_btc: null }));
     if (p === "/health") return route.fulfill(json({ ok: true, version: "e2e", demo_mode: false, default_network: "regtest", email_enabled: true }));
     if (p === "/vaults/v-send")
       return route.fulfill(
@@ -109,11 +113,11 @@ test("a send is signed in the browser: the server never sees the key", async ({ 
         }),
       );
     if (p === "/vaults/v-send/send") {
-      oldSendCalled = true;
+      seen.oldSendCalled = true;
       return route.fulfill(json({ error: "gone" }, 410));
     }
     if (p === "/vaults/v-send/send/signed") {
-      signedBody = req.postDataJSON();
+      seen.signedBody = req.postDataJSON();
       return route.fulfill(json({ txid: "ab".repeat(32), explorer_url: "https://example.com/tx", sent_sat: 99_000, fee_sat: 300, remaining_sat: 0 }));
     }
     return route.fulfill(json({}, 404));
@@ -129,29 +133,76 @@ test("a send is signed in the browser: the server never sees the key", async ({ 
     window.localStorage.setItem("gk:lastActivityAt", String(Date.now()));
   });
 
+  return seen;
+}
+
+test("a send is signed in the browser: the server never sees the key", async ({ page }) => {
+  test.setTimeout(120_000);
+  const seen = await mockVault(page);
+
   await page.goto(`${base}/#/dashboard`);
   await page.getByTestId("savings-hero").getByRole("button", { name: "Send", exact: true }).click();
-  const expand = page.getByRole("button", { name: "Send from this vault" });
-  if (await expand.isVisible().catch(() => false)) await expand.click();
-  await page.getByLabel("Send to (Bitcoin address)").fill(fixture.recipient);
-  await page.getByLabel("Send everything").check();
-  await page.getByLabel("Your password").fill(PASSWORD);
-  await page.getByRole("button", { name: "Review" }).click();
-  await page.getByRole("button", { name: "Yes, send it" }).click();
+  // Send is its own page, one step per screen.
+  await expect(page).toHaveURL(/#\/send$/);
+  await expect(page.getByRole("heading", { name: "How much?" })).toBeVisible();
+  await page.getByRole("button", { name: "Send all" }).click();
+  await expect(page.getByRole("heading", { name: "Send to" })).toBeVisible();
+  await page.getByLabel("Bitcoin address").fill(fixture.recipient);
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(page.getByRole("heading", { name: "Check it" })).toBeVisible();
+  await expect(page.getByText(fixture.recipient)).toBeVisible();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByLabel("Enter your password to send").fill(PASSWORD);
+  await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(page.getByText(/Sent ✓/)).toBeVisible({ timeout: 90_000 });
 
   // The server got a finished transaction that pays the address typed...
-  expect(signedBody).not.toBeNull();
-  expect(signedBody!.destination).toBe(fixture.recipient);
-  const tx = Transaction.fromRaw(hexToBytes(signedBody!.tx_hex));
+  expect(seen.signedBody).not.toBeNull();
+  expect(seen.signedBody!.destination).toBe(fixture.recipient);
+  const tx = Transaction.fromRaw(hexToBytes(seen.signedBody!.tx_hex));
   const want = bytesToHex(OutScript.encode(Address(REGTEST).decode(fixture.recipient)));
   expect(tx.outputsLength).toBe(1);
   expect(bytesToHex(tx.getOutput(0).script!)).toBe(want);
   expect(tx.getInput(0).finalScriptWitness?.length ?? 0).toBeGreaterThan(0);
   // ...and never the key, by any route.
-  expect(oldSendCalled).toBe(false);
-  for (const b of bodies) {
+  expect(seen.oldSendCalled).toBe(false);
+  for (const b of seen.bodies) {
     expect(b).not.toContain("prv");
     expect(b).not.toContain("owner_xprv");
   }
+});
+
+test("an amount can be typed in dollars, and back steps back without losing it", async ({ page }) => {
+  test.setTimeout(120_000);
+  const seen = await mockVault(page);
+  await page.goto(`${base}/#/send`);
+  await expect(page.getByText(/You can send/)).toBeVisible();
+  await page.getByRole("button", { name: "$", exact: true }).click();
+  // $1 at $100,000 per bitcoin is 1,000 sats.
+  await page.getByLabel("Amount in $").fill("1");
+  await expect(page.getByText("= 1,000 sats")).toBeVisible();
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(page.getByRole("heading", { name: "Send to" })).toBeVisible();
+
+  // The phone's back button returns to the amount, still filled in.
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "How much?" })).toBeVisible();
+  await expect(page.getByLabel("Amount in $")).toHaveValue("1");
+
+  await page.getByRole("button", { name: "Next" }).click();
+  await page.getByLabel("Bitcoin address").fill(fixture.recipient);
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(page.getByText(/1,000 sats/)).toBeVisible();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByLabel("Enter your password to send").fill(PASSWORD);
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(page.getByText(/Sent ✓/)).toBeVisible({ timeout: 90_000 });
+
+  // The transaction pays exactly 1,000 sats to the address typed.
+  const tx = Transaction.fromRaw(hexToBytes(seen.signedBody!.tx_hex));
+  const want = bytesToHex(OutScript.encode(Address(REGTEST).decode(fixture.recipient)));
+  const paid = Array.from({ length: tx.outputsLength }, (_, i) => tx.getOutput(i)).find(
+    (o) => bytesToHex(o.script!) === want,
+  );
+  expect(paid?.amount).toBe(1000n);
 });

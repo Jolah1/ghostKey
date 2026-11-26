@@ -156,6 +156,17 @@ const Dashboard = lazyRoute(() =>
 const ActivityPage = lazyRoute(() =>
   import("./ActivityPage").then((m) => ({ default: m.ActivityPage })),
 );
+const SendPage = lazyRoute(() =>
+  import("./SendPage").then((m) => ({ default: m.SendPage })),
+);
+const AddMoneyPage = lazyRoute(() =>
+  import("./AddMoneyPage").then((m) => ({ default: m.AddMoneyPage })),
+);
+// Finishes Lightning deposits on any page while signed in. Lazy: it
+// brings a bitcoin library the first page load doesn't need.
+const LightningCollector = lazy(() =>
+  import("./lightning/engine").then((m) => ({ default: m.LightningCollector })),
+);
 const ChallengesPage = lazyRoute(() =>
   import("./ChallengesPage").then((m) => ({ default: m.ChallengesPage })),
 );
@@ -224,6 +235,8 @@ export type Route =
   | "setup-password"
   | "success"
   | "dashboard"
+  | "send"
+  | "add-money"
   | "activity"
   | "challenges"
   | "heir-message"
@@ -248,6 +261,8 @@ const VALID: Route[] = [
   "setup-password",
   "success",
   "dashboard",
+  "send",
+  "add-money",
   "activity",
   "challenges",
   "heir-message",
@@ -275,6 +290,8 @@ const VALID: Route[] = [
  */
 const OWNER_ROUTES: Route[] = [
   "dashboard",
+  "send",
+  "add-money",
   "activity",
   "challenges",
   "heir-message",
@@ -578,7 +595,13 @@ export default function App() {
     };
   }, []);
 
-  const setRoute = (r: Route) => setLocation({ kind: "route", route: r });
+  // A new history entry per page, so the phone's back button goes back
+  // a page instead of leaving the app.
+  const setRoute = (r: Route) => {
+    const wanted = `#/${r}`;
+    if (window.location.hash !== wanted) window.history.pushState(null, "", wanted);
+    setLocation({ kind: "route", route: r });
+  };
   const isClaim = location.kind === "claim";
   // Nav is also hidden for the one-tap check-in and email-confirm
   // pages. The owner arrived from an email link; "Set up" /
@@ -667,6 +690,8 @@ export default function App() {
       )}
       {location.kind === "route" && location.route === "success"   && <Success onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "dashboard" && <Dashboard onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "send"      && <SendPage onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "add-money" && <AddMoneyPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "activity"  && <ActivityPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "challenges" && <ChallengesPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "heir-message" && <HeirMessagePage onNavigate={setRoute} />}
@@ -734,6 +759,11 @@ export default function App() {
       )}
       </Suspense>
       </div>
+      {signedIn && !locked && getActiveVaultId() ? (
+        <Suspense fallback={null}>
+          <LightningCollector vaultId={getActiveVaultId() as string} />
+        </Suspense>
+      ) : null}
       {/* One chat for the whole app, opened from "Ask GhostKey AI" in
           the menu. Nothing floats over the page. */}
       <AssistChat intro="Questions about saving, Lightning, check-ins, or what your heir will see? Ask away." />

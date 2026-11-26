@@ -7,13 +7,14 @@
  * the real work. Keeping the dashboard to status + money + heir was the
  * goal; these pages are one tap away from it.
  */
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 
 import type { Route } from "./App";
 import { api, ApiError } from "./api";
 import { ShowHeirCodeCard } from "./HeirCodeCard";
 import { useActiveVault } from "./useActiveVault";
 import { useToolDoneState } from "./toolStatus";
+import { PageShell as ToolPage } from "./PageShell";
 import { VideoMessageCard } from "./VideoMessageCard";
 import { PracticeClaimCard, type HeirChannel } from "./PracticeClaimCard";
 import { PanicCard, PushOptInCard } from "./Dashboard";
@@ -27,35 +28,6 @@ import {
   contactShapeError,
   type HeirContactChannel,
 } from "./heirChannels";
-
-function ToolPage({
-  title,
-  intro,
-  onNavigate,
-  children,
-}: {
-  title: string;
-  intro?: string;
-  onNavigate: (r: Route) => void;
-  children: ReactNode;
-}) {
-  return (
-    <main className="bg-app fade-in">
-      <div className="mx-auto max-w-2xl px-5 py-10 md:py-14">
-        <button
-          type="button"
-          onClick={() => onNavigate("dashboard")}
-          className="text-sm text-muted underline hover:text-[var(--text)]"
-        >
-          ← Back to home
-        </button>
-        <h1 className="mt-4 font-serif text-3xl">{title}</h1>
-        {intro ? <p className="mt-2 text-sm text-muted">{intro}</p> : null}
-        <div className="mt-8">{children}</div>
-      </div>
-    </main>
-  );
-}
 
 /** Shared "no vault / still loading / nothing to show" fallback body. */
 function Fallback({

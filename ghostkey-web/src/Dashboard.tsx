@@ -26,9 +26,7 @@ import {
   useTicker,
   usePolling,
 } from "./ui";
-import { ReceiveCard } from "./ReceiveCard";
 import { ChooseHeirCard } from "./ChooseHeir";
-import { SpendFromGoal } from "./Goals";
 import { SavingsCard } from "./SavingsCard";
 import { addedThisMonth, streakLine } from "./savings";
 import { challengeName, freshWins, homeChallengeLine, markWinSeen, seenWins } from "./challenges";
@@ -37,7 +35,6 @@ import {
   api,
   type VaultView,
   type VaultBalanceView,
-  type OwnerSendResponse,
   type HeirProfileView,
   type SavingsView,
   type ChallengeView,
@@ -55,30 +52,19 @@ import {
   type VaultMeta,
 } from "./vaultStore";
 import { AddHeirPortal } from "./AddHeirPortal";
-import { ConfirmSend } from "./ConfirmSend";
-import {
-  addressMatchesNetwork,
-  bech32PrefixFor,
-  looksLikeBitcoinAddress,
-} from "./address";
 import {
   getPushSubscription,
   isIosBrowserNeedingInstall,
   isPushSupported,
   subscribeToPush,
 } from "./push";
-import { unsealOwner } from "./crypto/sealing";
-import { usePrices } from "./fiat";
-import { fiatAmount, formatAmount, useFiat, useFiatLine, useUnit } from "./units";
+import { formatAmount, useFiatLine, useUnit } from "./units";
 import { UnitToggle } from "./UnitToggle";
 import { InstallNudge } from "./InstallNudge";
-import { useLightningEngine } from "./lightning/engine";
 import { checkInVaults } from "./checkin";
-import type { Network } from "./crypto/keygen";
 import { heirContactDue } from "./heirContact";
 import { useToolDoneState } from "./toolStatus";
 import type { Route } from "./App";
-import { unlockErrorMessage } from "./unlockErrors";
 
 interface Props {
   onNavigate: (r: Route) => void;
@@ -146,8 +132,6 @@ export function Dashboard({ onNavigate }: Props) {
   // Savings lead the page, so the balance and the savings view are
   // fetched here once and shared by the headline and the savings hero.
   const balanceState = useVaultBalance(activeId);
-  // Finish any Lightning deposit left mid-way (e.g. the tab was closed).
-  useLightningEngine(activeId);
   const [savings, setSavings] = useState<SavingsView | null>(null);
   useEffect(() => {
     if (!activeId || !ownerToken) return;
@@ -556,7 +540,6 @@ export function Dashboard({ onNavigate }: Props) {
             {vault ? (
               <SavingsHero
                 vaultId={vault.id}
-                network={vault.network}
                 ownerToken={ownerToken}
                 canManage={!isClosed && !isClaiming}
                 heirLabel={groupVaults.length > 1 ? meta.heir.name : null}
@@ -770,7 +753,6 @@ export function Dashboard({ onNavigate }: Props) {
  */
 function SavingsHero({
   vaultId,
-  network,
   ownerToken,
   canManage,
   heirLabel,
@@ -780,7 +762,6 @@ function SavingsHero({
   onNavigate,
 }: {
   vaultId: string;
-  network: string;
   ownerToken: string | null;
   canManage: boolean;
   /** Whose share this card is for. Shown only for multi-heir accounts,
@@ -793,7 +774,6 @@ function SavingsHero({
   onNavigate: (r: Route) => void;
 }) {
   const canSend = canManage && Boolean(ownerToken);
-  const [panel, setPanel] = useState<"add" | "send" | null>(null);
   // Challenges are a quiet extra: if they don't load (or the server
   // doesn't have them yet), Home just doesn't mention them.
   const [challenges, setChallenges] = useState<ChallengeView[] | null>(null);
@@ -812,7 +792,6 @@ function SavingsHero({
   const win = challenges ? freshWins(challenges, seen, new Date())[0] : undefined;
   const challengeLine =
     challenges && canManage ? homeChallengeLine(challenges, (savings?.deposit_count ?? 0) > 0) : null;
-  const toggle = (p: "add" | "send") => setPanel((cur) => (cur === p ? null : p));
 
   return (
     <section
@@ -837,16 +816,14 @@ function SavingsHero({
           <RoundAction
             label="Add money"
             primary
-            expanded={panel === "add"}
-            onClick={() => toggle("add")}
+            onClick={() => onNavigate("add-money")}
             icon={<path d="M12 5v14M5 12h14" />}
           />
         ) : null}
         {canSend ? (
           <RoundAction
             label="Send"
-            expanded={panel === "send"}
-            onClick={() => toggle("send")}
+            onClick={() => onNavigate("send")}
             icon={<path d="M12 19V5M6 11l6-6 6 6" />}
           />
         ) : null}
@@ -906,33 +883,6 @@ function SavingsHero({
             See
           </button>
         </p>
-      ) : null}
-
-      {panel === "add" ? (
-        <div className="mt-5 border-t border-app pt-5">
-          <ReceiveCard vaultId={vaultId} embedded autoShow />
-        </div>
-      ) : null}
-      {panel === "send" && ownerToken ? (
-        <div className="mt-5 border-t border-app pt-5">
-          <SendCard
-            vaultId={vaultId}
-            network={network}
-            ownerToken={ownerToken}
-            embedded
-            afterSend={(outSat) =>
-              savings && savings.goals?.length ? (
-                <SpendFromGoal
-                  vaultId={vaultId}
-                  ownerToken={ownerToken}
-                  goals={savings.goals}
-                  amountSat={outSat}
-                  onView={onSavings}
-                />
-              ) : null
-            }
-          />
-        </div>
       ) : null}
 
       {savings ? (
@@ -1402,310 +1352,6 @@ function HeirRow({
  * returns to the vault's internal keychain, so the remainder stays
  * covered by the inheritance plan (with a fresh heir countdown).
  */
-function SendCard({
-  vaultId,
-  network,
-  ownerToken,
-  embedded,
-  afterSend,
-}: {
-  vaultId: string;
-  network: string;
-  ownerToken: string;
-  embedded?: boolean;
-  /** Shown under a successful send, given what left the vault (amount
-   *  plus fee). Savings uses it to ask which goal it came from. */
-  afterSend?: (outSat: number) => ReactNode;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [destination, setDestination] = useState("");
-  const [amountStr, setAmountStr] = useState("");
-  const [sendAll, setSendAll] = useState(false);
-  const [password, setPassword] = useState("");
-  const [confirming, setConfirming] = useState(false);
-  const [phase, setPhase] = useState<"idle" | "unlocking" | "sending">("idle");
-  const [unlockPct, setUnlockPct] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<OwnerSendResponse | null>(null);
-  const prices = usePrices();
-  const fiat = useFiat();
-  const unit = useUnit();
-
-  const busy = phase !== "idle";
-  const amountSat = sendAll ? null : Number.parseInt(amountStr, 10);
-  const amountUsd =
-    !sendAll && Number.isFinite(amountSat) && (amountSat as number) > 0
-      ? fiatAmount(amountSat as number, prices, fiat)
-      : null;
-  const addrShapeOk = looksLikeBitcoinAddress(destination);
-  const addrNetworkOk = addressMatchesNetwork(destination, network);
-  const addrOk = addrShapeOk && addrNetworkOk;
-  const amountOk =
-    sendAll || (Number.isFinite(amountSat) && (amountSat as number) > 0);
-  const canSubmit =
-    !busy && addrOk && password.length > 0 && amountOk;
-
-  async function onSend() {
-    setError(null);
-    setPhase("unlocking");
-    setUnlockPct(0);
-    let ownerXprv: string;
-    try {
-      // Legacy (non-password) vaults have no sealed blobs; the server
-      // 400s with a self-explanatory message.
-      const blobs = await api.getSealedBlobs(vaultId, ownerToken);
-      const unsealed = await unsealOwner({
-        password,
-        passwordSalt: blobs.password_salt_b64,
-        memKiB: blobs.password_kdf_mem_kib,
-        iters: blobs.password_kdf_iters,
-        ownerXprvBlob: {
-          v: 1,
-          ct: blobs.owner_xprv_ct_b64,
-          nonce: blobs.owner_xprv_nonce_b64,
-        },
-        ownerTokenBlob: {
-          v: 1,
-          ct: blobs.owner_token_ct_b64,
-          nonce: blobs.owner_token_nonce_b64,
-        },
-        onProgress: (pct) => setUnlockPct(Math.round(pct * 100)),
-      });
-      ownerXprv = unsealed.ownerXprv;
-    } catch (e) {
-      setPhase("idle");
-      setError(unlockErrorMessage(e));
-      return;
-    }
-
-    setPhase("sending");
-    try {
-      // Signed here, in this browser (#442): the server sends the vault's
-      // history and broadcasts the finished transaction, but never sees
-      // the key. The signer is the recovery kit's (ghostkey-core in wasm),
-      // loaded only now because it's large.
-      const [coins, vault, signer] = await Promise.all([
-        api.getSpendCoins(vaultId, ownerToken),
-        api.getVault(vaultId, ownerToken),
-        import("./kit/signer"),
-      ]);
-      if (coins.confirmed_sat === 0) {
-        throw new Error(
-          coins.unconfirmed_sat > 0
-            ? "Your bitcoin is still waiting for its first confirmation. Try again in about 10 minutes."
-            : "There's nothing in the vault to send yet.",
-        );
-      }
-      // The descriptors this device pinned the first time it saw the
-      // vault, so a tampered server can't redirect the change.
-      const pinned = getVaultMeta(vaultId)?.pinnedDescriptors;
-      const descriptorExternal = pinned?.external ?? vault.descriptor_external;
-      const descriptorInternal = pinned?.internal ?? vault.descriptor_internal;
-      if (!descriptorExternal || !descriptorInternal) {
-        throw new Error("Couldn't load your vault's details. Try again.");
-      }
-      const signed = await signer.signSweep({
-        role: "owner",
-        descriptor_external: descriptorExternal,
-        descriptor_internal: descriptorInternal,
-        timelock_blocks: vault.timelock_blocks,
-        network: network as Network,
-        account_xprv: ownerXprv,
-        funding: coins.funding,
-        chain_tip_height: coins.chain_tip_height,
-        recipient: destination.trim(),
-        amount_sat: sendAll ? null : (amountSat as number),
-        fee_rate_sat_vb: coins.fee_rate_sat_per_vb,
-      });
-      const res = await api.ownerSendSigned(vaultId, ownerToken, {
-        tx_hex: signed.tx_hex,
-        destination: destination.trim(),
-      });
-      setResult(res);
-      setPassword("");
-    } catch (e) {
-      setError(
-        e instanceof ApiError
-          ? e.message
-          : e instanceof Error
-            ? e.message
-            : String(e),
-      );
-    } finally {
-      setPhase("idle");
-    }
-  }
-
-  if (result) {
-    return (
-      <section className={embedded ? "" : "card-flat p-5"}>
-        {!embedded ? (
-          <p className="text-xs uppercase tracking-wider text-dim">
-            Send Bitcoin
-          </p>
-        ) : null}
-        <p className="mt-2 text-sm font-semibold text-ok">
-          Sent ✓ {formatAmount(result.sent_sat, unit)} is on its way.
-        </p>
-        <p className="mt-1.5 text-sm text-muted">
-          Network fee: {formatAmount(result.fee_sat, unit)}.{" "}
-          {result.remaining_sat > 0
-            ? `The remaining ${formatAmount(result.remaining_sat, unit)} stays in this share, still covered by your inheritance plan. Your heir's waiting clock starts fresh from this move.`
-            : "This share is now empty; add Bitcoin any time to keep the plan going."}
-        </p>
-        {afterSend ? afterSend(result.sent_sat + result.fee_sat) : null}
-        <div className="mt-3 flex items-center gap-3">
-          <a
-            href={result.explorer_url}
-            target="_blank"
-            rel="noreferrer"
-            className="text-xs text-muted underline underline-offset-2"
-          >
-            View on mempool.space
-          </a>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              setResult(null);
-              setDestination("");
-              setAmountStr("");
-              setSendAll(false);
-              setConfirming(false);
-            }}
-          >
-            Send again
-          </Button>
-        </div>
-      </section>
-    );
-  }
-
-  return (
-    <section className={embedded ? "" : "card-flat p-5"}>
-      {!embedded ? (
-        <p className="text-xs uppercase tracking-wider text-dim">Send Bitcoin</p>
-      ) : null}
-      <p className="mt-1.5 text-sm text-muted">
-        Your money is never locked up. Pay anyone from your vault, and
-        whatever you leave behind stays covered by the same inheritance
-        plan.
-      </p>
-      {!expanded ? (
-        <div className="mt-3">
-          <Button size="sm" variant="ghost" onClick={() => setExpanded(true)}>
-            Send from this vault
-          </Button>
-        </div>
-      ) : (
-        <form
-          className="mt-3 flex flex-col gap-3"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (canSubmit) setConfirming(true);
-          }}
-        >
-          <label className="block">
-            <span className="text-xs text-muted">Send to (Bitcoin address)</span>
-            <input
-              type="text"
-              value={destination}
-              onChange={(e) => setDestination(e.target.value)}
-              placeholder={`${bech32PrefixFor(network)}…`}
-              autoComplete="off"
-              spellCheck={false}
-              disabled={busy || confirming}
-              className="input mt-1 w-full font-mono text-xs"
-            />
-            {destination && !addrShapeOk ? (
-              <span className="mt-1 block text-xs text-alarm">
-                That doesn't look like a Bitcoin address. Check the start.
-              </span>
-            ) : destination && !addrNetworkOk ? (
-              <span className="mt-1 block text-xs text-alarm">
-                That address is for a different network. It should start with{" "}
-                {bech32PrefixFor(network)}.
-              </span>
-            ) : null}
-          </label>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-            <label className="block flex-1">
-              <span className="text-xs text-muted">Amount (sats)</span>
-              <input
-                type="number"
-                inputMode="numeric"
-                min={1}
-                value={sendAll ? "" : amountStr}
-                onChange={(e) => setAmountStr(e.target.value)}
-                placeholder={sendAll ? "everything" : "e.g. 50000"}
-                disabled={busy || sendAll || confirming}
-                className="input mt-1 w-full"
-              />
-            </label>
-            <label className="flex items-center gap-2 pb-2 text-xs text-muted">
-              <input
-                type="checkbox"
-                checked={sendAll}
-                onChange={(e) => setSendAll(e.target.checked)}
-                disabled={busy || confirming}
-              />
-              Send everything
-            </label>
-          </div>
-          {amountUsd ? (
-            <p className="-mt-1 text-xs text-dim">≈ {amountUsd}</p>
-          ) : null}
-          <label className="block">
-            <span className="text-xs text-muted">Your password</span>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-              disabled={busy || confirming}
-              className="input mt-1 w-full"
-            />
-            <span className="mt-1 block text-xs text-dim">
-              Your password unlocks your key and signs the send right here.
-              Your key never leaves this device.
-            </span>
-          </label>
-          {error ? <p className="text-xs text-alarm">{error}</p> : null}
-          {confirming ? (
-            <div className="card-flat p-4">
-              <ConfirmSend
-                destination={destination.trim()}
-                amountLabel={
-                  sendAll
-                    ? "Everything in this share"
-                    : `${formatAmount(amountSat as number, unit)}${amountUsd ? ` (≈ ${amountUsd})` : ""}`
-                }
-                networkLabel={network === "bitcoin" ? "Bitcoin" : `${network} network`}
-                busy={busy}
-                confirmLabel={
-                  phase === "unlocking"
-                    ? `Unlocking… ${unlockPct}%`
-                    : phase === "sending"
-                      ? "Sending…"
-                      : "Yes, send it"
-                }
-                onConfirm={() => void onSend()}
-                onBack={() => setConfirming(false)}
-              />
-            </div>
-          ) : (
-            <div>
-              <Button size="sm" disabled={!canSubmit} type="submit">
-                Review
-              </Button>
-            </div>
-          )}
-        </form>
-      )}
-    </section>
-  );
-}
-
 /* ----------------------------- Greeting ----------------------------------- */
 
 function Greeting({
