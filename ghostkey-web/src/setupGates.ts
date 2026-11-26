@@ -65,3 +65,28 @@ export function passwordStepError(input: PasswordStepInput): string | null {
 export function canCreateVault(input: PasswordStepInput): boolean {
   return passwordStepError(input) === null;
 }
+
+/* One check per setup screen. Each returns the reason that screen
+ * can't move on, or null. `passwordStepError` above still gates the
+ * final create, so a skipped screen can't slip through. */
+
+export function emailError(ownerEmail: string): string | null {
+  if (!ownerEmail.trim()) return "Add your email to sign in on other devices.";
+  if (!/^.+@.+\..+$/.test(ownerEmail.trim())) return "That email looks off. Double-check it.";
+  return null;
+}
+
+export function newPasswordError(password: string, strength: StrengthResult | null): string | null {
+  if (password.length < MIN_LENGTH) {
+    return `At least ${MIN_LENGTH} characters. Longer is better.`;
+  }
+  if (strength === null) return "One moment. Still checking it.";
+  if (!strength.acceptable) {
+    return strength.advice ?? "Too easy to guess. Try three or four unrelated words.";
+  }
+  return null;
+}
+
+export function confirmError(password: string, passwordConfirm: string): string | null {
+  return password === passwordConfirm ? null : "The two passwords don't match.";
+}

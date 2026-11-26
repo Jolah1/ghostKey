@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { canCreateVault, passwordStepError } from "./setupGates";
+import { canCreateVault, confirmError, emailError, newPasswordError, passwordStepError } from "./setupGates";
 import { MIN_LENGTH, type StrengthResult } from "./passwordStrength";
 
 const strong: StrengthResult = {
@@ -75,5 +75,28 @@ describe("passwordStepError / canCreateVault", () => {
     expect(passwordStepError({ ...valid, savedPassword: false })).toMatch(
       /save your password/i,
     );
+  });
+});
+
+
+describe("one check per setup screen", () => {
+  it("email", () => {
+    expect(emailError("")).not.toBeNull();
+    expect(emailError("nope")).not.toBeNull();
+    expect(emailError(" a@b.co ")).toBeNull();
+  });
+  it("password", () => {
+    expect(newPasswordError("short", null)).toMatch(/At least/);
+    expect(newPasswordError("long-enough-password", null)).toMatch(/Still checking/);
+    expect(
+      newPasswordError("long-enough-password", { score: 1, acceptable: false, tone: "bad", label: "Weak", advice: null }),
+    ).toMatch(/Too easy/);
+    expect(
+      newPasswordError("long-enough-password", { score: 4, acceptable: true, tone: "good", label: "Strong", advice: null }),
+    ).toBeNull();
+  });
+  it("confirm", () => {
+    expect(confirmError("a", "b")).not.toBeNull();
+    expect(confirmError("a", "a")).toBeNull();
   });
 });

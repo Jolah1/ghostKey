@@ -82,6 +82,28 @@ const HEALTH = {
 const PAST = new Date(Date.now() - 5 * 86400_000).toISOString();
 const PASSWORD = "Okra-lantern-harbour-quietly-92";
 
+/** Setup up to "Should someone get your savings?", one screen at a time,
+ *  checking the phone's back button steps back on the way. */
+async function walkToHeirQuestion(page: Page) {
+  await page.goto(`${base}/#/setup`);
+  await page.getByRole("button", { name: "School fees" }).click();
+  await page.getByRole("button", { name: "Next" }).click();
+  await page.getByLabel("Your email").fill("owner@example.com");
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(page.getByRole("heading", { name: "Create a password" })).toBeVisible();
+  await page.goBack();
+  await expect(page.getByLabel("Your email")).toHaveValue("owner@example.com");
+  await page.getByRole("button", { name: "Next" }).click();
+  await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
+  await page.getByRole("button", { name: "Next" }).click();
+  await page.getByLabel("Password again").fill(PASSWORD);
+  await page.getByRole("button", { name: "Next" }).click();
+  await page.getByRole("button", { name: "I've saved it" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Should someone get your savings if you stop signing in?" }),
+  ).toBeVisible();
+}
+
 test("setup: 'Do this later' creates savings with nothing that reaches an heir", async ({ page }) => {
   test.setTimeout(120_000);
   let created: Record<string, any> | null = null;
@@ -115,30 +137,18 @@ test("setup: 'Do this later' creates savings with nothing that reaches an heir",
     return route.fulfill(json({}, 404));
   });
 
-  await page.goto(`${base}/#/setup`);
-  await page.getByRole("button", { name: "School fees" }).click();
-  await page.getByRole("button", { name: "6 months" }).click();
-  await page.getByRole("button", { name: "Continue" }).click();
+  await walkToHeirQuestion(page);
 
-  await page.locator('input[autocomplete="email"]').fill("owner@example.com");
-  const pw = page.locator('input[autocomplete="new-password"]');
-  await pw.nth(0).fill(PASSWORD);
-  await pw.nth(1).fill(PASSWORD);
-  await page.getByText("I have saved my password somewhere I can get it back.").click();
-  await page.getByRole("button", { name: "Continue" }).click();
-
-  await expect(page.getByRole("heading", { name: "Who inherits?" })).toBeVisible();
   await expectNoSerious(page);
-  await page.getByRole("button", { name: "Do this later" }).click();
+  await page.getByRole("button", { name: "Not now" }).click();
   await expect.poll(() => created, { timeout: 60_000 }).not.toBeNull();
-  await expect(page.getByRole("heading", { name: "Fund your vault" })).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText("Only you can spend it. Choose who inherits any time from Home.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Add money" })).toBeVisible({ timeout: 30_000 });
 
   const body = created!;
   expect(body.heir_contact).toBeNull();
-  expect(body.timelock_blocks).toBe(6 * 30 * 144);
-  // One choice sets both: no sign-in for 6 months before anyone is contacted.
-  expect(body.checkin_period_secs).toBe(6 * 30 * 86_400);
+  // No heir, so the wait was never asked: the 3-month default.
+  expect(body.timelock_blocks).toBe(3 * 30 * 144);
+  expect(body.checkin_period_secs).toBe(3 * 30 * 86_400);
   expect(body.sealed.claim_token_b64).toBeUndefined();
   expect(body.sealed.heir_xprv_ct_b64).toBeUndefined();
   expect(body.sealed.heir_xprv_owner_ct_b64).toBeTruthy();
@@ -189,27 +199,23 @@ test("setup with an heir: the key is locked with an heir code; the server gets n
     return route.fulfill(json({}, 404));
   });
 
-  await page.goto(`${base}/#/setup`);
-  await page.getByRole("button", { name: "School fees" }).click();
+  await walkToHeirQuestion(page);
+
+  await page.getByRole("button", { name: "Choose someone" }).click();
+  await page.getByLabel("Their name").fill("Sarah");
+  await page.getByRole("button", { name: "Next" }).click();
+  await page.getByLabel("Their email").fill("sarah@example.com");
+  await page.getByRole("button", { name: "Next" }).click();
+  // The wait is asked only on the heir path.
+  await expect(page.getByRole("heading", { name: /how long until Sarah can claim/ })).toBeVisible();
   await page.getByRole("button", { name: "6 months" }).click();
-  await page.getByRole("button", { name: "Continue" }).click();
-
-  await page.locator('input[autocomplete="email"]').fill("owner@example.com");
-  const pw = page.locator('input[autocomplete="new-password"]');
-  await pw.nth(0).fill(PASSWORD);
-  await pw.nth(1).fill(PASSWORD);
-  await page.getByText("I have saved my password somewhere I can get it back.").click();
-  await page.getByRole("button", { name: "Continue" }).click();
-
-  await expect(page.getByRole("heading", { name: "Who inherits?" })).toBeVisible();
-  await page.getByPlaceholder("Sarah").first().fill("Sarah");
-  await page.locator('input[inputmode="email"]').first().fill("sarah@example.com");
-  await page.getByRole("button", { name: "Create vault" }).click();
+  await page.getByRole("button", { name: "Next" }).click();
+  await page.getByRole("button", { name: "Create my vault" }).click();
   await expect.poll(() => created, { timeout: 90_000 }).not.toBeNull();
 
   const card = page.getByTestId("heir-card");
   await expect(card).toBeVisible({ timeout: 60_000 });
-  await expect(page.getByRole("heading", { name: "Give your heir their code" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Give Sarah this code" })).toBeVisible();
   await expectNoSerious(page, '[data-testid="heir-card"]');
   const code = (await card.getByTestId("heir-code").textContent())!.trim();
   expect(code.split(" ")).toHaveLength(5);
