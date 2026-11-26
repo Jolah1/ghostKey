@@ -1,7 +1,7 @@
 /**
  * "Add money": the vault's deposit address, checked in this browser
  * before it is shown (#378), with a QR and a copy button. Used inside the
- * dashboard's savings hero and in the nav's Add money sheet.
+ * Add money page.
  */
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, api, type VaultAddressView } from "./api";
@@ -58,11 +58,12 @@ export function ReceiveCard({
       {!embedded ? (
         <p className="text-xs uppercase tracking-wider text-dim">Add Bitcoin</p>
       ) : null}
-      <p className={`text-sm text-muted ${embedded ? "" : "mt-1.5"}`}>
-        Send any amount from any wallet or exchange, as often as you like. Each
-        deposit starts its own waiting period before the person you choose
-        could ever claim it.
-      </p>
+      {/* On the Add money page the title says it all. */}
+      {!embedded ? (
+        <p className="mt-1.5 text-sm text-muted">
+          Send any amount from any wallet or exchange, as often as you like.
+        </p>
+      ) : null}
       {!expanded ? (
         <div className="mt-3">
           <Button size="sm" variant="ghost" onClick={() => void onExpand()}>
