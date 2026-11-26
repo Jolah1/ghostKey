@@ -1242,7 +1242,7 @@ fn clean_esplora_err(op: &str, e: &esplora_client::Error) -> BlockingErr {
         // the request. The dashboard has a Refresh button — point them at it.
         E::HttpResponse { status, .. } if (500..=599).contains(status) || *status == 429 => {
             format!(
-                "block explorer is temporarily unavailable (HTTP {status}); please try {op} again in a moment"
+                "The Bitcoin network lookup is busy right now (HTTP {status} on {op}). Try again in a minute."
             )
         }
         E::HttpResponse { status, message } => {
@@ -2279,14 +2279,29 @@ pub struct SpendCoinsView {
     pub fee_rate_sat_per_vb: u64,
 }
 
-/// Fee rate to suggest: the explorers' estimate for about an hour
-/// (6 blocks), within sane bounds; 2 sat/vB if they don't answer.
+/// Fee rate to suggest: the explorers' estimate for about two hours
+/// (12 blocks), never below 2 sat/vB so a send doesn't sit for days, and
+/// 2 sat/vB if they don't answer. Savings sends and heir claims are not
+/// urgent, and on small sends the hour estimate can eat half the amount.
 fn suggested_fee_rate(estimates: Option<std::collections::HashMap<u16, f64>>) -> u64 {
     estimates
-        .and_then(|m| m.get(&6).or_else(|| m.get(&3)).copied())
+        .and_then(|m| {
+            m.get(&12)
+                .or_else(|| m.get(&6))
+                .or_else(|| m.get(&3))
+                .copied()
+        })
         .map(|r| r.ceil() as u64)
         .unwrap_or(2)
-        .clamp(1, 500)
+        .clamp(2, 500)
+}
+
+/// What stays in the vault after a send: everything it held, less the
+/// coins this send spent, plus any change it pays back. The change alone
+/// is not enough: a send that spends one coin leaves the others, and
+/// counting only the change called a vault empty that still held money.
+fn left_after_send(vault_total: u64, spent_in: u64, change: u64) -> u64 {
+    vault_total.saturating_sub(spent_in) + change
 }
 
 /// Scan a vault and return what a browser needs to sign a spend of it
@@ -2453,13 +2468,18 @@ pub async fn owner_send_signed(
             wallet
                 .apply_update(update)
                 .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
-            let summary = summarize_signed_send(
+            let mut summary = summarize_signed_send(
                 &tx,
                 &dest_spk,
                 |op| wallet.get_utxo(*op).map(|u| u.txout.value.to_sat()),
                 |spk| wallet.is_mine(spk.clone()),
             )
             .map_err(BlockingErr::Build)?;
+            summary.remaining_sat = left_after_send(
+                wallet.balance().total().to_sat(),
+                summary.total_in,
+                summary.remaining_sat,
+            );
             try_each_esplora(&urls, |client| {
                 client
                     .broadcast(&tx)
@@ -3296,10 +3316,7 @@ mod tests {
             panic!("expected Esplora variant");
         };
         assert!(msg.contains("504"), "should mention the status: {msg}");
-        assert!(
-            msg.contains("temporarily unavailable"),
-            "should be friendly: {msg}"
-        );
+        assert!(msg.contains("busy right now"), "should be friendly: {msg}");
         assert!(!msg.contains("<html"), "must not echo HTML body: {msg}");
         assert!(!msg.contains("openresty"), "must not leak upstream: {msg}");
     }
@@ -3484,12 +3501,26 @@ mod tests {
     }
 
     #[test]
-    fn the_suggested_fee_is_the_hour_estimate_within_bounds() {
+    fn the_suggested_fee_is_the_two_hour_estimate_within_bounds() {
         let m = |pairs: &[(u16, f64)]| Some(pairs.iter().copied().collect());
+        // The 12-block estimate wins when there is one.
+        assert_eq!(suggested_fee_rate(m(&[(12, 2.4), (6, 5.3), (3, 9.0)])), 3);
         assert_eq!(suggested_fee_rate(m(&[(6, 3.2), (3, 9.0)])), 4);
-        assert_eq!(suggested_fee_rate(m(&[(3, 0.4)])), 1);
+        // Never below 2 sat/vB, however quiet the network.
+        assert_eq!(suggested_fee_rate(m(&[(12, 0.12)])), 2);
         assert_eq!(suggested_fee_rate(m(&[(6, 9000.0)])), 500);
         assert_eq!(suggested_fee_rate(None), 2);
+    }
+
+    #[test]
+    fn a_send_that_spends_one_coin_leaves_the_others() {
+        // Two coins, 5,000 + 1,000. A send spends the 5,000 coin with no
+        // change: the 1,000 coin is still there.
+        assert_eq!(left_after_send(6_000, 5_000, 0), 1_000);
+        // Change comes back on top.
+        assert_eq!(left_after_send(6_000, 5_000, 700), 1_700);
+        // Spending everything leaves nothing.
+        assert_eq!(left_after_send(6_000, 6_000, 0), 0);
     }
 
     #[test]

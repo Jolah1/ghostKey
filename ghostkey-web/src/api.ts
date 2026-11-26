@@ -680,6 +680,15 @@ export interface PanicResponse {
   frozen_until: string;
 }
 
+/** The server labels its errors ("validation: …", "conflict: …") for
+ *  its own logs. People see the message without the label. */
+export function plainServerMessage(raw: string): string {
+  const m = /^(validation|conflict):\s*/i.exec(raw);
+  if (!m) return raw;
+  const rest = raw.slice(m[0].length);
+  return rest.charAt(0).toUpperCase() + rest.slice(1);
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -743,11 +752,11 @@ async function request<T>(
     // instead of a raw SyntaxError reaching the user.
   }
   if (!res.ok) {
-    const msg =
+    const raw =
       (body && typeof body === "object" && "error" in body
         ? String((body as { error: unknown }).error)
         : null) ?? `${res.status} ${res.statusText}`;
-    throw new ApiError(res.status, body, msg);
+    throw new ApiError(res.status, body, plainServerMessage(raw));
   }
   return body as T;
 }
