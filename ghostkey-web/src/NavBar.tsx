@@ -5,18 +5,12 @@
  * Mobile collapses to wordmark + CTA + hamburger; the sheet slides
  * under the bar with the same links.
  */
-import { Suspense, lazy, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Brand } from "./Brand";
 import type { Route } from "./App";
 import { useTheme } from "./theme";
 import { LanguageToggle } from "./vocab";
 import { openAssist } from "./AssistChat";
-
-// Loaded on first tap: the deposit card checks the address with the
-// wasm signer, which the rest of the nav doesn't need.
-const AddMoneySheet = lazy(() =>
-  import("./AddMoneySheet").then((m) => ({ default: m.AddMoneySheet })),
-);
 
 interface NavItem {
   key: Route;
@@ -55,7 +49,6 @@ interface Props {
 
 export function NavBar({ route, onNavigate, signedIn, canAddMoney = false }: Props) {
   const [open, setOpen] = useState(false);
-  const [addOpen, setAddOpen] = useState(false);
   const { theme, toggle } = useTheme();
   const items = signedIn ? SIGNED_IN_ITEMS : SIGNED_OUT_ITEMS;
 
@@ -110,7 +103,10 @@ export function NavBar({ route, onNavigate, signedIn, canAddMoney = false }: Pro
           {canAddMoney && (
             <button
               type="button"
-              onClick={() => setAddOpen(true)}
+              onClick={() => {
+                setOpen(false);
+                onNavigate("add-money");
+              }}
               aria-label="Add money"
               className="btn btn-primary h-9 px-3 text-sm md:px-4"
             >
@@ -166,11 +162,6 @@ export function NavBar({ route, onNavigate, signedIn, canAddMoney = false }: Pro
         </div>
       )}
 
-      {addOpen && (
-        <Suspense fallback={null}>
-          <AddMoneySheet onClose={() => setAddOpen(false)} />
-        </Suspense>
-      )}
     </header>
   );
 }

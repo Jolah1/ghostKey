@@ -28,8 +28,10 @@ export function ConfirmSend({
   amountLabel,
   networkLabel,
   feeLabel,
+  rows = [],
   busy = false,
   confirmLabel = "Yes, send it",
+  showHeading = true,
   onConfirm,
   onBack,
 }: {
@@ -44,20 +46,26 @@ export function ConfirmSend({
   /** Optional fee-rate playback (e.g. "2 sat/vB"). Omitted where the
    *  server picks the fee and the user never set one. */
   feeLabel?: string;
+  /** More label/value lines under the network (fee, what's left). */
+  rows?: { label: string; value: string }[];
   /** Disables both buttons while the send is in flight. */
   busy?: boolean;
   /** Confirm-button text; callers swap it for progress ("Sending…"). */
   confirmLabel?: string;
+  /** Off where the page title already says "check it". */
+  showHeading?: boolean;
   onConfirm: () => void;
   onBack: () => void;
 }) {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <p className="text-xs uppercase tracking-wider text-dim">
-          Check this before you send
-        </p>
-        <dl className="mt-3 flex flex-col gap-3 text-sm">
+        {showHeading ? (
+          <p className="mb-3 text-xs uppercase tracking-wider text-dim">
+            Check this before you send
+          </p>
+        ) : null}
+        <dl className="flex flex-col gap-3 text-sm">
           <div>
             <dt className="text-muted">Sending</dt>
             <dd className="mt-0.5 font-semibold text-[var(--text)]">
@@ -74,6 +82,12 @@ export function ConfirmSend({
             <dt className="text-muted">Network</dt>
             <dd className="text-[var(--text)]">{networkLabel}</dd>
           </div>
+          {rows.map((r) => (
+            <div key={r.label} className="flex justify-between gap-3">
+              <dt className="text-muted">{r.label}</dt>
+              <dd className="text-[var(--text)]">{r.value}</dd>
+            </div>
+          ))}
           {feeLabel ? (
             <div className="flex justify-between gap-3">
               <dt className="text-muted">Fee rate</dt>
@@ -84,8 +98,8 @@ export function ConfirmSend({
       </div>
 
       <InlineAlert tone="warning">
-        Check the address one more time. Bitcoin sent to the wrong address
-        is gone for good. No one can reverse it.
+        Check the address. Bitcoin sent to a wrong address can&apos;t come
+        back.
       </InlineAlert>
 
       <div className="flex flex-wrap gap-2">

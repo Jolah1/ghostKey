@@ -108,3 +108,10 @@ export function useLightningEngine(vaultId: string | null, everyMs = 10_000): vo
     return () => window.clearInterval(t);
   }, [vaultId, everyMs, waiting]);
 }
+
+/** Mounted once by the app while signed in, so a Lightning deposit
+ *  finishes on whatever page is open, not only on Home. Draws nothing. */
+export function LightningCollector({ vaultId }: { vaultId: string }): null {
+  useLightningEngine(vaultId);
+  return null;
+}

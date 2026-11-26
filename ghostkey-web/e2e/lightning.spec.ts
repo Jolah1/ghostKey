@@ -302,8 +302,9 @@ test("a reload picks an unpaid Lightning deposit back up", async ({ page }) => {
   await page.getByLabel("How much? (sats)").fill("10,000");
   await page.getByRole("button", { name: "Get Lightning invoice" }).click();
   const shown = await page.getByTestId("ln-invoice").textContent();
+  // Add money is its own page, so a reload comes back to it.
   await page.reload();
-  await page.getByTestId("savings-hero").getByRole("button", { name: "Add money" }).click();
+  await expect(page).toHaveURL(/#\/add-money$/);
   await page.getByRole("tab", { name: "Lightning" }).click();
   await expect(page.getByTestId("ln-invoice")).toHaveText(shown!);
   expect(fake.created).toHaveLength(1);
