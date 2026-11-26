@@ -1,6 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 // During `npm run dev`, browser requests to `/api/*` are proxied to the
 // ghostkey-server bound on 127.0.0.1:8787. In production we expect the
@@ -15,6 +17,18 @@ import { VitePWA } from "vite-plugin-pwa";
 // @types/node for the whole web project; Vite evaluates this file in Node.
 declare const process: { env: Record<string, string | undefined> };
 const DEV_PROXY_TARGET = process.env.DEV_PROXY_TARGET ?? "http://127.0.0.1:8787";
+
+// The installed app serves pages from its offline copy of index.html, and
+// that copy keeps the response headers it was saved with, including the
+// Content-Security-Policy. The copy is only refetched when index.html's
+// revision changes, so a header-only deploy (vercel.json) never reached
+// installed apps: #451 allowed the wasm signer, but phones kept the old
+// policy and sends still failed. Folding the headers into the revision
+// makes any header change refresh the offline copy.
+const HEADERS_REV = createHash("sha256")
+  .update(JSON.stringify(JSON.parse(readFileSync(new URL("../vercel.json", import.meta.url), "utf8")).headers))
+  .digest("hex")
+  .slice(0, 16);
 export default defineConfig({
   plugins: [
     react(),
@@ -134,6 +148,14 @@ export default defineConfig({
         // survive Workbox regenerating the SW body on every build.
         // (push-sw.js sits in public/ and is served at the root.)
         importScripts: ["push-sw.js"],
+        manifestTransforms: [
+          async (entries) => ({
+            manifest: entries.map((e) =>
+              e.url === "index.html" ? { ...e, revision: `${e.revision ?? ""}-h${HEADERS_REV}` } : e,
+            ),
+            warnings: [],
+          }),
+        ],
       },
     }),
   ],
