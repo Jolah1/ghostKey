@@ -759,6 +759,10 @@ pub struct VaultView {
     pub drill_opened_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drill_completed_at: Option<DateTime<Utc>>,
+    /// Did the heir's code work in the last practice run? `false`: they
+    /// said they don't have it. Absent when it wasn't tested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drill_code_ok: Option<bool>,
     /// Rough wall-clock time the on-chain CSV timelock matures, derived
     /// from the cached maturity scan (the scheduler refreshes it; a
     /// dashboard read never triggers a scan). Lets the owner dashboard
@@ -1032,6 +1036,7 @@ async fn create_vault(
                 drill_started_at: None,
                 drill_opened_at: None,
                 drill_completed_at: None,
+                drill_code_ok: None,
                 unlock_eta: None,
             },
             owner_token: issued_owner.token,
@@ -1870,6 +1875,7 @@ async fn create_vault_from_xpub(
                 drill_started_at: None,
                 drill_opened_at: None,
                 drill_completed_at: None,
+                drill_code_ok: None,
                 unlock_eta: None,
             },
             owner_token: issued_owner.token,
@@ -2773,6 +2779,8 @@ async fn get_vault(
         drill_started_at: Option<String>,
         drill_opened_at: Option<String>,
         drill_completed_at: Option<String>,
+        /// The practice run's heir-code result (1/0, null = not tested).
+        drill_code_ok: Option<i64>,
         /// Has a sealed heir contact (0/1).
         has_heir_contact: i64,
         heir_contact_channel: Option<String>,
@@ -2792,7 +2800,7 @@ async fn get_vault(
                   descriptor_external, descriptor_internal,
                   trusted_contact_ciphertext IS NOT NULL AS has_trusted_contact,
                   chain_unlock_height, chain_tip_height, chain_has_unspent,
-                  drill_started_at, drill_opened_at, drill_completed_at,
+                  drill_started_at, drill_opened_at, drill_completed_at, drill_code_ok,
                   heir_contact_ciphertext IS NOT NULL AS has_heir_contact,
                   heir_contact_channel, heir_contact_verified_at,
                   heir_unreachable_alerted_at, heir_pending
@@ -2872,6 +2880,7 @@ async fn get_vault(
         drill_started_at: row.drill_started_at.as_deref().map(parse_rfc),
         drill_opened_at: row.drill_opened_at.as_deref().map(parse_rfc),
         drill_completed_at: row.drill_completed_at.as_deref().map(parse_rfc),
+        drill_code_ok: row.drill_code_ok.map(|v| v == 1),
         unlock_eta,
     }))
 }

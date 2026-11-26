@@ -91,7 +91,7 @@ function heirCheckKey(codeKek: Uint8Array): Uint8Array {
 
 /** Seal the check phrase, so a typed code can be tested later without
  *  touching the heir's key (the practice run). */
-function sealHeirCheck(codeKek: Uint8Array): SealedBlob {
+export function sealHeirCheck(codeKek: Uint8Array): SealedBlob {
   const key = heirCheckKey(codeKek);
   try {
     return sealWithKey(key, new TextEncoder().encode(CHECK_PHRASE));

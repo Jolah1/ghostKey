@@ -80,6 +80,9 @@ export interface VaultView {
    *  `shared`. Absent when there's no heir key here, or a claim is
    *  underway. Only on the owner `GET /vaults/:id`. */
   heir_code_state?: "upgrade" | "unshared" | "shared" | null;
+  /** The last practice run's heir-code result: true = the code worked,
+   *  false = the heir said they don't have it. Absent = not tested. */
+  drill_code_ok?: boolean | null;
   /** Whether a trusted contact is on file. Gates the panic-stop
    *  copy's "your trusted contact will be alerted" promise — only
    *  rendered when true (issue #70). Absent on list/create
@@ -1246,10 +1249,14 @@ export const api = {
     ),
   /** The heir finished the practice walkthrough. Records the permanent
    *  fact on the vault and tells the owner. Idempotent. */
-  completeDrill: (token: string) =>
+  /** `heirCode`: on a vault with an heir code, whether the heir's code
+   *  worked ("ok", checked in their browser) or they don't have it. */
+  completeDrill: (token: string, heirCode?: "ok" | "missing") =>
     request<DrillCompleteView>(
       `/claim/${encodeURIComponent(token)}/drill-complete`,
-      { method: "POST" },
+      heirCode
+        ? { method: "POST", body: JSON.stringify({ heir_code: heirCode }) }
+        : { method: "POST" },
     ),
   /** On-chain unlock estimate for this claim. Tells the heir when the
    *  funds actually become spendable (the CSV timelock), separate from

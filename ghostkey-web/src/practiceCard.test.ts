@@ -80,4 +80,16 @@ describe("drillStatusLine", () => {
     );
     expect(line).toBe("Fola completed a practice claim.");
   });
+
+  it("says whether the heir's code worked in the practice", () => {
+    const done = { drill_completed_at: "2026-11-26T10:00:00Z" };
+    expect(drillStatusLine({ ...done, drill_code_ok: true }, "Fola", "email", en.practiceCard)).toContain(
+      "Fola's heir code worked.",
+    );
+    expect(drillStatusLine({ ...done, drill_code_ok: false }, "Fola", "email", en.practiceCard)).toContain(
+      "Fola doesn't have their heir code.",
+    );
+    expect(drillStatusLine(done, "Fola", "email", en.practiceCard)).not.toContain("heir code");
+  });
 });
+

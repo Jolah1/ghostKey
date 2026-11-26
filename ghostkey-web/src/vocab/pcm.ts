@@ -157,6 +157,24 @@ export const pcm: Vocab = {
     doneBody: "The person wey set this up go see say the practice work. Nothing move and nothing change. If the real day ever come, e go look exactly like wetin you just do.",
     doneClose: "You fit close this page.",
   },
+  heirCode: {
+    label: "Your heir code",
+    hint: "The five words wey the person wey set this up give you. Space and capital letter no matter.",
+    placeholder: "five words",
+    wrong: "That code no match. Check each word well and try again.",
+    unlock: "Open am",
+    checking: (pct) => `We dey check… ${pct}%`,
+    claimTitle: "Put your heir code",
+    claimBody: "The person wey set this up give you five words. Na dem go open wetin be your own. GhostKey no dey see dem.",
+    videoLocked: "Video message dey for you. Put your heir code make you watch am.",
+    videoUnlock: "Watch the message",
+    drillTitle: "Try your heir code",
+    drillBody: "For the real day you go need the five words wey dem give you. Type dem here make you check say dem dey work. Nothing go open today.",
+    drillCheck: "Check my code",
+    drillOk: "Your code dey work. Keep am safe and private.",
+    drillMissing: "I no get the code",
+    drillMissingBody: "No wahala. When you finish, we go tell the person wey set this up make dem give you am again.",
+  },
   claimCommon: {
     whatIsBeingPassedOn: "Wetin dem dey pass on",
     defaultLabel: "A Bitcoin inheritance",
@@ -351,6 +369,8 @@ export const pcm: Vocab = {
     errorSendingFailed: "Sending no work. Your vault fine. Try again later.",
     lineCompleted: (who, when) =>
       when ? `${who} don complete practice claim for ${when}.` : `${who} don complete practice claim.`,
+    codeWorked: (who) => `${who} heir code work.`,
+    codeMissing: (who) => `${who} no get their heir code. Show am again and give dem.`,
     lineOpened: (who, when) =>
       when
         ? `${who} open the practice link for ${when} but never finish am.`
