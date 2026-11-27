@@ -14,6 +14,7 @@
  * the orange accent picked out on the punchline word. Tando-inspired.
  * Tone: emotional, no jargon, no AI tells.
  */
+import { FAQS } from "./faq";
 import { useState } from "react";
 import { Disclosure, Eyebrow } from "./ui";
 import { useVocab } from "./vocab";
@@ -492,52 +493,6 @@ function Mark({ v }: { v: "yes" | "partial" | "no" }) {
 
 /* ---------------------------------- FAQ ----------------------------------- */
 
-const FAQS = [
-  {
-    q: "What happens if I lose my phone or computer?",
-    a: "Nothing is tied to one device. Sign in from any browser with your email and password and your vault is right there. For a deeper emergency, your recovery file reaches the money without GhostKey at all, so keep a copy of it somewhere safe. If you connected your own wallet instead of using easy setup, back up its seed phrase like always.",
-  },
-  {
-    q: "What if I forget my password?",
-    a: "You lose time, not money. There is no reset, because GhostKey's server does not receive or store your password. The website uses it briefly on your device to unlock your key. But the plan works without it: your heir's claim doesn't need your password, and you also hold your heir's file and its unlock code, so once the waiting period passes you can open that file yourself and move the funds to a new wallet. A password manager is still the best protection.",
-  },
-  {
-    q: "Can I change my heir after creating a vault?",
-    a: "You can add another heir at any time, each with their own share. To change who inherits an existing share, or to change its waiting period, send that share back to your own wallet from the dashboard (one transaction) and set up a fresh vault with the new details. While you keep checking in, nothing ever moves without you.",
-  },
-  {
-    q: "What does a check-in cost?",
-    a: "Nothing. The monthly tap is a web action that resets a timer on our reminder service. No transaction is broadcast and no Bitcoin moves.",
-  },
-  {
-    q: "Are there fees?",
-    a: "GhostKey takes no cut and has no subscription. You only pay the normal Bitcoin network fee when you add money on-chain, and again when your heir claims. Adding money by Lightning goes through an independent swap service, which charges its own small fee (see below).",
-  },
-  {
-    q: "Can my heir claim early?",
-    a: "No. The waiting period is locked into Bitcoin itself. Until it fully runs out, nobody can move the funds. Not your heir, not us.",
-  },
-  {
-    q: "What does adding money by Lightning cost?",
-    a: "GhostKey charges nothing. The swap service takes about 0.6%, plus a few hundred sats in Bitcoin network fees, and you see what lands in your vault before you pay. Because part of the fee is fixed, very small deposits cost more as a share. The bitcoin arrives in your vault after one confirmation, usually 10 to 20 minutes, and neither GhostKey nor the swap service can keep it: if anything fails, your Lightning wallet gets the money back.",
-  },
-  {
-    q: "What kinds of Bitcoin can I deposit?",
-    a: "Any Bitcoin you already hold. Each heir's share has its own Bitcoin address, with rules that already include them. You send from your own wallet to that address, or pay a Lightning invoice, and your browser checks the address is really yours before using it. We never hold your money, and your own key never leaves your device.",
-  },
-  {
-    q: "Is this a legal will?",
-    a: "No. GhostKey is a way to pass on Bitcoin you hold yourself. Most people use it alongside a normal will, which still covers their other things and the legal paperwork.",
-  },
-  {
-    q: "Can I reclaim my Bitcoin after creating a vault?",
-    a: "Always. Until your heir actually claims, you have full spending power over the funds with your own key. Emergency withdraw is one transaction away.",
-  },
-  {
-    q: "What if GhostKey shuts down?",
-    a: "Your heir can still claim. At setup you save two files: your own spare key, which opens with your password, and a file for your heir, which opens with a short code kept beside it. If GhostKey ever disappears, your heir opens their file and it walks them through claiming straight from the Bitcoin network, no GhostKey needed. Keep both with your important papers.",
-  },
-];
 
 function FAQ() {
   const ref = useTrackInView("landing.section_viewed", "faq");

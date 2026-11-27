@@ -13,8 +13,7 @@ import type { Route } from "./App";
 import { api, ApiError } from "./api";
 import { ShowHeirCodeCard } from "./HeirCodeCard";
 import { useActiveVault } from "./useActiveVault";
-import { useToolDoneState } from "./toolStatus";
-import { PageShell as ToolPage } from "./PageShell";
+import { PageShell } from "./PageShell";
 import { VideoMessageCard } from "./VideoMessageCard";
 import { PracticeClaimCard, type HeirChannel } from "./PracticeClaimCard";
 import { PanicCard, PushOptInCard } from "./Dashboard";
@@ -28,6 +27,13 @@ import {
   contactShapeError,
   type HeirContactChannel,
 } from "./heirChannels";
+
+/** Every page here is opened from Inheritance, so back goes there. */
+function ToolPage(props: Omit<Parameters<typeof PageShell>[0], "onBack" | "backLabel">) {
+  return (
+    <PageShell {...props} onBack={() => props.onNavigate("tools")} backLabel="Back to inheritance" />
+  );
+}
 
 /** Shared "no vault / still loading / nothing to show" fallback body. */
 function Fallback({
@@ -179,106 +185,6 @@ export function EmergencyPage({ onNavigate }: PageProps) {
  * once a video is saved, a practice is sent, or reminders are on,
  * this page is where the owner comes back to review or change them.
  */
-export function ToolsPage({ onNavigate }: PageProps) {
-  const { meta, ownerToken, vault, pushKey, loading } = useActiveVault();
-  const done = useToolDoneState(meta?.id ?? null, ownerToken);
-  const isClaiming =
-    vault?.status === "timelock_started" || vault?.status === "claiming";
-  const isClosed = vault?.status === "claimed";
-  // No heir chosen yet: there is nobody to message, reach or practise
-  // with, and no clock to remind about or freeze. Home offers the choice.
-  const heirPending = vault?.heir_pending === true;
-
-  const items: Array<{ label: string; desc: string; route: Route }> = [];
-  if (vault && !isClosed && !heirPending) {
-    items.push({
-      label: "Message for your heir",
-      desc:
-        done.hasVideo === true
-          ? "Video saved. Watch, replace, or remove it"
-          : "Record a short video for your heir",
-      route: "heir-message",
-    });
-  }
-  if (vault && !isClosed && !heirPending) {
-    items.push({
-      label: "How your heir is reached",
-      desc: "Change their contact or the way we reach them",
-      route: "heir-contact",
-    });
-  }
-  if (vault && !isClosed && !isClaiming && !heirPending) {
-    items.push({
-      label: "Practice a claim",
-      desc: vault.drill_completed_at
-        ? "Completed. Send another any time"
-        : vault.drill_started_at
-          ? "Practice sent. See where it stands"
-          : "Let your heir rehearse safely",
-      route: "practice",
-    });
-  }
-  if (vault && ownerToken && pushKey && !isClosed && !heirPending) {
-    items.push({
-      label: "Check-in reminders",
-      desc:
-        done.remindersOn === true
-          ? "On for this device"
-          : "Get a nudge to check in",
-      route: "reminders",
-    });
-  }
-  if (vault && vault.status !== "frozen" && !isClosed && !isClaiming && !heirPending) {
-    items.push({
-      label: "Emergency options",
-      desc: "Freeze this share if needed",
-      route: "emergency",
-    });
-  }
-
-  return (
-    <ToolPage
-      title="Family"
-      intro="Who inherits your savings, how they're reached, and what to do in an emergency."
-      onNavigate={onNavigate}
-    >
-      {items.length > 0 ? (
-        <nav
-          className="card-flat divide-y divide-[var(--border)] p-0"
-          aria-label="Family settings"
-        >
-          {items.map((it) => (
-            <button
-              key={it.route}
-              type="button"
-              onClick={() => onNavigate(it.route)}
-              className="flex w-full items-center gap-3 p-4 text-left transition-colors hover:bg-[var(--surface-2)]"
-            >
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-medium text-[var(--text)]">
-                  {it.label}
-                </span>
-                <span className="block truncate text-xs text-muted">
-                  {it.desc}
-                </span>
-              </span>
-              <span aria-hidden="true" className="shrink-0 text-lg text-dim">
-                ›
-              </span>
-            </button>
-          ))}
-        </nav>
-      ) : (
-        <Fallback
-          loading={loading}
-          hasVault={Boolean(meta)}
-          emptyText={heirPending ? "Choose who inherits from Home first. These tools are for your heir." : "No tools apply to this vault right now."}
-          onNavigate={onNavigate}
-        />
-      )}
-    </ToolPage>
-  );
-}
 
 export function RemindersPage({ onNavigate }: PageProps) {
   const { meta, ownerToken, vault, pushKey, loading } = useActiveVault();

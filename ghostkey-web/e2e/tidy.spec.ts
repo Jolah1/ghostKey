@@ -100,10 +100,11 @@ test("signed in: no mainnet banner, a tidy menu, and the AI chat opens from it",
 
   await page.getByRole("button", { name: "Open menu" }).click();
   const menu = page.locator("#mobile-menu");
-  for (const item of ["Home", "Activity", "Challenges", "Family", "Recovery kit", "Ask GhostKey AI"]) {
+  for (const item of ["Home", "Activity", "Challenges", "Inheritance", "Recovery kit", "Ask GhostKey AI"]) {
     await expect(menu.getByRole("button", { name: item, exact: true })).toBeVisible();
   }
-  await expect(menu.getByRole("button", { name: "Inherit" })).toHaveCount(0);
+  // The heirs' own "Inherit" page stays off the signed-in menu.
+  await expect(menu.getByRole("button", { name: "Inherit", exact: true })).toHaveCount(0);
   await expect(menu.getByRole("button", { name: "Open your savings" })).toHaveCount(0);
   await menu.getByRole("button", { name: "Ask GhostKey AI" }).click();
   await expect(page.getByRole("dialog", { name: "GhostKey AI chat" })).toBeVisible();
@@ -119,6 +120,8 @@ test("Activity leads with savings; heir contact shows only email", async ({ page
   await expect(page.getByText("Their email")).toBeVisible();
   await expect(page.getByText("SMS", { exact: true })).toHaveCount(0);
   await expect(page.getByText("WhatsApp", { exact: true })).toHaveCount(0);
+  // Opened from Inheritance, so back goes there.
+  await expect(page.getByRole("button", { name: "← Back to inheritance" })).toBeVisible();
   await page.goto(`${base}/#/recovery`);
   await expect(page.getByRole("button", { name: "← Back to home" })).toBeVisible();
 });

@@ -11,6 +11,7 @@ import type { Route } from "./App";
 import { useTheme } from "./theme";
 import { LanguageToggle } from "./vocab";
 import { openAssist } from "./AssistChat";
+import { useFamilyAttention } from "./familyAttention";
 
 interface NavItem {
   key: Route;
@@ -35,7 +36,7 @@ const SIGNED_IN_ITEMS: NavItem[] = [
   { key: "dashboard",  label: "Home" },
   { key: "activity",   label: "Activity" },
   { key: "challenges", label: "Challenges" },
-  { key: "tools",      label: "Family" },
+  { key: "tools",      label: "Inheritance" },
   { key: "recovery",   label: "Recovery kit" },
 ];
 
@@ -50,6 +51,7 @@ interface Props {
 export function NavBar({ route, onNavigate, signedIn, canAddMoney = false }: Props) {
   const [open, setOpen] = useState(false);
   const { theme, toggle } = useTheme();
+  const familyDot = useFamilyAttention() && signedIn;
   const items = signedIn ? SIGNED_IN_ITEMS : SIGNED_OUT_ITEMS;
 
   useEffect(() => { setOpen(false); }, [route]);
@@ -81,6 +83,7 @@ export function NavBar({ route, onNavigate, signedIn, canAddMoney = false }: Pro
               aria-current={item.key === route ? "page" : undefined}
             >
               {item.label}
+              {item.key === "tools" && familyDot ? <AttentionDot /> : null}
             </button>
           ))}
           <button type="button" onClick={openAssist} className="nav-link h-full">
@@ -120,10 +123,16 @@ export function NavBar({ route, onNavigate, signedIn, canAddMoney = false }: Pro
             aria-expanded={open}
             aria-controls="mobile-menu"
             aria-label={open ? "Close menu" : "Open menu"}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-full text-[var(--text)] md:hidden"
+            className="relative inline-flex h-9 w-9 items-center justify-center rounded-full text-[var(--text)] md:hidden"
             style={{ border: "1px solid var(--border-hi)" }}
           >
             {open ? <CloseIcon /> : <MenuIcon />}
+            {!open && familyDot ? (
+              <span
+                className="absolute right-0 top-0 h-2.5 w-2.5 rounded-full bg-[var(--alarm)]"
+                aria-hidden="true"
+              />
+            ) : null}
           </button>
         </div>
       </div>
@@ -140,6 +149,7 @@ export function NavBar({ route, onNavigate, signedIn, canAddMoney = false }: Pro
                 className="nav-link mobile"
               >
                 {item.label}
+                {item.key === "tools" && familyDot ? <AttentionDot /> : null}
               </button>
             ))}
             <button
@@ -210,5 +220,15 @@ function CloseIcon() {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
       <path d="M6 6l12 12M18 6L6 18" />
     </svg>
+  );
+}
+
+/** A small dot beside a nav item that needs the owner. */
+function AttentionDot() {
+  return (
+    <span
+      className="ml-1.5 inline-block h-2 w-2 rounded-full bg-[var(--alarm)] align-middle"
+      aria-label="Needs attention"
+    />
   );
 }

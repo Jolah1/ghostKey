@@ -40,6 +40,8 @@ import {
   type ChallengeView,
 } from "./api";
 import { HeirCodeNotice } from "./HeirCodeNotice";
+import { FamilyTools } from "./FamilyTools";
+import { setFamilyAttention } from "./familyAttention";
 import { countdown, parseRfc } from "./time";
 import {
   getActiveVaultId,
@@ -68,9 +70,11 @@ import type { Route } from "./App";
 
 interface Props {
   onNavigate: (r: Route) => void;
+  /** Home (savings) or Inheritance (who inherits, set up and managed). */
+  view?: "home" | "family";
 }
 
-export function Dashboard({ onNavigate }: Props) {
+export function Dashboard({ onNavigate, view = "home" }: Props) {
   const activeId = useMemo(() => getActiveVaultId(), []);
   const meta = useMemo(
     () => (activeId ? getVaultMeta(activeId) : null),
@@ -112,8 +116,8 @@ export function Dashboard({ onNavigate }: Props) {
   const [addHeirOpen, setAddHeirOpen] = useState(false);
   // Whether the "Close this vault" confirmation is open.
   const [closeOpen, setCloseOpen] = useState(false);
-  // Whether the "Manage heirs" panel is open.
-  const [manageOpen, setManageOpen] = useState(false);
+  // Heir management shows on the Inheritance page, where the heirs are the point.
+  const manageOpen = view === "family";
   // Status of every share in this vault, keyed by share id. The share
   // on screen also has its status in `vault`; this map is what lets the
   // dashboard say anything about the vault as a whole, like whether
@@ -131,7 +135,8 @@ export function Dashboard({ onNavigate }: Props) {
   const toolsDone = useToolDoneState(activeId, ownerToken);
   // Savings lead the page, so the balance and the savings view are
   // fetched here once and shared by the headline and the savings hero.
-  const balanceState = useVaultBalance(activeId);
+  // The balance is a chain lookup; the Family view doesn't show it.
+  const balanceState = useVaultBalance(view === "home" ? activeId : null);
   const [savings, setSavings] = useState<SavingsView | null>(null);
   useEffect(() => {
     if (!activeId || !ownerToken) return;
@@ -384,6 +389,16 @@ export function Dashboard({ onNavigate }: Props) {
     if (typeof window !== "undefined") window.location.reload();
   }
 
+  // The dot on the Family tab: something there needs the owner.
+  useEffect(() => {
+    if (!vault) return;
+    setFamilyAttention(
+      Boolean(heirReachNotice(vault)) ||
+        vault.heir_code_state === "upgrade" ||
+        vault.heir_code_state === "unshared",
+    );
+  }, [vault]);
+
   if (emptied) {
     return <EmptyState onNavigate={onNavigate} reason={emptied} />;
   }
@@ -411,7 +426,11 @@ export function Dashboard({ onNavigate }: Props) {
   // why "unfunded" alone no longer means "waiting for coins".
   const heirPending = vault?.heir_pending === true;
   const statusUnfunded = vault?.status === "unfunded";
-  const isUnfunded = statusUnfunded && !heirPending;
+  // Goes by the money actually seen, not only the server's status: a slow
+  // or failed chain lookup can leave the status behind the balance, and
+  // asking someone with money in to "add your first sats" is wrong.
+  const isUnfunded =
+    statusUnfunded && !heirPending && !((balanceState.balance?.total_sat ?? 0) > 0);
   const isPastDeadline =
     vault != null &&
     !statusUnfunded &&
@@ -426,48 +445,37 @@ export function Dashboard({ onNavigate }: Props) {
     shareStatus,
   );
 
-  return (
-    <main className="bg-app fade-in">
-      {/* pb-28 reserves space for the fixed GhostKey AI button
-          (bottom-5) so it never overlaps the last activity rows. */}
-      <div className="mx-auto max-w-2xl px-5 py-10 pb-28 md:py-14 md:pb-28 lg:max-w-5xl">
-        <Greeting
-          meta={meta}
-          vault={vault}
-          now={now}
-          isClaiming={isClaiming}
-          isClosed={isClosed}
-          isUnfunded={isUnfunded}
-          isPastDeadline={isPastDeadline}
-          multiHeir={groupVaults.length > 1}
-          savings={savings}
-          balanceHidden={balanceState.hidden}
-        />
+  // Home is savings first; Family is everything about who inherits.
+  // Both are this one component so they share the vault state.
+  const familyAttention =
+    Boolean(heirNotice) ||
+    vault?.heir_code_state === "upgrade" ||
+    vault?.heir_code_state === "unshared";
+  const heirNames = groupVaults.map((g) => g.heir.name).filter(Boolean);
 
-        {vault?.status === "frozen" ? (
-          <div className="mt-4">
-            <FrozenBanner vault={vault} now={now} />
-          </div>
-        ) : vault?.status === "alarmed" ? (
-          <div className="mt-4">
-            <AlarmBanner vault={vault} now={now} />
-          </div>
-        ) : null}
-
-        {/* Single column on mobile; on desktop a wide savings column and a
-            narrower "If you stop showing up" column. The mobile source
-            order is unchanged — the grid only kicks in at lg. */}
-        <div className="mt-10 lg:grid lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start lg:gap-8">
-          <div className="min-w-0">
-            {/* Anything that needs fixing comes before the savings. T6
-                (#117): an unconfirmed email guards the one mechanism that
-                prevents an accidental trigger, so it leads the column. */}
-            {vault && !isClosed && !isClaiming && vault.owner_contact_verified === false ? (
-              <div className="mb-5">
-                <ConfirmEmailCard vaultId={vault.id} ownerToken={ownerToken} />
-              </div>
-            ) : null}
-
+  if (view === "family") {
+    return (
+      <main className="bg-app fade-in">
+        <div className="mx-auto max-w-2xl px-5 py-10 pb-28 md:py-14 md:pb-28">
+          <button
+            type="button"
+            onClick={() => onNavigate("dashboard")}
+            className="text-sm text-muted underline hover:text-[var(--text)]"
+          >
+            ← Back to home
+          </button>
+          <h1 className="mt-4 font-serif text-3xl">Inheritance</h1>
+          <p className="mt-2 text-sm text-muted">
+            If you stop signing in, your savings go to the people you choose.{" "}
+            <button
+              type="button"
+              onClick={() => onNavigate("help")}
+              className="underline underline-offset-2 hover:text-[var(--text)]"
+            >
+              How does this work?
+            </button>
+          </p>
+          <div className="mt-8">
             {heirNotice ? (
               <div className="mb-5">
                 <HeirReachCard
@@ -493,87 +501,6 @@ export function Dashboard({ onNavigate }: Props) {
                 />
               </div>
             ) : null}
-
-            {/* The state cards that outrank saving: still loading, a
-                share claimed or being claimed, not funded yet, or a
-                check-in that is overdue. Otherwise the savings lead. */}
-            {!vault && !error ? (
-              <div className="mb-5">
-                <VaultLoadingCard />
-              </div>
-            ) : isClosed ? (
-              <div className="mb-5">
-                <VaultClosedCard
-                  meta={meta}
-                  multiHeir={groupVaults.length > 1}
-                />
-              </div>
-            ) : isClaiming ? (
-              <div className="mb-5">
-                <ClaimInProgressCard
-                  meta={meta}
-                  status={vault!.status}
-                  unlockEta={vault?.unlock_eta ?? null}
-                />
-              </div>
-            ) : isUnfunded ? (
-              <div className="mb-5">
-                <AwaitingFundingCard
-                  meta={meta}
-                  held={vault.activation_held === true}
-                />
-              </div>
-            ) : vault && isPastDeadline ? (
-              <div className="mb-5">
-                <HeartbeatCard
-                  meta={meta}
-                  vault={vault}
-                  now={now}
-                  busy={busy}
-                  justChecked={justChecked}
-                  error={error}
-                  onCheckin={onCheckin}
-                />
-              </div>
-            ) : null}
-
-            {vault ? (
-              <SavingsHero
-                vaultId={vault.id}
-                ownerToken={ownerToken}
-                canManage={!isClosed && !isClaiming}
-                heirLabel={groupVaults.length > 1 ? meta.heir.name : null}
-                balanceState={balanceState}
-                savings={savings}
-                onSavings={setSavings}
-                onNavigate={onNavigate}
-              />
-            ) : null}
-
-            {vault && !isClosed && !isClaiming && !statusUnfunded && !isPastDeadline ? (
-              <div className="mt-5">
-                <CheckinRow
-                  vault={vault}
-                  justChecked={justChecked}
-                  error={error}
-                />
-              </div>
-            ) : null}
-
-            <InstallNudge />
-
-            {/* A sign-in or network error with no vault to show it on. */}
-            {!vault && error ? (
-              <p className="text-sm text-alarm">{error}</p>
-            ) : null}
-          </div>
-
-          <div className="mt-10 min-w-0 lg:mt-0">
-            <h2 className="font-serif text-2xl">Build wealth that outlives you</h2>
-            <p className="mt-1 text-sm text-muted">
-              If you stop showing up, your bitcoin goes to the people you
-              choose. It is never lost.
-            </p>
 
             {vault && heirPending && ownerToken ? (
               <div className="mt-4">
@@ -606,8 +533,6 @@ export function Dashboard({ onNavigate }: Props) {
                       ? humanAgo(parseRfc(vault.last_checkin_at), now)
                       : "Not yet"
                   }
-                  manageOpen={manageOpen}
-                  onToggleManage={() => setManageOpen((o) => !o)}
                   onNavigate={onNavigate}
                 />
               </div>
@@ -616,11 +541,6 @@ export function Dashboard({ onNavigate }: Props) {
             {/* Heir management stays one tap away, not on show. */}
             {vault && !heirPending && manageOpen ? (
               <div className="mt-4 space-y-4" data-testid="manage-heirs">
-                <p className="text-xs text-muted">
-                  Your heir can claim once your bitcoin has sat untouched for
-                  the wait above. Adding or moving money restarts that wait;
-                  checking in keeps your plan active but doesn&apos;t.
-                </p>
                 {groupVaults.length > 1 ? (
                   <HeirGroupList
                     groupVaults={groupVaults}
@@ -681,38 +601,184 @@ export function Dashboard({ onNavigate }: Props) {
               </div>
             ) : null}
 
-            {/* One suggested next step at most. Everything else lives on
-                the Family page. */}
-            <NextStep
-              onNavigate={onNavigate}
-              showPractice={
-                Boolean(vault) &&
-                !heirPending &&
-                !isClosed &&
-                !isClaiming &&
-                !vault?.drill_started_at
-              }
-              showMessage={
-                Boolean(vault) &&
-                !heirPending &&
-                !isClosed &&
-                toolsDone.hasVideo !== true
-              }
-              showReminders={
-                Boolean(vault) &&
-                !heirPending &&
-                !isClosed &&
-                !isClaiming &&
-                !statusUnfunded &&
-                Boolean(pushKey) &&
-                Boolean(ownerToken) &&
-                toolsDone.remindersOn !== true
-              }
-            />
+            {vault ? (
+              <div className="mt-6">
+                <FamilyTools
+                  vault={vault}
+                  ownerToken={ownerToken}
+                  pushKey={pushKey}
+                  done={toolsDone}
+                  onNavigate={onNavigate}
+                />
+              </div>
+            ) : !error ? (
+              <VaultLoadingCard />
+            ) : (
+              <p className="text-sm text-alarm">{error}</p>
+            )}
           </div>
         </div>
-      </div>
+      {addHeirOpen && activeId && vault ? (
+        <AddHeirPortal
+          siblingVaultId={activeId}
+          vault={vault}
+          groupId={meta.groupId}
+          ownerEmail={meta.owner.address}
+          onClose={() => setAddHeirOpen(false)}
+          onAdded={() => {
+            setAddHeirOpen(false);
+            // Reload so groupVaults / active state re-derive against
+            // the newly added sibling.
+            if (typeof window !== "undefined") window.location.reload();
+          }}
+        />
+      ) : null}
 
+      {closeOpen ? (
+        <CloseVaultDialog
+          shareCount={groupVaults.length}
+          allClaimed={allSharesClaimed}
+          busy={busy}
+          onCancel={() => setCloseOpen(false)}
+          onConfirm={onCloseVault}
+        />
+      ) : null}
+
+      </main>
+    );
+  }
+
+  return (
+    <main className="bg-app fade-in">
+      {/* pb-28 reserves space for the fixed GhostKey AI button
+          (bottom-5) so it never overlaps the last rows. */}
+      <div className="mx-auto max-w-2xl px-5 py-10 pb-28 md:py-14 md:pb-28">
+        <Greeting
+          meta={meta}
+          vault={vault}
+          now={now}
+          isClaiming={isClaiming}
+          isClosed={isClosed}
+          isUnfunded={isUnfunded}
+          isPastDeadline={isPastDeadline}
+          multiHeir={groupVaults.length > 1}
+          savings={savings}
+          balanceHidden={balanceState.hidden}
+        />
+
+        {vault?.status === "frozen" ? (
+          <div className="mt-4">
+            <FrozenBanner vault={vault} now={now} />
+          </div>
+        ) : vault?.status === "alarmed" ? (
+          <div className="mt-4">
+            <AlarmBanner vault={vault} now={now} />
+          </div>
+        ) : null}
+
+        <div className="mt-8">
+            {vault && !isClosed && !isClaiming && vault.owner_contact_verified === false ? (
+              <div className="mb-5">
+                <ConfirmEmailCard vaultId={vault.id} ownerToken={ownerToken} />
+              </div>
+            ) : null}
+
+            {/* The state cards that outrank saving: still loading, a
+                share claimed or being claimed, not funded yet, or a
+                check-in that is overdue. Otherwise the savings lead. */}
+            {!vault && !error ? (
+              <div className="mb-5">
+                <VaultLoadingCard />
+              </div>
+            ) : isClosed ? (
+              <div className="mb-5">
+                <VaultClosedCard
+                  meta={meta}
+                  multiHeir={groupVaults.length > 1}
+                />
+              </div>
+            ) : isClaiming ? (
+              <div className="mb-5">
+                <ClaimInProgressCard
+                  meta={meta}
+                  status={vault!.status}
+                  unlockEta={vault?.unlock_eta ?? null}
+                />
+              </div>
+            ) : vault && isPastDeadline ? (
+              <div className="mb-5">
+                <HeartbeatCard
+                  meta={meta}
+                  vault={vault}
+                  now={now}
+                  busy={busy}
+                  justChecked={justChecked}
+                  error={error}
+                  onCheckin={onCheckin}
+                />
+              </div>
+            ) : null}
+
+            {vault ? (
+              <SavingsHero
+                vaultId={vault.id}
+                ownerToken={ownerToken}
+                canManage={!isClosed && !isClaiming}
+                heirLabel={groupVaults.length > 1 ? meta.heir.name : null}
+                balanceState={balanceState}
+                savings={savings}
+                onSavings={setSavings}
+                onNavigate={onNavigate}
+              />
+            ) : null}
+
+            {vault && !isClosed && !isClaiming && !statusUnfunded && !isPastDeadline ? (
+              <div className="mt-5">
+                <CheckinRow
+                  vault={vault}
+                  justChecked={justChecked}
+                  error={error}
+                />
+              </div>
+            ) : null}
+
+            {vault && !isClosed ? (
+              <button
+                type="button"
+                onClick={() => onNavigate("tools")}
+                className="mt-5 flex w-full items-center gap-3 rounded-2xl border border-app px-4 py-3 text-left text-sm transition-colors hover:bg-[var(--surface-2)]"
+                data-testid="family-row"
+              >
+                <span className="min-w-0 flex-1 truncate">
+                  {heirPending
+                    ? "Choose who gets your savings if you stop signing in"
+                    : `${heirNames.join(", ") || "Your heir"} ${heirNames.length > 1 ? "inherit" : "inherits"} if you stop signing in`}
+                </span>
+                {familyAttention ? (
+                  <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--alarm)]" aria-label="Needs attention" />
+                ) : null}
+                <span aria-hidden="true" className="shrink-0 text-lg text-dim">›</span>
+              </button>
+            ) : null}
+
+            <InstallNudge />
+
+            <p className="mt-8 text-center">
+              <button
+                type="button"
+                onClick={() => onNavigate("help")}
+                className="text-sm text-muted underline underline-offset-2 hover:text-[var(--text)]"
+              >
+                How does this work?
+              </button>
+            </p>
+
+            {/* A sign-in or network error with no vault to show it on. */}
+            {!vault && error ? (
+              <p className="text-sm text-alarm">{error}</p>
+            ) : null}
+        </div>
+      </div>
       {addHeirOpen && activeId && vault ? (
         <AddHeirPortal
           siblingVaultId={activeId}
@@ -1164,17 +1230,18 @@ function BalanceDisplay({ state }: { state: VaultBalanceState }) {
             className="mt-2 font-display text-5xl font-bold tracking-tight md:text-6xl"
             data-testid="savings-balance"
           >
-            {balance ? formatAmount(balance.total_sat, unit) : loading ? "…" : "—"}
+            {balance ? formatAmount(balance.confirmed_sat, unit) : loading ? "…" : "—"}
           </div>
-          {balance && fiatLineOf(balance.total_sat) ? (
+          {balance && fiatLineOf(balance.confirmed_sat) ? (
             <p className="mt-1 text-sm text-accent" data-testid="balance-fiat">
-              {fiatLineOf(balance.total_sat)}
+              {fiatLineOf(balance.confirmed_sat)}
             </p>
           ) : null}
+          {/* Money still confirming is not counted above: it can't be
+              spent yet, so it never looks like it can. */}
           {balance && balance.unconfirmed_sat > 0 ? (
-            <p className="mt-1.5 text-sm text-muted">
-              {formatAmount(balance.confirmed_sat, unit)} confirmed,{" "}
-              {formatAmount(balance.unconfirmed_sat, unit)} pending
+            <p className="mt-1.5 text-sm text-muted" data-testid="balance-pending">
+              +{formatAmount(balance.unconfirmed_sat, unit)} on the way
             </p>
           ) : null}
           {balance && asOf ? (
@@ -1392,8 +1459,8 @@ function Greeting({
     // Money lives in a share, not in the vault as a whole, so name the
     // heir whose share is waiting on it. With several heirs this is
     // the difference between "which one?" and an obvious next step.
-    headline = `Fund ${meta.heir.name || "your heir"}'s share to start`;
-    sub = `Add Bitcoin to this share to start it. Check-ins begin once the funds arrive, not before.`;
+    headline = "Add your first sats";
+    sub = "Any amount starts your savings.";
   } else if (isClosed) {
     // A claim ends one heir's share. It never closes the vault: the
     // owner keeps the same key and can add another heir on top of it.
@@ -1485,78 +1552,7 @@ function VaultLoadingCard() {
  * owner at the balance card below (their deposit address) and reassure
  * them the countdown hasn't begun.
  */
-/**
- * Funded, but the clock has not started because the owner's email is
- * still unconfirmed (#326).
- *
- * This replaces the "fund your share" card rather than sitting next to
- * it. Telling someone who has just sent Bitcoin to go and send Bitcoin
- * is how a person concludes their money is gone.
- *
- * The tone is deliberately not an error. Nothing is wrong and nothing
- * is at risk: the coins are on-chain in an address only the owner can
- * spend from, and one tap in an email starts everything.
- */
-function ClockHeldCard({ meta }: { meta: VaultMeta }) {
-  return (
-    <section className="card relative overflow-hidden p-5 text-center md:p-8">
-      <div className="flex flex-col items-center">
-        <div
-          aria-hidden="true"
-          className="flex h-16 w-16 items-center justify-center rounded-full bg-[var(--surface-2,var(--surface))] text-3xl"
-        >
-          ✉
-        </div>
-        <h2 className="mt-6 font-serif text-2xl">
-          Your Bitcoin arrived. Confirm your email to start.
-        </h2>
-        <p className="mt-2 max-w-md text-sm text-muted">
-          The money is safe in your share and only you can spend it. We
-          just can&apos;t start your check-in clock until we know we can
-          reach you, because everything after it depends on you getting
-          our reminders. Tap the link in the email we sent, and{" "}
-          {meta.heir.name || "your heir"}&apos;s plan begins.
-        </p>
-      </div>
-    </section>
-  );
-}
 
-function AwaitingFundingCard({
-  meta,
-  held,
-}: {
-  meta: VaultMeta;
-  /** The coins have landed; what's missing is the owner's confirmed
-   *  email (#326). Same `unfunded` status, opposite instruction. */
-  held: boolean;
-}) {
-  if (held) {
-    return <ClockHeldCard meta={meta} />;
-  }
-  return (
-    <section className="card relative overflow-hidden p-5 text-center md:p-8">
-      <div className="flex flex-col items-center">
-        <div
-          aria-hidden="true"
-          className="flex h-16 w-16 items-center justify-center rounded-full bg-[var(--surface-2,var(--surface))] text-3xl"
-        >
-          ₿
-        </div>
-        <h2 className="mt-6 font-serif text-2xl">
-          {`Fund ${meta.heir.name || "your heir"}'s share to start`}
-        </h2>
-        <p className="mt-2 max-w-md text-sm text-muted">
-          Tap Add money below to send Bitcoin to this share. Nothing
-          starts until the funds arrive: no check-in clock, no reminders, and
-          {" "}
-          {meta.heir.name || "your heir"} can't be contacted. Once it's funded,
-          signing in to GhostKey keeps it active.
-        </p>
-      </div>
-    </section>
-  );
-}
 
 /**
  * Terminal-state replacement for the HeartbeatCard. Shown when the
@@ -1771,15 +1767,11 @@ function LegacySummary({
   heirNames,
   waitLabel,
   lastCheckin,
-  manageOpen,
-  onToggleManage,
   onNavigate,
 }: {
   heirNames: string[];
   waitLabel: string;
   lastCheckin: string;
-  manageOpen: boolean;
-  onToggleManage: () => void;
   onNavigate: (r: Route) => void;
 }) {
   const rows: Array<{ label: string; value: string }> = [
@@ -1801,21 +1793,6 @@ function LegacySummary({
         ))}
       </dl>
       <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 text-xs">
-        <button
-          type="button"
-          onClick={onToggleManage}
-          aria-expanded={manageOpen}
-          className="text-muted underline underline-offset-2 hover:text-[var(--text)]"
-        >
-          {manageOpen ? "Hide heirs" : "Manage heirs"}
-        </button>
-        <button
-          type="button"
-          onClick={() => onNavigate("tools")}
-          className="text-muted underline underline-offset-2 hover:text-[var(--text)]"
-        >
-          Family settings
-        </button>
         <button
           type="button"
           onClick={() => onNavigate("recovery")}
@@ -2455,65 +2432,6 @@ export function vaultCloseState(
 
 /* -------------------------------- Next step ------------------------------- */
 
-/**
- * At most one suggested task, so the dashboard never turns into a to-do
- * list. Practice comes first: it is the one thing that proves the heir's
- * address works (#327). Every tool stays on the Family page either way.
- */
-function NextStep({
-  onNavigate,
-  showPractice,
-  showMessage,
-  showReminders,
-}: {
-  onNavigate: (r: Route) => void;
-  showPractice: boolean;
-  showMessage: boolean;
-  showReminders: boolean;
-}) {
-  const next: { label: string; desc: string; route: Route } | null = showPractice
-    ? {
-        label: "Practice a claim",
-        desc: "Check your heir can be reached",
-        route: "practice",
-      }
-    : showMessage
-      ? {
-          label: "Message for your heir",
-          desc: "Record a short video",
-          route: "heir-message",
-        }
-      : showReminders
-        ? {
-            label: "Check-in reminders",
-            desc: "Get a nudge to check in",
-            route: "reminders",
-          }
-        : null;
-  if (!next) return null;
-
-  return (
-    <button
-      type="button"
-      onClick={() => onNavigate(next.route)}
-      className="card-flat mt-5 flex w-full items-center gap-3 p-4 text-left transition-colors hover:bg-[var(--surface-2)]"
-      data-testid="next-step"
-    >
-      <span className="min-w-0 flex-1">
-        <span className="block text-xs uppercase tracking-wider text-dim">
-          Next step
-        </span>
-        <span className="mt-0.5 block text-sm font-medium text-[var(--text)]">
-          {next.label}
-        </span>
-        <span className="block truncate text-xs text-muted">{next.desc}</span>
-      </span>
-      <span aria-hidden="true" className="shrink-0 text-lg text-dim">
-        ›
-      </span>
-    </button>
-  );
-}
 
 function humanAgo(then: Date, now: Date): string {
   const ms = now.getTime() - then.getTime();

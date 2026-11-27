@@ -156,6 +156,9 @@ const Dashboard = lazyRoute(() =>
 const ActivityPage = lazyRoute(() =>
   import("./ActivityPage").then((m) => ({ default: m.ActivityPage })),
 );
+const HelpPage = lazyRoute(() =>
+  import("./HelpPage").then((m) => ({ default: m.HelpPage })),
+);
 const SendPage = lazyRoute(() =>
   import("./SendPage").then((m) => ({ default: m.SendPage })),
 );
@@ -184,9 +187,6 @@ const RemindersPage = lazyRoute(() =>
 );
 const HeirContactPage = lazyRoute(() =>
   import("./VaultToolPages").then((m) => ({ default: m.HeirContactPage })),
-);
-const ToolsPage = lazyRoute(() =>
-  import("./VaultToolPages").then((m) => ({ default: m.ToolsPage })),
 );
 const RecoveryKitPage = lazyRoute(() =>
   import("./RecoveryKitPage").then((m) => ({ default: m.RecoveryKitPage })),
@@ -251,6 +251,7 @@ export type Route =
   | "checkin-legacy"
   | "inherit"
   | "status"
+  | "help"
   | "terms"
   | "privacy";
 
@@ -277,6 +278,7 @@ const VALID: Route[] = [
   "checkin-legacy",
   "inherit",
   "status",
+  "help",
   "terms",
   "privacy",
 ];
@@ -699,7 +701,7 @@ export default function App() {
       {location.kind === "route" && location.route === "practice"  && <PracticeRunPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "emergency" && <EmergencyPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "reminders" && <RemindersPage onNavigate={setRoute} />}
-      {location.kind === "route" && location.route === "tools"     && <ToolsPage onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "tools"     && <Dashboard onNavigate={setRoute} view="family" />}
       {location.kind === "route" && location.route === "recovery"  && <RecoveryKitPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "recovery-guide" && <RecoveryGuide onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "checkin" && (
@@ -738,6 +740,7 @@ export default function App() {
       )}
       {location.kind === "route" && location.route === "inherit"   && <InheritPortal />}
       {location.kind === "route" && location.route === "status"    && <StatusPage />}
+      {location.kind === "route" && location.route === "help"      && <HelpPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "terms"     && <TermsPage />}
       {location.kind === "route" && location.route === "privacy"   && <PrivacyPage />}
       {location.kind === "claim" && <ClaimPage token={location.token} />}
