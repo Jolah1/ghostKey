@@ -163,15 +163,6 @@ export interface CreateVaultFromXpubRequest {
    * Mirrors `crates/ghostkey-server/src/routes.rs::SealedSetup`.
    */
   sealed?: SealedSetup | null;
-  /**
-   * F2: opt the heir into server-side key derivation. When set, the
-   * server derives the heir's xpub deterministically from the email,
-   * the vault id, and the master key — the `heir` xpub above is
-   * ignored. The heir's browser re-derives the matching xprv at claim
-   * time via `crypto/heirKey.ts`. Use this when the heir has no
-   * Bitcoin wallet yet.
-   */
-  heir_derivation?: { email: string } | null;
   /** F4: trusted contact who will be alerted if the owner triggers
    *  a panic-stop. Optional. */
   trusted_contact?: string | null;
@@ -505,24 +496,6 @@ export interface BroadcastClaimResponse {
 }
 
 /**
- * Returned by `GET /claim/:token/heir-derivation-params` for F2
- * server-derived heirs. The browser HKDFs the `vault_secret_hex` with
- * `heir_email` to reach the BIP39 entropy that built the heir's xpub,
- * then derives the corresponding xprv locally.
- */
-export interface HeirDerivationParamsView {
-  vault_id: string;
-  network: string;
-  timelock_blocks: number;
-  vault_secret_hex: string;
-  heir_email: string;
-  /** Public watch-only descriptor pair. Lets the heir's browser build a
-   *  self-contained recovery file (block B) it can sign offline. */
-  descriptor_external: string;
-  descriptor_internal: string;
-}
-
-/**
  * Returned by `GET /claim/:token/sealed-heir` for password-vault
  * claims. The browser unwraps `heir_xprv_ct_b64` locally using a KEK
  * derived from the raw claim token (HKDF-SHA256, same path the setup
@@ -768,10 +741,6 @@ async function request<T>(
  */
 export interface CreatedVault extends VaultView {
   owner_token: string;
-  /** F2 only: the vault secret the owner's browser HKDFs with the heir
-   *  email to derive the heir's account key, so it can build the heir
-   *  envelope (block A) at setup. Absent for bring-your-own-xpub heirs. */
-  vault_secret_hex?: string | null;
 }
 
 export const api = {
@@ -1258,13 +1227,6 @@ export const api = {
    *  not created with a password (legacy vault). */
   getSealedHeirXprv: (token: string) =>
     request<SealedHeirView>(`/claim/${encodeURIComponent(token)}/sealed-heir`),
-  /** F2: fetch the parameters a server-derived heir's browser needs
-   *  to recompute the heir BIP39 mnemonic + xprv. Returns 422 if the
-   *  vault was not created with `heir_derivation`. */
-  getHeirDerivationParams: (token: string) =>
-    request<HeirDerivationParamsView>(
-      `/claim/${encodeURIComponent(token)}/heir-derivation-params`,
-    ),
   /** The vault's confirmed history, so the heir's browser can sign the
    *  claim itself (#390). Same claim-link checks as the claim. */
   getClaimCoins: (token: string) =>

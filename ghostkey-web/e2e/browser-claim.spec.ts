@@ -106,9 +106,6 @@ async function mockClaim(page: Page, lockedWith: "link" | "code") {
       );
     if (p === `${at}/unlock-estimate`)
       return route.fulfill(json({ matured: true, tip_height: fixture.chain_tip_height, unlock_height: 105, blocks_remaining: 0, unlock_eta: null }));
-    // Not a "derived heir" vault: the page moves on to the sealed key.
-    if (p === `${at}/heir-derivation-params`)
-      return route.fulfill(json({ error: "this vault was not created with heir derivation" }, 422));
     if (p === `${at}/sealed-heir`)
       return route.fulfill(
         json({

@@ -49,7 +49,7 @@ export interface ClaimErrorCopy {
  */
 export type ClaimContext =
   | "resolve" // GET /claim/:token
-  | "probe" // GET /claim/:token/{sealed-heir,heir-derivation-params}
+  | "probe" // GET /claim/:token/sealed-heir
   | "send" // POST /claim/:token/claim-signed
   | "build" // POST /claim/:token/build-psbt (legacy manual)
   | "broadcast"; // POST /claim/:token/broadcast (legacy manual)

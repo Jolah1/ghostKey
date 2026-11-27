@@ -182,10 +182,6 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
             "/claim/:token/unlock-estimate",
             get(crate::psbt_routes::claim_unlock_estimate),
         )
-        .route(
-            "/claim/:token/heir-derivation-params",
-            get(crate::psbt_routes::get_heir_derivation_params),
-        )
         .route("/claim/:token/coins", get(crate::psbt_routes::claim_coins))
         .route(
             "/claim/:token/claim-signed",
@@ -798,13 +794,6 @@ pub struct CreatedVault {
     /// inheritance is unaffected (the owner can still spend, the
     /// heir can still wait out the timelock).
     pub owner_token: String,
-    /// F2 only: the vault secret the owner's browser HKDFs with the
-    /// heir email to derive the heir's account key, so it can build the
-    /// heir envelope (block A) at setup. `None` for vaults where the
-    /// heir brought their own xpub. See the create handler for why this
-    /// is no new exposure.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vault_secret_hex: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1046,7 +1035,6 @@ async fn create_vault(
                 unlock_eta: None,
             },
             owner_token: issued_owner.token,
-            vault_secret_hex: None,
         }),
     ))
 }
@@ -1115,13 +1103,12 @@ pub struct CreateVaultFromXpubRequest {
     #[serde(default)]
     pub sealed: Option<SealedSetup>,
 
-    /// F2: heir has no Bitcoin wallet. When present, the server derives
-    /// the heir's xpub deterministically from `heir_derivation.email`
-    /// (which is also stored as the heir contact) and the master key.
-    /// The `heir` field's xpub is ignored in that path — the browser
-    /// can pass any placeholder.
+    /// Removed: the server used to derive an heir key from the master key
+    /// and the heir's email (F2), which meant it could rebuild that key.
+    /// Kept only so an old client sending `null` still works; anything
+    /// else is refused.
     #[serde(default)]
-    pub heir_derivation: Option<HeirDerivation>,
+    pub heir_derivation: Option<serde_json::Value>,
 
     /// F4: trusted contact for panic-stop. Optional. When present and
     /// the owner triggers panic-pay, this address receives an alert.
@@ -1135,15 +1122,6 @@ pub struct CreateVaultFromXpubRequest {
     /// as a JSON blob in `heir_intro_*`. Both optional.
     pub from_name: Option<String>,
     pub heir_note: Option<String>,
-}
-
-/// Opt-in heir-derivation parameters (F2).
-#[derive(Debug, Deserialize)]
-pub struct HeirDerivation {
-    /// The heir's email address. Lowercased + trimmed before use, and
-    /// also stored as the heir contact (so the claim email reaches
-    /// them through the existing scheduler). Required.
-    pub email: String,
 }
 
 /// Sealed material the browser ships during the password-vault flow.
@@ -1338,55 +1316,17 @@ async fn create_vault_from_xpub(
     let (owner_fp, owner_xpub) =
         resolve_party("owner", &req.owner.xpub, req.owner.fingerprint.as_deref())?;
 
-    // F2: when heir_derivation is opted into, the server derives the
-    // heir's account xpub from (heir_email, vault_id, master_key) and
-    // the user-supplied heir.xpub is ignored. The fingerprint is a
-    // synthetic zero — heirs in this flow have no hardware wallet, so
-    // there is no real BIP32 master to fingerprint. We allocate the
-    // vault id earlier than the non-derived branch so the derivation
-    // can consume it.
-    //
-    // The result is byte-for-byte reconstructible in the heir's browser
-    // at claim time via `crypto/heirKey.ts`, which is the whole point
-    // of the feature: an heir with nothing but an email gets a real
-    // BIP86 key without setup ahead of time.
-    // `vault_secret_hex` is returned to the owner ONLY for heir-derived
-    // (F2) vaults, so their browser can derive the heir's account key and
-    // build the heir envelope (block A) at setup — the one moment that's
-    // possible. It's no new exposure: the owner already controls the
-    // funds via the owner branch, and the heir-claim flow already hands
-    // the same secret to whoever holds a valid claim token.
-    let (id, heir_fp, heir_xpub, heir_derived, vault_secret_hex) = if let Some(hd) =
-        req.heir_derivation.as_ref()
-    {
-        let id = Uuid::new_v4().to_string();
-        let email = hd.email.trim();
-        if email.is_empty() {
-            return Err(ApiError::Validation(
-                "heir_derivation.email must be non-empty".into(),
-            ));
-        }
-        let master = crate::crypto::master_key_bytes()?;
-        // `network` is already resolved above; we just rebind here so the
-        // block is self-contained for readers and the call to
-        // `derive_heir_seed` lines up with the local variable name.
-        let net = network;
-        let (_entropy, derived_xpub) =
-            ghostkey_core::keys::derive_heir_seed(email, &id, &master, net)
-                .map_err(|e| ApiError::Validation(format!("heir_derivation: {e}")))?;
-        let vault_secret = ghostkey_core::keys::compute_vault_secret(&id, &master)
-            .map_err(|e| ApiError::Validation(format!("vault_secret: {e}")))?;
-        (
-            id,
-            Fingerprint::default(),
-            derived_xpub,
-            true,
-            Some(hex::encode(vault_secret)),
-        )
-    } else {
-        let (fp, xpub) = resolve_party("heir", &req.heir.xpub, req.heir.fingerprint.as_deref())?;
-        (Uuid::new_v4().to_string(), fp, xpub, false, None)
-    };
+    // The server never makes or derives an heir key: the heir's xpub
+    // comes from the browser (or the heir's own wallet).
+    if req.heir_derivation.as_ref().is_some_and(|v| !v.is_null()) {
+        return Err(ApiError::Validation(
+            "GhostKey no longer creates heir keys on the server. Update the app and try again."
+                .into(),
+        ));
+    }
+    let (heir_fp, heir_xpub) =
+        resolve_party("heir", &req.heir.xpub, req.heir.fingerprint.as_deref())?;
+    let id = Uuid::new_v4().to_string();
 
     if owner_xpub == heir_xpub {
         return Err(ApiError::Validation(
@@ -1445,13 +1385,7 @@ async fn create_vault_from_xpub(
         .heir_contact
         .as_deref()
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .or_else(|| {
-            req.heir_derivation
-                .as_ref()
-                .map(|hd| hd.email.trim().to_string())
-                .filter(|s| !s.is_empty())
-        });
+        .map(|s| s.to_string());
     // Both contacts get the shape check the heir-update path already
     // had and creation never did, so a malformed address is refused at
     // the only moment it is cheap to retype.
@@ -1616,8 +1550,7 @@ async fn create_vault_from_xpub(
             && (s.heir_xprv_owner_ct_b64.is_none()
                 || s.heir_xprv_owner_nonce_b64.is_none()
                 || heir_present
-                || effective_heir_contact.is_some()
-                || req.heir_derivation.is_some())
+                || effective_heir_contact.is_some())
         {
             return Err(ApiError::Validation(
                 "a vault with its heir chosen later carries only the owner-sealed heir key".into(),
@@ -1743,7 +1676,7 @@ async fn create_vault_from_xpub(
     .bind(&sealed_claim_token_at_rest)
     .bind(&sealed_claim_token_hash)
     .bind(&sealed_claim_token_issued_at)
-    .bind(if heir_derived { 1_i64 } else { 0_i64 })
+    .bind(0_i64) // heir_derived: never set any more
     .bind(&trusted_ct_b64)
     .bind(&trusted_nn_b64)
     .bind(&trusted_channel)
@@ -1885,7 +1818,6 @@ async fn create_vault_from_xpub(
                 unlock_eta: None,
             },
             owner_token: issued_owner.token,
-            vault_secret_hex,
         }),
     ))
 }
@@ -2602,12 +2534,6 @@ async fn choose_heir(
 /// blob with the vault key and rewrites the plaintext channel column so
 /// the notifier (which reads the channel from the blob) and the
 /// dashboard (which reads the column) stay in agreement.
-///
-/// Guard: on `heir_derived` (F2 "easy-setup") vaults the heir's key is
-/// derived from their email, so the address is load-bearing for the
-/// claim itself and changing it would strand the heir. Email is also the
-/// only channel that reaches that address, so both the address and the
-/// channel are locked to email there, with a clear message.
 async fn update_vault_heir(
     auth: OwnerAuth,
     State(state): State<Arc<AppState>>,
@@ -2623,16 +2549,16 @@ async fn update_vault_heir(
     validate_contact_shape(&req.channel, &contact)?;
 
     // Load the current sealed heir contact so we can preserve the heir's
-    // name and enforce the F2 email-is-load-bearing guard below.
-    type Row = (i64, Option<String>, Option<String>);
+    // name.
+    type Row = (Option<String>, Option<String>);
     let row: Row = sqlx::query_as(
-        "SELECT heir_derived, heir_contact_ciphertext, heir_contact_nonce FROM vaults WHERE id = ?",
+        "SELECT heir_contact_ciphertext, heir_contact_nonce FROM vaults WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.db)
     .await?
     .ok_or(ApiError::NotFound)?;
-    let (heir_derived, cur_ct, cur_nn) = row;
+    let (cur_ct, cur_nn) = row;
 
     // Existing name + contact, from the current blob. Normal rows hold a
     // {name, contact, channel} JSON; legacy / F2 rows hold the raw email.
@@ -2659,20 +2585,6 @@ async fn update_vault_heir(
         } else if let Ok(s) = String::from_utf8(bytes) {
             existing_contact = Some(s.trim().to_string()).filter(|s| !s.is_empty());
         }
-    }
-
-    // On F2 ("easy-setup") vaults the heir's key is derived from their
-    // email, so the email is the only address that can reach them and it's
-    // load-bearing for the claim. We can't change the address, and email is
-    // the only channel that points at it, so lock both.
-    if heir_derived != 0
-        && (existing_contact.as_deref() != Some(contact.as_str()) || req.channel != "email")
-    {
-        return Err(ApiError::Validation(
-            "This heir's recovery key is tied to their email, so we can only \
-             reach them by email at that address. It can't be changed here."
-                .into(),
-        ));
     }
 
     // Re-seal {name, contact, channel}, preserving the existing name.
@@ -6058,6 +5970,33 @@ mod tests {
         }
     }
 
+    /// The server never derives an heir key any more (it could rebuild
+    /// any key it derived). An old client sending `null` still works; a
+    /// request asking for a derived heir is refused, and nothing is made.
+    #[tokio::test]
+    async fn the_server_refuses_to_derive_an_heir_key() {
+        ensure_test_master_key();
+        let state = fresh_state().await;
+        let mut req = from_xpub_with_owner_email(0x31, &"e".repeat(64));
+        req.heir_derivation = Some(serde_json::json!({ "email": "heir@example.com" }));
+        let err = create_vault_from_xpub(State(state.clone()), Json(req))
+            .await
+            .expect_err("a derived heir must be refused");
+        assert!(matches!(err, ApiError::Validation(_)), "got {err:?}");
+        let vaults: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vaults")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(vaults, 0);
+
+        let mut req = from_xpub_with_owner_email(0x32, &"e".repeat(64));
+        req.heir_derivation = Some(serde_json::Value::Null);
+        let (code, _) = create_vault_from_xpub(State(state.clone()), Json(req))
+            .await
+            .expect("an explicit null is the normal case");
+        assert_eq!(code, StatusCode::CREATED);
+    }
+
     /// Adding a second heir for an owner who already confirmed their email
     /// must NOT re-open the "confirm your email" prompt or send another
     /// confirmation email: the new sibling inherits the verified status.
@@ -6210,12 +6149,6 @@ mod tests {
             .expect("Door B create should succeed");
         assert_eq!(code, StatusCode::CREATED);
         let id = created.vault.id.clone();
-        // Door B owners hold their own key already; no derivation secret
-        // is ever returned.
-        assert!(
-            created.vault_secret_hex.is_none(),
-            "Door B must not emit a vault secret"
-        );
 
         // The descriptor must be a real, parseable timelock vault.
         let (ext, heir_ct, heir_nn, at_rest, token_hash, derived): (
@@ -6692,7 +6625,7 @@ mod tests {
     /// blob, rewrites the plaintext channel column, preserves the heir's
     /// name, and refuses an address change on heir-derived (F2) vaults.
     #[tokio::test]
-    async fn update_vault_heir_switches_channel_and_guards_f2() {
+    async fn update_vault_heir_switches_channel() {
         ensure_test_master_key();
         let state = fresh_state().await;
         let id = "edit-heir-vault";
@@ -6805,80 +6738,5 @@ mod tests {
                 other => panic!("SMS must be refused while undeliverable, got {other:?}"),
             }
         }
-
-        // Put the vault back on email so the F2 lock below starts from a
-        // consistent {email contact, email channel} state.
-        let _ = update_vault_heir(
-            OwnerAuth {
-                vault_id: id.to_string(),
-            },
-            State(state.clone()),
-            Json(UpdateHeirRequest {
-                contact: "ara@example.com".to_string(),
-                channel: "email".to_string(),
-            }),
-        )
-        .await
-        .expect("back to email");
-
-        // Mark the vault heir-derived (F2): the email is now load-bearing
-        // for the heir's key, so an ADDRESS change must be refused...
-        sqlx::query("UPDATE vaults SET heir_derived = 1 WHERE id = ?")
-            .bind(id)
-            .execute(&state.db)
-            .await
-            .expect("set heir_derived");
-        let refused = update_vault_heir(
-            OwnerAuth {
-                vault_id: id.to_string(),
-            },
-            State(state.clone()),
-            Json(UpdateHeirRequest {
-                contact: "someone-else@example.com".to_string(),
-                channel: "email".to_string(),
-            }),
-        )
-        .await
-        .expect_err("f2 address change refused");
-        assert!(
-            matches!(refused, ApiError::Validation(_)),
-            "got {refused:?}"
-        );
-
-        // ...and so must a channel change away from email, since email is the
-        // only channel that points at the load-bearing address.
-        let refused_channel = update_vault_heir(
-            OwnerAuth {
-                vault_id: id.to_string(),
-            },
-            State(state.clone()),
-            Json(UpdateHeirRequest {
-                contact: "ara@example.com".to_string(),
-                channel: "sms".to_string(),
-            }),
-        )
-        .await
-        .expect_err("f2 channel change refused");
-        assert!(
-            matches!(refused_channel, ApiError::Validation(_)),
-            "got {refused_channel:?}"
-        );
-
-        // The email-only no-op still succeeds.
-        let ok = update_vault_heir(
-            OwnerAuth {
-                vault_id: id.to_string(),
-            },
-            State(state.clone()),
-            Json(UpdateHeirRequest {
-                contact: "ara@example.com".to_string(),
-                channel: "email".to_string(),
-            }),
-        )
-        .await
-        .expect("f2 email no-op allowed")
-        .0;
-        assert_eq!(ok.channel.as_deref(), Some("email"));
-        assert_eq!(ok.contact.as_deref(), Some("ara@example.com"));
     }
 }

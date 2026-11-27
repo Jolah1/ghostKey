@@ -196,10 +196,8 @@ pub fn ensure_master_key_loaded() -> Result<(), CryptoError> {
 
 /// Return a heap-allocated copy of the 32-byte master key.
 ///
-/// Used by heir-key-derivation paths (F2) that have to hand the master
-/// secret to `ghostkey-core::keys::derive_heir_seed`, which lives outside
-/// this crate and cannot reach the `'static` reference behind `master_key`.
-/// Callers should drop the `Vec` as soon as derivation is done.
+/// For callers that need an owned copy (the notifier). Drop the `Vec` as
+/// soon as it has been used.
 pub fn master_key_bytes() -> Result<Vec<u8>, CryptoError> {
     master_key().map(|k| k.to_vec())
 }

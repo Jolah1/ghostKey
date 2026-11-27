@@ -251,7 +251,6 @@ export function AddHeirPortal({
           owner_email_hash: hashEmailForLookup(ownerEmail),
           heir_code: heirLock.heir_code,
         },
-        heir_derivation: null,
       });
 
       // (3) Re-seal the REAL owner token under the same password KEK so

@@ -38,6 +38,8 @@ the old key.
 
 ### Role B: F2 server-derived heir keys
 
+> **Removed (November 2026).** GhostKey no longer derives heir keys from the master key: the server route, the creation path and the claim flow are gone, and a create request asking for it is refused. The one vault ever made this way has been claimed. The text below is kept as history. Role B no longer exists, so only Role A (PII encryption at rest) needs rotating.
+
 Used by `ghostkey_core::keys::derive_heir_seed` to deterministically
 recompute an F2 heir's BIP86 account xpub from `(heir_email,
 vault_id, master_key)`. The resulting xpub is embedded in the
