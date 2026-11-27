@@ -188,6 +188,11 @@ pub enum NotificationKind {
     /// check-in, and the time before the heir is contacted is the
     /// vault's own waiting period. Confirmed email only.
     CheckinRhythm,
+    /// Owner-side: a locked goal reached its unlock date.
+    LockedUnlocked,
+    /// Owner-side: a locked goal's heir date is a week away and the money
+    /// is still in it: lock it again or move it before then.
+    LockedHeirDate,
 }
 
 impl NotificationKind {
@@ -212,6 +217,8 @@ impl NotificationKind {
             NotificationKind::SavingsReminder => "savings_reminder",
             NotificationKind::ChallengeDone => "challenge_done",
             NotificationKind::CheckinRhythm => "checkin_rhythm",
+            NotificationKind::LockedUnlocked => "locked_unlocked",
+            NotificationKind::LockedHeirDate => "locked_heir_date",
         }
     }
 }

@@ -1362,6 +1362,24 @@ pub(crate) async fn save_last_balance(
     }
 }
 
+/// Bitcoin checks a date lock against the median time of the last 11
+/// blocks, which runs about an hour behind the clock. Two hours of margin
+/// keeps "ready" from coming before the chain agrees.
+pub(crate) const LOCKED_MTP_MARGIN_SECS: i64 = 2 * 3_600;
+
+/// The block height a locked goal's heir date maps to, from the current
+/// tip, at one block per ten minutes: the tip itself once the date (plus
+/// the margin) has passed, so "matured" (tip >= unlock height) is exact on
+/// the safe side and an estimate before it.
+pub(crate) fn locked_unlock_height(tip_height: u32, heir_after: u32, now: i64) -> u32 {
+    let left = heir_after as i64 + LOCKED_MTP_MARGIN_SECS - now;
+    if left <= 0 {
+        tip_height
+    } else {
+        tip_height.saturating_add(((left + 599) / 600) as u32)
+    }
+}
+
 /// Scan a vault's addresses via Esplora and compute its on-chain
 /// unlock-maturity estimate, plus the balance the same scan saw. Blocking BDK + HTTP work runs on a
 /// dedicated thread. Esplora failures surface as `BlockingErr::Esplora`
@@ -1423,7 +1441,14 @@ pub(crate) async fn scan_unlock_estimate(
             }
         }
 
-        let unlock_height = youngest_conf.map(|h| h.saturating_add(csv));
+        let unlock_height = match ghostkey_core::descriptor::locked_dates(
+            vault.descriptor_for(ghostkey_core::keys::Chain::External),
+        ) {
+            // A locked goal's heir waits for a date, not a deposit's age.
+            Some((_, heir_after)) => youngest_conf
+                .map(|_| locked_unlock_height(tip_height, heir_after, Utc::now().timestamp())),
+            None => youngest_conf.map(|h| h.saturating_add(csv)),
+        };
         let bal = wallet.balance();
         let (deposits, still_unspent) = deposits_and_unspent(&wallet);
 
@@ -3393,6 +3418,21 @@ mod tests {
             let err = summarize_signed_send(&bad, &dest, prevout, is_vault).unwrap_err();
             assert!(err.contains(why), "{err}");
         }
+    }
+
+    #[test]
+    fn a_locked_goal_is_ready_only_after_the_heir_date_and_a_margin() {
+        let heir_after = 2_000_000_000u32;
+        let at = |now: i64| locked_unlock_height(900_000, heir_after, now);
+        // Long before: in the future, at about one block per ten minutes.
+        assert_eq!(
+            at(heir_after as i64 - 6_000),
+            900_000 + (6_000 + LOCKED_MTP_MARGIN_SECS as u32) / 600
+        );
+        // At the date but inside the margin: still not ready.
+        assert!(at(heir_after as i64) > 900_000);
+        // Past the date and the margin: ready now (the tip itself).
+        assert_eq!(at(heir_after as i64 + LOCKED_MTP_MARGIN_SECS + 1), 900_000);
     }
 
     #[test]

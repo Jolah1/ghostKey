@@ -143,6 +143,16 @@ pub fn claim_challenge_window_secs() -> i64 {
     }
 }
 
+/// Locked goals are offered only when `GHOSTKEY_LOCKED_GOALS` is `1` or
+/// `true`. Off by default, so the code can ship before it's switched on;
+/// `/health` reports it and the app follows.
+pub fn locked_goals_enabled() -> bool {
+    matches!(
+        std::env::var("GHOSTKEY_LOCKED_GOALS").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

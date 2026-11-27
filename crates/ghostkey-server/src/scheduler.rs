@@ -202,6 +202,120 @@ async fn refresh_chain_caches(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// "27 May 2027" for a locked goal's Unix-seconds date.
+fn locked_date_words(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|d| d.format("%-d %B %Y").to_string())
+        .unwrap_or_else(|| "your date".to_string())
+}
+
+/// The two emails a locked goal sends, each once, and only while money is
+/// in it:
+/// - on its unlock date: "Unlocked: School fees is ready";
+/// - a week before the heir's date, when an heir is chosen: lock it again
+///   or move it, or the person you chose can claim it from that date.
+///
+/// Each email's slot is claimed (`... IS NULL` to now) before it is
+/// queued, so two ticks can't both send it.
+async fn notify_locked_goals(state: &AppState) -> anyhow::Result<()> {
+    type Row = (String, Option<String>, i64, i64, i64, Option<i64>);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT id, label, locked_until, heir_unlock_at, heir_pending, chain_has_unspent \
+           FROM vaults \
+          WHERE locked_until IS NOT NULL AND heir_unlock_at IS NOT NULL \
+            AND status != 'claimed' \
+            AND (unlocked_notified_at IS NULL OR heir_date_reminder_at IS NULL)",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    let now = Utc::now();
+    let now_ts = now.timestamp();
+    let now_s = now.to_rfc3339();
+    let base = public_base_url();
+    for (id, label, locked_until, heir_at, heir_pending, has_unspent) in rows {
+        if has_unspent != Some(1) {
+            continue; // nothing in it: nothing to unlock or lose
+        }
+        let name = label.unwrap_or_else(|| "Your locked goal".to_string());
+
+        if now_ts >= locked_until {
+            let claimed = sqlx::query(
+                "UPDATE vaults SET unlocked_notified_at = ? WHERE id = ? AND unlocked_notified_at IS NULL",
+            )
+            .bind(&now_s)
+            .bind(&id)
+            .execute(&state.db)
+            .await?;
+            if claimed.rows_affected() == 1 {
+                let heir_line = if heir_pending == 0 {
+                    format!(
+                        "If you leave it as it is, the person you chose can claim it from {}. \
+                         Lock it again or move it before then.\n\n",
+                        locked_date_words(heir_at)
+                    )
+                } else {
+                    String::new()
+                };
+                let subject = format!("Unlocked: {name} is ready");
+                let body = format!(
+                    "Hello,\n\n\
+                     {name} is unlocked. It's ready for what you saved it for.\n\n\
+                     {heir_line}\
+                     Use it, or lock it again:\n\n\
+                     {base}/#/dashboard\n\n\
+                     From GhostKey\n"
+                );
+                if let Err(e) = notifier::enqueue_owner_email(
+                    &state.db,
+                    &id,
+                    NotificationKind::LockedUnlocked,
+                    &subject,
+                    &body,
+                )
+                .await
+                {
+                    tracing::warn!(vault_id = %id, error = ?e, "unlocked email not enqueued");
+                }
+            }
+        }
+
+        if heir_pending == 0 && now_ts >= heir_at - 7 * 86_400 && now_ts < heir_at {
+            let claimed = sqlx::query(
+                "UPDATE vaults SET heir_date_reminder_at = ? WHERE id = ? AND heir_date_reminder_at IS NULL",
+            )
+            .bind(&now_s)
+            .bind(&id)
+            .execute(&state.db)
+            .await?;
+            if claimed.rows_affected() == 1 {
+                let when = locked_date_words(heir_at);
+                let subject = format!("Lock {name} again before {when}");
+                let body = format!(
+                    "Hello,\n\n\
+                     {name} unlocked on {}. From {when} the person you chose \
+                     can claim it, unless you lock it again or move it before \
+                     then.\n\n\
+                     {base}/#/dashboard\n\n\
+                     From GhostKey\n",
+                    locked_date_words(locked_until)
+                );
+                if let Err(e) = notifier::enqueue_owner_email(
+                    &state.db,
+                    &id,
+                    NotificationKind::LockedHeirDate,
+                    &subject,
+                    &body,
+                )
+                .await
+                {
+                    tracing::warn!(vault_id = %id, error = ?e, "heir-date reminder not enqueued");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Upsert the single-row scheduler heartbeat. Best-effort: a write
 /// failure is logged, not fatal -- losing a heartbeat must never stop
 /// the scheduler from doing its real work on the next tick.
@@ -231,6 +345,7 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
     // all: stop its clock before anything can nag or escalate on it.
     stand_down_never_funded_vaults(state).await?;
     issue_pre_deadline_reminders(state, &now).await?;
+    notify_locked_goals(state).await?;
     transition_ok_to_alarmed(state, &now).await?;
     send_alarm_escalations(state, &now).await?;
 
@@ -4045,6 +4160,86 @@ mod tests {
         .execute(pool)
         .await
         .expect("insert vault with sealed owner contact");
+    }
+
+    async fn make_locked(
+        pool: &SqlitePool,
+        id: &str,
+        locked_until: i64,
+        heir_at: i64,
+        heir_pending: i64,
+    ) {
+        insert_vault_with_sealed_owner(
+            pool,
+            id,
+            "ok",
+            "2099-01-01T00:00:00Z",
+            "2099-01-02T00:00:00Z",
+            "owner@example.com",
+        )
+        .await;
+        sqlx::query(
+            "UPDATE vaults SET label = 'School fees', locked_until = ?, heir_unlock_at = ?, \
+                    heir_pending = ?, chain_has_unspent = 1, \
+                    owner_contact_verified_at = '2026-01-01T00:00:00Z' WHERE id = ?",
+        )
+        .bind(locked_until)
+        .bind(heir_at)
+        .bind(heir_pending)
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn emails(pool: &SqlitePool, id: &str, kind: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE vault_id = ? AND kind = ?")
+            .bind(id)
+            .bind(kind)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_locked_goal_says_unlocked_once_and_warns_before_the_heir_date() {
+        ensure_test_master_key();
+        let state = AppState {
+            db: fresh_db().await,
+        };
+        let now = Utc::now().timestamp();
+        // Unlocked yesterday; the heir's date is five days away.
+        make_locked(&state.db, "v-lock-a", now - 86_400, now + 5 * 86_400, 0).await;
+        notify_locked_goals(&state).await.unwrap();
+        notify_locked_goals(&state).await.unwrap();
+        assert_eq!(emails(&state.db, "v-lock-a", "locked_unlocked").await, 1);
+        assert_eq!(emails(&state.db, "v-lock-a", "locked_heir_date").await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_locked_goal_says_nothing_early_empty_or_without_an_heir() {
+        ensure_test_master_key();
+        let state = AppState {
+            db: fresh_db().await,
+        };
+        let now = Utc::now().timestamp();
+        // Not unlocked yet, heir date far away.
+        make_locked(&state.db, "v-lock-b", now + 86_400, now + 200 * 86_400, 0).await;
+        // Unlocked, but empty.
+        make_locked(&state.db, "v-lock-c", now - 86_400, now + 5 * 86_400, 0).await;
+        sqlx::query("UPDATE vaults SET chain_has_unspent = 0 WHERE id = 'v-lock-c'")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        // Unlocked, no heir chosen: the unlocked email, no heir warning.
+        make_locked(&state.db, "v-lock-d", now - 86_400, now + 5 * 86_400, 1).await;
+        notify_locked_goals(&state).await.unwrap();
+        for id in ["v-lock-b", "v-lock-c"] {
+            assert_eq!(emails(&state.db, id, "locked_unlocked").await, 0, "{id}");
+            assert_eq!(emails(&state.db, id, "locked_heir_date").await, 0, "{id}");
+        }
+        assert_eq!(emails(&state.db, "v-lock-d", "locked_unlocked").await, 1);
+        assert_eq!(emails(&state.db, "v-lock-d", "locked_heir_date").await, 0);
     }
 
     /// Savings reminders (#367): sent once when due, the date moves past
