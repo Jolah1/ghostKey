@@ -3940,6 +3940,12 @@ pub struct FoundVault {
     pub status: String,
     pub created_at: DateTime<Utc>,
     pub next_deadline_at: DateTime<Utc>,
+    /// A locked goal's dates, so a new device files it under the owner's
+    /// savings rather than as an heir's share.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked_until: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heir_unlock_at: Option<i64>,
 }
 
 fn legacy_public_recovery_enabled() -> bool {
@@ -3978,6 +3984,8 @@ async fn find_vaults_by_email_legacy(
                 status,
                 created_at: parse_rfc(&created),
                 next_deadline_at: parse_rfc(&next),
+                locked_until: None,
+                heir_unlock_at: None,
             })
             .collect(),
     ))
@@ -4160,8 +4168,17 @@ async fn exchange_owner_recovery(
     .await?;
     let owner_email_hash = owner_email_hash.ok_or(ApiError::NotFound)?;
 
-    let rows = sqlx::query_as::<_, (String, Option<String>, String, String, String)>(
-        r#"SELECT id, label, status, created_at, next_deadline_at
+    type RecoveryRow = (
+        String,
+        Option<String>,
+        String,
+        String,
+        String,
+        Option<i64>,
+        Option<i64>,
+    );
+    let rows = sqlx::query_as::<_, RecoveryRow>(
+        r#"SELECT id, label, status, created_at, next_deadline_at, locked_until, heir_unlock_at
              FROM vaults
             WHERE owner_email_hash = ?
               AND password_salt_b64 IS NOT NULL
@@ -4171,7 +4188,7 @@ async fn exchange_owner_recovery(
     .fetch_all(&state.db)
     .await?;
 
-    let owner_email = if let Some((id, _, _, _, _)) = rows.first() {
+    let owner_email = if let Some((id, ..)) = rows.first() {
         let contact: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
             "SELECT owner_contact_ciphertext, owner_contact_nonce, owner_contact_channel \
              FROM vaults WHERE id = ?",
@@ -4196,7 +4213,7 @@ async fn exchange_owner_recovery(
     };
 
     let mut bundles = Vec::with_capacity(rows.len());
-    for (id, label, status, created, next) in rows {
+    for (id, label, status, created, next, locked_until, heir_unlock_at) in rows {
         let sealed_blobs = load_sealed_blobs(&state.db, &id).await?;
         bundles.push(OwnerRecoveryBundle {
             vault: FoundVault {
@@ -4205,6 +4222,8 @@ async fn exchange_owner_recovery(
                 status,
                 created_at: parse_rfc(&created),
                 next_deadline_at: parse_rfc(&next),
+                locked_until,
+                heir_unlock_at,
             },
             sealed_blobs,
         });
