@@ -75,7 +75,7 @@ export function OneTapCheckinPage({ vaultId, token, onNavigate }: Props) {
 
   return (
     <Shell>
-      <h1 className="font-serif text-3xl md:text-4xl">Still here?</h1>
+      <h1 className="font-display text-[32px] font-extrabold leading-[1.1] tracking-[-0.02em] text-[var(--text)]">Still here?</h1>
       <p className="mt-3 max-w-md text-muted">
         Tap the button to check in. It&apos;s free and resets your countdown.
       </p>
@@ -139,7 +139,7 @@ function Success({
           <path d="M20 6L9 17l-5-5" />
         </svg>
       </div>
-      <h1 className="mt-6 font-serif text-3xl md:text-4xl">You&apos;re checked in</h1>
+      <h1 className="mt-6 font-display text-[32px] font-extrabold leading-[1.1] tracking-[-0.02em] text-[var(--text)]">You&apos;re checked in</h1>
       <p className="mt-3 max-w-md text-muted">
         Thanks. Your next reminder is on{" "}
         <span className="font-medium text-[var(--text)]">{dateLine}</span>.
@@ -180,7 +180,7 @@ function Failed({
           <path d="M12 8v4M12 16h.01" />
         </svg>
       </div>
-      <h1 className="mt-6 font-serif text-3xl md:text-4xl">Couldn&apos;t check in</h1>
+      <h1 className="mt-6 font-display text-[32px] font-extrabold leading-[1.1] tracking-[-0.02em] text-[var(--text)]">Couldn&apos;t check in</h1>
       <p className="mt-3 max-w-md text-muted">{message}</p>
       <div className="mt-10 flex gap-3">
         <Button onClick={() => onNavigate("dashboard")} size="lg">

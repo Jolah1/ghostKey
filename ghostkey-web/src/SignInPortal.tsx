@@ -593,18 +593,17 @@ export function SignInPortal({
   return (
     <main className="bg-app fade-in">
       <div className="mx-auto max-w-md px-5 py-12 md:py-16">
-        <header className="text-center">
-          <p className="eyebrow">Sign in</p>
-          <h1 className="mt-6 font-serif text-3xl md:text-4xl">
+        <header>
+          <h1 className="m-0 font-display text-[32px] font-extrabold leading-[1.1] tracking-[-0.02em] text-[var(--text)]">
             {trustedUnlock
               ? timedOut
                 ? "Session timed out"
                 : "Welcome back"
               : "Open your savings on this device"}
           </h1>
-          <p className="mx-auto mt-3 text-sm text-muted">
+          <p className="m-0 mt-2.5 text-[17px] leading-normal text-muted">
             {trustedUnlock
-              ? `Enter the password for ${maskEmail(storedEmail)}.`
+              ? `Signing in is your check-in. Enter the password for ${maskEmail(storedEmail)}.`
               : recoveryToken
               ? "Enter the password you chose at setup. Your encrypted vault opens here on this device."
               : "Enter your email and we'll send a private, one-time sign-in link. We never reveal whether an address has a vault."}
@@ -662,6 +661,13 @@ export function SignInPortal({
                 {showPassword ? "Hide" : "Show"}
               </button>
             </div>
+            <button
+              type="button"
+              onClick={() => onNavigate("help")}
+              className="mt-2 text-sm font-semibold text-[var(--accent-text)] underline underline-offset-2"
+            >
+              Forgot your password?
+            </button>
           </Field> : null}
 
           {phase.kind === "sent" ? (
@@ -774,10 +780,10 @@ export function SignInPortal({
                 New here?{" "}
                 <button
                   type="button"
-                  className="underline hover:text-[var(--text)]"
+                  className="font-semibold text-[var(--accent-text)] underline underline-offset-2"
                   onClick={() => onNavigate("setup")}
                 >
-                  Set up a vault
+                  Start saving
                 </button>
               </>
             )}

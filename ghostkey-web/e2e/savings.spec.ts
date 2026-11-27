@@ -77,8 +77,9 @@ test("savings card: totals, then a goal with progress and pace", async ({ page }
   await page.goto(`${base}/#/dashboard`);
 
   // Savings lead: the headline, the balance, and one quiet check-in row.
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Stack sats. Build your future.");
-  await expect(page.getByText("You've added 150,000 sats this month.")).toBeVisible();
+  // Everyday Home has no headline to read past: the savings card leads.
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Home");
+  await expect(page.getByText("All your savings")).toBeVisible();
   await expect(page.getByTestId("savings-balance")).toHaveText("250,000 sats");
   await expect(page.getByTestId("checkin-row")).toContainText("You're checked in");
   await expect(page.getByTestId("checkin-row")).toContainText("Signing in keeps it that way");
@@ -264,9 +265,9 @@ test("Home shows the savings streak in one line, and the best one in the details
   });
   await page.goto(`${base}/#/dashboard`);
   await expect(page.getByTestId("savings-streak")).toHaveText(
-    "3 weeks in a row · add any amount by Sun 29 Nov to make it 4",
+    "3 weeks in a row. Add any amount by Sun 29 Nov to make it 4.",
   );
-  // The line sits in the hero, under the buttons, not in a card of its own.
+  // One green banner at the top of the savings, not a card of its own.
   await expect(page.getByTestId("savings-hero").getByTestId("savings-streak")).toBeVisible();
   await expect(page.getByTestId("savings-best-streak")).toHaveCount(0);
   await page.getByRole("button", { name: "Savings details" }).click();

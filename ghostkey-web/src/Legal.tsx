@@ -307,7 +307,7 @@ export function PrivacyPage() {
           </li>
           <li>
             <strong>Contact details</strong>: your email, your heir's,
-            and your optional trusted contact's, stored{" "}
+            and your optional emergency contact's, stored{" "}
             <strong>encrypted at rest</strong>. Your heir receives nothing
             from us until your schedule actually triggers.
           </li>

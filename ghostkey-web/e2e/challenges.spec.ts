@@ -226,7 +226,7 @@ test("start the 52-week challenge with your own week 1, and Don't touch it; stop
   await expectNoSerious(page);
 
   // Back home, the line counts what's going.
-  await page.getByRole("button", { name: "← Back to home" }).click();
+  await page.getByRole("button", { name: "Back to home" }).click();
   await expect(page.getByTestId("challenge-line")).toHaveText("1 challenge going · See");
 });
 
@@ -272,7 +272,7 @@ test("a finished challenge: 'You did it' on Home until waved off, and a badge", 
   await win.getByRole("button", { name: "See your badge" }).click();
   await expect(page.getByTestId("badge")).toContainText("Don't touch it for 6 months · finished");
 
-  await page.getByRole("button", { name: "← Back to home" }).click();
+  await page.getByRole("button", { name: "Back to home" }).click();
   await page.getByTestId("challenge-win").getByRole("button", { name: "Nice" }).click();
   await expect(page.getByTestId("challenge-win")).toHaveCount(0);
   // Waved off for good on this device.

@@ -456,16 +456,24 @@ export function Dashboard({ onNavigate, view = "home" }: Props) {
   if (view === "family") {
     return (
       <main className="bg-app fade-in">
-        <div className="mx-auto max-w-2xl px-5 py-10 pb-28 md:py-14 md:pb-28">
-          <button
-            type="button"
-            onClick={() => onNavigate("dashboard")}
-            className="text-sm text-muted underline hover:text-[var(--text)]"
-          >
-            ← Back to home
-          </button>
-          <h1 className="mt-4 font-serif text-3xl">Inheritance</h1>
-          <p className="mt-2 text-sm text-muted">
+        <div className="mx-auto max-w-2xl px-5 pb-28 pt-4 md:pt-8">
+          <div className="flex h-12 items-center">
+            <button
+              type="button"
+              onClick={() => onNavigate("dashboard")}
+              aria-label="Back to home"
+              title="Back to home"
+              className="flex h-11 w-11 items-center justify-center rounded-full bg-surface text-[var(--text)] transition-colors hover:bg-[var(--surface-2)]"
+            >
+              <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M15 18l-6-6 6-6" />
+              </svg>
+            </button>
+          </div>
+          <h1 className="mt-5 font-display text-[32px] font-extrabold leading-[1.1] tracking-[-0.02em] text-[var(--text)]">
+            Inheritance
+          </h1>
+          <p className="mt-2.5 text-[17px] leading-normal text-muted">
             If you stop signing in, your savings go to the people you choose.{" "}
             <button
               type="button"
@@ -652,7 +660,7 @@ export function Dashboard({ onNavigate, view = "home" }: Props) {
     <main className="bg-app fade-in">
       {/* pb-28 reserves space for the fixed GhostKey AI button
           (bottom-5) so it never overlaps the last rows. */}
-      <div className="mx-auto max-w-2xl px-5 py-10 pb-28 md:py-14 md:pb-28">
+      <div className="mx-auto max-w-2xl px-5 pb-28 pt-6 md:pt-10">
         <Greeting
           meta={meta}
           vault={vault}
@@ -742,36 +750,30 @@ export function Dashboard({ onNavigate, view = "home" }: Props) {
               </div>
             ) : null}
 
-            {vault && !isClosed ? (
-              <button
-                type="button"
-                onClick={() => onNavigate("tools")}
-                className="mt-5 flex w-full items-center gap-3 rounded-2xl border border-app px-4 py-3 text-left text-sm transition-colors hover:bg-[var(--surface-2)]"
-                data-testid="family-row"
-              >
-                <span className="min-w-0 flex-1 truncate">
-                  {heirPending
-                    ? "Choose who gets your savings if you stop signing in"
-                    : `${heirNames.join(", ") || "Your heir"} ${heirNames.length > 1 ? "inherit" : "inherits"} if you stop signing in`}
-                </span>
-                {familyAttention ? (
-                  <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--alarm)]" aria-label="Needs attention" />
-                ) : null}
-                <span aria-hidden="true" className="shrink-0 text-lg text-dim">›</span>
-              </button>
+            {vault ? (
+              <nav aria-label="More" className="mt-5">
+                <ul className="m-0 list-none overflow-hidden rounded-[20px] border border-app bg-surface p-0">
+                  {!isClosed ? (
+                    <MoreRow
+                      testId="family-row"
+                      title="Inheritance"
+                      sub={
+                        heirPending
+                          ? "Choose who gets your savings if you stop signing in"
+                          : `${heirNames.join(", ") || "Your heir"} ${heirNames.length > 1 ? "inherit" : "inherits"} if you stop signing in`
+                      }
+                      dot={familyAttention}
+                      onClick={() => onNavigate("tools")}
+                    />
+                  ) : null}
+                  <MoreRow title="Goals & badges" sub="Challenges you've joined and earned" onClick={() => onNavigate("challenges")} />
+                  <MoreRow title="Recovery files" sub="Reach your money without GhostKey" onClick={() => onNavigate("recovery")} />
+                  <MoreRow title="How does this work?" sub="Short answers to common questions" onClick={() => onNavigate("help")} />
+                </ul>
+              </nav>
             ) : null}
 
             <InstallNudge />
-
-            <p className="mt-8 text-center">
-              <button
-                type="button"
-                onClick={() => onNavigate("help")}
-                className="text-sm text-muted underline underline-offset-2 hover:text-[var(--text)]"
-              >
-                How does this work?
-              </button>
-            </p>
 
             {/* A sign-in or network error with no vault to show it on. */}
             {!vault && error ? (
@@ -860,41 +862,32 @@ function SavingsHero({
     challenges && canManage ? homeChallengeLine(challenges, (savings?.deposit_count ?? 0) > 0) : null;
 
   return (
-    <section
-      className="card ink-card overflow-hidden p-5 md:p-7"
-      data-testid="savings-hero"
-      style={{
-        // A soft glow of the accent in one corner, so the balance reads
-        // as the centre of the app without adding anything to read.
-        background:
-          "radial-gradient(120% 90% at 100% 0%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 60%), var(--surface)",
-      }}
-    >
-      {heirLabel ? (
-        <p className="mb-3 text-xs uppercase tracking-wider text-dim">
-          {heirLabel}'s share
-        </p>
-      ) : null}
-      <BalanceDisplay state={balanceState} />
+    <div className="flex flex-col gap-5" data-testid="savings-hero">
+      {savings?.streak ? <StreakLine savings={savings} /> : null}
 
-      <div className="mt-6 flex items-start gap-6">
+      <section
+        className="card ink-card relative overflow-hidden p-[22px]"
+        style={{
+          background:
+            "linear-gradient(150deg, color-mix(in srgb, var(--brand-blue) 22%, var(--surface)) 0%, var(--bg-elev) 60%)",
+        }}
+      >
+        {heirLabel ? (
+          <p className="mb-3 text-xs uppercase tracking-wider text-dim">{heirLabel}&apos;s share</p>
+        ) : null}
+        <BalanceDisplay state={balanceState} />
+      </section>
+
+      <nav aria-label="Main actions" className="grid grid-cols-3 gap-2.5">
         {canManage ? (
-          <RoundAction
-            label="Add money"
-            primary
-            onClick={() => onNavigate("add-money")}
-            icon={<path d="M12 5v14M5 12h14" />}
-          />
+          <ActionTile label="Add" name="Add money" primary onClick={() => onNavigate("add-money")} icon={<path d="M12 5v14M5 12h14" />} />
         ) : null}
         {canSend ? (
-          <RoundAction
-            label="Send"
-            onClick={() => onNavigate("send")}
-            icon={<path d="M12 19V5M6 11l6-6 6 6" />}
-          />
+          <ActionTile label="Send" name="Send" onClick={() => onNavigate("send")} icon={<path d="M12 19V5M6 11l6-6 6 6" />} />
         ) : null}
-        <RoundAction
-          label="History"
+        <ActionTile
+          label="Activity"
+          name="Activity"
           onClick={() => onNavigate("activity")}
           icon={
             <>
@@ -903,12 +896,11 @@ function SavingsHero({
             </>
           }
         />
-      </div>
+      </nav>
 
-      {savings?.streak ? <StreakLine savings={savings} /> : null}
       {win ? (
         <div
-          className="mt-5 rounded-2xl border border-[var(--accent)] bg-[color-mix(in_srgb,var(--accent)_12%,transparent)] p-4"
+          className="rounded-2xl border border-[var(--accent)] bg-[color-mix(in_srgb,var(--accent)_12%,transparent)] p-4"
           data-testid="challenge-win"
           role="status"
         >
@@ -938,7 +930,7 @@ function SavingsHero({
         </div>
       ) : null}
       {challengeLine ? (
-        <p className="mt-3 text-sm" data-testid="challenge-line">
+        <p className="m-0 px-1 text-sm" data-testid="challenge-line">
           <span className="font-medium">{challengeLine}</span>
           <span className="text-muted"> · </span>
           <button
@@ -952,7 +944,8 @@ function SavingsHero({
       ) : null}
 
       {savings ? (
-        <div className="mt-6 border-t border-app pt-5">
+        <section className="card-flat p-5">
+          <h2 className="m-0 mb-3 text-sm font-bold uppercase tracking-[0.06em] text-muted">Your goals</h2>
           <SavingsCard
             vaultId={vaultId}
             ownerToken={ownerToken}
@@ -961,9 +954,9 @@ function SavingsHero({
             balanceSat={balanceState.balance?.total_sat ?? null}
             balanceHidden={balanceState.hidden}
           />
-        </div>
+        </section>
       ) : null}
-    </section>
+    </div>
   );
 }
 
@@ -973,55 +966,83 @@ function StreakLine({ savings }: { savings: SavingsView }) {
   const line = savings.streak ? streakLine(savings.streak, savings.deposit_count) : null;
   if (!line) return null;
   return (
-    <p className="mt-5 text-sm" data-testid="savings-streak">
-      <span className="font-medium">{line.main}</span>
-      <span className="text-muted"> · {line.sub}</span>
+    <p
+      className="m-0 flex items-center gap-2.5 rounded-[14px] border border-[color-mix(in_srgb,var(--ok)_35%,transparent)] bg-[color-mix(in_srgb,var(--ok)_12%,transparent)] px-4 py-3 text-[15px]"
+      data-testid="savings-streak"
+    >
+      <span aria-hidden="true" className="gk-dot h-[9px] w-[9px] shrink-0 rounded-full bg-[var(--ok)]" />
+      <span>
+        <strong className="text-[var(--text)]">{line.main}.</strong>{" "}
+        <span className="text-[var(--text-body)]">{line.sub.charAt(0).toUpperCase() + line.sub.slice(1)}.</span>
+      </span>
     </p>
   );
 }
 
-/** A round icon button with its label underneath. */
-function RoundAction({
+/** One row in Home's list of other pages. */
+function MoreRow({
+  title,
+  sub,
+  onClick,
+  dot = false,
+  testId,
+}: {
+  title: string;
+  sub: string;
+  onClick: () => void;
+  dot?: boolean;
+  testId?: string;
+}) {
+  return (
+    <li className="border-t border-app first:border-t-0">
+      <button
+        type="button"
+        onClick={onClick}
+        data-testid={testId}
+        className="flex min-h-16 w-full items-center gap-3.5 px-4 py-2.5 text-left transition-colors hover:bg-[var(--surface-2)]"
+      >
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="text-base font-semibold text-[var(--text)]">{title}</span>
+          <span className="truncate text-sm text-muted">{sub}</span>
+        </span>
+        {dot ? <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--alarm)]" aria-label="Needs attention" /> : null}
+        <span aria-hidden="true" className="shrink-0 text-lg text-dim">
+          ›
+        </span>
+      </button>
+    </li>
+  );
+}
+
+/** A big square action: Add, Send, Activity. */
+function ActionTile({
   label,
+  name,
   icon,
   onClick,
   primary = false,
-  expanded,
 }: {
   label: string;
+  /** The accessible name, when it says more than the short label. */
+  name: string;
   icon: ReactNode;
   onClick: () => void;
   primary?: boolean;
-  /** Set for buttons that open a panel in place. */
-  expanded?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-expanded={expanded}
-      className="group flex w-16 flex-col items-center gap-2 text-xs text-[var(--text)]"
+      aria-label={name}
+      className={`flex h-[88px] flex-col items-center justify-center gap-2 rounded-[18px] text-[15px] font-bold transition-transform hover:-translate-y-0.5 ${
+        primary
+          ? "bg-[var(--accent)] text-[var(--text-on-accent)]"
+          : "border border-app bg-surface text-[var(--text)]"
+      }`}
     >
-      <span
-        className={`flex h-12 w-12 items-center justify-center rounded-full transition-transform group-hover:scale-105 ${
-          primary
-            ? "bg-[var(--accent)] text-[var(--bg)]"
-            : "border border-[var(--border-hi)] text-[var(--text)]"
-        }`}
-      >
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className="h-5 w-5"
-          aria-hidden="true"
-        >
-          {icon}
-        </svg>
-      </span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6" aria-hidden="true">
+        {icon}
+      </svg>
       {label}
     </button>
   );
@@ -1163,7 +1184,7 @@ function BalanceDisplay({ state }: { state: VaultBalanceState }) {
   return (
     <div>
       <div className="flex items-baseline justify-between gap-3">
-        <p className="text-xs uppercase tracking-wider text-dim">Your savings</p>
+        <p className="text-sm font-semibold text-muted">All your savings</p>
         <div className="flex items-center gap-3">
           {!hidden ? <UnitToggle /> : null}
           {/* Refresh only earns its place when a load failed. */}
@@ -1455,6 +1476,7 @@ function Greeting({
   // this dashboard.
   let headline: string;
   let sub: string;
+  let everyday = false;
   if (isUnfunded) {
     // Money lives in a share, not in the vault as a whole, so name the
     // heir whose share is waiting on it. With several heirs this is
@@ -1496,6 +1518,7 @@ function Greeting({
       ? `Your check-in was due ${missedAgo}. Check in to reset the clock, or your heir will be contacted.`
       : `Check in to reset the clock before your heir is contacted.`;
   } else {
+    everyday = true;
     // Everyday state: savings lead. The check-in has its own row below
     // the savings, and takes the headline back only when it's overdue.
     // Same promise as the website's front page.
@@ -1511,6 +1534,9 @@ function Greeting({
             : `You've added ${formatAmount(month, unit)} this month.`;
   }
 
+  // Everyday Home needs no headline: the savings card says it all. The
+  // heading stays for screen readers.
+  if (everyday) return <h1 className="sr-only">Home</h1>;
   return (
     <div>
       <h1 className="font-serif text-3xl md:text-4xl">{headline}</h1>
@@ -2581,7 +2607,7 @@ function FrozenBanner({ vault, now }: { vault: VaultView; now: Date }) {
         {daysLeft != null
           ? `Auto-unfreezes in ${daysLeft} day${daysLeft === 1 ? "" : "s"}.`
           : "Auto-unfreezes after the 90-day window."}
-        {vault.has_trusted_contact ? " Your trusted contact has been alerted." : ""}
+        {vault.has_trusted_contact ? " Your emergency contact has been told." : ""}
       </p>
     </section>
   );
@@ -2598,16 +2624,17 @@ export function PanicCard({
   vaultId,
   ownerToken,
   hasTrustedContact,
+  onMoveAll,
 }: {
   vaultId: string;
   ownerToken: string | null;
-  // The "alert your trusted contact" copy only renders when one is on
-  // file. Promising an alert the server won't send is issue #70.
+  // The "your emergency contact is told" copy only renders when one is
+  // on file. Promising an alert the server won't send is issue #70.
   hasTrustedContact: boolean;
+  /** "Or move everything to my own wallet": the other way out. */
+  onMoveAll?: () => void;
 }) {
-  const [step, setStep] = useState<"closed" | "confirm" | "sending" | "done">(
-    "closed",
-  );
+  const [step, setStep] = useState<"closed" | "confirm" | "sending" | "done">("closed");
   const [frozenUntil, setFrozenUntil] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -2624,79 +2651,70 @@ export function PanicCard({
     }
   }
 
+  const warnBox =
+    "rounded-[20px] border border-[color-mix(in_srgb,var(--warning)_40%,transparent)] bg-[var(--warning-tint)] p-5";
+
   if (step === "done") {
     return (
-      <section className="rounded-md border border-amber-500/40 bg-amber-500/10 p-5">
-        <p className="text-sm font-semibold text-amber-200">
-          This share is frozen.
-        </p>
-        <p className="mt-1 text-xs text-amber-100/80">
-          No claim can go ahead
+      <section className={warnBox} role="status">
+        <p className="m-0 text-base font-bold text-[var(--text)]">Your vault is frozen.</p>
+        <p className="m-0 mt-1.5 text-[15px] text-[var(--text-body)]">
+          No claim can start
           {frozenUntil
-            ? ` until ${frozenUntil.toLocaleDateString(undefined, {
-                day: "numeric",
-                month: "long",
-                year: "numeric",
-              })}`
+            ? ` until ${frozenUntil.toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}`
             : " for 90 days"}
           . It unfreezes by itself after that.
-          {hasTrustedContact ? " Your trusted contact has been alerted." : ""}
+          {hasTrustedContact ? " Your emergency contact has been told." : ""}
         </p>
       </section>
     );
   }
 
   if (step === "closed") {
+    const points = [
+      "No claim can start for 90 days",
+      ...(hasTrustedContact ? ["Your emergency contact is told"] : []),
+      "Your savings stay where they are",
+    ];
     return (
-      <section className="card-flat p-5">
-        <p className="text-xs uppercase tracking-wider text-dim">
-          Emergency stop
-        </p>
-        <p className="mt-1.5 text-sm text-muted">
-          If your password, phone or wallet is ever compromised, freeze this
-          share for 90 days
-          {hasTrustedContact ? " and alert your trusted contact" : ""}.
-        </p>
-        <div className="mt-3">
-          <Button size="sm" variant="ghost" onClick={() => setStep("confirm")}>
-            Freeze this share
-          </Button>
-        </div>
+      <section className="flex flex-col gap-5">
+        <ul className="m-0 flex list-none flex-col gap-3 p-0">
+          {points.map((t) => (
+            <li key={t} className="flex items-center gap-3 text-base text-[var(--text-body)]">
+              <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-[var(--warning)]" />
+              {t}
+            </li>
+          ))}
+        </ul>
+        <button type="button" onClick={() => setStep("confirm")} className="btn btn-primary h-14 w-full text-[17px]">
+          Freeze my vault
+        </button>
+        {onMoveAll ? (
+          <button type="button" onClick={onMoveAll} className="min-h-11 text-[15px] font-semibold text-[var(--accent-text)]">
+            Or move everything to my own wallet
+          </button>
+        ) : null}
       </section>
     );
   }
 
   return (
-    <section className="rounded-md border border-amber-500/40 bg-amber-500/5 p-5">
-      <p className="text-sm font-semibold text-amber-200">
-        Freeze this share for 90 days?
-      </p>
-      <p className="mt-1 text-xs text-amber-100/80">
-        Your heir cannot claim during that time, and it can&apos;t be undone
-        early. Your bitcoin doesn&apos;t move.
-        {hasTrustedContact
-          ? " Your trusted contact will be told you triggered an emergency freeze."
-          : ""}
+    <section className={warnBox}>
+      <p className="m-0 text-base font-bold text-[var(--text)]">Freeze your vault for 90 days?</p>
+      <p className="m-0 mt-1.5 text-[15px] text-[var(--text-body)]">
+        Your heir can&apos;t claim during that time, and it can&apos;t be undone early. Your bitcoin doesn&apos;t move.
+        {hasTrustedContact ? " Your emergency contact will be told." : ""}
       </p>
       {error ? (
-        <p className="mt-2 text-xs text-alarm" role="alert">
+        <p className="m-0 mt-2 text-sm text-alarm" role="alert">
           {error}
         </p>
       ) : null}
-      <div className="mt-3 flex flex-wrap gap-2">
-        <Button
-          size="sm"
-          onClick={() => void freeze()}
-          loading={step === "sending"}
-        >
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button onClick={() => void freeze()} loading={step === "sending"}>
           Yes, freeze it
         </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => setStep("closed")}
-          disabled={step === "sending"}
-        >
+        <Button variant="ghost" onClick={() => setStep("closed")} disabled={step === "sending"}>
           Cancel
         </Button>
       </div>

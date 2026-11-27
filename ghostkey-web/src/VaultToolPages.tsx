@@ -160,8 +160,8 @@ export function EmergencyPage({ onNavigate }: PageProps) {
   );
   return (
     <ToolPage
-      title="Emergency options"
-      intro="If your wallet is ever compromised, freeze this share so no claim can proceed."
+      title="Something feel wrong?"
+      intro="Freeze your vault if you think someone has your password or device."
       onNavigate={onNavigate}
     >
       {ready && vault ? (
@@ -170,6 +170,7 @@ export function EmergencyPage({ onNavigate }: PageProps) {
             vaultId={vault.id}
             ownerToken={ownerToken}
             hasTrustedContact={hasContact}
+            onMoveAll={() => onNavigate("send")}
           />
           <EmergencyContactCard
             vaultIds={meta?.groupId ? getVaultsByGroup(meta.groupId).map((m) => m.id) : [vault.id]}

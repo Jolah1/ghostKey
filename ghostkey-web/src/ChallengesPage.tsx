@@ -6,6 +6,7 @@
  * The server works out all progress from real deposits, spends and goals
  * (challenges.rs); this page only shows it and sends join / stop.
  */
+import { PageShell } from "./PageShell";
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import type { Route } from "./App";
 import {
@@ -86,19 +87,11 @@ export function ChallengesPage({ onNavigate }: { onNavigate: (r: Route) => void 
   const goalTitle = (id: string | null) => goals.find((g) => g.id === id)?.title ?? null;
 
   return (
-    <main className="bg-app fade-in">
-      <div className="mx-auto max-w-2xl px-5 py-10 md:py-14">
-        <button
-          type="button"
-          onClick={() => onNavigate("dashboard")}
-          className="text-sm text-muted underline hover:text-[var(--text)]"
-        >
-          ← Back to home
-        </button>
-        <h1 className="mt-4 font-serif text-3xl">Challenges</h1>
-        <p className="mt-2 text-sm text-muted">
-          Optional. Stop any time: nothing happens to your money and nobody is told.
-        </p>
+    <PageShell
+      title="Challenges"
+      intro="Optional. Stop any time: nothing happens to your money and nobody is told."
+      onNavigate={onNavigate}
+    >
 
         {!vaultId ? (
           <p className="mt-10 text-sm text-muted">Open your dashboard first.</p>
@@ -183,8 +176,7 @@ export function ChallengesPage({ onNavigate }: { onNavigate: (r: Route) => void 
             ) : null}
           </>
         )}
-      </div>
-    </main>
+    </PageShell>
   );
 }
 
