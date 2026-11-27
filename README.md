@@ -113,7 +113,7 @@ Built with Rust (ghostkey-core, ghostkey-cli, ghostkey-server) and React (ghostk
 ### Run locally
 
 ```bash
-# Prerequisites: Rust 1.85+, Node 20+
+# Prerequisites: Rust 1.88+, Node 20+
 
 cargo build --workspace
 cd ghostkey-web && npm install && npm run build && cd ..

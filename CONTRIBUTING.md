@@ -38,7 +38,7 @@ both are valuable, but only after you've read it.
 ## Setting up your environment
 
 Prerequisites:
-- Rust 1.85 or newer (`rustup install stable`)
+- Rust 1.88 or newer (`rustup install stable`)
 - Node 20 or newer (`nvm install 20`)
 - Optional: `bitcoind` v25+ on `PATH` for the regtest end-to-end test
 

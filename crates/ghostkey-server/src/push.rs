@@ -46,7 +46,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use base64::Engine;
 use hkdf::Hkdf;
 use p256::ecdsa::signature::Signer;
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
+use p256::elliptic_curve::Generate;
 use rand::RngCore;
 use sha2::Sha256;
 
@@ -126,7 +127,7 @@ impl VapidConfig {
         let public_key_b64 = B64URL.encode(
             private_key
                 .public_key()
-                .to_encoded_point(false) // uncompressed: 0x04 || X || Y
+                .to_sec1_point(false) // uncompressed: 0x04 || X || Y
                 .as_bytes(),
         );
         let subject = std::env::var("GHOSTKEY_VAPID_SUBJECT")
@@ -343,7 +344,8 @@ pub async fn send(
         .map_err(|e| PushError::Permanent(format!("stored auth not base64url: {e}")))?;
 
     // Fresh ephemeral key + salt per message, per RFC 8291 §3.1.
-    let as_secret = p256::SecretKey::random(&mut rand::thread_rng());
+    let as_secret = fresh_secret_key()
+        .map_err(|e| PushError::Transient(format!("system randomness unavailable: {e}")))?;
     let mut salt = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut salt);
 
@@ -393,6 +395,16 @@ pub async fn send(
 }
 
 /// RFC 8292 §2: short-lived ES256 JWT over the endpoint's origin.
+/// A new P-256 key straight from the operating system's secure random
+/// source (getrandom), rejection-sampled to a non-zero scalar. p256 0.14
+/// takes rand_core 0.10 RNGs, which our rand 0.8 `thread_rng` is not, so
+/// this goes to the OS directly instead of through a compatibility shim.
+fn fresh_secret_key() -> Result<p256::SecretKey, String> {
+    p256::NonZeroScalar::try_generate()
+        .map(p256::SecretKey::from)
+        .map_err(|e| e.to_string())
+}
+
 fn vapid_authorization(cfg: &VapidConfig, endpoint: &str) -> Result<String, PushError> {
     let url = reqwest::Url::parse(endpoint)
         .map_err(|e| PushError::Permanent(format!("stored endpoint is not a URL: {e}")))?;
@@ -446,7 +458,7 @@ fn encrypt_aes128gcm(
         ));
     }
 
-    let as_public_bytes = as_secret.public_key().to_encoded_point(false);
+    let as_public_bytes = as_secret.public_key().to_sec1_point(false);
     let as_public_bytes = as_public_bytes.as_bytes(); // 65
 
     let shared = p256::ecdh::diffie_hellman(as_secret.to_nonzero_scalar(), ua_public.as_affine());
@@ -538,7 +550,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_ua_public_key() {
-        let as_secret = p256::SecretKey::random(&mut rand::thread_rng());
+        let as_secret = fresh_secret_key().unwrap();
         let salt = [0u8; 16];
         // 65 bytes that are not a curve point.
         let bogus = [0x04u8; 65];
@@ -548,9 +560,9 @@ mod tests {
 
     #[test]
     fn rejects_wrong_auth_secret_length() {
-        let as_secret = p256::SecretKey::random(&mut rand::thread_rng());
-        let ua = p256::SecretKey::random(&mut rand::thread_rng());
-        let ua_pub = ua.public_key().to_encoded_point(false);
+        let as_secret = fresh_secret_key().unwrap();
+        let ua = fresh_secret_key().unwrap();
+        let ua_pub = ua.public_key().to_sec1_point(false);
         let salt = [0u8; 16];
         let err = encrypt_aes128gcm(&as_secret, &salt, ua_pub.as_bytes(), &[0u8; 8], b"x");
         assert!(err.is_err());
@@ -560,8 +572,8 @@ mod tests {
     fn vapid_header_shape() {
         // Build a config directly (no env) and check the header
         // parts parse back out.
-        let sk = p256::SecretKey::random(&mut rand::thread_rng());
-        let pk_b64 = B64URL.encode(sk.public_key().to_encoded_point(false).as_bytes());
+        let sk = fresh_secret_key().unwrap();
+        let pk_b64 = B64URL.encode(sk.public_key().to_sec1_point(false).as_bytes());
         let cfg = VapidConfig {
             private_key: sk,
             public_key_b64: pk_b64.clone(),
@@ -584,8 +596,23 @@ mod tests {
             serde_json::from_slice(&B64URL.decode(parts[1]).unwrap()).unwrap();
         assert_eq!(claims["aud"], "https://fcm.googleapis.com");
         assert_eq!(claims["sub"], "mailto:test@example.com");
-        // Signature is fixed-width r||s.
-        assert_eq!(B64URL.decode(parts[2]).unwrap().len(), 64);
+        // Signature is fixed-width r||s, and verifies against the public
+        // key the header advertises, as the push service will check it.
+        let sig_bytes = B64URL.decode(parts[2]).unwrap();
+        assert_eq!(sig_bytes.len(), 64);
+        use p256::ecdsa::signature::Verifier;
+        let vk =
+            p256::ecdsa::VerifyingKey::from_sec1_bytes(&B64URL.decode(&pk_b64).unwrap()).unwrap();
+        let sig = p256::ecdsa::Signature::from_slice(&sig_bytes).unwrap();
+        vk.verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &sig)
+            .expect("VAPID signature verifies");
+    }
+
+    #[test]
+    fn fresh_keys_come_from_the_os_and_differ() {
+        let a = fresh_secret_key().unwrap();
+        let b = fresh_secret_key().unwrap();
+        assert_ne!(a.to_bytes(), b.to_bytes());
     }
 
     #[test]
