@@ -197,6 +197,12 @@ jobs:
       - name: Run regtest end-to-end test
         run: cargo test -p ghostkey-core --test regtest_e2e -- --ignored --nocapture
 
+      # Locked goals (date-locked owner and heir leaves): owner and heir
+      # refused before their dates and accepted after, and Bitcoin Core
+      # spends from the same descriptor.
+      - name: Run locked-goal regtest spike
+        run: cargo test -p ghostkey-core --test locked_spike -- --ignored --nocapture
+
   # Runs GhostKey's standard vault format through Liana's own descriptor
   # parser (#386), so "every new vault is also a Liana wallet" stays true.
   # Lives outside the workspace (tools/liana-compat) so Liana never enters
