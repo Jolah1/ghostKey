@@ -1010,6 +1010,15 @@ async fn finish_owner_send(
         fee_sat,
         remaining_sat,
     } = sent;
+    // The cached chain data predates this send: rescan on the next
+    // refresher pass instead of acting on it for up to an hour.
+    if let Err(e) = sqlx::query("UPDATE vaults SET chain_scanned_at = NULL WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::warn!(vault_id = %id, error = ?e, "could not mark vault for rescan");
+    }
     record_event(
         &state.db,
         id,
@@ -1610,7 +1619,17 @@ pub(crate) async fn unlock_estimate_with_cache(
     if let Some(est) = fresh_cached_estimate(input, now) {
         return Ok(est);
     }
+    Ok(scan_and_cache(db, input, now).await?.estimate)
+}
 
+/// Scan the vault now and save everything the scan saw: the balance, new
+/// and spent deposits, and the maturity cache the scheduler reads. One
+/// explorer lookup serves the owner's balance and the scheduler alike.
+pub(crate) async fn scan_and_cache(
+    db: &sqlx::SqlitePool,
+    input: &EstimateInput,
+    now: chrono::DateTime<Utc>,
+) -> Result<ScanOutput, BlockingErr> {
     let net = crate::config::parse_network(&input.network)
         .map_err(|e| BlockingErr::Vault(format!("unknown vault network: {e}")))?;
 
@@ -1630,16 +1649,20 @@ pub(crate) async fn unlock_estimate_with_cache(
     )
     .await;
     backoff_record(net, &scanned, now);
-    let ScanOutput {
-        estimate: est,
-        balance,
-        deposits,
-        still_unspent,
-    } = scanned?;
+    let out = scanned?;
     // Record what came in and what left now, not when the owner next
     // opens the app, so deposits land in the right week.
-    record_scan(db, &input.vault_id, balance, &deposits, &still_unspent, now).await;
+    record_scan(
+        db,
+        &input.vault_id,
+        out.balance,
+        &out.deposits,
+        &out.still_unspent,
+        now,
+    )
+    .await;
 
+    let est = out.estimate.clone();
     if let Err(e) = sqlx::query(
         r#"UPDATE vaults
               SET chain_unlock_height = ?,
@@ -1659,7 +1682,7 @@ pub(crate) async fn unlock_estimate_with_cache(
         tracing::warn!(vault_id = %input.vault_id, error = ?e,
             "could not cache on-chain maturity estimate");
     }
-    Ok(est)
+    Ok(out)
 }
 
 /// Heir-facing view of `UnlockEstimate`: the derived fields the claim
@@ -2117,83 +2140,77 @@ pub async fn get_vault_balance(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<VaultBalanceView>, ApiError> {
-    type Row = (String, String, String, i64); // network, ext, int, timelock
+    type Row = (
+        String,         // network
+        String,         // descriptor_external
+        String,         // descriptor_internal
+        i64,            // timelock_blocks
+        Option<i64>,    // balance_confirmed_sat
+        Option<i64>,    // balance_unconfirmed_sat
+        Option<String>, // balance_checked_at
+    );
     let row: Option<Row> = sqlx::query_as(
-        r#"SELECT network, descriptor_external, descriptor_internal, timelock_blocks
+        r#"SELECT network, descriptor_external, descriptor_internal, timelock_blocks,
+                  balance_confirmed_sat, balance_unconfirmed_sat, balance_checked_at
              FROM vaults WHERE id = ?"#,
     )
     .bind(&id)
     .fetch_optional(&state.db)
     .await?;
-    let (network_s, ext, int_, timelock) = row.ok_or(ApiError::NotFound)?;
-
-    let network = crate::config::parse_network(&network_s).map_err(|name| {
+    let (network_s, ext, int_, timelock, saved_conf, saved_unconf, saved_at) =
+        row.ok_or(ApiError::NotFound)?;
+    crate::config::parse_network(&network_s).map_err(|name| {
         ApiError::Validation(format!(
             "stored vault network {name} is not a known Bitcoin network"
         ))
     })?;
 
-    let vault_config = VaultConfig {
+    // A balance read in the last minute is still the balance: a reload or
+    // a second tab doesn't cost the public explorers another lookup.
+    let now = Utc::now();
+    if let (Some(c), Some(u), Some(at)) = (saved_conf, saved_unconf, saved_at.as_deref()) {
+        let fresh = chrono::DateTime::parse_from_rfc3339(at)
+            .map(|t| (now - t.with_timezone(&Utc)).num_seconds() < BALANCE_REUSE_SECS)
+            .unwrap_or(false);
+        if fresh {
+            let (c, u) = (c.max(0) as u64, u.max(0) as u64);
+            return Ok(Json(VaultBalanceView {
+                vault_id: id,
+                network: network_s,
+                confirmed_sat: c,
+                unconfirmed_sat: u,
+                total_sat: c + u,
+            }));
+        }
+    }
+
+    // One scan for both the owner's balance and the scheduler's cache, so
+    // opening the app also brings the vault's chain data up to date.
+    let input = EstimateInput {
+        vault_id: id.clone(),
         descriptor_external: ext,
         descriptor_internal: int_,
-        timelock_blocks: timelock as u32,
-        network,
-        role: VaultRole::Watchonly,
-        label: None,
+        network: network_s.clone(),
+        timelock_blocks: timelock,
+        cached_unlock_height: None,
+        cached_tip_height: None,
+        cached_scanned_at: None,
+        cached_has_unspent: None,
     };
-    let vault = Vault::from_config(vault_config)
-        .map_err(|e| ApiError::Validation(format!("stored vault descriptors invalid: {e}")))?;
-
-    let urls = esplora_urls(network)?;
-    let id_for_resp = id.clone();
-    type ScanResult = (u64, u64, u64, Vec<ConfirmedDeposit>, Vec<String>);
-    let _concurrency_permit = crate::concurrency::acquire_esplora().await;
-    let (confirmed_sat, unconfirmed_sat, total_sat, deposits, still_unspent) =
-        tokio::task::spawn_blocking(move || -> Result<ScanResult, BlockingErr> {
-            let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
-                .map_err(|e| BlockingErr::Vault(e.to_string()))?;
-            let update = try_each_esplora(&urls, |client| {
-                client
-                    .full_scan(wallet.start_full_scan(), 5, 1)
-                    .map_err(|e| clean_esplora_err("full_scan", &e))
-            })?;
-            wallet
-                .apply_update(update)
-                .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
-            let bal = wallet.balance();
-            let confirmed = bal.confirmed.to_sat();
-            let unconfirmed = bal.trusted_pending.to_sat() + bal.untrusted_pending.to_sat();
-            let total = bal.total().to_sat();
-
-            // Deposits and spends off this same scan (no extra chain poll).
-            let (deposits, still_unspent) = deposits_and_unspent(&wallet);
-            Ok((confirmed, unconfirmed, total, deposits, still_unspent))
-        })
-        .await
-        .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
-
-    let now = Utc::now();
-    record_scan(
-        &state.db,
-        &id,
-        ScanBalance {
-            confirmed_sat,
-            unconfirmed_sat,
-        },
-        &deposits,
-        &still_unspent,
-        now,
-    )
-    .await;
-
+    let out = scan_and_cache(&state.db, &input, now).await?;
+    let (confirmed_sat, unconfirmed_sat) = (out.balance.confirmed_sat, out.balance.unconfirmed_sat);
     Ok(Json(VaultBalanceView {
-        vault_id: id_for_resp,
+        vault_id: id,
         network: network_s,
         confirmed_sat,
         unconfirmed_sat,
-        total_sat,
+        total_sat: confirmed_sat + unconfirmed_sat,
     }))
 }
+
+/// How long a balance read stays good enough to hand back without asking
+/// the explorer again.
+const BALANCE_REUSE_SECS: i64 = 60;
 
 /// Response from `GET /vaults/:id/balance/last`.
 #[derive(Debug, Serialize, PartialEq, Eq)]

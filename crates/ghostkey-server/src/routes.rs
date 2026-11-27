@@ -507,6 +507,10 @@ struct Health {
     chain_scan_healthy: bool,
     /// Consecutive failed maturity scans (0 when healthy or idle).
     chain_scan_consecutive_failures: i64,
+    /// Vaults whose chain data is more than three rescan intervals old
+    /// and whose last attempt failed. Any here makes `chain_scan_healthy`
+    /// false: one vault's success must not hide another going stale.
+    chain_scan_overdue_vaults: i64,
     /// Last maturity-scan error, null when the most recent scan (or no
     /// scan at all) succeeded.
     chain_scan_last_error: Option<String>,
@@ -621,8 +625,10 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
 
     // On-chain maturity-scan health (Fix A heir-contact gate).
     let scan = crate::scheduler::chain_scan_health_snapshot();
-    let chain_scan_healthy =
-        scan.consecutive_failures < crate::scheduler::CHAIN_SCAN_UNHEALTHY_THRESHOLD;
+    let chain_scan_overdue_vaults = crate::scheduler::overdue_scans();
+    let chain_scan_healthy = scan.consecutive_failures
+        < crate::scheduler::CHAIN_SCAN_UNHEALTHY_THRESHOLD
+        && chain_scan_overdue_vaults == 0;
 
     Json(Health {
         ok: true,
@@ -647,6 +653,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         notifier_healthy,
         chain_scan_healthy,
         chain_scan_consecutive_failures: scan.consecutive_failures as i64,
+        chain_scan_overdue_vaults,
         chain_scan_last_error: scan.last_err,
         chain_scan_last_ok_at: scan.last_ok_at.map(|t| t.to_rfc3339()),
         chain_scan_retry_at: crate::psbt_routes::explorer_retry_at(Utc::now())
