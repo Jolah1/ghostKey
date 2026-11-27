@@ -1163,6 +1163,14 @@ export const api = {
   /** Panic stop: freeze this vault for 90 days so no claim can
    *  proceed, and alert the trusted contact if one is on file. Free and
    *  signed-in. 409 when the vault is already frozen or claimed. */
+  /** Add, change or (with null) remove the emergency contact: the person
+   *  emailed if the owner ever freezes their savings. */
+  setTrustedContact: (id: string, ownerToken: string | null, contact: string | null) =>
+    request<{ has_trusted_contact: boolean }>(
+      `/vaults/${id}/trusted-contact`,
+      { method: "PUT", body: JSON.stringify({ contact }) },
+      ownerToken,
+    ),
   panicStop: (id: string, ownerToken: string | null) =>
     request<PanicResponse>(
       `/vaults/${id}/panic`,
