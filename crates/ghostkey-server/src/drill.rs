@@ -756,7 +756,6 @@ mod http_tests {
         // them — refusal by construction.
         let gets = [
             format!("/claim/{token}/sealed-heir"),
-            format!("/claim/{token}/heir-derivation-params"),
             format!("/claim/{token}/video"),
             format!("/claim/{token}/unlock-estimate"),
             format!("/claim/{token}/coins"),

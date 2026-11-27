@@ -58,7 +58,6 @@ import {
   type BroadcastClaimResponse,
   type BuildClaimPsbtResponse,
   type ClaimView,
-  type HeirDerivationParamsView,
   type SealedHeirView,
   type UnlockEstimateView,
   type VaultBalanceView,
@@ -79,7 +78,6 @@ import {
 import { b64decode, unsealHeirXprv } from "./crypto/sealing";
 import { checkHeirCode, openHeirXprv } from "./crypto/heirCode";
 import { HeirCodeEntry, HeirCodeProvider, useHeirCode } from "./HeirCodeEntry";
-import { deriveHeirKey } from "./crypto/heirKey";
 import type { Network } from "./crypto/keygen";
 import {
   buildHeirEnvelope,
@@ -803,7 +801,6 @@ function HeirClaimable({
   const [flow, setFlow] = useState<
     | { kind: "probing" }
     | { kind: "password-vault"; sealed: SealedHeirView }
-    | { kind: "derived-heir"; params: HeirDerivationParamsView }
     | { kind: "manual-psbt" }
     | { kind: "probe-error"; error: unknown }
   >({ kind: "probing" });
@@ -821,25 +818,6 @@ function HeirClaimable({
       (e.status === 422 ||
         (e.status === 400 && /this vault was not created with/i.test(e.message)));
     (async () => {
-      // F2 first: if this vault was created with heir_derivation, the
-      // dedicated endpoint returns 200 with the derivation params and
-      // we skip the sealed-heir path entirely. A wrong-shape error
-      // means this is NOT an F2 vault, in which case we fall through
-      // to the password-vault / manual-psbt detection that pre-dated
-      // F2.
-      try {
-        const params = await api.getHeirDerivationParams(token);
-        if (!cancelled) setFlow({ kind: "derived-heir", params });
-        return;
-      } catch (e) {
-        if (cancelled) return;
-        if (!isWrongShape(e)) {
-          setFlow({ kind: "probe-error", error: e });
-          return;
-        }
-        // Not an F2 vault. Fall through.
-      }
-
       try {
         const sealed = await api.getSealedHeirXprv(token);
         if (!cancelled) setFlow({ kind: "password-vault", sealed });
@@ -880,9 +858,6 @@ function HeirClaimable({
   }
   if (flow.kind === "password-vault") {
     return <PasswordVaultClaim view={view} token={token} sealed={flow.sealed} />;
-  }
-  if (flow.kind === "derived-heir") {
-    return <DerivedHeirClaim view={view} token={token} params={flow.params} />;
   }
   return <ManualPsbtClaim view={view} token={token} />;
 }
@@ -1233,227 +1208,6 @@ function PasswordVaultClaim({
  * "esplora: connection refused") all need a Bitcoin-literate human to
  * interpret. Sugaring those is misleading.
  */
-
-/* -------------------- F2: heir-derived claim flow ------------------------- */
-
-/**
- * Claim flow for vaults where the heir's xpub was server-derived
- * from an email. The heir doesn't need any setup ahead of time: we
- * recompute their BIP86 mnemonic + xprv locally from the server's
- * `vault_secret`, sign the claim in the browser, and then show the
- * heir the 12-word mnemonic so they can record it.
- *
- * Why also show the mnemonic? The heir-claim flow sweeps to a
- * destination address; once the funds land there, the derived key
- * is functionally retired. But the mnemonic is the only artefact
- * that exists OUTSIDE the server's master key — if the operator ever
- * loses the master key, the only way back to the derived xpub is the
- * mnemonic. Showing it once gives the heir a personal escape hatch.
- */
-function DerivedHeirClaim({
-  view,
-  token,
-  params,
-}: {
-  view: ClaimView;
-  token: string;
-  params: HeirDerivationParamsView;
-}) {
-  const v = useVocab();
-  const d = v.derivedClaim;
-  const c = v.claimCommon;
-  const [address, setAddress] = useState("");
-  const [feeRate, setFeeRate] = useState("");
-  const [confirming, setConfirming] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [result, setResult] = useState<
-    | { kind: "ok"; resp: BroadcastClaimResponse; mnemonic: string }
-    | null
-  >(null);
-  const [error, setError] = useState<unknown>(null);
-
-  const heir = view.heir_display_name?.trim() || "you";
-  const addrShapeOk = looksLikeBitcoinAddress(address);
-  const addrNetworkOk = addressMatchesNetwork(address, params.network);
-  const destHint = destinationHint(c, address, params.network);
-  const validAddr = addrShapeOk && addrNetworkOk;
-  const feeRateNum = parseFeeRate(feeRate);
-  const feeRateValid = feeRate.trim() === "" || feeRateNum !== null;
-
-  const onSubmit = useCallback(async () => {
-    if (!validAddr || !feeRateValid) return;
-    setSubmitting(true);
-    setError(null);
-
-    let heirXprv: string | null = null;
-    let mnemonic: string | null = null;
-    try {
-      const network = params.network as Network;
-      const derived = deriveHeirKey(
-        params.vault_secret_hex,
-        params.heir_email,
-        network,
-      );
-      heirXprv = derived.xprvBase58;
-      mnemonic = derived.mnemonic;
-      const resp = await signAndSendClaim({
-        token,
-        heirXprv,
-        descriptorExternal: params.descriptor_external,
-        descriptorInternal: params.descriptor_internal,
-        timelockBlocks: params.timelock_blocks,
-        network: params.network,
-        destination: address.trim(),
-        feeRate: feeRateNum,
-      });
-      setResult({ kind: "ok", resp, mnemonic });
-    } catch (e) {
-      setError(e);
-    } finally {
-      heirXprv = null;
-      // Keep `mnemonic` only inside `result` (state) on the success
-      // path. On error we drop it.
-      if (!mnemonic) mnemonic = null;
-      setSubmitting(false);
-    }
-  }, [address, feeRateNum, feeRateValid, params, token, validAddr]);
-
-  if (result) {
-    return (
-      <section>
-        <p className="eyebrow">{c.someonesLeftYou}</p>
-        <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-5xl">
-          Hello {heir}.
-        </h1>
-        <BroadcastSuccess result={result.resp} />
-
-        <div className="mt-10 card-flat p-5">
-          <p className="text-xs uppercase tracking-wider text-dim">
-            {d.yourBackupPhrase}
-          </p>
-          <p className="mt-2 text-sm text-soft">
-            {d.backupDescription}
-          </p>
-          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
-            {result.mnemonic.split(/\s+/).map((w, i) => (
-              <div
-                key={`${i}-${w}`}
-                className="rounded bg-[var(--bg-elev)] p-2 font-mono text-xs"
-              >
-                <span className="text-dim">{i + 1}.</span> {w}
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-    );
-  }
-
-  return (
-    <section>
-      <p className="eyebrow">{c.someonesLeftYou}</p>
-      <h1 className="mt-4 font-display text-3xl font-bold leading-tight tracking-tight md:text-5xl">
-        Hello {heir}.
-      </h1>
-      <p className="mt-4 text-base text-body md:text-lg">
-        {c.pageDescription}
-      </p>
-
-      <div className="mt-8 card-flat p-5">
-        <p className="text-xs uppercase tracking-wider text-dim">
-          Confirm this is you
-        </p>
-        <p className="mt-2 text-sm">
-          {d.confirmEmail(params.heir_email)} {d.stopAndContact}
-        </p>
-      </div>
-
-      <div className="mt-10">
-        <p className="text-xs uppercase tracking-wider text-dim">{c.step1}</p>
-        <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">
-          {c.whereShouldMoneyGo}
-        </h2>
-        <p className="mt-2 text-sm text-soft">
-          {d.whereShouldMoneyGo(networkLabel(params.network), walletExamplesInline(params.network))}
-        </p>
-
-        <div className="mt-4">
-          <input
-            type="text"
-            value={address}
-            onChange={(e) => setAddress(e.target.value)}
-            placeholder={`${bech32PrefixFor(params.network)}...`}
-            autoComplete="off"
-            className="input"
-            disabled={submitting || confirming}
-          />
-          {destHint ? (
-            <p className="mt-1 text-xs text-alarm">{destHint}</p>
-          ) : null}
-        </div>
-
-        <details className="mt-3">
-          <summary className="cursor-pointer text-xs text-muted">
-            {d.advancedFee}
-          </summary>
-          <div className="mt-2">
-            <input
-              type="text"
-              value={feeRate}
-              onChange={(e) => setFeeRate(e.target.value)}
-              placeholder={d.feePlaceholder}
-              autoComplete="off"
-              className="input"
-              disabled={submitting || confirming}
-            />
-          </div>
-        </details>
-      </div>
-
-      {error ? <ClaimErrorBlock error={error} context="send" /> : null}
-
-      {!confirming ? (
-        <div className="mt-8">
-          <Button
-            onClick={() => setConfirming(true)}
-            disabled={!validAddr || !feeRateValid}
-          >
-            {d.reviewAndClaim}
-          </Button>
-        </div>
-      ) : (
-        <div className="mt-8 card-flat p-4">
-          <ConfirmSend
-            destination={address.trim()}
-            amountLabel={c.everythingMinusFee}
-            networkLabel={networkLabel(params.network)}
-            feeLabel={feeRateNum ? `${feeRateNum} sat/vB` : c.defaultFeeLabel}
-            busy={submitting}
-            confirmLabel={submitting ? d.claimingAndSending : d.claimAndSend}
-            onConfirm={() => void onSubmit()}
-            onBack={() => setConfirming(false)}
-          />
-        </div>
-      )}
-
-      <HeirRecoveryFileSection
-        vaultId={params.vault_id}
-        network={params.network}
-        timelockBlocks={params.timelock_blocks}
-        descriptorExternal={params.descriptor_external}
-        descriptorInternal={params.descriptor_internal}
-        heirName={view.heir_display_name?.trim() || ""}
-        deriveXprv={() =>
-          deriveHeirKey(
-            params.vault_secret_hex,
-            params.heir_email,
-            params.network as Network,
-          ).xprvBase58
-        }
-      />
-    </section>
-  );
-}
 
 function ManualPsbtClaim({
   view,

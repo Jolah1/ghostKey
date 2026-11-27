@@ -685,7 +685,6 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
             heir_xprv_owner_ct_b64: sealed.heir_xprv_owner.ct,
             heir_xprv_owner_nonce_b64: sealed.heir_xprv_owner.nonce,
           },
-          heir_derivation: null,
           trusted_contact: null,
           trusted_contact_channel: null,
           from_name: draft.ownerName.trim() || null,
@@ -868,10 +867,8 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
         });
 
         // The heir key is always the browser-generated `heirParty`,
-        // sealed under this heir's claim token (above). We never ask
-        // the server to derive the heir key from its master key — that
-        // would make every such heir key recoverable from one secret.
-        // `heir_derivation` is therefore always null on new vaults.
+        // locked under this heir's code (above). The server never makes
+        // or derives an heir key: it would be able to rebuild it.
         const resp = await api.createVaultFromXpub({
           label,
           network,
@@ -896,7 +893,6 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           heir_contact: heirContactPayload,
           heir_contact_channel: heir.channel,
           sealed: sealedBody,
-          heir_derivation: null,
           trusted_contact: draft.trustedContact.trim() || null,
           trusted_contact_channel: draft.trustedContact.trim()
             ? draft.trustedContactChannel

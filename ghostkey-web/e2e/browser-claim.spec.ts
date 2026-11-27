@@ -6,6 +6,7 @@
  * Serves the built dist/ and intercepts /api/*. Prereq: `npm run build`.
  */
 import { test, expect, type Page } from "@playwright/test";
+import { settleAnimations } from "./settle";
 import AxeBuilder from "@axe-core/playwright";
 import { createServer, type Server } from "node:http";
 import { prodHeaders } from "./prodHeaders";
@@ -106,9 +107,6 @@ async function mockClaim(page: Page, lockedWith: "link" | "code") {
       );
     if (p === `${at}/unlock-estimate`)
       return route.fulfill(json({ matured: true, tip_height: fixture.chain_tip_height, unlock_height: 105, blocks_remaining: 0, unlock_eta: null }));
-    // Not a "derived heir" vault: the page moves on to the sealed key.
-    if (p === `${at}/heir-derivation-params`)
-      return route.fulfill(json({ error: "this vault was not created with heir derivation" }, 422));
     if (p === `${at}/sealed-heir`)
       return route.fulfill(
         json({
@@ -183,6 +181,7 @@ test("an heir code opens the key in the browser; a wrong code doesn't", async ({
 });
 
 async function expectNoSerious(page: Page) {
+  await settleAnimations(page);
   const results = await new AxeBuilder({ page }).analyze();
   const serious = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
   expect(serious.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);

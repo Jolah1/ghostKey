@@ -70,18 +70,12 @@ Same shape as A1, owned by the heir.
   [`crypto/sealing.ts`](../ghostkey-web/src/crypto/sealing.ts) →
   `unsealHeirXprv`, [`psbt_routes.rs`](../crates/ghostkey-server/src/psbt_routes.rs)
   → `get_sealed_heir_xprv`.
-- **F2 server-derived flow (legacy vaults only)**: there is no on-disk
-  heir key; it is recomputed deterministically from
-  `(GHOSTKEY_MASTER_KEY, heir_email, vault_id)` on both sides. **No new
-  vault uses this.** #124 stopped opting into server derivation:
-  `heir_derivation` is null on every vault created since, in both
-  `PasswordSetupPortal` and `AddHeirPortal`, and a no-wallet heir now
-  gets a browser-generated key sealed under their claim token (the
-  password-vault flow above). The derivation path stays reachable only
-  so vaults created before that change can still be claimed. Source:
-  [`crates/ghostkey-core/src/keys.rs`](../crates/ghostkey-core/src/keys.rs)
-  → `derive_heir_seed`,
-  [`ghostkey-web/src/crypto/heirKey.ts`](../ghostkey-web/src/crypto/heirKey.ts).
+- **F2 server-derived flow: removed.** It recomputed the heir key from
+  `(GHOSTKEY_MASTER_KEY, heir_email, vault_id)`, so the server could
+  rebuild it. No vault has used it since #124, the one vault made with it
+  has been claimed, and the code is gone (`derive_heir_seed`,
+  `GET /claim/:token/heir-derivation-params`, the claim page's derived
+  flow). A create request that asks for it is refused.
 
 *Retired 2026-11-25: guardian vaults are no longer offered and their code is removed. Kept for the record.*
 In a **guardian vault** (for an underage heir) the policy is
@@ -420,6 +414,8 @@ The trade-offs we made knowingly. Each one is here so a reviewer can
 argue with it.
 
 ### R1. Master-key compromise gives an attacker the F2 heir's keys
+> **Removed (November 2026).** GhostKey no longer derives heir keys from the master key: the server route, the creation path and the claim flow are gone, and a create request asking for it is refused. The one vault ever made this way has been claimed. The text below is kept as history.
+
 For vaults created via the F2 server-derived-heir wizard, the heir's
 mnemonic is a function of `(GHOSTKEY_MASTER_KEY, heir_email,
 vault_id)`. An attacker who simultaneously holds all three can

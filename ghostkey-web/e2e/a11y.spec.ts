@@ -15,6 +15,7 @@
  * Prereq: `npm run build` (the workflow builds before running this).
  */
 import { test, expect, type Page } from "@playwright/test";
+import { settleAnimations } from "./settle";
 import AxeBuilder from "@axe-core/playwright";
 import { createServer, type Server } from "node:http";
 import { readFileSync, existsSync } from "node:fs";
@@ -206,6 +207,7 @@ async function seedSignedIn(page: Page) {
 
 /** Run axe and fail on serious/critical violations, with a readable dump. */
 async function expectNoSeriousViolations(page: Page) {
+  await settleAnimations(page);
   const results = await new AxeBuilder({ page }).analyze();
   const serious = results.violations.filter(
     (v) => v.impact === "serious" || v.impact === "critical",
