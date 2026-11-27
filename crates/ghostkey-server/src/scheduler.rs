@@ -752,7 +752,7 @@ async fn enqueue_alarm_escalation(
 
     let one_tap_block = match mint_or_reuse_one_tap_token(state, vault_id, now_iso).await? {
         Some(token) => format!(
-            "Tap this link to check in. It's free:\n\n\
+            "One tap stops it. It's free:\n\n\
              {base}/#/checkin-link/{vault_id}/{token}\n\n"
         ),
         None => String::new(),
@@ -761,32 +761,23 @@ async fn enqueue_alarm_escalation(
     // email most needs to be taken seriously.
     let days_word = if days_left == 1 { "day" } else { "days" };
 
-    let (subject, lead) = match count_so_far {
-        0 => (
-            format!("You missed a check-in. {days_left} {days_word} until your heir is notified"),
-            "This is the first daily reminder.".to_string(),
-        ),
-        n if n < 7 => (
-            format!("{days_left} {days_word} left to check in before your heir is contacted"),
-            format!("You've now missed {} daily reminders.", n + 1),
-        ),
-        _ => (
-            format!(
-                "Last few days: {days_left} {days_word} until your heir is notified about {display_label}"
-            ),
-            "This is one of the final reminders.".to_string(),
-        ),
+    // One template for every day of the escalation: the subject counts
+    // down, and the last days say so.
+    let subject = if count_so_far < 7 {
+        format!("You missed a check-in. {days_left} {days_word} until your heir is contacted")
+    } else {
+        format!("Last few days: {days_left} {days_word} until your heir is contacted")
     };
 
     let body = format!(
         "Hello,\n\n\
-         {lead} {display_label} is past its check-in deadline.\n\n\
+         {days_left} {days_word} left. You missed a check-in for \
+         {display_label}. If we don't hear from you by then, your heir \
+         gets a link to claim your savings.\n\n\
          {one_tap_block}\
-         You can also open the dashboard on any device:\n\n\
+         Or sign in to GhostKey on any device. That counts too:\n\n\
          {base}/#/checkin\n\n\
-         If we don't hear from you within {days_left} {days_word}, your heir \
-         will receive a claim link for this vault. You can stop that \
-         instantly by checking in.\n\n\
+         Nothing has moved. Got this by mistake? Ignore it.\n\n\
          From GhostKey\n"
     );
 
@@ -1126,25 +1117,20 @@ async fn enqueue_pre_deadline_reminder(
     if let Some(contact) = &owner_contact {
         let when = time_left_words(secs_left);
         let tap_block = match &one_tap_url {
-            Some(url) => format!(
-                "Tap this link to say you're still here. It's free and \
-                 takes one tap:\n\n{url}\n\n"
-            ),
+            Some(url) => format!("One tap checks you in. It's free:\n\n{url}\n\n"),
             None => "The one-tap link in our earlier reminder still works.\n\n".to_string(),
         };
-        let subject = format!("Reminder: sign in to GhostKey by {deadline_friendly}");
+        let subject = format!("Still there? Sign in by {deadline_friendly}");
         let body = format!(
             "Hello,\n\n\
-             You haven't signed in to GhostKey for a while. To keep \
-             {display_label} as it is, sign in by {deadline_friendly}, \
-             {when}.\n\n\
+             Still there? Sign in by {deadline_friendly}, {when}, so \
+             {display_label} stays as it is.\n\n\
              {tap_block}\
-             Or just open GhostKey and sign in with your password:\n\n\
+             Or just sign in to GhostKey. That counts too:\n\n\
              {base}/#/checkin\n\n\
-             If we don't hear from you by then, we'll keep reminding you \
-             every day for a week. Only after that would the person you \
-             chose be contacted.\n\n\
-             If this email reached you by mistake, you can ignore it.\n\n\
+             If we don't hear from you, we remind you every day for a week \
+             before anyone is contacted. You get this because you chose to \
+             pass on your savings. Got this by mistake? Ignore it.\n\n\
              From GhostKey\n"
         );
 
@@ -1800,28 +1786,20 @@ async fn enqueue_alarm_owner(
 
     if let Some(contact) = &owner_contact {
         let one_tap_block = match &one_tap_url {
-            Some(url) => format!(
-                "Tap this link, then the button, to check in. It's free, \
-                 and it resets the clock.\n\n\
-                 {url}\n\n"
-            ),
+            Some(url) => format!("One tap stops it. It's free:\n\n{url}\n\n"),
             None => String::new(),
         };
 
-        let subject = "You missed your GhostKey check-in".to_string();
+        let subject = "You missed a check-in".to_string();
         let body = format!(
             "Hello,\n\n\
-             {display_label} just missed its check-in deadline. This is the \
-             last reminder before the next step.\n\n\
+             You missed a check-in for {display_label}. If we don't hear \
+             from you by {claim_friendly}, your heir gets a link to claim \
+             your savings.\n\n\
              {one_tap_block}\
-             You can also open the dashboard on any device and check in \
-             to reset the clock:\n\n\
+             Or sign in to GhostKey on any device. That counts too:\n\n\
              {base}/#/checkin\n\n\
-             If we don't hear from you by {claim_friendly}, your heir will \
-             receive their claim link automatically. You can stop that at \
-             any moment up to then by checking in.\n\n\
-             If this email reached you by mistake, you can ignore it. \
-             Nothing happens until the deadline above.\n\n\
+             Nothing has moved. Got this by mistake? Ignore it.\n\n\
              From GhostKey\n"
         );
 

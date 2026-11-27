@@ -48,7 +48,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use lettre::message::{header, Message};
+use lettre::message::{Message, MultiPart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 use serde::Deserialize;
@@ -812,7 +812,7 @@ async fn tick_once(pool: &SqlitePool, backends: Arc<Backends>) -> anyhow::Result
         // told the owner the message went out, and no operator signal
         // ever fired. Fail it loudly instead — if the backend is
         // configured later, the sender can re-enqueue.
-        let dispatch = dispatch_send(pool, &backends, channel, id, &vault_id, &draft).await;
+        let dispatch = dispatch_send(pool, &backends, channel, id, &vault_id, &kind, &draft).await;
         let outcome = match dispatch {
             None => {
                 let reason = undeliverable_reason(channel);
@@ -897,6 +897,7 @@ async fn dispatch_send(
     channel: Channel,
     notif_id: i64,
     vault_id: &str,
+    kind: &str,
     draft: &DraftPayload,
 ) -> Option<Result<Option<String>, SendError>> {
     // Each arm awaits a different `async fn`, which produces a
@@ -906,7 +907,7 @@ async fn dispatch_send(
     match channel {
         Channel::Email => {
             let cfg = backends.smtp.as_ref()?;
-            Some(send_email(cfg, notif_id, draft).await)
+            Some(send_email(cfg, notif_id, kind, draft).await)
         }
         Channel::Sms | Channel::Whatsapp => {
             let cfg = backends.twilio.as_ref()?;
@@ -1160,6 +1161,7 @@ fn message_id_for(notif_id: i64, domain: &str) -> Result<String, SendError> {
 async fn send_email(
     cfg: &SmtpConfig,
     notif_id: i64,
+    kind: &str,
     draft: &DraftPayload,
 ) -> Result<Option<String>, SendError> {
     let from = cfg
@@ -1186,8 +1188,12 @@ async fn send_email(
                 .trim_end_matches('>')
                 .to_string(),
         ))
-        .header(header::ContentType::TEXT_PLAIN)
-        .body(draft.body.clone())
+        // The plain text, and the same words in the redesign's layout,
+        // as one message: inboxes that won't show HTML get the text.
+        .multipart(MultiPart::alternative_plain_html(
+            draft.body.clone(),
+            crate::email_html::render(kind, &draft.subject, &draft.body),
+        ))
         .map_err(|e| SendError::Build(format!("msg: {e}")))?;
 
     let mut builder = if cfg.starttls {
