@@ -341,6 +341,10 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
         .route("/vaults/:id/checkin", post(checkin))
         .route("/vaults/:id/panic", post(crate::panic::panic_stop))
         .route(
+            "/vaults/:id/trusted-contact",
+            put(crate::panic::put_trusted_contact),
+        )
+        .route(
             "/vaults/:id/checkin-from-link/:token",
             post(checkin_from_link),
         )

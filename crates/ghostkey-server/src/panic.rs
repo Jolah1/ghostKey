@@ -192,3 +192,74 @@ pub async fn panic_stop(
         frozen_until,
     }))
 }
+
+/* -------------------------------------------------------------------------- *
+ *  PUT /vaults/:id/trusted-contact                                           *
+ *                                                                            *
+ *  Add, change or remove the emergency contact: the one person told when the *
+ *  owner triggers a panic stop. Setup no longer asks for it, so this is the  *
+ *  only way to set it. Sealed at rest like every other contact; email only,  *
+ *  the one channel that delivers.                                            *
+ * -------------------------------------------------------------------------- */
+
+#[derive(Debug, serde::Deserialize)]
+pub struct TrustedContactRequest {
+    /// The contact's email. Empty or absent removes it.
+    #[serde(default)]
+    pub contact: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TrustedContactView {
+    pub has_trusted_contact: bool,
+}
+
+pub async fn put_trusted_contact(
+    auth: OwnerAuth,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<TrustedContactRequest>,
+) -> Result<Json<TrustedContactView>, ApiError> {
+    let id = auth.vault_id;
+    let contact = req
+        .contact
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    match contact {
+        Some(c) => {
+            let shaped = c.chars().count() <= 254
+                && c.split_once('@')
+                    .is_some_and(|(user, host)| !user.is_empty() && host.contains('.'))
+                && !c.chars().any(char::is_whitespace);
+            if !shaped {
+                return Err(ApiError::Validation(
+                    "That email looks off. Double-check it.".into(),
+                ));
+            }
+            let sealed = crate::crypto::seal_for_vault(&id, c.as_bytes())?;
+            sqlx::query(
+                "UPDATE vaults SET trusted_contact_ciphertext = ?, trusted_contact_nonce = ?, \
+                        trusted_contact_channel = 'email' WHERE id = ?",
+            )
+            .bind(&sealed.ciphertext_b64)
+            .bind(&sealed.nonce_b64)
+            .bind(&id)
+            .execute(&state.db)
+            .await?;
+            record_event(&state.db, &id, "trusted_contact_set", None).await?;
+        }
+        None => {
+            sqlx::query(
+                "UPDATE vaults SET trusted_contact_ciphertext = NULL, trusted_contact_nonce = NULL, \
+                        trusted_contact_channel = NULL WHERE id = ?",
+            )
+            .bind(&id)
+            .execute(&state.db)
+            .await?;
+            record_event(&state.db, &id, "trusted_contact_removed", None).await?;
+        }
+    }
+    Ok(Json(TrustedContactView {
+        has_trusted_contact: contact.is_some(),
+    }))
+}

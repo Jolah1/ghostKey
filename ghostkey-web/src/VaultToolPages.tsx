@@ -13,6 +13,7 @@ import type { Route } from "./App";
 import { api, ApiError } from "./api";
 import { ShowHeirCodeCard } from "./HeirCodeCard";
 import { useActiveVault } from "./useActiveVault";
+import { getVaultOwnerToken, getVaultsByGroup } from "./vaultStore";
 import { PageShell } from "./PageShell";
 import { VideoMessageCard } from "./VideoMessageCard";
 import { PracticeClaimCard, type HeirChannel } from "./PracticeClaimCard";
@@ -147,6 +148,8 @@ export function PracticeRunPage({ onNavigate }: PageProps) {
 
 export function EmergencyPage({ onNavigate }: PageProps) {
   const { vault, loading, meta, ownerToken } = useActiveVault();
+  const [contactChanged, setHasContact] = useState<boolean | null>(null);
+  const hasContact = contactChanged ?? Boolean(vault?.has_trusted_contact);
   const isClaiming =
     vault?.status === "timelock_started" || vault?.status === "claiming";
   const ready = Boolean(
@@ -162,11 +165,18 @@ export function EmergencyPage({ onNavigate }: PageProps) {
       onNavigate={onNavigate}
     >
       {ready && vault ? (
-        <PanicCard
-          vaultId={vault.id}
-          ownerToken={ownerToken}
-          hasTrustedContact={Boolean(vault.has_trusted_contact)}
-        />
+        <>
+          <PanicCard
+            vaultId={vault.id}
+            ownerToken={ownerToken}
+            hasTrustedContact={hasContact}
+          />
+          <EmergencyContactCard
+            vaultIds={meta?.groupId ? getVaultsByGroup(meta.groupId).map((m) => m.id) : [vault.id]}
+            hasContact={hasContact}
+            onChange={setHasContact}
+          />
+        </>
       ) : (
         <Fallback
           loading={loading}
@@ -176,6 +186,94 @@ export function EmergencyPage({ onNavigate }: PageProps) {
         />
       )}
     </ToolPage>
+  );
+}
+
+/** The emergency contact: who we email if the owner freezes their
+ *  savings. The server keeps it sealed and never sends it back, so this
+ *  says only whether one is on file. Saved to every share in the account. */
+function EmergencyContactCard({
+  vaultIds,
+  hasContact,
+  onChange,
+}: {
+  vaultIds: string[];
+  hasContact: boolean;
+  onChange: (has: boolean) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(contact: string | null) {
+    setBusy(true);
+    setError(null);
+    try {
+      for (const id of vaultIds) {
+        await api.setTrustedContact(id, getVaultOwnerToken(id), contact);
+      }
+      onChange(contact !== null);
+      setEditing(false);
+      setEmail("");
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Couldn't save that. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="card-flat mt-6 p-5" data-testid="emergency-contact">
+      <h2 className="font-medium">Emergency contact</h2>
+      <p className="mt-1 text-sm text-muted">
+        If you ever freeze your savings, we email this person to check on you.
+      </p>
+      {editing || !hasContact ? (
+        <form
+          className="mt-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (email.trim()) void save(email.trim());
+          }}
+        >
+          <input
+            type="email"
+            aria-label="Their email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="Their email"
+            autoComplete="off"
+            className="input w-full"
+          />
+          <div className="mt-3 flex gap-2">
+            <Button type="submit" size="sm" disabled={!email.trim()} loading={busy}>
+              Save
+            </Button>
+            {editing ? (
+              <Button type="button" size="sm" variant="ghost" onClick={() => setEditing(false)}>
+                Cancel
+              </Button>
+            ) : null}
+          </div>
+        </form>
+      ) : (
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <p className="text-sm">Someone is on file.</p>
+          <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
+            Change
+          </Button>
+          <Button size="sm" variant="ghost" loading={busy} onClick={() => void save(null)}>
+            Remove
+          </Button>
+        </div>
+      )}
+      {error ? (
+        <p className="mt-3 text-sm text-alarm" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </section>
   );
 }
 
