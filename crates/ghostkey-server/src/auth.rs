@@ -1654,6 +1654,113 @@ mod http_tests {
         assert_eq!(events, 1);
     }
 
+    async fn put_trusted(
+        state: std::sync::Arc<crate::AppState>,
+        id: &str,
+        token: Option<&str>,
+        body: &str,
+    ) -> axum::response::Response {
+        let mut req = Request::builder()
+            .method("PUT")
+            .uri(format!("/vaults/{id}/trusted-contact"))
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(t) = token {
+            req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        routes::router(state)
+            .oneshot(req.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn trusted_on_file(pool: &SqlitePool, id: &str) -> Option<String> {
+        let (ct, nn, ch): (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT trusted_contact_ciphertext, trusted_contact_nonce, trusted_contact_channel \
+               FROM vaults WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        crate::notifier::parse_owner_contact(id, ct.as_deref(), nn.as_deref(), ch.as_deref())
+            .unwrap()
+            .map(|c| c.address)
+    }
+
+    #[tokio::test]
+    async fn the_emergency_contact_can_be_set_changed_and_removed_after_setup() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-tc-A", Some(&issued.hash_hex)).await;
+
+        let resp = put_trusted(
+            state.clone(),
+            "vault-tc-A",
+            Some(&issued.token),
+            r#"{"contact":" friend@example.com "}"#,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            trusted_on_file(&state.db, "vault-tc-A").await.as_deref(),
+            Some("friend@example.com")
+        );
+
+        let resp = put_trusted(
+            state.clone(),
+            "vault-tc-A",
+            Some(&issued.token),
+            r#"{"contact":"other@example.com"}"#,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            trusted_on_file(&state.db, "vault-tc-A").await.as_deref(),
+            Some("other@example.com")
+        );
+
+        let resp = put_trusted(
+            state.clone(),
+            "vault-tc-A",
+            Some(&issued.token),
+            r#"{"contact":null}"#,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(trusted_on_file(&state.db, "vault-tc-A").await, None);
+    }
+
+    #[tokio::test]
+    async fn the_emergency_contact_needs_the_owner_and_a_real_email() {
+        let state = fresh_state().await;
+        let issued = crate::crypto::issue_owner_token();
+        insert_vault(&state.db, "vault-tc-B", Some(&issued.hash_hex)).await;
+        let body = r#"{"contact":"friend@example.com"}"#;
+        assert_eq!(
+            put_trusted(state.clone(), "vault-tc-B", None, body)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            put_trusted(state.clone(), "vault-tc-B", Some("not-the-token"), body)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        for bad in ["nope", "a@b", "two words@example.com"] {
+            let resp = put_trusted(
+                state.clone(),
+                "vault-tc-B",
+                Some(&issued.token),
+                &format!(r#"{{"contact":"{bad}"}}"#),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{bad}");
+        }
+        assert_eq!(trusted_on_file(&state.db, "vault-tc-B").await, None);
+    }
+
     #[tokio::test]
     async fn panic_stop_twice_is_refused() {
         // A second tap must not extend the window or re-alert anyone.
