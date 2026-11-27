@@ -167,14 +167,19 @@ pub fn build_heir_claim(
         b.drain_wallet()
             .drain_to(recipient.script_pubkey())
             .fee_rate(fee_rate)
-            .nlocktime(bitcoin::absolute::LockTime::ZERO)
             .policy_path(ext_path, KeychainKind::External)
-            .policy_path(int_path, KeychainKind::Internal)
-            // Force every input's nSequence to satisfy CSV. `set_exact_sequence`
+            .policy_path(int_path, KeychainKind::Internal);
+        if vault.locked_dates().is_none() {
+            // Classic vault: the heir waits on each deposit's age (CSV).
+            // Force every input's nSequence to satisfy it. `set_exact_sequence`
             // is BDK's explicit knob; it will conflict with the CSV branch
             // only if the value we pass is *lower* than the required CSV,
             // which we guarantee here by passing `csv` itself.
-            .set_exact_sequence(nseq);
+            b.nlocktime(bitcoin::absolute::LockTime::ZERO)
+                .set_exact_sequence(nseq);
+        }
+        // A locked goal's heir waits for a date instead: BDK sets the
+        // transaction's lock time from the heir branch's `after`.
         b.finish().map_err(|e| Error::Psbt(e.to_string()))?
     };
 
@@ -214,7 +219,7 @@ fn resolve_timelock_policy_path(
     let mut out = BTreeMap::new();
     if !walk(&policy, &mut out) {
         return Err(Error::Psbt(
-            "could not find a script-path branch with a relative timelock".into(),
+            "could not find a script-path branch with a timelock".into(),
         ));
     }
     return Ok(out);
@@ -225,11 +230,13 @@ fn resolve_timelock_policy_path(
     /// satisfies each `Thresh`'s threshold.
     fn walk(node: &Policy, out: &mut BTreeMap<String, Vec<usize>>) -> bool {
         match &node.item {
-            SatisfiableItem::RelativeTimelock { .. } => true,
+            SatisfiableItem::RelativeTimelock { .. } | SatisfiableItem::AbsoluteTimelock { .. } => {
+                true
+            }
             SatisfiableItem::Thresh { items, threshold } => {
                 // First locate which children reach a timelock.
                 let timelock_children: Vec<usize> = (0..items.len())
-                    .filter(|&i| contains_relative_timelock_node(&items[i]))
+                    .filter(|&i| contains_timelock_node(&items[i]))
                     .collect();
                 if timelock_children.is_empty() {
                     return false;
@@ -239,9 +246,37 @@ fn resolve_timelock_policy_path(
                     // Conjunction: must satisfy every child of this Thresh.
                     (0..items.len()).collect()
                 } else {
-                    // Disjunction: any one child suffices. Pick the one(s)
-                    // containing the timelock.
-                    timelock_children.clone()
+                    // Disjunction: any one child suffices. In a locked goal
+                    // both branches carry a timelock (the owner's date and
+                    // the heir's), so take the one this wallet can sign.
+                    // A watch-only wallet signs nothing: then the branch
+                    // with a per-deposit wait (the classic heir branch),
+                    // or else the latest date, which is always the heir's.
+                    let mine: Vec<usize> = timelock_children
+                        .iter()
+                        .copied()
+                        .filter(|&i| contains_my_signature(&items[i]))
+                        .collect();
+                    if !mine.is_empty() {
+                        mine
+                    } else if timelock_children
+                        .iter()
+                        .any(|&i| contains_relative_timelock_node(&items[i]))
+                    {
+                        timelock_children
+                            .iter()
+                            .copied()
+                            .filter(|&i| contains_relative_timelock_node(&items[i]))
+                            .collect()
+                    } else {
+                        let latest = timelock_children
+                            .iter()
+                            .copied()
+                            .max_by_key(|&i| latest_absolute_lock(&items[i]))
+                            .into_iter()
+                            .collect::<Vec<_>>();
+                        latest
+                    }
                 };
 
                 // Recurse into the children we selected so their sub-Threshes
@@ -255,6 +290,39 @@ fn resolve_timelock_policy_path(
             // Other leaves (signatures, hashes, abs timelocks, etc.) are not
             // the timelock branch on their own.
             _ => false,
+        }
+    }
+
+    fn contains_timelock_node(node: &Policy) -> bool {
+        match &node.item {
+            SatisfiableItem::RelativeTimelock { .. } | SatisfiableItem::AbsoluteTimelock { .. } => {
+                true
+            }
+            SatisfiableItem::Thresh { items, .. } => items.iter().any(contains_timelock_node),
+            _ => false,
+        }
+    }
+
+    /// True if this subtree holds a signature this wallet can make.
+    fn contains_my_signature(node: &Policy) -> bool {
+        use bdk_wallet::descriptor::policy::Satisfaction;
+        match &node.item {
+            SatisfiableItem::SchnorrSignature(_) | SatisfiableItem::EcdsaSignature(_) => {
+                !matches!(node.contribution, Satisfaction::None)
+            }
+            SatisfiableItem::Thresh { items, .. } => items.iter().any(contains_my_signature),
+            _ => false,
+        }
+    }
+
+    /// The latest absolute lock in this subtree (0 if none).
+    fn latest_absolute_lock(node: &Policy) -> u32 {
+        match &node.item {
+            SatisfiableItem::AbsoluteTimelock { value } => value.to_consensus_u32(),
+            SatisfiableItem::Thresh { items, .. } => {
+                items.iter().map(latest_absolute_lock).max().unwrap_or(0)
+            }
+            _ => 0,
         }
     }
 
@@ -310,9 +378,12 @@ fn resolve_owner_policy_path(
             | SatisfiableItem::EcdsaSignature(_)
             | SatisfiableItem::Multisig { .. } => is_complete_no_csv(node),
 
-            // Timelock / hash leaves are NOT in the owner path.
+            // A locked goal's owner branch waits for its date: the
+            // date is part of the owner path (BDK sets the transaction's
+            // lock time from it). A per-deposit wait and hash locks are
+            // never the owner's.
+            SatisfiableItem::AbsoluteTimelock { .. } => true,
             SatisfiableItem::RelativeTimelock { .. }
-            | SatisfiableItem::AbsoluteTimelock { .. }
             | SatisfiableItem::Sha256Preimage { .. }
             | SatisfiableItem::Hash256Preimage { .. }
             | SatisfiableItem::Ripemd160Preimage { .. }
