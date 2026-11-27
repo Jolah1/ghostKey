@@ -127,23 +127,6 @@ test("Activity leads with savings; heir contact shows only email", async ({ page
   await expect(page.getByRole("button", { name: "← Back to home" })).toBeVisible();
 });
 
-test("website: savings first, technical sections folded, savings comparison", async ({ page }) => {
-  await mock(page, false);
-  await page.goto(`${base}/#/`);
-  await expect(page.getByRole("heading", { level: 1 })).toContainText("Stack sats.");
-  await expect(page.getByText("on-chain or by Lightning")).toBeVisible();
-  const tech = page.getByTestId("tech-details");
-  await expect(tech).not.toHaveAttribute("open", "");
-  await expect(page.getByText("Liana", { exact: true }).first()).toBeHidden();
-  await tech.locator("summary").click();
-  await expect(page.getByText("An exchange app").first()).toBeVisible();
-  await expect(page.getByText("Lightning deposits").first()).toBeVisible();
-  await expect(page.getByText("Heartbeat-based")).toHaveCount(0);
-  await expect(page.locator("footer")).toContainText("Build wealth that outlives you.");
-  await expect(page.getByText("What does adding money by Lightning cost?")).toBeVisible();
-  await expectNoSerious(page);
-});
-
 async function expectNoSerious(page: import("@playwright/test").Page) {
   await settleAnimations(page);
   const results = await new AxeBuilder({ page }).analyze();

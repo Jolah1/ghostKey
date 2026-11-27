@@ -6,15 +6,26 @@
 export interface FaqItem {
   q: string;
   a: string;
+  /** Also shown on the website's front page (the full list is on Help). */
+  home?: boolean;
+  /** About locked goals: shown only once the server has them. */
+  lockedOnly?: boolean;
 }
 
 export const FAQS: FaqItem[] = [
   {
+    q: "Do I have to name someone to inherit?",
+    a: "No. Saving is the main thing, and passing it on is optional. Add someone whenever you're ready, from the Inheritance page.",
+    home: true,
+  },
+  {
     q: "What happens if I lose my phone or computer?",
+    home: true,
     a: "Nothing is tied to one device. Sign in from any browser with your email and password and your savings are right there. For a deeper emergency, download your recovery file from the Recovery kit page: it reaches your money without GhostKey at all. Keep a copy somewhere safe.",
   },
   {
     q: "What if I forget my password?",
+    home: true,
     a: "There is no reset, because GhostKey never receives your password. It is used only on your device to unlock your key. You lose time, not money: if you stop signing in, the person you chose can claim after the wait. If you kept their heir file and code, you can use them yourself once the wait passes. A password manager is the best protection.",
   },
   {
@@ -23,6 +34,7 @@ export const FAQS: FaqItem[] = [
   },
   {
     q: "Are there fees?",
+    home: true,
     a: "GhostKey takes no cut and has no subscription. You pay the normal Bitcoin network fee when you add money on-chain, when you send, and when your heir claims. When you send, you see the fee before anything moves. Adding money by Lightning goes through an independent swap service, which charges its own fee (see below).",
   },
   {
@@ -47,6 +59,7 @@ export const FAQS: FaqItem[] = [
   },
   {
     q: "Can I take my bitcoin out?",
+    home: true,
     a: "Always. Until your heir actually claims, you can send your savings anywhere with your own key, in one transaction.",
   },
   {
@@ -55,6 +68,7 @@ export const FAQS: FaqItem[] = [
   },
   {
     q: "What if GhostKey shuts down?",
+    home: true,
     a: "When you choose an heir, you can download a file for them that opens with their heir code. If GhostKey ever disappears, that file walks them through claiming straight from the Bitcoin network. Your own recovery file, from the Recovery kit page, does the same for you.",
   },
   {
