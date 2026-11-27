@@ -5,6 +5,7 @@
  * /api/*. Prereq: `npm run build`.
  */
 import { test, expect } from "@playwright/test";
+import { settleAnimations } from "./settle";
 import AxeBuilder from "@axe-core/playwright";
 import { createServer, type Server } from "node:http";
 import { prodHeaders } from "./prodHeaders";
@@ -130,6 +131,7 @@ test("savings card: totals, then a goal with progress and pace", async ({ page }
     "We'll remind you to save every week (about 50,000 sats). Next on",
   );
 
+  await settleAnimations(page);
   const results = await new AxeBuilder({ page }).include('[data-testid="savings-hero"]').analyze();
   const serious = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
   expect(serious.map((v) => v.id)).toEqual([]);
@@ -175,6 +177,7 @@ test("several goals: sort new money with a tap, type your own, and never show mo
   await expect.poll(() => state.moves[0]).toEqual({ from_goal_id: "g1", to_goal_id: "g2", amount_sat: 20_000 });
   await expect(card.getByTestId("goal").nth(1)).toContainText("70,000 sats");
 
+  await settleAnimations(page);
   const results = await new AxeBuilder({ page }).include('[data-testid="savings-hero"]').analyze();
   const serious = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
   expect(serious.map((v) => v.id)).toEqual([]);

@@ -13,6 +13,7 @@
  * Serves the built dist/ and intercepts /api/*. Prereq: `npm run build`.
  */
 import { test, expect, type Page } from "@playwright/test";
+import { settleAnimations } from "./settle";
 import AxeBuilder from "@axe-core/playwright";
 import { createServer, type Server } from "node:http";
 import { prodHeaders } from "./prodHeaders";
@@ -386,6 +387,7 @@ test("Home: choose who inherits later; the heir code really opens the key", asyn
 });
 
 async function expectNoSerious(page: Page, include?: string) {
+  await settleAnimations(page);
   let axe = new AxeBuilder({ page });
   if (include) axe = axe.include(include);
   const results = await axe.analyze();

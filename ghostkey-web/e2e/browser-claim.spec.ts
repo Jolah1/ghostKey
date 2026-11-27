@@ -6,6 +6,7 @@
  * Serves the built dist/ and intercepts /api/*. Prereq: `npm run build`.
  */
 import { test, expect, type Page } from "@playwright/test";
+import { settleAnimations } from "./settle";
 import AxeBuilder from "@axe-core/playwright";
 import { createServer, type Server } from "node:http";
 import { prodHeaders } from "./prodHeaders";
@@ -180,6 +181,7 @@ test("an heir code opens the key in the browser; a wrong code doesn't", async ({
 });
 
 async function expectNoSerious(page: Page) {
+  await settleAnimations(page);
   const results = await new AxeBuilder({ page }).analyze();
   const serious = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
   expect(serious.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
