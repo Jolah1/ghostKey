@@ -98,6 +98,10 @@ export interface VaultView {
    *  `GET /vaults/:id` when the vault has been scanned and hasn't matured.
    *  Drives the "waiting to claim — unlocks around <date>" copy. */
   unlock_eta?: string | null;
+  /** A locked goal: the owner can spend from this time (Unix seconds). */
+  locked_until?: number | null;
+  /** A locked goal: the heir can claim from this time (Unix seconds). */
+  heir_unlock_at?: number | null;
   /** Claim fire-drill progress (#223): when the owner last sent a
    *  practice run, when the heir first opened it, and when the heir
    *  finished it. Present only on the owner `GET /vaults/:id`. */
@@ -163,6 +167,9 @@ export interface CreateVaultFromXpubRequest {
    * Mirrors `crates/ghostkey-server/src/routes.rs::SealedSetup`.
    */
   sealed?: SealedSetup | null;
+  /** A locked goal's dates (Unix seconds). Only while the server has
+   *  locked goals switched on. */
+  locked?: { owner_after: number; heir_after: number } | null;
   /** F4: trusted contact who will be alerted if the owner triggers
    *  a panic-stop. Optional. */
   trusted_contact?: string | null;
@@ -259,6 +266,9 @@ export interface FoundVault {
   status: VaultStatus;
   created_at: string;
   next_deadline_at: string;
+  /** A locked goal's dates (Unix seconds); absent for other vaults. */
+  locked_until?: number;
+  heir_unlock_at?: number;
 }
 
 export interface OwnerRecoveryBundle {
@@ -751,6 +761,8 @@ export const api = {
       /** The git commit the server was built from, or "unknown". */
       commit?: string;
       demo_mode: boolean;
+      /** Whether locked goals are switched on (GHOSTKEY_LOCKED_GOALS). */
+      locked_goals_enabled?: boolean;
       /** Which Bitcoin network the server wants the UI to default
        *  new vaults to. Mirrors GHOSTKEY_DEFAULT_NETWORK on the
        *  server side. Falls back to `"testnet"` on older servers

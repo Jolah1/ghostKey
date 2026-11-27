@@ -498,8 +498,18 @@ export function SignInPortal({
       return byDate !== 0 ? byDate : a.vault.id.localeCompare(b.vault.id);
     });
 
+    // Locked goals hang off the owner's main savings, not the heir group.
+    const mainId =
+      ordered.find((b) => !b.vault.locked_until && b.vault.status !== "claimed")?.vault.id ??
+      ordered.find((b) => !b.vault.locked_until)?.vault.id ??
+      null;
+
     for (let i = 0; i < ordered.length; i++) {
       const { vault: v, sealed_blobs: blobs } = ordered[i];
+      const lockedGoal =
+        v.locked_until && v.heir_unlock_at && mainId
+          ? { parentId: mainId, title: v.label ?? "Locked goal", until: v.locked_until, heirAt: v.heir_unlock_at }
+          : undefined;
       setPhase({ kind: "unsealing", vaultId: v.id, progress: 0 });
 
       try {
@@ -540,7 +550,9 @@ export function SignInPortal({
           id: v.id,
           label: v.label ?? "Your vault",
           owner: { address: recoveredEmail || email.trim() },
-          heir: { name: heirNameFromLabel(v.label), email: "", address: "" },
+          heir: lockedGoal
+            ? { name: "", email: "", address: "" }
+            : { name: heirNameFromLabel(v.label), email: "", address: "" },
           createdAt: v.created_at,
           ownerToken,
           ownerTokenLock: ownerToken
@@ -557,8 +569,9 @@ export function SignInPortal({
                 validated: true,
               }
             : undefined,
-          groupId,
+          ...(lockedGoal ? { locked: lockedGoal } : { groupId }),
         });
+        if (lockedGoal) continue;
         if (!firstId) firstId = v.id;
         // Prefer a share the owner can still act on. Landing on a claimed
         // one just because it came first reads as "my heir claimed my

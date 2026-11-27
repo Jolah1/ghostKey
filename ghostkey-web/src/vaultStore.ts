@@ -85,6 +85,19 @@ export interface VaultMeta {
    * compromised after that moment can't swap in its own address.
    */
   pinnedDescriptors?: { external: string; internal: string };
+  /**
+   * A locked goal: its own vault, made from `parentId`'s keys, that nobody
+   * can spend from before `until` (Unix seconds). Not an heir's share, so
+   * it never takes a `groupId`: Home lists it under "Your plans".
+   */
+  locked?: { parentId: string; title: string; until: number; heirAt: number };
+}
+
+/** The locked goals made from `parentId`, soonest unlock first. */
+export function getLockedGoals(parentId: string): VaultMeta[] {
+  return Object.values(readAll())
+    .filter((m) => m.locked?.parentId === parentId)
+    .sort((a, b) => (a.locked!.until - b.locked!.until));
 }
 
 const STORE_KEY = "gk:vaults";
@@ -278,7 +291,10 @@ export function setActiveVaultId(id: string | null) {
 
 export function getActiveVaultId(): string | null {
   try {
-    return localStorage.getItem(ACTIVE_KEY);
+    const id = localStorage.getItem(ACTIVE_KEY);
+    // A locked goal is never the vault Home opens on: its main savings is.
+    const locked = id ? readAll()[id]?.locked : undefined;
+    return locked ? locked.parentId : id;
   } catch {
     return null;
   }

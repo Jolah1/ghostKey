@@ -101,7 +101,9 @@ function parseNode(src: string): Node {
 }
 
 /** Split `tr(INTERNAL,LEAF)` (checksum optional) into its two parts. */
-function splitTr(descriptor: string): { internal: string; leaf: Node } {
+/** The internal key and the script leaves: one leaf, or a two-leaf tree
+ *  `{A,B}` (a locked goal's owner and heir branches). */
+function splitTr(descriptor: string): { internal: string; leaves: Node[] } {
   const d = descriptor.replace(/#[a-z0-9]+$/, "");
   if (!d.startsWith("tr(") || !d.endsWith(")")) {
     throw new UnsupportedDescriptor("not a tr() descriptor");
@@ -109,7 +111,28 @@ function splitTr(descriptor: string): { internal: string; leaf: Node } {
   const body = d.slice(3, -1);
   const comma = body.indexOf(",");
   if (comma < 0) throw new UnsupportedDescriptor("tr() without a script leaf");
-  return { internal: body.slice(0, comma), leaf: parseNode(body.slice(comma + 1)) };
+  const internal = body.slice(0, comma);
+  const tree = body.slice(comma + 1);
+  if (!tree.startsWith("{")) return { internal, leaves: [parseNode(tree)] };
+  if (!tree.endsWith("}")) throw new UnsupportedDescriptor("unclosed tree");
+  const inner = tree.slice(1, -1);
+  // Split at the one comma that isn't inside brackets.
+  let depth = 0;
+  let split = -1;
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    if (c === "(" || c === "{") depth += 1;
+    else if (c === ")" || c === "}") depth -= 1;
+    else if (c === "," && depth === 0) {
+      if (split >= 0) throw new UnsupportedDescriptor("only two-leaf trees are supported");
+      split = i;
+    }
+  }
+  if (split < 0) throw new UnsupportedDescriptor("a tree needs two leaves");
+  const a = inner.slice(0, split);
+  const b = inner.slice(split + 1);
+  if (a.startsWith("{") || b.startsWith("{")) throw new UnsupportedDescriptor("nested trees aren't supported");
+  return { internal, leaves: [parseNode(a), parseNode(b)] };
 }
 
 /* -------------------------------- keys ---------------------------------- */
@@ -213,6 +236,13 @@ function compactSize(n: number): number[] {
   throw new UnsupportedDescriptor("script too long");
 }
 
+function compareBytes(a: Uint8Array, b: Uint8Array): number {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return a.length - b.length;
+}
+
 const HRP: Record<string, string> = {
   bitcoin: "bc",
   testnet: "tb",
@@ -225,15 +255,25 @@ const HRP: Record<string, string> = {
 export function deriveVaultAddress(descriptor: string, network: string, index: number): string {
   const hrp = HRP[network];
   if (!hrp) throw new UnsupportedDescriptor(`unknown network ${network}`);
-  const { internal, leaf } = splitTr(descriptor);
+  const { internal, leaves } = splitTr(descriptor);
 
-  const script = Uint8Array.from(compile(leaf, index));
-  const leafHash = schnorr.utils.taggedHash(
-    "TapLeaf",
-    Uint8Array.from([0xc0, ...compactSize(script.length), ...script]),
-  );
+  const leafHashes = leaves.map((leaf) => {
+    const script = Uint8Array.from(compile(leaf, index));
+    return schnorr.utils.taggedHash(
+      "TapLeaf",
+      Uint8Array.from([0xc0, ...compactSize(script.length), ...script]),
+    );
+  });
+  // One leaf is its own root; two meet in a TapBranch of the pair, in
+  // byte order (BIP 341).
+  let root = leafHashes[0];
+  if (leafHashes.length === 2) {
+    const [x, y] = leafHashes;
+    const xFirst = compareBytes(x, y) <= 0;
+    root = schnorr.utils.taggedHash("TapBranch", xFirst ? x : y, xFirst ? y : x);
+  }
   const internalX = xOnlyKey(internal, index);
-  const tweak = schnorr.utils.taggedHash("TapTweak", internalX, leafHash);
+  const tweak = schnorr.utils.taggedHash("TapTweak", internalX, root);
   const P = secp256k1.Point.fromHex("02" + Array.from(internalX, (b) => b.toString(16).padStart(2, "0")).join(""));
   const t = BigInt("0x" + Array.from(tweak, (b) => b.toString(16).padStart(2, "0")).join(""));
   const Q = P.add(secp256k1.Point.BASE.multiply(t));
