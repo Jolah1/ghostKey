@@ -1762,6 +1762,39 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn a_balance_read_in_the_last_minute_is_reused_without_a_lookup() {
+        // The vault's descriptors are fake, so a real scan would fail: a
+        // 200 with the saved numbers proves no explorer was asked.
+        let state = fresh_state().await;
+        insert_vault(&state.db, "vault-bal", None).await;
+        sqlx::query(
+            "UPDATE vaults SET balance_confirmed_sat = 1000, balance_unconfirmed_sat = 50, \
+                    balance_checked_at = ? WHERE id = 'vault-bal'",
+        )
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let resp = routes::router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/vaults/vault-bal/balance")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["confirmed_sat"], 1000);
+        assert_eq!(v["unconfirmed_sat"], 50);
+        assert_eq!(v["total_sat"], 1050);
+    }
+
+    #[tokio::test]
     async fn panic_stop_twice_is_refused() {
         // A second tap must not extend the window or re-alert anyone.
         let state = fresh_state().await;

@@ -57,9 +57,63 @@ pub async fn run_chain_refresher(state: Arc<AppState>, tick: Duration) {
     }
 }
 
-/// Rescan a vault once its cache is this old, well before the scheduler
-/// would see it as stale (`MATURITY_CACHE_TTL_SECS`).
-const REFRESH_AFTER_SECS: i64 = crate::psbt_routes::MATURITY_CACHE_TTL_SECS / 2;
+/// How often to rescan a vault, by what could happen to it soon. Every
+/// vault every 5 minutes was ~2M explorer requests a month for a dozen
+/// vaults, and the public explorers rate-limited us into hours-stale data.
+/// Most vaults have nothing time-critical going on, so they are rescanned
+/// hourly or daily; the ones where minutes matter keep the fast pace.
+/// Opening the app (`GET /vaults/:id/balance`) and sending also rescan.
+pub(crate) const SCAN_FAST_SECS: i64 = 300;
+pub(crate) const SCAN_HOURLY_SECS: i64 = 3_600;
+pub(crate) const SCAN_DAILY_SECS: i64 = 86_400;
+
+/// What the refresher needs to pick a vault's pace.
+pub(crate) struct ScanPaceInput<'a> {
+    pub status: &'a str,
+    pub heir_pending: bool,
+    pub created_at: Option<chrono::DateTime<Utc>>,
+    pub next_deadline_at: Option<chrono::DateTime<Utc>>,
+    pub claim_eligible_at: Option<chrono::DateTime<Utc>>,
+    /// The last scan saw coins (None: never scanned).
+    pub has_unspent: Option<bool>,
+}
+
+pub(crate) fn scan_every_secs(v: &ScanPaceInput<'_>, now: chrono::DateTime<Utc>) -> i64 {
+    // A claim under way, or a missed check-in: the heir's timeline runs
+    // on these scans.
+    if matches!(v.status, "alarmed" | "timelock_started" | "claiming") {
+        return SCAN_FAST_SECS;
+    }
+    // A deadline within two days either side: the scheduler is about to
+    // act (or just did) on this vault.
+    let near = |t: Option<chrono::DateTime<Utc>>| {
+        t.is_some_and(|t| (t - now).num_seconds().abs() < 2 * 86_400)
+    };
+    if !v.heir_pending && (near(v.next_deadline_at) || near(v.claim_eligible_at)) {
+        return SCAN_FAST_SECS;
+    }
+    let age_days = v.created_at.map(|c| (now - c).num_days()).unwrap_or(0);
+    if v.status == "unfunded" && v.has_unspent != Some(true) {
+        // Waiting for a first deposit: quickly while the owner is likely
+        // setting up, then rarely for vaults nobody ever funded.
+        return if age_days < 7 {
+            SCAN_FAST_SECS
+        } else {
+            SCAN_DAILY_SECS
+        };
+    }
+    SCAN_HOURLY_SECS
+}
+
+/// Vaults whose chain data is well past its rescan time (three intervals),
+/// as of the last refresher pass. Read by `/health`: a vault this far
+/// behind means the explorers are failing us for it, even when another
+/// vault's scan just succeeded.
+static OVERDUE_SCANS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+pub(crate) fn overdue_scans() -> i64 {
+    OVERDUE_SCANS.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 async fn refresh_chain_caches(state: &AppState) -> anyhow::Result<()> {
     type Row = (
@@ -69,24 +123,58 @@ async fn refresh_chain_caches(state: &AppState) -> anyhow::Result<()> {
         String,         // network
         i64,            // timelock_blocks
         Option<String>, // chain_scanned_at
+        String,         // status
+        i64,            // heir_pending
+        Option<String>, // created_at
+        Option<String>, // next_deadline_at
+        Option<String>, // claim_eligible_at
+        Option<i64>,    // chain_has_unspent
     );
     // Every vault the scheduler might act on. A claimed vault is done.
     let rows: Vec<Row> = sqlx::query_as(
         "SELECT id, descriptor_external, descriptor_internal, network, timelock_blocks, \
-                chain_scanned_at \
+                chain_scanned_at, status, heir_pending, created_at, next_deadline_at, \
+                claim_eligible_at, chain_has_unspent \
            FROM vaults WHERE status != 'claimed'",
     )
     .fetch_all(&state.db)
     .await?;
 
-    for (id, ext, int, network, timelock_blocks, scanned_at) in rows {
-        let now = Utc::now();
-        let fresh_enough = scanned_at
-            .as_deref()
+    let parse = |s: &Option<String>| {
+        s.as_deref()
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|t| (now - t.with_timezone(&Utc)).num_seconds() < REFRESH_AFTER_SECS)
-            .unwrap_or(false);
-        if fresh_enough {
+            .map(|t| t.with_timezone(&Utc))
+    };
+    let mut overdue = 0i64;
+    for row in rows {
+        let (
+            id,
+            ext,
+            int,
+            network,
+            timelock_blocks,
+            scanned_at,
+            status,
+            heir_pending,
+            created_at,
+            next_deadline_at,
+            claim_eligible_at,
+            has_unspent,
+        ) = row;
+        let now = Utc::now();
+        let every = scan_every_secs(
+            &ScanPaceInput {
+                status: &status,
+                heir_pending: heir_pending != 0,
+                created_at: parse(&created_at),
+                next_deadline_at: parse(&next_deadline_at),
+                claim_eligible_at: parse(&claim_eligible_at),
+                has_unspent: has_unspent.map(|h| h != 0),
+            },
+            now,
+        );
+        let age = parse(&scanned_at).map(|t| (now - t).num_seconds());
+        if age.is_some_and(|a| a < every) {
             continue;
         }
         let input = crate::psbt_routes::EstimateInput {
@@ -95,17 +183,22 @@ async fn refresh_chain_caches(state: &AppState) -> anyhow::Result<()> {
             descriptor_internal: int,
             network,
             timelock_blocks,
-            // Force a scan: we're refreshing ahead of expiry.
             cached_unlock_height: None,
             cached_tip_height: None,
             cached_scanned_at: None,
             cached_has_unspent: None,
         };
-        match crate::psbt_routes::unlock_estimate_with_cache(&state.db, &input, now).await {
+        match crate::psbt_routes::scan_and_cache(&state.db, &input, now).await {
             Ok(_) => record_chain_scan(&input.network, true, None, now),
-            Err(e) => record_chain_scan_err(&input.network, &e, now),
+            Err(e) => {
+                if age.is_none_or(|a| a > 3 * every) {
+                    overdue += 1;
+                }
+                record_chain_scan_err(&input.network, &e, now)
+            }
         }
     }
+    OVERDUE_SCANS.store(overdue, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
@@ -2485,6 +2578,69 @@ mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
     use sqlx::SqlitePool;
+
+    fn pace(status: &str) -> ScanPaceInput<'_> {
+        ScanPaceInput {
+            status,
+            heir_pending: false,
+            created_at: Some(Utc::now() - chrono::Duration::days(30)),
+            next_deadline_at: Some(Utc::now() + chrono::Duration::days(90)),
+            claim_eligible_at: Some(Utc::now() + chrono::Duration::days(97)),
+            has_unspent: Some(true),
+        }
+    }
+
+    #[test]
+    fn a_quiet_funded_vault_is_rescanned_hourly() {
+        assert_eq!(scan_every_secs(&pace("ok"), Utc::now()), SCAN_HOURLY_SECS);
+        // Savings only (no heir yet) with money in: hourly too.
+        let v = ScanPaceInput {
+            status: "unfunded",
+            heir_pending: true,
+            ..pace("unfunded")
+        };
+        assert_eq!(scan_every_secs(&v, Utc::now()), SCAN_HOURLY_SECS);
+    }
+
+    #[test]
+    fn a_claim_or_a_near_deadline_keeps_the_fast_pace() {
+        let now = Utc::now();
+        for s in ["alarmed", "timelock_started", "claiming"] {
+            assert_eq!(scan_every_secs(&pace(s), now), SCAN_FAST_SECS, "{s}");
+        }
+        let soon = ScanPaceInput {
+            next_deadline_at: Some(now + chrono::Duration::hours(30)),
+            ..pace("ok")
+        };
+        assert_eq!(scan_every_secs(&soon, now), SCAN_FAST_SECS);
+        let just_passed = ScanPaceInput {
+            next_deadline_at: Some(now - chrono::Duration::hours(3)),
+            ..pace("ok")
+        };
+        assert_eq!(scan_every_secs(&just_passed, now), SCAN_FAST_SECS);
+        let eligible_soon = ScanPaceInput {
+            claim_eligible_at: Some(now + chrono::Duration::hours(5)),
+            ..pace("ok")
+        };
+        assert_eq!(scan_every_secs(&eligible_soon, now), SCAN_FAST_SECS);
+    }
+
+    #[test]
+    fn an_unfunded_vault_is_watched_closely_at_first_then_rarely() {
+        let now = Utc::now();
+        let new = ScanPaceInput {
+            created_at: Some(now - chrono::Duration::hours(2)),
+            has_unspent: None,
+            ..pace("unfunded")
+        };
+        assert_eq!(scan_every_secs(&new, now), SCAN_FAST_SECS);
+        let abandoned = ScanPaceInput {
+            created_at: Some(now - chrono::Duration::days(60)),
+            has_unspent: Some(false),
+            ..pace("unfunded")
+        };
+        assert_eq!(scan_every_secs(&abandoned, now), SCAN_DAILY_SECS);
+    }
 
     #[test]
     fn chain_scan_health_tracks_failure_streak() {
