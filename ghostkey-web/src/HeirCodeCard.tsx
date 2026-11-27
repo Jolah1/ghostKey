@@ -71,7 +71,7 @@ export function HeirCodeCard({
       </div>
       <p className="mt-3 text-sm text-muted">
         Send it now, or write it on paper for {who}. You can see it again
-        in Settings. If {who} loses it, they can't claim.
+        on the Inheritance page. If {who} loses it, they can't claim.
       </p>
       {envelope && (
         <div className="mt-5 border-t border-app pt-4">

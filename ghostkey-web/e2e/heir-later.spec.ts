@@ -344,9 +344,12 @@ test("Home: choose who inherits later; the heir code really opens the key", asyn
 
   await page.goto(`${base}/#/dashboard`);
   await expect(page.getByTestId("savings-balance")).toHaveText("50,000 sats");
-  await expect(page.getByTestId("choose-heir")).toBeVisible();
   await expect(page.getByTestId("checkin-row")).toHaveCount(0);
   await expect(page.getByText("Check-in overdue")).toHaveCount(0);
+  // Choosing an heir lives on Inheritance; Home has one row that leads there.
+  await expect(page.getByTestId("choose-heir")).toHaveCount(0);
+  await page.getByTestId("family-row").click();
+  await expect(page.getByTestId("choose-heir")).toBeVisible();
 
   const card = page.getByTestId("choose-heir");
   await card.getByRole("button", { name: "Choose who inherits" }).click();
@@ -464,6 +467,10 @@ test("Home: an older vault switches to an heir code; GhostKey forgets the link s
   });
 
   await page.goto(`${base}/#/dashboard`);
+  // Home stays calm: a dot on the inheritance row says something needs doing.
+  await expect(page.getByTestId("family-row").getByLabel("Needs attention")).toBeVisible();
+  await expect(page.getByTestId("heir-code-notice")).toHaveCount(0);
+  await page.getByTestId("family-row").click();
   const card = page.getByTestId("heir-code-notice");
   await expect(card.getByText("Make Ada's access private")).toBeVisible();
   await card.getByRole("button", { name: "Switch to a code" }).click();

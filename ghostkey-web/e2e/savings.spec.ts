@@ -81,7 +81,8 @@ test("savings card: totals, then a goal with progress and pace", async ({ page }
   await expect(page.getByTestId("savings-balance")).toHaveText("250,000 sats");
   await expect(page.getByTestId("checkin-row")).toContainText("You're checked in");
   await expect(page.getByTestId("checkin-row")).toContainText("Signing in keeps it that way");
-  await expect(page.getByRole("heading", { name: "Build wealth that outlives you" })).toBeVisible();
+  // Who inherits is one row on Home; the details live on Inheritance.
+  await expect(page.getByTestId("family-row")).toBeVisible();
 
   const card = page.getByTestId("savings-card");
 
@@ -337,8 +338,12 @@ async function mockVault(
     saved?: { sat: number; minutesAgo: number };
     live?: "ok" | "held" | "fail";
     streak?: Record<string, unknown>;
+    /** Sats still confirming, on top of `balance`. */
+    pending?: number;
+    status?: string;
   },
 ) {
+  const pending = opts.pending ?? 0;
   state.reminderBody = null;
   state.added = [];
   state.moves = [];
@@ -387,7 +392,7 @@ async function mockVault(
           timelock_blocks: 4320,
           checkin_period_secs: 2_592_000,
           grace_period_secs: 604_800,
-          status: "ok",
+          status: opts.status ?? "ok",
           created_at: FUTURE,
           last_checkin_at: null,
           next_deadline_at: deadline,
@@ -397,7 +402,9 @@ async function mockVault(
     if (p === `/vaults/${VAULT_ID}/balance`) {
       if (state.live === "fail") return route.fulfill(json({ error: "explorer down" }, 500));
       if (state.live === "held") await held;
-      return route.fulfill(json({ vault_id: VAULT_ID, network: "signet", confirmed_sat: state.balance, unconfirmed_sat: 0, total_sat: state.balance }));
+      return route.fulfill(
+        json({ vault_id: VAULT_ID, network: "signet", confirmed_sat: state.balance, unconfirmed_sat: pending, total_sat: state.balance + pending }),
+      );
     }
     if (p === `/vaults/${VAULT_ID}/events`) return route.fulfill(json([]));
     if (p === `/vaults/${VAULT_ID}/savings`) return route.fulfill(json(view()));
@@ -447,3 +454,24 @@ async function mockVault(
   }, VAULT_ID);
 
 }
+
+test("the big number is money you can spend; new money shows on its own line", async ({ page }) => {
+  await mockVault(page, { overdue: false, balance: 100_000, pending: 5_000 });
+  await page.goto(`${base}/#/dashboard`);
+  await expect(page.getByTestId("savings-balance")).toHaveText("100,000 sats");
+  await expect(page.getByTestId("balance-pending")).toHaveText("+5,000 sats on the way");
+});
+
+test("a vault the server still calls unfunded doesn't ask for money it already has", async ({ page }) => {
+  await mockVault(page, { overdue: false, balance: 1_050, status: "unfunded" });
+  await page.goto(`${base}/#/dashboard`);
+  await expect(page.getByTestId("savings-balance")).toHaveText("1,050 sats");
+  await expect(page.getByText("Add your first sats")).toHaveCount(0);
+});
+
+test("an empty vault asks for the first sats, in plain words", async ({ page }) => {
+  await mockVault(page, { overdue: false, balance: 0, status: "unfunded" });
+  await page.goto(`${base}/#/dashboard`);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Add your first sats");
+  await expect(page.getByText(/share to start/)).toHaveCount(0);
+});

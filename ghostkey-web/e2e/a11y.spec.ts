@@ -249,10 +249,18 @@ test("dashboard has no serious a11y violations", async ({ page }) => {
   await mockApi(page);
   await seedSignedIn(page);
   await page.goto(`${base}/#/dashboard`);
-  // "Manage heirs" renders only once the vault view has landed — a real
-  // signed-in dashboard, not a redirect or an error shell. Open it so the
-  // scan covers the heir panel too.
-  await page.getByRole("button", { name: "Manage heirs" }).click();
+  // The inheritance row renders only once the vault view has landed: a real
+  // signed-in Home, not a redirect or an error shell.
+  await page.getByTestId("family-row").waitFor();
+  await page.waitForLoadState("networkidle");
+  await expectNoSeriousViolations(page);
+});
+
+test("inheritance page has no serious a11y violations", async ({ page }) => {
+  await mockApi(page);
+  await seedSignedIn(page);
+  await page.goto(`${base}/#/tools`);
+  // The heir panel shows on Inheritance.
   await page.waitForSelector("text=Add heir");
   await page.waitForLoadState("networkidle");
   await expectNoSeriousViolations(page);
