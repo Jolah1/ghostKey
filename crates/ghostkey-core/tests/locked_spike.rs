@@ -846,12 +846,28 @@ fn the_export_opens_in_bitcoin_core_with_the_same_addresses_and_balance() -> Res
 }
 
 /// #387 "done when": the descriptor "Use this vault in another wallet"
-/// gives Liana opens in a real `lianad` (needs `lianad` and `liana-cli` on
-/// PATH, as well as `bitcoind`), which then sees the same coins and the
-/// same receive addresses as GhostKey.
+/// gives Liana opens in a real `lianad`, which then sees the same coins and
+/// the same receive addresses as GhostKey.
+///
+/// Needs `lianad` and `liana-cli` on PATH as well as `bitcoind`. CI's
+/// regtest job doesn't install Liana, so there it says it skipped (the
+/// `liana compatibility` job checks the format with Liana's own library
+/// instead); run it where Liana is installed.
 #[test]
 #[ignore]
 fn the_export_opens_in_liana_with_the_same_addresses_and_coins() -> Result<()> {
+    let on_path = |bin: &str| {
+        Command::new(bin)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok()
+    };
+    if !on_path("lianad") || !on_path("liana-cli") {
+        eprintln!("SKIPPED: lianad and liana-cli aren't installed here, so Liana wasn't checked.");
+        return Ok(());
+    }
     use ghostkey_core::descriptor::{build_standard_descriptor_from_fragments, standard_multipath};
     use ghostkey_core::keys::{account_xpub, descriptor_key_fragment, Chain};
     use ghostkey_core::vault::{Vault, VaultConfig, VaultRole};
