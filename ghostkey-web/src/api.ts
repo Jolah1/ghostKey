@@ -1014,6 +1014,17 @@ export const api = {
       /** A fresh change address to refresh coins into, with its index. */
       refresh_address?: { address: string; index: number };
     }>(`/vaults/${id}/coins`, undefined, ownerToken),
+  /** Owner-only (#387): the vault's public descriptors in the forms other
+   *  wallets import. They let a wallet see the money, not spend it. */
+  getExport: (id: string, ownerToken: string) =>
+    request<{
+      format: "standard" | "legacy" | "locked";
+      network: string;
+      descriptor_external: string;
+      descriptor_internal: string;
+      liana_descriptor?: string;
+      core_import: string;
+    }>(`/vaults/${id}/export`, undefined, ownerToken),
   /** Owner-only (#389): whether the vault can move to the new format, and
    *  the new descriptors, for this browser to check against its own. */
   getUpgrade: (id: string, ownerToken: string) =>

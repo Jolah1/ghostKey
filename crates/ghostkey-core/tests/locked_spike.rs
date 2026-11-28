@@ -746,3 +746,304 @@ fn legacy_vault_upgrades_and_the_heir_can_still_claim() -> Result<()> {
     println!("heir claimed the upgraded vault: fee {} sat", claim.fee_sat);
     Ok(())
 }
+
+/// #387: what "Use this vault in another wallet" gives Bitcoin Core
+/// imports into a watch-only wallet that sees exactly the vault: the same
+/// addresses and the same balance. For the standard format and the
+/// legacy one. (Liana takes the standard format's multipath descriptor;
+/// Core here checks the same keys and script.)
+#[test]
+#[ignore]
+fn the_export_opens_in_bitcoin_core_with_the_same_addresses_and_balance() -> Result<()> {
+    use ghostkey_core::descriptor::{
+        build_descriptor_pair, build_standard_descriptor_from_fragments, standard_multipath,
+        with_checksum,
+    };
+    use ghostkey_core::keys::{account_xpub, descriptor_key_fragment, Chain};
+    use ghostkey_core::vault::{Vault, VaultConfig, VaultRole};
+
+    let node = Bitcoind::spawn()?;
+    let rpc = node.client()?;
+    let miner = ensure_node_wallet(&node, "miner")?;
+    mine_blocks(&miner, 101)?;
+    let net = Network::Regtest;
+    let frag = |seed: u8, chain| -> Result<String> {
+        let m = Xpriv::new_master(net, &[seed; 32])?;
+        let (fp, p, x) = account_xpub(&m, net)?;
+        Ok(descriptor_key_fragment(fp, &p, &x, chain))
+    };
+    let (oe, oi) = (frag(0x51, Chain::External)?, frag(0x51, Chain::Internal)?);
+    let (he, hi) = (frag(0x52, Chain::External)?, frag(0x52, Chain::Internal)?);
+    let standard = build_standard_descriptor_from_fragments(&oe, &oi, &he, &hi, 144)?;
+    assert_eq!(
+        standard_multipath(&standard.pair.external, &standard.pair.internal).as_deref(),
+        Some(standard.multipath.as_str())
+    );
+    let legacy = build_descriptor_pair(&oe, &oi, &he, &hi, 144)?;
+
+    for (name, pair) in [("standard", &standard.pair), ("legacy", &legacy)] {
+        let vault = Vault::from_config(VaultConfig {
+            descriptor_external: pair.external.clone(),
+            descriptor_internal: pair.internal.clone(),
+            timelock_blocks: 144,
+            network: net,
+            role: VaultRole::Watchonly,
+            label: None,
+        })?;
+        let mut watch = ghostkey_core::wallet::build_watch_only(&vault)?;
+        let a0 = watch.reveal_next_address(KeychainKind::External).address;
+        let a1 = watch.reveal_next_address(KeychainKind::External).address;
+        fund(&miner, &a0, 70_000)?;
+        fund(&miner, &a1, 30_000)?;
+        mine_blocks(&miner, 1)?;
+
+        // The same JSON the export endpoint builds.
+        let import = json!([
+            { "desc": with_checksum(&pair.external)?, "timestamp": 0, "active": true, "internal": false, "range": [0, 999] },
+            { "desc": with_checksum(&pair.internal)?, "timestamp": 0, "active": true, "internal": true, "range": [0, 999] },
+        ]);
+        let wallet_name = format!("watch-{name}");
+        let _: Value = rpc.call(
+            "createwallet",
+            &[
+                json!(wallet_name),
+                json!(true),
+                json!(true),
+                json!(""),
+                json!(false),
+                json!(true),
+            ],
+        )?;
+        let w = Client::new(
+            &format!("{}/wallet/{}", node.rpc_url(), wallet_name),
+            node.auth(),
+        )?;
+        let res: Value = w.call("importdescriptors", &[import])?;
+        assert!(
+            res.as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["success"] == json!(true)),
+            "{name}: {res}"
+        );
+        let bal: Value = w.call("getbalances", &[])?;
+        let held = (bal["mine"]["trusted"].as_f64().unwrap() * 1e8).round() as u64;
+        assert_eq!(held, 100_000, "{name}: Core sees the vault's balance");
+        let first: String = w
+            .call(
+                "deriveaddresses",
+                &[json!(with_checksum(&pair.external)?), json!([0, 1])],
+            )
+            .map(|v: Value| v[0].as_str().unwrap().to_string())?;
+        assert_eq!(
+            first,
+            a0.to_string(),
+            "{name}: Core's first address is the vault's"
+        );
+        println!("{name}: Core sees {held} sat at {first}");
+    }
+    Ok(())
+}
+
+/// #387 "done when": the descriptor "Use this vault in another wallet"
+/// gives Liana opens in a real `lianad`, which then sees the same coins and
+/// the same receive addresses as GhostKey.
+///
+/// Needs `lianad` and `liana-cli` on PATH as well as `bitcoind`. CI's
+/// regtest job doesn't install Liana, so there it says it skipped (the
+/// `liana compatibility` job checks the format with Liana's own library
+/// instead); run it where Liana is installed.
+#[test]
+#[ignore]
+fn the_export_opens_in_liana_with_the_same_addresses_and_coins() -> Result<()> {
+    let on_path = |bin: &str| {
+        Command::new(bin)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok()
+    };
+    if !on_path("lianad") || !on_path("liana-cli") {
+        eprintln!("SKIPPED: lianad and liana-cli aren't installed here, so Liana wasn't checked.");
+        return Ok(());
+    }
+    use ghostkey_core::descriptor::{build_standard_descriptor_from_fragments, standard_multipath};
+    use ghostkey_core::keys::{account_xpub, descriptor_key_fragment, Chain};
+    use ghostkey_core::vault::{Vault, VaultConfig, VaultRole};
+
+    struct Kill(Vec<Child>);
+    impl Drop for Kill {
+        fn drop(&mut self) {
+            for c in &mut self.0 {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+        }
+    }
+    let tmp = tempfile::tempdir()?;
+    let btc_dir = tmp.path().join("bitcoind");
+    std::fs::create_dir_all(&btc_dir)?;
+    let rpc_port = pick_port()?;
+    let mut procs = Kill(vec![Command::new("bitcoind")
+        .arg(format!("-datadir={}", btc_dir.display()))
+        .args([
+            "-regtest=1",
+            "-server=1",
+            "-listen=0",
+            "-fallbackfee=0.0002",
+        ])
+        .arg(format!("-rpcport={rpc_port}"))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("bitcoind on PATH")?]);
+    let cookie = btc_dir.join("regtest").join(".cookie");
+    let started = Instant::now();
+    let rpc = loop {
+        if cookie.exists() {
+            if let Ok(c) = Client::new(
+                &format!("http://127.0.0.1:{rpc_port}"),
+                Auth::CookieFile(cookie.clone()),
+            ) {
+                if c.get_block_count().is_ok() {
+                    break c;
+                }
+            }
+        }
+        if started.elapsed() > Duration::from_secs(30) {
+            bail!("bitcoind didn't start");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let _: Value = rpc.call("createwallet", &[json!("miner")])?;
+    let miner = Client::new(
+        &format!("http://127.0.0.1:{rpc_port}/wallet/miner"),
+        Auth::CookieFile(cookie.clone()),
+    )?;
+    mine_blocks(&miner, 101)?;
+
+    let net = Network::Regtest;
+    let frag = |seed: u8, chain| -> Result<String> {
+        let m = Xpriv::new_master(net, &[seed; 32])?;
+        let (fp, p, x) = account_xpub(&m, net)?;
+        Ok(descriptor_key_fragment(fp, &p, &x, chain))
+    };
+    let std_ = build_standard_descriptor_from_fragments(
+        &frag(0x61, Chain::External)?,
+        &frag(0x61, Chain::Internal)?,
+        &frag(0x62, Chain::External)?,
+        &frag(0x62, Chain::Internal)?,
+        4320,
+    )?;
+    // Exactly what the export endpoint hands Liana.
+    let multipath = standard_multipath(&std_.pair.external, &std_.pair.internal).expect("standard");
+    let vault = Vault::from_config(VaultConfig {
+        descriptor_external: std_.pair.external.clone(),
+        descriptor_internal: std_.pair.internal.clone(),
+        timelock_blocks: 4320,
+        network: net,
+        role: VaultRole::Watchonly,
+        label: None,
+    })?;
+    let mut watch = ghostkey_core::wallet::build_watch_only(&vault)?;
+    let ours: Vec<String> = (0..3)
+        .map(|_| {
+            watch
+                .reveal_next_address(KeychainKind::External)
+                .address
+                .to_string()
+        })
+        .collect();
+    for (addr, sats) in ours.iter().take(2).zip([70_000u64, 30_000]) {
+        let a = Address::from_str(addr)?.require_network(net)?;
+        fund(&miner, &a, sats)?;
+    }
+    mine_blocks(&miner, 1)?;
+
+    let liana_dir = tmp.path().join("liana");
+    std::fs::create_dir_all(&liana_dir)?;
+    let conf = liana_dir.join("config.toml");
+    std::fs::write(
+        &conf,
+        format!(
+            r#"daemon = false
+data_dir = "{data}"
+log_level = "warn"
+main_descriptor = "{multipath}"
+
+[bitcoin_config]
+network = "regtest"
+poll_interval_secs = 1
+
+[bitcoind_config]
+addr = "127.0.0.1:{rpc_port}"
+cookie_path = "{cookie}"
+"#,
+            data = liana_dir.display(),
+            cookie = cookie.display(),
+        ),
+    )?;
+    procs.0.push(
+        Command::new("lianad")
+            .arg("--conf")
+            .arg(&conf)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("lianad on PATH")?,
+    );
+    let cli = |args: &[&str]| -> Result<Value> {
+        let out = Command::new("liana-cli")
+            .arg("--conf")
+            .arg(&conf)
+            .args(args)
+            .output()?;
+        let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| {
+            anyhow!(
+                "liana-cli {args:?}: {e}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        })?;
+        if v.get("error").is_some_and(|e| !e.is_null()) {
+            bail!("liana-cli {args:?}: {v}");
+        }
+        Ok(v["result"].clone())
+    };
+    let started = Instant::now();
+    loop {
+        if let Ok(info) = cli(&["getinfo"]) {
+            if info["sync"].as_f64() == Some(1.0) && info["block_height"].as_u64() >= Some(102) {
+                break;
+            }
+        }
+        if started.elapsed() > Duration::from_secs(90) {
+            bail!("lianad didn't sync (did it accept the descriptor?)");
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let coins = cli(&["listcoins"])?;
+    let total: u64 = coins["coins"]
+        .as_array()
+        .ok_or_else(|| anyhow!("no coins: {coins}"))?
+        .iter()
+        .map(|c| c["amount"].as_u64().unwrap_or(0))
+        .sum();
+    assert_eq!(total, 100_000, "Liana sees the vault's coins: {coins}");
+    let addrs = cli(&["listaddresses", "0", "3"])?;
+    let liana_receive: Vec<String> = addrs["addresses"]
+        .as_array()
+        .ok_or_else(|| anyhow!("no addresses: {addrs}"))?
+        .iter()
+        .map(|a| a["receive"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(
+        liana_receive, ours,
+        "Liana's receive addresses are GhostKey's"
+    );
+    println!(
+        "Liana sees {total} sat; receive addresses match: {}",
+        ours.join(", ")
+    );
+    Ok(())
+}
