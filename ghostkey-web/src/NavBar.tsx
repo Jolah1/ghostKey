@@ -26,9 +26,8 @@ interface NavItem {
  * across visits; email recovery is reserved for browsers without it.
  */
 const SIGNED_OUT_ITEMS: NavItem[] = [
-  { key: "setup",     label: "Set up" },
+  { key: "inherit",   label: "I was left something" },
   { key: "checkin",   label: "Sign in" },
-  { key: "inherit",   label: "Inherit" },
 ];
 
 // Inherit is for heirs, not savers: it stays in the website footer.
@@ -98,9 +97,9 @@ export function NavBar({ route, onNavigate, signedIn, canAddMoney = false }: Pro
             <button
               type="button"
               onClick={() => onNavigate("setup")}
-              className="btn btn-ghost hidden md:inline-flex"
+              className="btn btn-primary hidden md:inline-flex"
             >
-              Set up
+              Start saving
             </button>
           )}
           {canAddMoney && (

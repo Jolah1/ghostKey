@@ -770,6 +770,9 @@ export const api = {
       email_enabled?: boolean;
       sms_enabled?: boolean;
       whatsapp_enabled?: boolean;
+      /** Locked goals are live on this server. Absent on servers that
+       *  don't have them yet: the app then never mentions locking. */
+      locked_goals_enabled?: boolean;
     }>("/health"),
   getVault: (id: string, ownerToken: string | null) =>
     request<VaultView>(`/vaults/${id}`, {}, ownerToken),

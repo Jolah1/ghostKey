@@ -16,6 +16,7 @@
   --accent-deep:   #0B7568;
   --accent-glow:   rgba(46, 230, 210, 0.28);
   --accent-ring:   rgba(46, 230, 210, 0.55);
+  --blue-text:     #8FB0FF;
   --accent-tint:   rgba(46, 230, 210, 0.10);
   --accent-tint-2: rgba(46, 230, 210, 0.20);
 
@@ -165,6 +166,7 @@
   --accent-deep:   #0B7A6D;
   --accent-glow:   rgba(11, 122, 109, 0.28);
   --accent-ring:   rgba(11, 122, 109, 0.45);
+  --blue-text:     #2B59C8;
   --accent-tint:   rgba(11, 122, 109, 0.10);
   --accent-tint-2: rgba(11, 122, 109, 0.18);
   --accent-text:   #0B7A6D;
@@ -219,6 +221,7 @@
   --accent-strong: #5CF2E2;
   --accent-glow:   rgba(46, 230, 210, 0.28);
   --accent-ring:   rgba(46, 230, 210, 0.55);
+  --blue-text:     #8FB0FF;
   --accent-tint:   rgba(46, 230, 210, 0.10);
   --accent-tint-2: rgba(46, 230, 210, 0.20);
   --accent-text:   #2EE6D2;
@@ -795,4 +798,46 @@
   height: env(safe-area-inset-top, 0px);
   background: var(--bg);
   z-index: 40;
+}
+
+/* ---- Home page motion -------------------------------------------------
+   The savings card floats and its balance ticks up, the steps play in
+   turn, numbers tick when they change. All of it stops for anyone whose
+   device asks for reduced motion. */
+@layer components {
+  @keyframes gk-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+  @keyframes gk-glow { 0%, 100% { opacity: .55; transform: scale(1); } 50% { opacity: .9; transform: scale(1.06); } }
+  @keyframes gk-ripple { from { transform: scale(.6); opacity: .7; } to { transform: scale(1.7); opacity: 0; } }
+  @keyframes gk-fill { from { width: 0%; } to { width: 100%; } }
+  @keyframes gk-toast {
+    0% { transform: translateY(8px); opacity: 0; }
+    15%, 80% { transform: translateY(0); opacity: 1; }
+    100% { transform: translateY(-6px); opacity: 0; }
+  }
+  @keyframes gk-dot { 0%, 100% { box-shadow: 0 0 0 0 rgba(47, 191, 113, .6); } 50% { box-shadow: 0 0 0 6px rgba(47, 191, 113, 0); } }
+  @keyframes gk-rise { from { transform: translateY(16px); opacity: 0; } to { transform: none; opacity: 1; } }
+  @keyframes gk-drift { 0% { transform: translate(0, 0); } 50% { transform: translate(30px, -20px); } 100% { transform: translate(0, 0); } }
+  @keyframes gk-tick { from { transform: translateY(-6px); opacity: .3; } to { transform: none; opacity: 1; } }
+  @keyframes gk-shackle { 0% { transform: translateY(-8px); } 60% { transform: translateY(1px); } 100% { transform: translateY(0); } }
+
+  .gk-float { animation: gk-float 6s ease-in-out infinite; }
+  .gk-glow { animation: gk-glow 5s ease-in-out infinite; }
+  .gk-ripple { animation: gk-ripple .9s ease-out forwards; }
+  .gk-fill { animation: gk-fill 4s linear forwards; }
+  .gk-toast { animation: gk-toast 2.4s ease forwards; }
+  .gk-dot { animation: gk-dot 2s ease-in-out infinite; }
+  .gk-rise { animation: gk-rise .5s cubic-bezier(.16, 1, .3, 1) both; }
+  .gk-drift { animation: gk-drift 14s ease-in-out infinite; }
+  .gk-tick { display: inline-block; animation: gk-tick .35s ease-out both; }
+  .gk-shackle { animation: gk-shackle .5s cubic-bezier(.16, 1, .3, 1) both; }
+  .gk-lift { transition: border-color .2s ease, transform .2s ease; }
+  .gk-lift:hover { border-color: var(--border-hi); transform: translateY(-2px); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .gk-float, .gk-glow, .gk-ripple, .gk-fill, .gk-toast, .gk-dot,
+    .gk-rise, .gk-drift, .gk-tick, .gk-shackle {
+      animation: none !important;
+    }
+    .gk-lift:hover { transform: none; }
+  }
 }

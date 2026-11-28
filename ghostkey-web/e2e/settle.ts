@@ -7,7 +7,14 @@
 import type { Page } from "@playwright/test";
 
 export async function settleAnimations(page: Page): Promise<void> {
+  // Looping animations (a floating card, a pulsing dot) never finish, so
+  // only wait for the ones that end.
   await page.evaluate(() =>
-    Promise.all(document.getAnimations().map((a) => a.finished.catch(() => undefined))),
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((a) => a.effect?.getComputedTiming().iterations !== Infinity)
+        .map((a) => a.finished.catch(() => undefined)),
+    ),
   );
 }
