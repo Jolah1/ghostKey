@@ -76,7 +76,7 @@ function Confirming() {
       >
         <span className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-current border-r-transparent text-muted" />
       </div>
-      <h1 className="mt-6 font-serif text-3xl md:text-4xl">Confirming your email</h1>
+      <h1 className="mt-6 font-display text-[32px] font-extrabold leading-[1.1] tracking-[-0.02em] text-[var(--text)]">Confirming your email</h1>
       <p className="mt-3 text-muted">One moment.</p>
     </>
   );
@@ -105,7 +105,7 @@ function Confirmed({ onNavigate }: { onNavigate: (r: Route) => void }) {
           <path d="M20 6L9 17l-5-5" />
         </svg>
       </div>
-      <h1 className="mt-6 font-serif text-3xl md:text-4xl">Your email is confirmed</h1>
+      <h1 className="mt-6 font-display text-[32px] font-extrabold leading-[1.1] tracking-[-0.02em] text-[var(--text)]">Email confirmed</h1>
       <p className="mt-3 max-w-md text-muted">
         Reminders will reach you here before every check-in is due.
         Nothing else to do.
@@ -139,7 +139,7 @@ function Stale({ onNavigate }: { onNavigate: (r: Route) => void }) {
           <path d="M12 8v4M12 16h.01" />
         </svg>
       </div>
-      <h1 className="mt-6 font-serif text-3xl md:text-4xl">This link doesn&apos;t work anymore</h1>
+      <h1 className="mt-6 font-display text-[32px] font-extrabold leading-[1.1] tracking-[-0.02em] text-[var(--text)]">This link doesn&apos;t work anymore</h1>
       <p className="mt-3 max-w-md text-muted">
         It may have been replaced by a newer email. Open your dashboard
         and tap &quot;Send it again&quot; to get a fresh one. The newest

@@ -66,8 +66,8 @@ export function FamilyTools({
   }
   if (vault && vault.status !== "frozen" && !isClosed && !isClaiming && !heirPending) {
     items.push({
-      label: "Emergency options",
-      desc: "Freeze this share if needed",
+      label: "Emergency",
+      desc: "Freeze your vault if something feels wrong",
       route: "emergency",
     });
   }

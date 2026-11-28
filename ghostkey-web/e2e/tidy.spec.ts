@@ -122,9 +122,9 @@ test("Activity leads with savings; heir contact shows only email", async ({ page
   await expect(page.getByText("SMS", { exact: true })).toHaveCount(0);
   await expect(page.getByText("WhatsApp", { exact: true })).toHaveCount(0);
   // Opened from Inheritance, so back goes there.
-  await expect(page.getByRole("button", { name: "← Back to inheritance" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Back to inheritance" })).toBeVisible();
   await page.goto(`${base}/#/recovery`);
-  await expect(page.getByRole("button", { name: "← Back to home" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Back to home" })).toBeVisible();
 });
 
 async function expectNoSerious(page: import("@playwright/test").Page) {

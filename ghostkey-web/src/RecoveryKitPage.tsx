@@ -6,6 +6,7 @@
  * off to `downloadIndependenceProof`. Kept off the dashboard so that
  * screen stays calm.
  */
+import { PageShell } from "./PageShell";
 import { useEffect, useState } from "react";
 
 import { Button } from "./ui";
@@ -67,26 +68,11 @@ export function RecoveryKitPage({ onNavigate }: Props) {
   }
 
   return (
-    <main className="bg-app fade-in">
-      <div className="mx-auto max-w-md px-5 py-12 md:py-16">
-        <button
-          type="button"
-          onClick={() => onNavigate("dashboard")}
-          className="text-sm text-muted underline hover:text-[var(--text)]"
-        >
-          ← Back to home
-        </button>
-        <header className="mt-4">
-          <p className="eyebrow">Recovery kit</p>
-          <h1 className="mt-4 font-serif text-3xl">Your spare key</h1>
-          <p className="mt-3 text-sm text-muted">
-            A backup of your key, for emergencies. Best kept somewhere offline
-            you control, like a USB stick or a printout, in more than one
-            place. Email works too, but it's the least private choice. If you
-            ever can't get into GhostKey, open the file and type your password
-            to reach your money.
-          </p>
-        </header>
+    <PageShell
+      title="Your spare key"
+      intro="It reaches your money even without GhostKey. Keep it offline, like on a USB stick or a printout, in more than one place."
+      onNavigate={onNavigate}
+    >
 
         {loadError === "none" ? (
           <div className="mt-8">
@@ -118,11 +104,33 @@ export function RecoveryKitPage({ onNavigate }: Props) {
               </p>
             ) : null}
             {state.kind === "error" ? (
-              <p className="mt-3 text-xs text-amber-200">{state.message}</p>
+              <p className="mt-3 text-sm text-alarm">{state.message}</p>
             ) : null}
           </div>
         )}
-      </div>
-    </main>
+
+        <section className="mt-10 rounded-[20px] border border-app bg-surface p-5" aria-labelledby="gone-h">
+          <h2 id="gone-h" className="m-0 text-base font-bold text-[var(--text)]">
+            If GhostKey is gone
+          </h2>
+          <ol className="m-0 mt-3 flex list-none flex-col gap-3 p-0">
+            {["Open the file in any browser, even offline.", "Type your password.", "Send the bitcoin to any wallet."].map((t, i) => (
+              <li key={t} className="flex items-center gap-3 text-[15px] text-[var(--text-body)]">
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--surface-2)] text-sm font-bold">
+                  {i + 1}
+                </span>
+                {t}
+              </li>
+            ))}
+          </ol>
+          <button
+            type="button"
+            onClick={() => onNavigate("recovery-guide")}
+            className="mt-4 text-[15px] font-semibold text-[var(--accent-text)] underline underline-offset-2"
+          >
+            Read the full guide
+          </button>
+        </section>
+    </PageShell>
   );
 }

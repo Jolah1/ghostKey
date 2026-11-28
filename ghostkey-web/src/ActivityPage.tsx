@@ -7,6 +7,7 @@
  * server records — amounts, and the on-chain transaction id with a
  * tap-through to a public block explorer.
  */
+import { PageShell } from "./PageShell";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { Route } from "./App";
@@ -210,17 +211,7 @@ export function ActivityPage({
   }, [load]);
 
   return (
-    <main className="bg-app fade-in">
-      <div className="mx-auto max-w-2xl px-5 py-10 md:py-14">
-        <button
-          type="button"
-          onClick={() => onNavigate("dashboard")}
-          className="text-sm text-muted underline hover:text-[var(--text)]"
-        >
-          ← Back to home
-        </button>
-
-        <h1 className="mt-4 font-serif text-3xl">Activity</h1>
+    <PageShell title="Activity" onNavigate={onNavigate}>
         {savings && savings.total_saved_sat > 0 && !balanceHidden() ? (
           <p className="mt-2 text-sm" data-testid="activity-savings">
             <span className="font-medium">
@@ -318,7 +309,6 @@ export function ActivityPage({
             })}
           </ul>
         )}
-      </div>
-    </main>
+    </PageShell>
   );
 }
