@@ -146,8 +146,14 @@ function Hero({ onNavigate, locked }: Props & { locked: boolean }) {
   const ref = useTrackInView("landing.section_viewed", "hero");
   const network = useServerNetwork();
   return (
-    <section ref={ref} className="relative mx-auto flex max-w-[1200px] flex-wrap items-center gap-14 px-6 pb-24 pt-10 md:pt-14">
-      <div className="gk-rise flex min-w-0 flex-[1_1_480px] flex-col gap-6">
+    // On a phone: headline, then the moving card, then the buttons, so the
+    // card is on screen without scrolling. On a wide screen: text and
+    // buttons on the left, the card beside them.
+    <section
+      ref={ref}
+      className="relative mx-auto grid max-w-[1200px] grid-cols-1 items-center gap-8 px-6 pb-24 pt-10 md:pt-14 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] lg:gap-x-14 lg:gap-y-6"
+    >
+      <div className="gk-rise flex min-w-0 flex-col gap-6 lg:col-start-1 lg:row-start-1 lg:self-end">
         {network === "bitcoin" ? (
           <span className="inline-flex items-center gap-2.5 self-start rounded-full border border-[var(--card-outline)] bg-[color-mix(in_srgb,var(--accent)_8%,transparent)] px-3.5 py-2 text-sm font-semibold text-[var(--accent-text)]">
             <span className="gk-dot h-2 w-2 rounded-full bg-[var(--ok)]" />
@@ -164,7 +170,20 @@ function Hero({ onNavigate, locked }: Props & { locked: boolean }) {
             ? "Pick a goal and a date. Bitcoin keeps your savings locked until then. Nobody can open it early, not even us."
             : "Save toward the big things, on your own key. If you ever stop showing up, it goes to the people you choose."}
         </p>
-        <div className="flex flex-wrap gap-3 pt-2">
+      </div>
+      <div className="relative flex min-w-0 justify-center lg:col-start-2 lg:row-span-2 lg:row-start-1">
+        <div
+          aria-hidden="true"
+          className="gk-glow absolute inset-10 rounded-[40px] blur-[30px]"
+          style={{
+            background:
+              "radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--accent) 35%, transparent), color-mix(in srgb, var(--brand-blue) 25%, transparent) 50%, transparent 75%)",
+          }}
+        />
+        <HeroCard locked={locked} />
+      </div>
+      <div className="gk-rise flex min-w-0 flex-col gap-6 lg:col-start-1 lg:row-start-2 lg:self-start">
+        <div className="flex flex-wrap gap-3">
           <button
             type="button"
             className="btn btn-primary px-7 py-4 text-[17px]"
@@ -200,17 +219,6 @@ function Hero({ onNavigate, locked }: Props & { locked: boolean }) {
             Claim it here
           </button>
         </p>
-      </div>
-      <div className="relative flex min-w-0 flex-[1_1_420px] justify-center">
-        <div
-          aria-hidden="true"
-          className="gk-glow absolute inset-10 rounded-[40px] blur-[30px]"
-          style={{
-            background:
-              "radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--accent) 35%, transparent), color-mix(in srgb, var(--brand-blue) 25%, transparent) 50%, transparent 75%)",
-          }}
-        />
-        <HeroCard locked={locked} />
       </div>
     </section>
   );
