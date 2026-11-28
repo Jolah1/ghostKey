@@ -58,7 +58,7 @@ jobs:
       #
       # Pinned here on the action and NOT in a rust-toolchain.toml:
       # rustup reads that file wherever it finds it, including inside
-      # the `rust:1.88-slim-bookworm` builder stage in our Dockerfile,
+      # the `rust:1.94-slim-bookworm` builder stage in our Dockerfile,
       # so every Fly image build would fetch this toolchain and compile
       # production with it instead of the version the Dockerfile pins.
       # The audit job stays on the runner's preinstalled Rust, for the
@@ -84,7 +84,7 @@ jobs:
       #
       # Pinned here on the action and NOT in a rust-toolchain.toml:
       # rustup reads that file wherever it finds it, including inside
-      # the `rust:1.88-slim-bookworm` builder stage in our Dockerfile,
+      # the `rust:1.94-slim-bookworm` builder stage in our Dockerfile,
       # so every Fly image build would fetch this toolchain and compile
       # production with it instead of the version the Dockerfile pins.
       # The audit job stays on the runner's preinstalled Rust, for the
@@ -111,7 +111,7 @@ jobs:
       #
       # Pinned here on the action and NOT in a rust-toolchain.toml:
       # rustup reads that file wherever it finds it, including inside
-      # the `rust:1.88-slim-bookworm` builder stage in our Dockerfile,
+      # the `rust:1.94-slim-bookworm` builder stage in our Dockerfile,
       # so every Fly image build would fetch this toolchain and compile
       # production with it instead of the version the Dockerfile pins.
       # The audit job stays on the runner's preinstalled Rust, for the
@@ -144,7 +144,7 @@ jobs:
       #
       # Pinned here on the action and NOT in a rust-toolchain.toml:
       # rustup reads that file wherever it finds it, including inside
-      # the `rust:1.88-slim-bookworm` builder stage in our Dockerfile,
+      # the `rust:1.94-slim-bookworm` builder stage in our Dockerfile,
       # so every Fly image build would fetch this toolchain and compile
       # production with it instead of the version the Dockerfile pins.
       # The audit job stays on the runner's preinstalled Rust, for the

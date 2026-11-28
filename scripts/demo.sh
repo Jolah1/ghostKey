@@ -37,7 +37,7 @@
 #   GHOSTKEY_ESPLORA_URL=https://mempool.space/signet/api ./scripts/demo.sh
 #                                     # signet, but a different explorer
 #
-# Prereqs: Rust 1.88+, Node 20+, and `npm install` already run once in
+# Prereqs: Rust 1.94+, Node 20+, and `npm install` already run once in
 # ghostkey-web (the script does it for you if node_modules is missing).
 
 set -euo pipefail

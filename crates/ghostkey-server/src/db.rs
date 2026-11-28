@@ -273,3 +273,37 @@ mod tests {
         assert_eq!(report.vault_tokens_sealed, 0);
     }
 }
+
+#[cfg(test)]
+mod migration_checksum_tests {
+    /// Production's database records each applied migration's checksum,
+    /// written by sqlx 0.8 as the SHA-384 of the file exactly as on disk.
+    /// If the migrator's checksum ever stops matching that (a sqlx upgrade
+    /// that rewrites the text first, #406), the server refuses to start
+    /// with "migration was previously applied but has been modified".
+    #[test]
+    fn every_migration_checksum_is_the_files_own_sha384() {
+        use sha2::{Digest, Sha384};
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        let migrator = sqlx::migrate!("./migrations");
+        assert!(migrator.migrations.len() >= 49);
+        for m in migrator.migrations.iter() {
+            let file = std::fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .find(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with(&format!("{}_", m.version))
+                })
+                .unwrap_or_else(|| panic!("no file for migration {}", m.version));
+            let on_disk = Sha384::digest(std::fs::read(file.path()).unwrap()).to_vec();
+            assert_eq!(
+                m.checksum.as_ref(),
+                on_disk.as_slice(),
+                "migration {}",
+                m.version
+            );
+        }
+    }
+}

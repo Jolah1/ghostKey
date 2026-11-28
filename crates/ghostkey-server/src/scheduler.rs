@@ -5018,7 +5018,7 @@ mod tests {
             .unwrap();
         let migrator = sqlx::migrate!("./migrations");
         for m in migrator.migrations.iter().filter(|m| m.version < VERSION) {
-            sqlx::raw_sql(&m.sql).execute(&pool).await.unwrap();
+            sqlx::raw_sql(m.sql.clone()).execute(&pool).await.unwrap();
         }
         // Checked in 10 days ago on a 30-day rhythm, 3-month (12,960
         // block) wait. Timestamps exactly as chrono writes them.
@@ -5055,7 +5055,7 @@ mod tests {
             .iter()
             .find(|m| m.version == VERSION)
             .unwrap();
-        sqlx::raw_sql(&m.sql).execute(&pool).await.unwrap();
+        sqlx::raw_sql(m.sql.clone()).execute(&pool).await.unwrap();
 
         type Row = (i64, String, String, String, i64, i64);
         let row = |id: &'static str| {

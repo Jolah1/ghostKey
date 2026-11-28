@@ -16,7 +16,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/anomalyco/ghostKey"
-rust-version = "1.88"
+rust-version = "1.94"
 
 [workspace.dependencies]
 # Bitcoin stack
@@ -39,7 +39,7 @@ axum = "0.7"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "set-header", "trace"] }
 ipnet = "2"
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid", "macros", "migrate"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "chrono", "uuid", "macros", "migrate"] }
 
 # Shared
 serde = { version = "1", features = ["derive"] }
