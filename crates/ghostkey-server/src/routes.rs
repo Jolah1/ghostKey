@@ -507,6 +507,9 @@ struct Health {
     /// and whose last attempt failed. Any here makes `chain_scan_healthy`
     /// false: one vault's success must not hide another going stale.
     chain_scan_overdue_vaults: i64,
+    /// Locked goals are switched on (`GHOSTKEY_LOCKED_GOALS`). The app
+    /// mentions locking only when this is true.
+    locked_goals_enabled: bool,
     /// Last maturity-scan error, null when the most recent scan (or no
     /// scan at all) succeeded.
     chain_scan_last_error: Option<String>,
@@ -650,6 +653,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         chain_scan_healthy,
         chain_scan_consecutive_failures: scan.consecutive_failures as i64,
         chain_scan_overdue_vaults,
+        locked_goals_enabled: crate::config::locked_goals_enabled(),
         chain_scan_last_error: scan.last_err,
         chain_scan_last_ok_at: scan.last_ok_at.map(|t| t.to_rfc3339()),
         chain_scan_retry_at: crate::psbt_routes::explorer_retry_at(Utc::now())
@@ -774,6 +778,12 @@ pub struct VaultView {
     /// Only populated on owner-authenticated `GET /vaults/:id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unlock_eta: Option<String>,
+    /// A locked goal: the owner can spend from this time (Unix seconds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked_until: Option<i64>,
+    /// A locked goal: the heir can claim from this time (Unix seconds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heir_unlock_at: Option<i64>,
 }
 
 /// Response shape from a successful vault creation.
@@ -1033,6 +1043,8 @@ async fn create_vault(
                 drill_completed_at: None,
                 drill_code_ok: None,
                 unlock_eta: None,
+                locked_until: None,
+                heir_unlock_at: None,
             },
             owner_token: issued_owner.token,
         }),
@@ -1122,6 +1134,53 @@ pub struct CreateVaultFromXpubRequest {
     /// as a JSON blob in `heir_intro_*`. Both optional.
     pub from_name: Option<String>,
     pub heir_note: Option<String>,
+
+    /// A locked goal: the owner can spend from `owner_after` and the heir
+    /// can claim from `heir_after` (Unix seconds), written into the
+    /// vault's script. Only while locked goals are switched on.
+    #[serde(default)]
+    pub locked: Option<LockedDates>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct LockedDates {
+    pub owner_after: i64,
+    pub heir_after: i64,
+}
+
+/// Lock lengths offered are 3, 6 and 12 months; this allows a little
+/// either side for months of different lengths and clocks.
+const LOCK_MIN_SECS: i64 = 80 * 86_400;
+const LOCK_MAX_SECS: i64 = 380 * 86_400;
+/// The heir's wait after the unlock date: the same 3-12 months.
+const HEIR_GAP_MIN_SECS: i64 = 80 * 86_400;
+const HEIR_GAP_MAX_SECS: i64 = 380 * 86_400;
+
+/// Check a locked goal's dates against what we offer.
+pub(crate) fn validate_locked_dates(d: LockedDates, now: i64) -> Result<(u32, u32), ApiError> {
+    let (min, gap_min) = if crate::demo::demo_mode() {
+        // Demo vaults lock for minutes so a whole cycle fits in a session.
+        (60, 60)
+    } else {
+        (LOCK_MIN_SECS, HEIR_GAP_MIN_SECS)
+    };
+    let lock = d.owner_after - now;
+    if !(min..=LOCK_MAX_SECS).contains(&lock) {
+        return Err(ApiError::Validation(
+            "a goal locks for 3, 6 or 12 months".into(),
+        ));
+    }
+    let gap = d.heir_after - d.owner_after;
+    if !(gap_min..=HEIR_GAP_MAX_SECS).contains(&gap) {
+        return Err(ApiError::Validation(
+            "the heir's date must be 3 to 12 months after the unlock date".into(),
+        ));
+    }
+    let owner = u32::try_from(d.owner_after)
+        .map_err(|_| ApiError::Validation("unlock date out of range".into()))?;
+    let heir = u32::try_from(d.heir_after)
+        .map_err(|_| ApiError::Validation("heir date out of range".into()))?;
+    Ok((owner, heir))
 }
 
 /// Sealed material the browser ships during the password-vault flow.
@@ -1340,19 +1399,43 @@ async fn create_vault_from_xpub(
     let heir_ext = descriptor_key_fragment(heir_fp, &path, &heir_xpub, Chain::External);
     let heir_int = descriptor_key_fragment(heir_fp, &path, &heir_xpub, Chain::Internal);
 
-    // New vaults use the standard format (#386): the same spending rule
-    // as the legacy NUMS + `or_d` leaf, written so Liana and other
-    // Miniscript wallets can open the vault. Existing vaults keep the
-    // descriptors they were created with.
-    let pair = build_standard_descriptor_from_fragments(
-        &owner_ext,
-        &owner_int,
-        &heir_ext,
-        &heir_int,
-        req.timelock_blocks,
-    )
-    .map_err(|e| ApiError::Validation(format!("descriptor build: {e}")))?
-    .pair;
+    // A locked goal gets dated leaves; everything else the standard
+    // format (#386): the same spending rule as the legacy NUMS + `or_d`
+    // leaf, written so Liana and other Miniscript wallets can open the
+    // vault. Existing vaults keep the descriptors they were created with.
+    let locked = match req.locked {
+        Some(d) => {
+            if !crate::config::locked_goals_enabled() {
+                return Err(ApiError::Validation(
+                    "Locked goals aren't available yet.".into(),
+                ));
+            }
+            Some(validate_locked_dates(d, Utc::now().timestamp())?)
+        }
+        None => None,
+    };
+    let pair = match locked {
+        Some((owner_after, heir_after)) => ghostkey_core::descriptor::build_locked_descriptor_pair(
+            &owner_ext,
+            &owner_int,
+            &heir_ext,
+            &heir_int,
+            owner_after,
+            heir_after,
+        )
+        .map_err(|e| ApiError::Validation(format!("descriptor build: {e}")))?,
+        None => {
+            build_standard_descriptor_from_fragments(
+                &owner_ext,
+                &owner_int,
+                &heir_ext,
+                &heir_int,
+                req.timelock_blocks,
+            )
+            .map_err(|e| ApiError::Validation(format!("descriptor build: {e}")))?
+            .pair
+        }
+    };
 
     // The builder already parses the descriptor, but we re-validate here
     // defensively in case a future refactor changes that contract.
@@ -1685,6 +1768,15 @@ async fn create_vault_from_xpub(
     .execute(&state.db)
     .await?;
 
+    if let Some((owner_after, heir_after)) = locked {
+        sqlx::query("UPDATE vaults SET locked_until = ?, heir_unlock_at = ? WHERE id = ?")
+            .bind(i64::from(owner_after))
+            .bind(i64::from(heir_after))
+            .bind(&id)
+            .execute(&state.db)
+            .await?;
+    }
+
     // Heir code: how the heir re-derives their key, and the code sealed
     // for the owner. No claim token is stored; the link is minted later.
     if let Some(code) = req.sealed.as_ref().and_then(|s| s.heir_code.as_ref()) {
@@ -1816,6 +1908,8 @@ async fn create_vault_from_xpub(
                 drill_completed_at: None,
                 drill_code_ok: None,
                 unlock_eta: None,
+                locked_until: None,
+                heir_unlock_at: None,
             },
             owner_token: issued_owner.token,
         }),
@@ -2706,6 +2800,9 @@ async fn get_vault(
         heir_unreachable_alerted_at: Option<String>,
         /// No heir chosen yet (0/1).
         heir_pending: i64,
+        /// A locked goal's dates (Unix seconds), null otherwise.
+        locked_until: Option<i64>,
+        heir_unlock_at: Option<i64>,
     }
     let row = sqlx::query_as::<_, VaultRow>(
         r#"SELECT id, label, network, timelock_blocks,
@@ -2721,7 +2818,8 @@ async fn get_vault(
                   drill_started_at, drill_opened_at, drill_completed_at, drill_code_ok,
                   heir_contact_ciphertext IS NOT NULL AS has_heir_contact,
                   heir_contact_channel, heir_contact_verified_at,
-                  heir_unreachable_alerted_at, heir_pending
+                  heir_unreachable_alerted_at, heir_pending,
+                  locked_until, heir_unlock_at
            FROM vaults WHERE id = ?"#,
     )
     .bind(&id)
@@ -2800,6 +2898,8 @@ async fn get_vault(
         drill_completed_at: row.drill_completed_at.as_deref().map(parse_rfc),
         drill_code_ok: row.drill_code_ok.map(|v| v == 1),
         unlock_eta,
+        locked_until: row.locked_until,
+        heir_unlock_at: row.heir_unlock_at,
     }))
 }
 
@@ -3840,6 +3940,12 @@ pub struct FoundVault {
     pub status: String,
     pub created_at: DateTime<Utc>,
     pub next_deadline_at: DateTime<Utc>,
+    /// A locked goal's dates, so a new device files it under the owner's
+    /// savings rather than as an heir's share.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked_until: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heir_unlock_at: Option<i64>,
 }
 
 fn legacy_public_recovery_enabled() -> bool {
@@ -3878,6 +3984,8 @@ async fn find_vaults_by_email_legacy(
                 status,
                 created_at: parse_rfc(&created),
                 next_deadline_at: parse_rfc(&next),
+                locked_until: None,
+                heir_unlock_at: None,
             })
             .collect(),
     ))
@@ -4060,8 +4168,17 @@ async fn exchange_owner_recovery(
     .await?;
     let owner_email_hash = owner_email_hash.ok_or(ApiError::NotFound)?;
 
-    let rows = sqlx::query_as::<_, (String, Option<String>, String, String, String)>(
-        r#"SELECT id, label, status, created_at, next_deadline_at
+    type RecoveryRow = (
+        String,
+        Option<String>,
+        String,
+        String,
+        String,
+        Option<i64>,
+        Option<i64>,
+    );
+    let rows = sqlx::query_as::<_, RecoveryRow>(
+        r#"SELECT id, label, status, created_at, next_deadline_at, locked_until, heir_unlock_at
              FROM vaults
             WHERE owner_email_hash = ?
               AND password_salt_b64 IS NOT NULL
@@ -4071,7 +4188,7 @@ async fn exchange_owner_recovery(
     .fetch_all(&state.db)
     .await?;
 
-    let owner_email = if let Some((id, _, _, _, _)) = rows.first() {
+    let owner_email = if let Some((id, ..)) = rows.first() {
         let contact: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
             "SELECT owner_contact_ciphertext, owner_contact_nonce, owner_contact_channel \
              FROM vaults WHERE id = ?",
@@ -4096,7 +4213,7 @@ async fn exchange_owner_recovery(
     };
 
     let mut bundles = Vec::with_capacity(rows.len());
-    for (id, label, status, created, next) in rows {
+    for (id, label, status, created, next, locked_until, heir_unlock_at) in rows {
         let sealed_blobs = load_sealed_blobs(&state.db, &id).await?;
         bundles.push(OwnerRecoveryBundle {
             vault: FoundVault {
@@ -4105,6 +4222,8 @@ async fn exchange_owner_recovery(
                 status,
                 created_at: parse_rfc(&created),
                 next_deadline_at: parse_rfc(&next),
+                locked_until,
+                heir_unlock_at,
             },
             sealed_blobs,
         });
@@ -5859,6 +5978,7 @@ mod tests {
             trusted_contact_channel: None,
             from_name: None,
             heir_note: None,
+            locked: None,
         }
     }
 
@@ -5967,7 +6087,79 @@ mod tests {
             trusted_contact_channel: None,
             from_name: None,
             heir_note: None,
+            locked: None,
         }
+    }
+
+    /// Serialises the tests that switch locked goals on and off.
+    static LOCKED_ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn locked_in(months: i64, heir_months: i64) -> LockedDates {
+        let now = Utc::now().timestamp();
+        let owner_after = now + months * 30 * 86_400;
+        LockedDates {
+            owner_after,
+            heir_after: owner_after + heir_months * 30 * 86_400,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_locked_goal_is_refused_while_switched_off_and_for_odd_dates() {
+        ensure_test_master_key();
+        let _g = LOCKED_ENV.lock().await;
+        unsafe { std::env::remove_var("GHOSTKEY_LOCKED_GOALS") };
+        let state = fresh_state().await;
+        let mut req = from_xpub_with_owner_email(0x41, &"d".repeat(64));
+        req.locked = Some(locked_in(6, 6));
+        let err = create_vault_from_xpub(State(state.clone()), Json(req))
+            .await
+            .expect_err("off");
+        assert!(
+            matches!(err, ApiError::Validation(ref m) if m.contains("aren't available")),
+            "{err:?}"
+        );
+
+        unsafe { std::env::set_var("GHOSTKEY_LOCKED_GOALS", "1") };
+        for (m, h) in [(1, 6), (24, 6), (6, 0)] {
+            let mut req = from_xpub_with_owner_email(0x42, &"d".repeat(64));
+            req.locked = Some(locked_in(m, h));
+            assert!(
+                create_vault_from_xpub(State(state.clone()), Json(req))
+                    .await
+                    .is_err(),
+                "lock {m} months, heir +{h}"
+            );
+        }
+        unsafe { std::env::remove_var("GHOSTKEY_LOCKED_GOALS") };
+    }
+
+    #[tokio::test]
+    async fn a_locked_goal_is_made_with_dated_branches_and_its_dates_stored() {
+        ensure_test_master_key();
+        let _g = LOCKED_ENV.lock().await;
+        unsafe { std::env::set_var("GHOSTKEY_LOCKED_GOALS", "1") };
+        let state = fresh_state().await;
+        let mut req = from_xpub_with_owner_email(0x43, &"d".repeat(64));
+        let dates = locked_in(6, 3);
+        req.locked = Some(dates);
+        let (code, created) = create_vault_from_xpub(State(state.clone()), Json(req))
+            .await
+            .expect("locked goal created");
+        unsafe { std::env::remove_var("GHOSTKEY_LOCKED_GOALS") };
+        assert_eq!(code, StatusCode::CREATED);
+        let (ext, until, heir_at): (String, Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT descriptor_external, locked_until, heir_unlock_at FROM vaults WHERE id = ?",
+        )
+        .bind(&created.vault.id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            ghostkey_core::descriptor::locked_dates(&ext),
+            Some((dates.owner_after as u32, dates.heir_after as u32))
+        );
+        assert_eq!(until, Some(dates.owner_after));
+        assert_eq!(heir_at, Some(dates.heir_after));
     }
 
     /// The server never derives an heir key any more (it could rebuild
