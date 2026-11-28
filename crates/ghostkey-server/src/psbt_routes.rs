@@ -1973,7 +1973,7 @@ pub(crate) async fn record_spent_deposits(
     // which errs toward reporting rather than staying quiet.
     let last_server_spend: Option<String> = sqlx::query_scalar(
         "SELECT MAX(created_at) FROM events \
-          WHERE vault_id = ? AND kind IN ('owner_send', 'claim_broadcast')",
+          WHERE vault_id = ? AND kind IN ('owner_send', 'claim_broadcast', 'coins_refreshed')",
     )
     .bind(vault_id)
     .fetch_one(db)
@@ -2197,6 +2197,27 @@ pub struct SpendCoinsView {
     pub unconfirmed_sat: u64,
     /// Suggested fee rate, sat/vB.
     pub fee_rate_sat_per_vb: u64,
+    /// Each coin still in the vault, for "Keep it protected" (#94).
+    pub coins: Vec<CoinView>,
+    /// A fresh change address to refresh coins into, with its index so the
+    /// browser checks it against its own copy of the descriptors (#378).
+    /// Only on the owner's view.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_address: Option<IndexedAddressView>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CoinView {
+    pub outpoint: String,
+    pub value_sat: u64,
+    /// The block it confirmed in; `None` while it waits for one.
+    pub confirmation_height: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IndexedAddressView {
+    pub address: String,
+    pub index: u32,
 }
 
 /// Fee rate to suggest: the explorers' estimate for about two hours
@@ -2257,6 +2278,20 @@ fn scan_spend_coins(
         })
         .collect();
     let bal = wallet.balance();
+    let coins = wallet
+        .list_unspent()
+        .map(|u| CoinView {
+            outpoint: u.outpoint.to_string(),
+            value_sat: u.txout.value.to_sat(),
+            confirmation_height: match u.chain_position {
+                bdk_wallet::chain::ChainPosition::Confirmed { anchor, .. } => {
+                    Some(anchor.block_id.height)
+                }
+                _ => None,
+            },
+        })
+        .collect();
+    let change = wallet.next_unused_address(bdk_wallet::KeychainKind::Internal);
     Ok(SpendCoinsView {
         network: network.to_string(),
         chain_tip_height: wallet.latest_checkpoint().height(),
@@ -2264,6 +2299,11 @@ fn scan_spend_coins(
         confirmed_sat: bal.confirmed.to_sat(),
         unconfirmed_sat: (bal.trusted_pending + bal.untrusted_pending).to_sat(),
         fee_rate_sat_per_vb: suggested_fee_rate(estimates.into_inner()),
+        coins,
+        refresh_address: Some(IndexedAddressView {
+            address: change.address.to_string(),
+            index: change.index,
+        }),
     })
 }
 
@@ -2428,6 +2468,208 @@ pub async fn owner_send_signed(
 }
 
 /* -------------------------------------------------------------------------- *
+ *  Refreshing coins (#94)                                                    *
+ *                                                                            *
+ *  Bitcoin's own lock on a coin (`older(N)`) counts from the block the coin  *
+ *  confirmed in. Once it has passed, only GhostKey's check-in stands between *
+ *  that coin and the heir's key. A refresh spends the coin back into the     *
+ *  vault, so its lock starts again. The browser builds and signs it with    *
+ *  the owner key; the server checks it stays in the vault and broadcasts.   *
+ * -------------------------------------------------------------------------- */
+
+#[derive(Debug, Deserialize)]
+pub struct SignedRefreshRequest {
+    pub tx_hex: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RefreshView {
+    pub txid: String,
+    pub fee_sat: u64,
+}
+
+/// What a refresh does, checked without the network: every input is a
+/// vault coin, every output pays the vault, and the fee is sane.
+#[derive(Debug, PartialEq, Eq)]
+struct RefreshSummary {
+    spent: Vec<bitcoin::OutPoint>,
+    /// The vault output the coins land in (the first, if somehow several).
+    landed: bitcoin::OutPoint,
+    total_in: u64,
+    fee_sat: u64,
+}
+
+fn summarize_refresh(
+    tx: &bitcoin::Transaction,
+    prevout_value: impl Fn(&bitcoin::OutPoint) -> Option<u64>,
+    is_vault: impl Fn(&bitcoin::ScriptBuf) -> bool,
+) -> Result<RefreshSummary, String> {
+    if tx.input.is_empty() || tx.output.is_empty() {
+        return Err("That transaction doesn't refresh anything.".into());
+    }
+    let mut total_in = 0u64;
+    let mut spent = Vec::new();
+    for input in &tx.input {
+        total_in += prevout_value(&input.previous_output).ok_or_else(|| {
+            "That transaction spends coins that aren't in this vault, or are already spent."
+                .to_string()
+        })?;
+        spent.push(input.previous_output);
+    }
+    let mut out_sum = 0u64;
+    for o in &tx.output {
+        if !is_vault(&o.script_pubkey) {
+            return Err("A refresh must pay back into this vault, and this one doesn't.".into());
+        }
+        out_sum += o.value.to_sat();
+    }
+    let fee = total_in
+        .checked_sub(out_sum)
+        .ok_or_else(|| "That transaction pays out more than it spends.".to_string())?;
+    // A refresh moves money from the vault to the vault: anything close
+    // to half of it going to fees is a mistake, not a refresh.
+    if fee * 2 > total_in {
+        return Err("The fee would be more than half of what you're refreshing.".into());
+    }
+    Ok(RefreshSummary {
+        spent,
+        landed: bitcoin::OutPoint {
+            txid: tx.compute_txid(),
+            vout: 0,
+        },
+        total_in,
+        fee_sat: fee,
+    })
+}
+
+/// Carry the refreshed deposits' history over to the coin they became, so
+/// the savings total, streak and "keep it" challenges see the same savings,
+/// less the fee, instead of a withdrawal and a new deposit. Several coins
+/// refreshed together become one row, dated from the earliest.
+async fn carry_deposits_over(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+    summary: &RefreshSummary,
+) -> Result<(), sqlx::Error> {
+    let mut tx = db.begin().await?;
+    let mut rows: Vec<(String, i64, String)> = Vec::new();
+    for op in &summary.spent {
+        let row: Option<(String, i64, String)> = sqlx::query_as(
+            "SELECT outpoint, amount_sat, seen_at FROM vault_deposits \
+              WHERE vault_id = ? AND outpoint = ? AND spent_at IS NULL",
+        )
+        .bind(vault_id)
+        .bind(op.to_string())
+        .fetch_optional(&mut *tx)
+        .await?;
+        rows.extend(row);
+    }
+    if rows.is_empty() {
+        return tx.commit().await; // change from a send: no deposit to carry
+    }
+    rows.sort_by(|a, b| a.2.cmp(&b.2));
+    let total: i64 = rows.iter().map(|r| r.1).sum();
+    let keep = rows[0].0.clone();
+    for (op, ..) in rows.iter().skip(1) {
+        sqlx::query("DELETE FROM vault_deposits WHERE vault_id = ? AND outpoint = ?")
+            .bind(vault_id)
+            .bind(op)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query(
+        "UPDATE vault_deposits SET outpoint = ?, amount_sat = ? \
+          WHERE vault_id = ? AND outpoint = ?",
+    )
+    .bind(summary.landed.to_string())
+    .bind((total - summary.fee_sat as i64).max(0))
+    .bind(vault_id)
+    .bind(&keep)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await
+}
+
+/// `POST /vaults/:id/refresh/signed` (owner): broadcast a refresh the
+/// owner's browser signed. No email: nothing left the vault.
+pub async fn owner_refresh_signed(
+    auth: crate::auth::OwnerAuth,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SignedRefreshRequest>,
+) -> Result<(StatusCode, Json<RefreshView>), ApiError> {
+    let id = auth.vault_id;
+    let raw = hex::decode(req.tx_hex.trim())
+        .map_err(|_| ApiError::Validation("That isn't a transaction.".into()))?;
+    if raw.len() > 100_000 {
+        return Err(ApiError::Validation("That transaction is too big.".into()));
+    }
+    let tx: bitcoin::Transaction = bitcoin::consensus::deserialize(&raw)
+        .map_err(|_| ApiError::Validation("That isn't a transaction.".into()))?;
+    let (vault, network) = load_vault_watch(&state, &id).await?;
+    let urls = esplora_urls(network)?;
+    let _permit = crate::concurrency::acquire_esplora().await;
+    let summary = tokio::task::spawn_blocking(move || -> Result<RefreshSummary, BlockingErr> {
+        let mut wallet = ghostkey_core::wallet::build_watch_only(&vault)
+            .map_err(|e| BlockingErr::Vault(e.to_string()))?;
+        let update = try_each_esplora(&urls, |client| {
+            client
+                .full_scan(wallet.start_full_scan(), 5, 1)
+                .map_err(|e| clean_esplora_err("full_scan", &e))
+        })?;
+        wallet
+            .apply_update(update)
+            .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
+        let summary = summarize_refresh(
+            &tx,
+            |op| wallet.get_utxo(*op).map(|u| u.txout.value.to_sat()),
+            |spk| wallet.is_mine(spk.clone()),
+        )
+        .map_err(BlockingErr::Build)?;
+        try_each_esplora(&urls, |client| {
+            client
+                .broadcast(&tx)
+                .map_err(|e| clean_esplora_err("broadcast", &e))
+        })?;
+        Ok(summary)
+    })
+    .await
+    .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
+
+    // The event first: a scan that runs before the deposits are carried
+    // over then reads the vanished coin as the owner's own move, not an
+    // unexplained spend (record_spent_deposits).
+    crate::routes::record_event(
+        &state.db,
+        &id,
+        "coins_refreshed",
+        Some(serde_json::json!({
+            "txid": summary.landed.txid.to_string(),
+            "coins": summary.spent.len(),
+            "total_input_sats": summary.total_in,
+            "fee_sats": summary.fee_sat,
+        })),
+    )
+    .await?;
+    if let Err(e) = carry_deposits_over(&state.db, &id, &summary).await {
+        tracing::warn!(vault_id = %id, error = ?e, "could not carry deposits over a refresh");
+    }
+    if let Err(e) = sqlx::query("UPDATE vaults SET chain_scanned_at = NULL WHERE id = ?")
+        .bind(&id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::warn!(vault_id = %id, error = ?e, "could not mark vault for rescan");
+    }
+    Ok((
+        StatusCode::OK,
+        Json(RefreshView {
+            txid: summary.landed.txid.to_string(),
+            fee_sat: summary.fee_sat,
+        }),
+    ))
+}
+
+/* -------------------------------------------------------------------------- *
  *  Heir claims signed in the browser (#390)                                  *
  *                                                                            *
  *  Same shape as the owner's browser-signed send: the claim page gets the    *
@@ -2461,9 +2703,10 @@ pub async fn claim_coins(
     let network = row.network;
     let urls = esplora_urls(network)?;
     let _permit = crate::concurrency::acquire_esplora().await;
-    let view = tokio::task::spawn_blocking(move || scan_spend_coins(&vault, network, &urls))
+    let mut view = tokio::task::spawn_blocking(move || scan_spend_coins(&vault, network, &urls))
         .await
         .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
+    view.refresh_address = None;
     Ok(Json(view))
 }
 
@@ -3418,6 +3661,144 @@ mod tests {
             let err = summarize_signed_send(&bad, &dest, prevout, is_vault).unwrap_err();
             assert!(err.contains(why), "{err}");
         }
+    }
+
+    fn refresh_tx(
+        outs: Vec<(bitcoin::ScriptBuf, u64)>,
+        ins: Vec<bitcoin::OutPoint>,
+    ) -> bitcoin::Transaction {
+        use bitcoin::{Amount, TxIn, TxOut};
+        bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: ins
+                .into_iter()
+                .map(|previous_output| TxIn {
+                    previous_output,
+                    ..Default::default()
+                })
+                .collect(),
+            output: outs
+                .into_iter()
+                .map(|(script_pubkey, v)| TxOut {
+                    value: Amount::from_sat(v),
+                    script_pubkey,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_refresh_must_stay_in_the_vault_with_a_sane_fee() {
+        use bitcoin::hashes::Hash;
+        use bitcoin::{OutPoint, ScriptBuf, Txid};
+        let vault = ScriptBuf::from_bytes(vec![0x51, 0x20, 9, 9, 9]);
+        let stranger = ScriptBuf::from_bytes(vec![0x51, 0x20, 7, 7, 7]);
+        let a = OutPoint::new(Txid::from_byte_array([1; 32]), 0);
+        let b = OutPoint::new(Txid::from_byte_array([3; 32]), 1);
+        let gone = OutPoint::new(Txid::from_byte_array([2; 32]), 0);
+        let prevout = |op: &OutPoint| (*op == a || *op == b).then_some(50_000);
+        let is_vault = |spk: &ScriptBuf| *spk == vault;
+
+        let t = refresh_tx(vec![(vault.clone(), 99_700)], vec![a, b]);
+        let ok = summarize_refresh(&t, prevout, is_vault).unwrap();
+        assert_eq!(ok.spent, vec![a, b]);
+        assert_eq!(ok.total_in, 100_000);
+        assert_eq!(ok.fee_sat, 300);
+        assert_eq!(ok.landed, OutPoint::new(t.compute_txid(), 0));
+
+        for (bad, why) in [
+            (
+                refresh_tx(vec![(stranger.clone(), 49_000)], vec![a]),
+                "pay back into this vault",
+            ),
+            (
+                refresh_tx(
+                    vec![(vault.clone(), 30_000), (stranger.clone(), 19_000)],
+                    vec![a],
+                ),
+                "pay back into this vault",
+            ),
+            (
+                refresh_tx(vec![(vault.clone(), 49_000)], vec![gone]),
+                "aren't in this vault",
+            ),
+            (
+                refresh_tx(vec![(vault.clone(), 20_000)], vec![a]),
+                "more than half",
+            ),
+            (
+                refresh_tx(vec![(vault.clone(), 60_000)], vec![a]),
+                "more than it spends",
+            ),
+            (refresh_tx(vec![], vec![a]), "doesn't refresh anything"),
+        ] {
+            let err = summarize_refresh(&bad, prevout, is_vault).unwrap_err();
+            assert!(err.contains(why), "{err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refresh_carries_the_deposits_over_less_the_fee() {
+        use bitcoin::hashes::Hash;
+        use bitcoin::{OutPoint, Txid};
+        let pool = memory_db().await;
+        seed_vault(&pool, "vault-r").await;
+        let a = OutPoint::new(Txid::from_byte_array([1; 32]), 0);
+        let b = OutPoint::new(Txid::from_byte_array([3; 32]), 1);
+        let other = OutPoint::new(Txid::from_byte_array([4; 32]), 0);
+        for (op, amt, seen) in [
+            (a, 30_000, "2026-03-01T00:00:00+00:00"),
+            (b, 20_000, "2026-01-01T00:00:00+00:00"),
+            (other, 5_000, "2026-02-01T00:00:00+00:00"),
+        ] {
+            sqlx::query(
+                "INSERT INTO vault_deposits (vault_id, outpoint, amount_sat, height, seen_at) \
+                 VALUES ('vault-r', ?, ?, 100, ?)",
+            )
+            .bind(op.to_string())
+            .bind(amt)
+            .bind(seen)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let landed = OutPoint::new(Txid::from_byte_array([9; 32]), 0);
+        let summary = RefreshSummary {
+            spent: vec![a, b],
+            landed,
+            total_in: 50_000,
+            fee_sat: 400,
+        };
+        carry_deposits_over(&pool, "vault-r", &summary)
+            .await
+            .unwrap();
+        let rows: Vec<(String, i64, String, Option<String>)> = sqlx::query_as(
+            "SELECT outpoint, amount_sat, seen_at, spent_at FROM vault_deposits \
+              WHERE vault_id = 'vault-r' ORDER BY seen_at",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        // One row for the refreshed pair, dated from the earlier deposit,
+        // worth what they held less the fee; the untouched one as it was.
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    landed.to_string(),
+                    49_600,
+                    "2026-01-01T00:00:00+00:00".into(),
+                    None
+                ),
+                (
+                    other.to_string(),
+                    5_000,
+                    "2026-02-01T00:00:00+00:00".into(),
+                    None
+                ),
+            ]
+        );
     }
 
     #[test]

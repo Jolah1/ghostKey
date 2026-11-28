@@ -316,6 +316,110 @@ async fn notify_locked_goals(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// How many blocks before a deposit's on-chain lock ends to remind the
+/// owner: a quarter of the wait, at least a day and at most a month.
+fn refresh_lead_blocks(timelock_blocks: i64) -> i64 {
+    (timelock_blocks / 4).clamp(144, 4_320)
+}
+
+/// Should the owner refresh a deposit now? Someone chosen to inherit, not
+/// a locked goal, active, money in it, and the earliest on-chain lock
+/// ends within the lead (or already has). The reminder email and Home's
+/// banner both use this.
+pub(crate) fn refresh_due(
+    status: &str,
+    heir_pending: i64,
+    locked_until: Option<i64>,
+    has_unspent: Option<i64>,
+    unlock_height: Option<i64>,
+    tip_height: Option<i64>,
+    timelock_blocks: i64,
+) -> bool {
+    matches!(status, "ok" | "warning")
+        && heir_pending == 0
+        && locked_until.is_none()
+        && has_unspent == Some(1)
+        && match (unlock_height, tip_height) {
+            (Some(u), Some(t)) => u - t <= refresh_lead_blocks(timelock_blocks),
+            _ => false,
+        }
+}
+
+/// "Keep your savings protected" (#94). Bitcoin's lock on a deposit counts
+/// from the block it confirmed in. Once it ends, only GhostKey's check-in
+/// keeps that deposit from the person you chose. When the earliest one is
+/// close, email the owner once, so they can refresh it in the app.
+///
+/// Once per lock end: the email is keyed to the height the scan found
+/// (`refresh_reminded_height`), so a refresh, which moves that height,
+/// arms the next reminder. Only vaults with someone chosen to inherit
+/// (no one else holds a savings-only vault's spare key) and not locked
+/// goals (their heir waits for a date, not a deposit's age).
+async fn remind_refresh_due(state: &AppState) -> anyhow::Result<()> {
+    type Row = (String, Option<String>, i64, i64, i64);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT id, label, timelock_blocks, chain_unlock_height, chain_tip_height \
+           FROM vaults \
+          WHERE status IN ('ok', 'warning') \
+            AND heir_pending = 0 \
+            AND locked_until IS NULL \
+            AND chain_has_unspent = 1 \
+            AND chain_unlock_height IS NOT NULL \
+            AND chain_tip_height IS NOT NULL \
+            AND (refresh_reminded_height IS NULL OR refresh_reminded_height != chain_unlock_height)",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    let base = public_base_url();
+    for (id, label, timelock, unlock_h, tip_h) in rows {
+        let left = unlock_h - tip_h;
+        if left > refresh_lead_blocks(timelock) {
+            continue;
+        }
+        let claimed = sqlx::query(
+            "UPDATE vaults SET refresh_reminded_height = ? \
+              WHERE id = ? AND (refresh_reminded_height IS NULL OR refresh_reminded_height != ?)",
+        )
+        .bind(unlock_h)
+        .bind(&id)
+        .bind(unlock_h)
+        .execute(&state.db)
+        .await?;
+        if claimed.rows_affected() != 1 {
+            continue;
+        }
+        let name = label.unwrap_or_else(|| "your savings".to_string());
+        let when = if left <= 0 {
+            "has ended".to_string()
+        } else {
+            let at = Utc::now() + chrono::Duration::minutes(left * 10);
+            format!("ends around {}", at.format("%-d %B %Y"))
+        };
+        let subject = format!("Keep {name} protected");
+        let body = format!(
+            "Hello,\n\n\
+             Bitcoin's own lock on a deposit in {name} {when}. After that, \
+             only your check-ins keep it from the person you chose.\n\n\
+             Refresh it to start the lock again. It takes one tap and a \
+             small network fee:\n\n\
+             {base}/#/protect\n\n\
+             From GhostKey\n"
+        );
+        if let Err(e) = notifier::enqueue_owner_email(
+            &state.db,
+            &id,
+            NotificationKind::RefreshDue,
+            &subject,
+            &body,
+        )
+        .await
+        {
+            tracing::warn!(vault_id = %id, error = ?e, "refresh reminder not enqueued");
+        }
+    }
+    Ok(())
+}
+
 /// Upsert the single-row scheduler heartbeat. Best-effort: a write
 /// failure is logged, not fatal -- losing a heartbeat must never stop
 /// the scheduler from doing its real work on the next tick.
@@ -346,6 +450,7 @@ async fn tick_once(state: &AppState) -> anyhow::Result<()> {
     stand_down_never_funded_vaults(state).await?;
     issue_pre_deadline_reminders(state, &now).await?;
     notify_locked_goals(state).await?;
+    remind_refresh_due(state).await?;
     transition_ok_to_alarmed(state, &now).await?;
     send_alarm_escalations(state, &now).await?;
 
@@ -4199,6 +4304,76 @@ mod tests {
             .fetch_one(pool)
             .await
             .unwrap()
+    }
+
+    async fn make_refreshable(pool: &SqlitePool, id: &str, unlock_h: i64, tip_h: i64) {
+        insert_vault_with_sealed_owner(
+            pool,
+            id,
+            "ok",
+            "2099-01-01T00:00:00Z",
+            "2099-01-02T00:00:00Z",
+            "owner@example.com",
+        )
+        .await;
+        sqlx::query(
+            "UPDATE vaults SET label = 'Savings', timelock_blocks = 12960, heir_pending = 0, \
+                    chain_has_unspent = 1, chain_unlock_height = ?, chain_tip_height = ?, \
+                    owner_contact_verified_at = '2026-01-01T00:00:00Z' WHERE id = ?",
+        )
+        .bind(unlock_h)
+        .bind(tip_h)
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn the_refresh_reminder_comes_a_quarter_of_the_wait_ahead_within_bounds() {
+        assert_eq!(refresh_lead_blocks(12_960), 3_240);
+        assert_eq!(refresh_lead_blocks(52_560), 4_320); // a year: a month ahead
+        assert_eq!(refresh_lead_blocks(1), 144); // demo: a day
+    }
+
+    #[tokio::test]
+    async fn a_refresh_reminder_goes_once_per_lock_end_and_only_when_close() {
+        ensure_test_master_key();
+        let state = AppState {
+            db: fresh_db().await,
+        };
+        // Due: ends in 1,000 blocks (about a week), lead is 3,240.
+        make_refreshable(&state.db, "v-ref-due", 901_000, 900_000).await;
+        // Far: ends in 10,000 blocks.
+        make_refreshable(&state.db, "v-ref-far", 910_000, 900_000).await;
+        // Due, but no one chosen to inherit.
+        make_refreshable(&state.db, "v-ref-solo", 901_000, 900_000).await;
+        sqlx::query("UPDATE vaults SET heir_pending = 1 WHERE id = 'v-ref-solo'")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        // Due, but a locked goal.
+        make_refreshable(&state.db, "v-ref-lock", 901_000, 900_000).await;
+        sqlx::query("UPDATE vaults SET locked_until = 1900000000 WHERE id = 'v-ref-lock'")
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        remind_refresh_due(&state).await.unwrap();
+        remind_refresh_due(&state).await.unwrap();
+        assert_eq!(emails(&state.db, "v-ref-due", "refresh_due").await, 1);
+        for id in ["v-ref-far", "v-ref-solo", "v-ref-lock"] {
+            assert_eq!(emails(&state.db, id, "refresh_due").await, 0, "{id}");
+        }
+
+        // After a refresh the next coin's lock ends later; when that one
+        // is close, the owner hears again.
+        sqlx::query("UPDATE vaults SET chain_unlock_height = 903_000, chain_tip_height = 901_500 WHERE id = 'v-ref-due'")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        remind_refresh_due(&state).await.unwrap();
+        assert_eq!(emails(&state.db, "v-ref-due", "refresh_due").await, 2);
     }
 
     #[tokio::test]

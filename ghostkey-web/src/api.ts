@@ -98,6 +98,8 @@ export interface VaultView {
    *  `GET /vaults/:id` when the vault has been scanned and hasn't matured.
    *  Drives the "waiting to claim — unlocks around <date>" copy. */
   unlock_eta?: string | null;
+  /** A deposit's on-chain lock ends soon or has ended (#94). */
+  refresh_due?: boolean;
   /** A locked goal: the owner can spend from this time (Unix seconds). */
   locked_until?: number | null;
   /** A locked goal: the heir can claim from this time (Unix seconds). */
@@ -999,7 +1001,19 @@ export const api = {
       confirmed_sat: number;
       unconfirmed_sat: number;
       fee_rate_sat_per_vb: number;
+      /** Each coin still in the vault (#94). */
+      coins?: { outpoint: string; value_sat: number; confirmation_height: number | null }[];
+      /** A fresh change address to refresh coins into, with its index. */
+      refresh_address?: { address: string; index: number };
     }>(`/vaults/${id}/coins`, undefined, ownerToken),
+  /** Owner-only: broadcast a refresh this browser signed. The server checks
+   *  every output pays back into the vault (#94). */
+  ownerRefreshSigned: (id: string, ownerToken: string, body: { tx_hex: string }) =>
+    request<{ txid: string; fee_sat: number }>(
+      `/vaults/${id}/refresh/signed`,
+      { method: "POST", body: JSON.stringify(body) },
+      ownerToken,
+    ),
   /** Owner-only: broadcast a send this browser signed. The server checks
    *  it only spends this vault's coins and pays the address given. */
   ownerSendSigned: (id: string, ownerToken: string, body: { tx_hex: string; destination: string }) =>

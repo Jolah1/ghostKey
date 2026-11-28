@@ -753,6 +753,25 @@ export function Dashboard({ onNavigate, view = "home" }: Props) {
               </div>
             ) : null}
 
+            {vault?.refresh_due && !isClosed && !isClaiming ? (
+              <button
+                type="button"
+                onClick={() => onNavigate("protect")}
+                data-testid="refresh-due"
+                className="mt-5 flex w-full items-center gap-3 rounded-[20px] border border-[color-mix(in_srgb,var(--warning)_45%,transparent)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-4 text-left"
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[15px] font-semibold text-[var(--text)]">Keep your savings protected</span>
+                  <span className="block text-sm text-[var(--text-body)]">
+                    Bitcoin&apos;s lock on a deposit ends soon. Refresh it in one tap.
+                  </span>
+                </span>
+                <span aria-hidden="true" className="shrink-0 text-lg text-dim">
+                  ›
+                </span>
+              </button>
+            ) : null}
+
             {vault ? (
               <nav aria-label="More" className="mt-5">
                 <ul className="m-0 list-none overflow-hidden rounded-[20px] border border-app bg-surface p-0">
