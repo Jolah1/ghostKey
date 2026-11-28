@@ -80,7 +80,7 @@ export async function createLockedGoal(opts: {
 }): Promise<{ id: string; until: number; heirAt: number }> {
   // Loaded here, not at the top: Home imports this file for its plan
   // list and shouldn't carry the key code.
-  const [{ generateParty }, { hashEmailForLookup, sealVaultSecretsHeirLater, sealWithKey, unsealOwner }] =
+  const [{ generateParty }, { hashEmailForLookup, sealHeirLaterWithKek, sealWithKey, unsealOwnerKeepKek }] =
     await Promise.all([import("./crypto/keygen"), import("./crypto/sealing")]);
   const parent = getVaultMeta(opts.parentId);
   const token = getVaultOwnerToken(opts.parentId);
@@ -93,31 +93,39 @@ export async function createLockedGoal(opts: {
     throw new Error("This vault is too old to lock goals from. Set up a new one to use them.");
   }
 
+  // One Argon2 run: the password key that opens this vault also seals the
+  // new goal, with the same salt. Running it again with a new salt was
+  // half of the wait on a phone.
   let ownerXprv: string;
+  let kek: Uint8Array;
   try {
-    const unsealed = await unsealOwner({
+    const unsealed = await unsealOwnerKeepKek({
       password: opts.password,
       passwordSalt: blobs.password_salt_b64,
       memKiB: blobs.password_kdf_mem_kib,
       iters: blobs.password_kdf_iters,
       ownerXprvBlob: { v: 1, ct: blobs.owner_xprv_ct_b64, nonce: blobs.owner_xprv_nonce_b64 },
       ownerTokenBlob: { v: 1, ct: blobs.owner_token_ct_b64, nonce: blobs.owner_token_nonce_b64 },
-      onProgress: (p) => opts.onProgress?.(Math.round(p * 50)),
+      onProgress: (p) => opts.onProgress?.(Math.round(p * 100)),
     });
     ownerXprv = unsealed.ownerXprv;
+    kek = unsealed.kek;
   } catch {
     throw new WrongPassword("That password didn't unlock your vault.");
   }
 
   const network = vault.network as Network;
   const spareHeir = generateParty(network);
-  const sealed = await sealVaultSecretsHeirLater({
-    password: opts.password,
+  const sealed = sealHeirLaterWithKek({
+    kek,
+    passwordSalt: blobs.password_salt_b64,
+    memKiB: blobs.password_kdf_mem_kib,
+    iters: blobs.password_kdf_iters,
     ownerXprv,
     heirXprv: spareHeir.xprv,
     ownerToken: PLACEHOLDER_OWNER_TOKEN,
-    onProgress: (p) => opts.onProgress?.(50 + Math.round(p * 50)),
   });
+  kek.fill(0);
   const dates = lockDates(opts.months, vault.timelock_blocks, opts.demo);
   const ownerEmail = parent.owner.address;
   const resp = await api.createVaultFromXpub({

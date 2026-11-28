@@ -415,6 +415,34 @@ export async function sealVaultSecretsHeirLater(input: {
   }
 }
 
+/**
+ * `sealVaultSecretsHeirLater` under a password key the caller already
+ * holds (from `unsealOwnerKeepKek`), with that key's salt and Argon2
+ * settings. The same password key and salt for vaults of one owner is
+ * what setup already does for several heirs; every blob still gets its
+ * own random nonce. No Argon2 run, so it is instant.
+ */
+export function sealHeirLaterWithKek(input: {
+  kek: Uint8Array;
+  passwordSalt: string;
+  memKiB: number;
+  iters: number;
+  ownerXprv: string;
+  heirXprv: string;
+  ownerToken: string;
+}): SealedHeirLater {
+  const enc = new TextEncoder();
+  return {
+    password_salt: input.passwordSalt,
+    password_kdf_mem_kib: input.memKiB,
+    password_kdf_iters: input.iters,
+    owner_xprv: sealWithKey(input.kek, enc.encode(input.ownerXprv)),
+    owner_token: sealWithKey(input.kek, enc.encode(input.ownerToken)),
+    heir_xprv_owner: sealWithKey(input.kek, enc.encode(input.heirXprv)),
+    _owner_kek: new Uint8Array(input.kek),
+  };
+}
+
 /** Result of sealing one secret under a password: the ciphertext plus
  *  the KDF parameters a reader needs to re-derive the same KEK. Shaped
  *  to drop straight into a recovery-kit data blob. */
@@ -466,20 +494,34 @@ export interface UnsealedOwner {
 }
 
 export async function unsealOwner(input: UnsealOwnerInput): Promise<UnsealedOwner> {
+  const { kek, ...out } = await unsealOwnerKeepKek(input);
+  kek.fill(0);
+  return out;
+}
+
+/**
+ * `unsealOwner`, but hand back the password key too, so a new vault for
+ * the same owner can be sealed under it with `sealHeirLaterWithKek`: one
+ * Argon2 run instead of two (each is seconds on a phone), and the new
+ * vault opens with the same derivation at sign-in. The caller wipes `kek`.
+ */
+export async function unsealOwnerKeepKek(
+  input: UnsealOwnerInput,
+): Promise<UnsealedOwner & { kek: Uint8Array }> {
   const salt = b64decode(input.passwordSalt);
   const kek = await deriveOwnerKek(input.password, salt, {
     memKiB: input.memKiB,
     iters: input.iters,
     onProgress: input.onProgress,
   });
-
   try {
     const dec = new TextDecoder();
     const xprv = dec.decode(openWithKey(kek, input.ownerXprvBlob));
     const token = dec.decode(openWithKey(kek, input.ownerTokenBlob));
-    return { ownerXprv: xprv, ownerToken: token };
-  } finally {
+    return { ownerXprv: xprv, ownerToken: token, kek };
+  } catch (e) {
     kek.fill(0);
+    throw e;
   }
 }
 
