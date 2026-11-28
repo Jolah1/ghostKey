@@ -357,6 +357,13 @@ export const pcm: Vocab = {
     linkPlaceholder: "https://www.ghostkeyapp.com/#/claim/…",
     openIt: "Open am",
     noLinkYet: "You no get link yet? That one normal. You go only receive one if the person wey set up the vault stop to check in. Until then, nothing dey for this site for you to do.",
+    codeTitle: "GhostKey send you message?",
+    codeLabel: "Put the code wey dey your message",
+    codeHint: "12 letters and numbers, like ABCD-EFGH-JKMN. You no need click anything for the message.",
+    codeButton: "Continue",
+    codeWrong: "That code no match. Check am with your message, then try again.",
+    codeTooMany: "You don try too many times. Wait one minute, then try again.",
+    haveLinkInstead: "You get link instead?",
   },
   practiceCard: {
     title: "Practice claim",

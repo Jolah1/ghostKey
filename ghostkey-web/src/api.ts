@@ -415,6 +415,8 @@ export interface DrillStartView {
   /** The practice link, so the owner can also share it directly. A
    *  drill link cannot reach key material or move coins. */
   claim_url: string;
+  /** The practice code the heir can type at the site instead (#393). */
+  code?: string;
 }
 
 /** Response from `POST /claim/:token/drill-complete` (#223). */
@@ -801,6 +803,10 @@ export const api = {
    *  questioned in front of the owner, who is the only person who knows
    *  the right answer. The domain list lives on the server so there is
    *  only ever one of it. */
+  /** #393: swap the code from the heir's message for the claim it opens.
+   *  404 when no live claim or practice has that code. */
+  claimByCode: (code: string) =>
+    request<{ token: string }>("/claim-code", { method: "POST", body: JSON.stringify({ code }) }),
   checkContact: (address: string) =>
     request<{ ok: boolean; message: string; suggestion: string | null }>(
       "/contact/check",

@@ -377,6 +377,103 @@ pub fn claim_token_matches(presented: &str, stored_hash_hex: &str) -> bool {
 }
 
 /* -------------------------------------------------------------------------- *
+ *  Claim codes (#393)                                                        *
+ *                                                                            *
+ *  A code the heir types at the site instead of clicking the link, for       *
+ *  "don't click links in messages". 12 Crockford base32 characters, shown    *
+ *  as XXXX-XXXX-XXXX: 60 bits, which online guessing can't reach behind the  *
+ *  rate limit and the short life of a claim. The server stores a keyed       *
+ *  hash for lookup (HMAC under a key derived from the master key, so a       *
+ *  copy of the database alone can't be searched for codes) and the code      *
+ *  with its claim token sealed under the per-vault key, so the code can be   *
+ *  sent again and exchanged for the token.                                   *
+ *                                                                            *
+ *  Threat model: this adds no capability the server lacks. The server       *
+ *  mints the token, and for older vaults already keeps it at rest (A3).      *
+ *  For heir-code vaults the token opens nothing by itself: the heir key      *
+ *  still needs the heir's own code.                                          *
+ * -------------------------------------------------------------------------- */
+
+/// Crockford base32: no I, L, O or U, so nothing reads as something else.
+const CLAIM_CODE_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const CLAIM_CODE_LEN: usize = 12;
+const CLAIM_CODE_LOOKUP_INFO: &[u8] = b"ghostkey-claim-code-lookup-v1";
+
+#[derive(Debug, Clone)]
+pub struct IssuedClaimCode {
+    /// As shown to people: `XXXX-XXXX-XXXX`.
+    pub code: String,
+    /// Keyed hash of the normalised code, for lookup.
+    pub lookup: String,
+}
+
+/// A fresh random claim code.
+pub fn issue_claim_code() -> Result<IssuedClaimCode, CryptoError> {
+    let mut bytes = [0u8; CLAIM_CODE_LEN];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    // 256 is a multiple of 32, so masking keeps every symbol equally likely.
+    let raw: String = bytes
+        .iter()
+        .map(|b| CLAIM_CODE_ALPHABET[(b & 31) as usize] as char)
+        .collect();
+    let lookup = claim_code_lookup(&raw)?;
+    let code = format!("{}-{}-{}", &raw[0..4], &raw[4..8], &raw[8..12]);
+    Ok(IssuedClaimCode { code, lookup })
+}
+
+/// What someone typed, as the 12 characters it stands for: case, spaces
+/// and dashes ignored; O read as 0 and I or L as 1, as Crockford says.
+/// `None` when it can't be a code.
+pub fn normalize_claim_code(input: &str) -> Option<String> {
+    let mut out = String::with_capacity(CLAIM_CODE_LEN);
+    for c in input.chars() {
+        let c = match c.to_ascii_uppercase() {
+            ' ' | '-' | '\u{2010}'..='\u{2015}' => continue,
+            'O' => '0',
+            'I' | 'L' => '1',
+            c => c,
+        };
+        if !CLAIM_CODE_ALPHABET.contains(&(c as u8)) || !c.is_ascii() {
+            return None;
+        }
+        out.push(c);
+    }
+    (out.len() == CLAIM_CODE_LEN).then_some(out)
+}
+
+/// The keyed lookup hash of a normalised code.
+pub fn claim_code_lookup(normalized: &str) -> Result<String, CryptoError> {
+    use hmac::{Hmac, Mac};
+    let master = master_key()?;
+    let hk = Hkdf::<Sha256>::new(None, master);
+    let mut key = [0u8; 32];
+    hk.expand(CLAIM_CODE_LOOKUP_INFO, &mut key)
+        .expect("32 bytes is well within HKDF-SHA256's max output");
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&key).expect("any key length works");
+    mac.update(normalized.as_bytes());
+    Ok(hex::encode(mac.finalize().into_bytes()))
+}
+
+/// Seal a code with the token it opens, for the `*_code_sealed` columns.
+pub fn seal_claim_code(vault_id: &str, code: &str, token: &str) -> Result<String, CryptoError> {
+    let json = serde_json::json!({ "code": code, "token": token }).to_string();
+    seal_claim_token_at_rest(vault_id, &json)
+}
+
+/// Reverse of [`seal_claim_code`]: `(code, token)`.
+pub fn open_claim_code(vault_id: &str, stored: &str) -> Result<(String, String), CryptoError> {
+    let json = open_claim_token_at_rest(vault_id, stored)?;
+    let v: serde_json::Value = serde_json::from_str(&json)
+        .map_err(|e| CryptoError::Malformed(format!("sealed claim code: {e}")))?;
+    match (v["code"].as_str(), v["token"].as_str()) {
+        (Some(c), Some(t)) => Ok((c.to_string(), t.to_string())),
+        _ => Err(CryptoError::Malformed(
+            "sealed claim code: missing fields".into(),
+        )),
+    }
+}
+
+/* -------------------------------------------------------------------------- *
  *  Owner tokens                                                              *
  *                                                                            *
  *  Same shape as claim tokens (32 bytes, base64-url-no-pad, SHA-256 hex)     *
@@ -466,6 +563,40 @@ mod tests {
     /// initialises once per process. The first test to run wins; the
     /// rest of the tests in this module ride on the same key.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn claim_codes_read_back_however_they_are_typed() {
+        ensure_test_master_key();
+        let issued = issue_claim_code().unwrap();
+        assert_eq!(issued.code.len(), 14);
+        assert_eq!(&issued.code[4..5], "-");
+        assert_eq!(&issued.code[9..10], "-");
+        let norm = normalize_claim_code(&issued.code).unwrap();
+        assert_eq!(claim_code_lookup(&norm).unwrap(), issued.lookup);
+        // Lower case, spaces, no dashes: the same code.
+        let typed = issued.code.to_lowercase().replace('-', " ");
+        assert_eq!(normalize_claim_code(&typed).as_deref(), Some(norm.as_str()));
+        // O reads as 0, I and L as 1.
+        assert_eq!(
+            normalize_claim_code("oooo-iiii-llll").as_deref(),
+            Some("000011111111")
+        );
+        // Wrong length, or a letter Crockford leaves out.
+        assert_eq!(normalize_claim_code("ABCD-EFGH-JKM"), None);
+        assert_eq!(normalize_claim_code("ABCD-EFGH-JKMNP"), None);
+        assert_eq!(normalize_claim_code("ABCD-EFGH-JKMU"), None);
+        // Two codes differ, and so do their lookups.
+        let other = issue_claim_code().unwrap();
+        assert_ne!(other.code, issued.code);
+        assert_ne!(other.lookup, issued.lookup);
+        // Sealed with its token, per vault.
+        let sealed = seal_claim_code("vault-x", &issued.code, "tok").unwrap();
+        assert_eq!(
+            open_claim_code("vault-x", &sealed).unwrap(),
+            (issued.code.clone(), "tok".to_string())
+        );
+        assert!(open_claim_code("vault-y", &sealed).is_err());
+    }
 
     fn ensure_test_master_key() {
         let _g = ENV_LOCK.lock().unwrap();
