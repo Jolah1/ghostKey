@@ -168,6 +168,9 @@ const LockGoalPage = lazyRoute(() =>
 const LockedPlanPage = lazyRoute(() =>
   import("./LockedPlanPage").then((m) => ({ default: m.LockedPlanPage })),
 );
+const ProtectPage = lazyRoute(() =>
+  import("./ProtectPage").then((m) => ({ default: m.ProtectPage })),
+);
 const AddMoneyPage = lazyRoute(() =>
   import("./AddMoneyPage").then((m) => ({ default: m.AddMoneyPage })),
 );
@@ -243,6 +246,7 @@ export type Route =
   | "dashboard"
   | "send"
   | "add-money"
+  | "protect"
   | "lock"
   | "plan"
   | "activity"
@@ -272,6 +276,7 @@ const VALID: Route[] = [
   "dashboard",
   "send",
   "add-money",
+  "protect",
   "lock",
   "plan",
   "activity",
@@ -304,6 +309,7 @@ const OWNER_ROUTES: Route[] = [
   "dashboard",
   "send",
   "add-money",
+  "protect",
   "lock",
   "plan",
   "activity",
@@ -706,6 +712,7 @@ export default function App() {
       {location.kind === "route" && location.route === "dashboard" && <Dashboard onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "send"      && <SendPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "add-money" && <AddMoneyPage onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "protect"   && <ProtectPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "lock"      && <LockGoalPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "plan"      && <LockedPlanPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "activity"  && <ActivityPage onNavigate={setRoute} />}

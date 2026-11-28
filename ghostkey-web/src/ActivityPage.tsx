@@ -91,6 +91,10 @@ function detailLine(e: ActivityEvent, unit: Unit): string | null {
         return `Sent ${formatAmount(sent, unit)} · ${formatAmount(left, unit)} left`;
       return sent != null ? `Sent ${formatAmount(sent, unit)}` : null;
     }
+    case "coins_refreshed": {
+      const fee = num(d, "fee_sats");
+      return fee != null ? `Bitcoin's lock started again · ${formatAmount(fee, unit)} fee` : null;
+    }
     case "checkin":
       return str(d, "source") === "lightning" ? "via Lightning" : null;
     case "panic_activated":

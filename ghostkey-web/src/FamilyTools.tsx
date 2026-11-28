@@ -43,6 +43,13 @@ export function FamilyTools({
       route: "heir-contact",
     });
   }
+  if (vault && !isClosed && !isClaiming && !heirPending && !vault.locked_until) {
+    items.push({
+      label: "Keep it protected",
+      desc: "See when Bitcoin's lock on each deposit ends, and refresh it",
+      route: "protect",
+    });
+  }
   if (vault && !isClosed && !isClaiming && !heirPending) {
     items.push({
       label: "Practice a claim",

@@ -428,6 +428,7 @@ export function friendlyEventKind(kind: string): string {
     case "resolved": return "Back on track";
     case "lightning_invoice_issued": return "Check-in invoice created";
     case "owner_send": return "You sent Bitcoin";
+    case "coins_refreshed": return "You refreshed a deposit";
     case "vault_empty": return "Share is empty";
     case "received": return "You received Bitcoin";
     // A spend the server did not build, so we know the coins left but

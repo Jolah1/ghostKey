@@ -333,6 +333,10 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
             "/vaults/:id/send/signed",
             post(crate::psbt_routes::owner_send_signed),
         )
+        .route(
+            "/vaults/:id/refresh/signed",
+            post(crate::psbt_routes::owner_refresh_signed),
+        )
         .route("/vaults/:id/seal-owner-token", post(seal_owner_token))
         .route("/vaults/:id/checkin", post(checkin))
         .route("/vaults/:id/panic", post(crate::panic::panic_stop))
@@ -778,6 +782,11 @@ pub struct VaultView {
     /// Only populated on owner-authenticated `GET /vaults/:id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unlock_eta: Option<String>,
+    /// A deposit's on-chain lock ends soon or has ended: Home asks the
+    /// owner to refresh it (#94). Same rule as the reminder email.
+    /// Only on owner-authenticated `GET /vaults/:id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_due: Option<bool>,
     /// A locked goal: the owner can spend from this time (Unix seconds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub locked_until: Option<i64>,
@@ -1043,6 +1052,7 @@ async fn create_vault(
                 drill_completed_at: None,
                 drill_code_ok: None,
                 unlock_eta: None,
+                refresh_due: None,
                 locked_until: None,
                 heir_unlock_at: None,
             },
@@ -1908,6 +1918,7 @@ async fn create_vault_from_xpub(
                 drill_completed_at: None,
                 drill_code_ok: None,
                 unlock_eta: None,
+                refresh_due: None,
                 locked_until: None,
                 heir_unlock_at: None,
             },
@@ -2842,6 +2853,15 @@ async fn get_vault(
     });
 
     // Before the struct literal takes ownership of the row's fields.
+    let refresh_due = crate::scheduler::refresh_due(
+        &row.status,
+        row.heir_pending,
+        row.locked_until,
+        row.chain_has_unspent,
+        row.chain_unlock_height,
+        row.chain_tip_height,
+        row.timelock_blocks,
+    );
     let heir_reachability = heir_reachability(
         row.has_heir_contact == 1,
         row.heir_contact_channel.as_deref(),
@@ -2898,6 +2918,7 @@ async fn get_vault(
         drill_completed_at: row.drill_completed_at.as_deref().map(parse_rfc),
         drill_code_ok: row.drill_code_ok.map(|v| v == 1),
         unlock_eta,
+        refresh_due: Some(refresh_due),
         locked_until: row.locked_until,
         heir_unlock_at: row.heir_unlock_at,
     }))

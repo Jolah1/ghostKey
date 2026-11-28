@@ -193,6 +193,8 @@ pub enum NotificationKind {
     /// Owner-side: a locked goal's heir date is a week away and the money
     /// is still in it: lock it again or move it before then.
     LockedHeirDate,
+    /// Owner-side: a deposit's on-chain lock is about to end (#94).
+    RefreshDue,
 }
 
 impl NotificationKind {
@@ -219,6 +221,7 @@ impl NotificationKind {
             NotificationKind::CheckinRhythm => "checkin_rhythm",
             NotificationKind::LockedUnlocked => "locked_unlocked",
             NotificationKind::LockedHeirDate => "locked_heir_date",
+            NotificationKind::RefreshDue => "refresh_due",
         }
     }
 }

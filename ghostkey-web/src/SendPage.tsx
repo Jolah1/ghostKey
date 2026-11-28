@@ -22,6 +22,7 @@ import { amountInLabel, amountToSats, isFiat, pricePerBtc, type AmountIn } from 
 import { Button } from "./ui";
 import { fiatAmount, formatAmount, useFiat, useUnit } from "./units";
 import { unlockErrorMessage } from "./unlockErrors";
+import { retryIfBusy } from "./coinProtection";
 import { useActiveVault } from "./useActiveVault";
 import { getVaultMeta } from "./vaultStore";
 import { Address, NETWORK, OutScript, TEST_NETWORK, Transaction } from "@scure/btc-signer";
@@ -55,19 +56,6 @@ function paidTo(txHex: string, address: string, network: string): number {
   return Number(sats);
 }
 
-/** The public explorers rate-limit. One quiet retry after a short wait
- *  saves people from an error that usually clears by itself. */
-async function retryIfBusy<T>(call: () => Promise<T>): Promise<T> {
-  try {
-    return await call();
-  } catch (e) {
-    const busy =
-      e instanceof ApiError && /busy right now|temporarily unavailable|HTTP (429|5\d\d)/i.test(e.message);
-    if (!busy) throw e;
-    await new Promise((r) => setTimeout(r, 4000));
-    return call();
-  }
-}
 
 interface Coins {
   confirmed_sat: number;
