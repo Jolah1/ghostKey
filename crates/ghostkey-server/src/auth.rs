@@ -1330,7 +1330,11 @@ mod http_tests {
                 .join("\n");
             let body = body.trim();
             if body.starts_with("INSERT") || body.starts_with("UPDATE") {
-                sqlx::query(body).execute(&state.db).await.unwrap();
+                // Test-only: statements from our own migration file.
+                sqlx::query(sqlx::AssertSqlSafe(body.to_string()))
+                    .execute(&state.db)
+                    .await
+                    .unwrap();
             }
         }
         let (code, v) = call(

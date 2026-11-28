@@ -12,22 +12,6 @@
 
 [advisories]
 ignore = [
-  # RUSTSEC-2023-0071: Marvin attack — timing sidechannel in RSA key recovery.
-  #
-  # Why this doesn't apply to GhostKey:
-  #   GhostKey uses no RSA anywhere. All on-chain crypto is secp256k1
-  #   Taproot; all server-side authenticated-encryption is
-  #   XChaCha20-Poly1305 with HKDF-SHA256 + Argon2id. The `rsa` crate
-  #   is pulled in transitively by sqlx-mysql features that we never
-  #   instantiate (we use SQLite). The vulnerable code path is therefore
-  #   unreachable at runtime.
-  # Status:
-  #   No upstream fix exists in the rsa crate as of this writing.
-  # Revisit when:
-  #   `rsa` ships a constant-time fix, OR sqlx publishes a version that
-  #   drops the rsa dependency from its sqlite feature tree.
-  "RUSTSEC-2023-0071",
-
   # RUSTSEC-2026-0098: rustls-webpki accepted name constraints for URI names.
   # RUSTSEC-2026-0099: rustls-webpki accepted wildcard name constraints.
   # RUSTSEC-2026-0104: rustls-webpki panics on malformed certificate revocation list.
@@ -128,26 +112,6 @@ ignore = [
   "RUSTSEC-2026-0346",
   "RUSTSEC-2026-0349",
 
-  # RUSTSEC-2026-0459: libsqlite3-sys bundles SQLite < 3.54.0, which can
-  # return uninitialized page-cache memory when opening a database whose
-  # sibling -wal file has a different page size (CVE-2026-119375).
-  #
-  # Why we can't fix this in a lockfile bump:
-  #   ghostkey-server -> sqlx 0.8.6 -> sqlx-sqlite 0.8.6, which pins
-  #   libsqlite3-sys ^0.30.1. The fix is libsqlite3-sys >=0.39, which
-  #   only sqlx 0.9.1 accepts. That is a major sqlx upgrade across the
-  #   whole database layer. (libsqlite3-sys 0.39 needs Rust 1.88, which
-  #   the Docker image has used since #380.)
-  # Why the impact in our case is low:
-  #   The attack needs the process to open a database file and -wal
-  #   that a less trusted party wrote. The server only opens its own
-  #   /data/ghostkey.sqlite, written only by itself, or restored by
-  #   Litestream from our own backup bucket. No user-supplied database
-  #   file is ever opened.
-  # Revisit when:
-  #   The sqlx 0.9 migration lands (issue #406).
-  "RUSTSEC-2026-0459",
-
   # RUSTSEC-2026-0543: chrono is unmaintained (informational, no fix).
   #
   # Why we can't fix this in a lockfile bump:
@@ -156,8 +120,11 @@ ignore = [
   #   of every timestamp, not a dependency bump.
   # Why the impact in our case is low:
   #   "Unmaintained" is not a vulnerability. No known flaw is open.
+  # Decision (#406, 2026-11-28): keep chrono for now. sqlx 0.9 still
+  #   reads and writes it, nothing is broken, and moving every timestamp to
+  #   jiff or time would be a large change for no safety gain today.
   # Revisit when:
-  #   We plan the move to jiff or time (issue #406), or an advisory against
-  #   chrono itself is published.
+  #   An advisory against chrono itself is published, or chrono stops
+  #   building with a dependency we need.
   "RUSTSEC-2026-0543",
 ]

@@ -41,21 +41,30 @@ pub async fn exchange_claim_code(
         ));
     };
     let lookup = claim_code_lookup(&code)?;
-    for (lookup_col, sealed_col, hash_col) in [
-        ("claim_code_lookup", "claim_code_sealed", "claim_token_hash"),
-        ("drill_code_lookup", "drill_code_sealed", "drill_token_hash"),
-    ] {
-        let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(&format!(
-            "SELECT id, {sealed_col}, {hash_col} FROM vaults WHERE {lookup_col} = ?"
-        ))
-        .bind(&lookup)
-        .fetch_optional(&state.db)
-        .await?;
-        if let Some((id, Some(sealed), Some(hash))) = row {
-            let (_, token) = open_claim_code(&id, &sealed)?;
-            if claim_token_matches(&token, &hash) {
-                return Ok(Json(ClaimCodeResponse { token }));
-            }
+    // A real claim's code first, then a practice run's. Two fixed queries:
+    // no SQL is built at runtime.
+    type Row = (String, Option<String>, Option<String>);
+    let real: Option<Row> = sqlx::query_as(
+        "SELECT id, claim_code_sealed, claim_token_hash FROM vaults WHERE claim_code_lookup = ?",
+    )
+    .bind(&lookup)
+    .fetch_optional(&state.db)
+    .await?;
+    let practice: Option<Row> = match real {
+        Some(_) => None,
+        None => {
+            sqlx::query_as(
+                "SELECT id, drill_code_sealed, drill_token_hash FROM vaults WHERE drill_code_lookup = ?",
+            )
+            .bind(&lookup)
+            .fetch_optional(&state.db)
+            .await?
+        }
+    };
+    if let Some((id, Some(sealed), Some(hash))) = real.or(practice) {
+        let (_, token) = open_claim_code(&id, &sealed)?;
+        if claim_token_matches(&token, &hash) {
+            return Ok(Json(ClaimCodeResponse { token }));
         }
     }
     Err(ApiError::NotFound)
@@ -118,9 +127,10 @@ mod tests {
         } else {
             ("claim_code_lookup", "claim_code_sealed", "claim_token_hash")
         };
-        sqlx::query(&format!(
+        // Test-only: the column names are the fixed pair above.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "UPDATE vaults SET {l} = ?, {s} = ?, {h} = ? WHERE id = ?"
-        ))
+        )))
         .bind(&code.lookup)
         .bind(&sealed)
         .bind(hash_claim_token(live_token))

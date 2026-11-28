@@ -21,6 +21,9 @@ tower-http = { workspace = true }
 ipnet = { workspace = true }
 tokio = { workspace = true }
 sqlx = { workspace = true }
+# Not used directly: a floor under the SQLite that sqlx bundles, so the
+# lock file can't fall back below the fix for RUSTSEC-2026-0459 (#406).
+libsqlite3-sys = ">=0.39"
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
