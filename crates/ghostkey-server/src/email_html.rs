@@ -41,6 +41,8 @@ fn button_label(kind: &str) -> &'static str {
         "heir_unreachable" => "Check their email",
         "savings_reminder" => "Add sats",
         "challenge_done" => "See your badge",
+        "locked_unlocked" => "See my goal",
+        "locked_heir_date" => "Lock it again",
         _ => "Open GhostKey",
     }
 }
