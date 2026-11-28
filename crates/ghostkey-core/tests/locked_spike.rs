@@ -615,3 +615,134 @@ fn locked_goal_through_the_signer() -> Result<()> {
     );
     Ok(())
 }
+
+/// #389: a legacy-format vault upgrades to the standard format, one
+/// transaction per deposit, signed by the same signer the browser uses;
+/// the old addresses end up empty; and the heir, with the same heir key,
+/// can still claim from the upgraded vault once the wait has passed (and
+/// not before: the upgrade restarts the wait).
+#[test]
+#[ignore]
+fn legacy_vault_upgrades_and_the_heir_can_still_claim() -> Result<()> {
+    use ghostkey_core::descriptor::{build_descriptor_pair, upgrade_legacy_pair};
+    use ghostkey_core::keys::{account_xpub, descriptor_key_fragment, vault_account_path, Chain};
+    use ghostkey_core::sweep::{sign_heir_sweep, sign_owner_sweep, ConfirmedTx};
+    use ghostkey_core::vault::{Vault, VaultConfig, VaultRole};
+
+    let node = Bitcoind::spawn()?;
+    let rpc = node.client()?;
+    let miner = ensure_node_wallet(&node, "miner")?;
+    mine_blocks(&miner, 101)?;
+
+    let net = Network::Regtest;
+    let secp = Secp256k1::new();
+    let owner_m = Xpriv::new_master(net, &[0xE1; 32])?;
+    let heir_m = Xpriv::new_master(net, &[0xF2; 32])?;
+    let (ofp, op, ox) = account_xpub(&owner_m, net)?;
+    let (hfp, hp, hx) = account_xpub(&heir_m, net)?;
+    let owner_acct = owner_m.derive_priv(&secp, &vault_account_path(net))?;
+    let heir_acct = heir_m.derive_priv(&secp, &vault_account_path(net))?;
+    let wait = 5u32;
+    let legacy = build_descriptor_pair(
+        &descriptor_key_fragment(ofp, &op, &ox, Chain::External),
+        &descriptor_key_fragment(ofp, &op, &ox, Chain::Internal),
+        &descriptor_key_fragment(hfp, &hp, &hx, Chain::External),
+        &descriptor_key_fragment(hfp, &hp, &hx, Chain::Internal),
+        wait,
+    )?;
+    let vault_of = |ext: &str, int: &str| {
+        Vault::from_config(VaultConfig {
+            descriptor_external: ext.to_string(),
+            descriptor_internal: int.to_string(),
+            timelock_blocks: wait,
+            network: net,
+            role: VaultRole::Owner,
+            label: None,
+        })
+    };
+    let old = vault_of(&legacy.external, &legacy.internal)?;
+
+    // Two deposits into the legacy vault.
+    let mut old_watch = ghostkey_core::wallet::build_watch_only(&old)?;
+    let mut deposits = Vec::new();
+    for sats in [100_000u64, 60_000] {
+        let addr = old_watch
+            .reveal_next_address(KeychainKind::External)
+            .address;
+        deposits.push(miner.send_to_address(
+            &addr,
+            Amount::from_sat(sats),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?);
+    }
+    let h1 = mine_blocks(&miner, 1)?;
+
+    // The upgrade target: same keys, same wait, standard format.
+    let target = upgrade_legacy_pair(&legacy.external, &legacy.internal).expect("a legacy pair");
+    let new = vault_of(&target.pair.external, &target.pair.internal)?;
+    let new_watch = ghostkey_core::wallet::build_watch_only(&new)?;
+    let fee = FeeRate::from_sat_per_vb(2).unwrap();
+
+    // One transaction per deposit, each to its own new change address.
+    let mut moved = Vec::new();
+    for (i, txid) in deposits.iter().enumerate() {
+        let funding = vec![ConfirmedTx {
+            tx: miner.get_transaction(txid, None)?.transaction()?,
+            confirmation_height: h1,
+        }];
+        let to = new_watch
+            .peek_address(KeychainKind::Internal, i as u32)
+            .address;
+        let up = sign_owner_sweep(&old, &owner_acct, funding, h1, &to, None, fee)?;
+        assert_eq!(up.tx.output.len(), 1, "one coin in, one coin out");
+        assert_eq!(up.tx.input.len(), 1, "deposits are not merged");
+        broadcast(&rpc, &up.tx).map_err(|e| anyhow!("upgrade tx refused: {e}"))?;
+        println!("upgraded deposit {i}: fee {} sat", up.fee_sat);
+        moved.push(up.tx);
+    }
+    let h2 = mine_blocks(&miner, 1)?;
+
+    // The old format is empty; the new one holds both, less fees.
+    sync_wallet(&mut old_watch, &rpc)?;
+    assert_eq!(
+        old_watch.balance().total().to_sat(),
+        0,
+        "old addresses empty"
+    );
+    let mut new_sync = ghostkey_core::wallet::build_watch_only(&new)?;
+    for i in 0..2 {
+        let _ = new_sync.reveal_addresses_to(KeychainKind::Internal, i);
+    }
+    sync_wallet(&mut new_sync, &rpc)?;
+    let held = new_sync.balance().confirmed.to_sat();
+    assert!(held > 159_000 && held < 160_000, "new vault holds {held}");
+
+    // The heir, same key: refused before the wait (it restarted at the
+    // upgrade), accepted after.
+    let history: Vec<ConfirmedTx> = moved
+        .iter()
+        .map(|tx| ConfirmedTx {
+            tx: tx.clone(),
+            confirmation_height: h2,
+        })
+        .collect();
+    let dest = miner
+        .get_new_address(None, Some(AddressType::Bech32m))?
+        .require_network(net)
+        .map_err(|e| anyhow!("{e}"))?;
+    let early = sign_heir_sweep(&new, &heir_acct, history.clone(), h2, &dest, fee)?;
+    match broadcast(&rpc, &early.tx) {
+        Ok(_) => bail!("an heir claim before the wait was ACCEPTED"),
+        Err(e) => println!("  heir refused before the wait: {e}"),
+    }
+    let tip = mine_blocks(&miner, wait as u64)?;
+    let claim = sign_heir_sweep(&new, &heir_acct, history, tip, &dest, fee)?;
+    broadcast(&rpc, &claim.tx).map_err(|e| anyhow!("heir claim after the wait refused: {e}"))?;
+    println!("heir claimed the upgraded vault: fee {} sat", claim.fee_sat);
+    Ok(())
+}

@@ -100,6 +100,8 @@ export interface VaultView {
   unlock_eta?: string | null;
   /** A deposit's on-chain lock ends soon or has ended (#94). */
   refresh_due?: boolean;
+  /** The vault is in the older format and can move to the new one (#389). */
+  upgrade_available?: boolean;
   /** A locked goal: the owner can spend from this time (Unix seconds). */
   locked_until?: number | null;
   /** A locked goal: the heir can claim from this time (Unix seconds). */
@@ -1012,6 +1014,22 @@ export const api = {
       /** A fresh change address to refresh coins into, with its index. */
       refresh_address?: { address: string; index: number };
     }>(`/vaults/${id}/coins`, undefined, ownerToken),
+  /** Owner-only (#389): whether the vault can move to the new format, and
+   *  the new descriptors, for this browser to check against its own. */
+  getUpgrade: (id: string, ownerToken: string) =>
+    request<{ available: boolean; descriptor_external?: string; descriptor_internal?: string }>(
+      `/vaults/${id}/upgrade`,
+      undefined,
+      ownerToken,
+    ),
+  /** Owner-only (#389): one signed transaction per deposit, old format to
+   *  new. `pending` ones are retried by the server until they're out. */
+  ownerUpgradeSigned: (id: string, ownerToken: string, body: { txs: string[] }) =>
+    request<{ moved: number; pending: number; fee_sat: number }>(
+      `/vaults/${id}/upgrade/signed`,
+      { method: "POST", body: JSON.stringify(body) },
+      ownerToken,
+    ),
   /** Owner-only: broadcast a refresh this browser signed. The server checks
    *  every output pays back into the vault (#94). */
   ownerRefreshSigned: (id: string, ownerToken: string, body: { tx_hex: string }) =>

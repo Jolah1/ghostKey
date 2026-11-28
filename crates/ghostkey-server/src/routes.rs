@@ -352,6 +352,11 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
             "/vaults/:id/refresh/signed",
             post(crate::psbt_routes::owner_refresh_signed),
         )
+        .route("/vaults/:id/upgrade", get(crate::psbt_routes::get_upgrade))
+        .route(
+            "/vaults/:id/upgrade/signed",
+            post(crate::psbt_routes::owner_upgrade_signed),
+        )
         .route("/vaults/:id/seal-owner-token", post(seal_owner_token))
         .route("/vaults/:id/checkin", post(checkin))
         .route("/vaults/:id/panic", post(crate::panic::panic_stop))
@@ -803,6 +808,10 @@ pub struct VaultView {
     /// Only on owner-authenticated `GET /vaults/:id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh_due: Option<bool>,
+    /// The vault is in the legacy format and can move to the standard one
+    /// (#389). Only on owner-authenticated `GET /vaults/:id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upgrade_available: Option<bool>,
     /// A locked goal: the owner can spend from this time (Unix seconds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub locked_until: Option<i64>,
@@ -1069,6 +1078,7 @@ async fn create_vault(
                 drill_code_ok: None,
                 unlock_eta: None,
                 refresh_due: None,
+                upgrade_available: None,
                 locked_until: None,
                 heir_unlock_at: None,
             },
@@ -1935,6 +1945,7 @@ async fn create_vault_from_xpub(
                 drill_code_ok: None,
                 unlock_eta: None,
                 refresh_due: None,
+                upgrade_available: None,
                 locked_until: None,
                 heir_unlock_at: None,
             },
@@ -2830,6 +2841,7 @@ async fn get_vault(
         /// A locked goal's dates (Unix seconds), null otherwise.
         locked_until: Option<i64>,
         heir_unlock_at: Option<i64>,
+        vault_kind: String,
     }
     let row = sqlx::query_as::<_, VaultRow>(
         r#"SELECT id, label, network, timelock_blocks,
@@ -2846,7 +2858,7 @@ async fn get_vault(
                   heir_contact_ciphertext IS NOT NULL AS has_heir_contact,
                   heir_contact_channel, heir_contact_verified_at,
                   heir_unreachable_alerted_at, heir_pending,
-                  locked_until, heir_unlock_at
+                  locked_until, heir_unlock_at, vault_kind
            FROM vaults WHERE id = ?"#,
     )
     .bind(&id)
@@ -2869,6 +2881,13 @@ async fn get_vault(
     });
 
     // Before the struct literal takes ownership of the row's fields.
+    let upgrade_available = crate::psbt_routes::upgrade_target(
+        &row.descriptor_external,
+        &row.descriptor_internal,
+        &row.vault_kind,
+        &row.status,
+    )
+    .is_some();
     let refresh_due = crate::scheduler::refresh_due(
         &row.status,
         row.heir_pending,
@@ -2935,6 +2954,7 @@ async fn get_vault(
         drill_code_ok: row.drill_code_ok.map(|v| v == 1),
         unlock_eta,
         refresh_due: Some(refresh_due),
+        upgrade_available: Some(upgrade_available),
         locked_until: row.locked_until,
         heir_unlock_at: row.heir_unlock_at,
     }))
