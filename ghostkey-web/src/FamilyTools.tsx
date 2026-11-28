@@ -51,14 +51,23 @@ export function FamilyTools({
     });
   }
   if (vault && !isClosed && !isClaiming && !heirPending) {
+    // A practice claim is also how we learn their email works (#327): a
+    // delivered invite confirms the address without telling them more
+    // than the owner chose to. Say that, so owners run it.
+    const reach = vault.heir_reachability;
     items.push({
-      label: "Practice a claim",
-      desc: vault.drill_completed_at
-        ? "Completed. Send another any time"
-        : vault.drill_started_at
-          ? "Practice sent. See where it stands"
-          : "Let your heir rehearse safely",
-      route: "practice",
+      label: reach === "confirmed" || vault.drill_started_at ? "Practice a claim" : "Check they can be reached",
+      desc:
+        reach === "unreachable"
+          ? "We couldn't reach them. Fix their email, then send a practice"
+          : vault.drill_completed_at
+            ? "Completed. Send another any time"
+            : vault.drill_started_at
+              ? "Practice sent. See where it stands"
+              : reach === "confirmed"
+                ? "Their email works. Let them rehearse a claim safely"
+                : "Send a practice claim. It confirms their email works",
+      route: reach === "unreachable" ? "heir-contact" : "practice",
     });
   }
   if (vault && ownerToken && pushKey && !isClosed && !heirPending) {

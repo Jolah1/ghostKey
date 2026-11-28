@@ -9,6 +9,7 @@
  * The owner sees the heir card with the code before the card closes.
  * Nothing is sent if the password is wrong or the key doesn't match.
  */
+import { DidYouMean } from "./DidYouMean";
 import { useId, useState } from "react";
 import { ApiError, api } from "./api";
 import { Button } from "./ui";
@@ -165,6 +166,9 @@ export function ChooseHeirCard({
               onChange={(e) => setEmail(e.target.value)}
               autoComplete="off"
             />
+            <div className="mt-2">
+              <DidYouMean address={email} onUse={setEmail} />
+            </div>
           </div>
           <div>
             <label htmlFor={pwId} className="block text-sm font-medium">

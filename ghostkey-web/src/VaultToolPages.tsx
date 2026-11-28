@@ -7,6 +7,7 @@
  * the real work. Keeping the dashboard to status + money + heir was the
  * goal; these pages are one tap away from it.
  */
+import { DidYouMean, swapDomain } from "./DidYouMean";
 import { useEffect, useState } from "react";
 
 import type { Route } from "./App";
@@ -247,6 +248,9 @@ function EmergencyContactCard({
             autoComplete="off"
             className="input w-full"
           />
+          <div className="mt-2">
+            <DidYouMean address={email} onUse={setEmail} />
+          </div>
           <div className="mt-3 flex gap-2">
             <Button type="submit" size="sm" disabled={!email.trim()} loading={busy}>
               Save
@@ -324,11 +328,7 @@ export function RemindersPage({ onNavigate }: PageProps) {
  *  typed. Used to accept a "did you mean" suggestion in one tap — the
  *  alternative is asking someone to retype an address they already got
  *  wrong once. */
-export function swapDomain(address: string, domain: string): string {
-  const at = address.trim().lastIndexOf("@");
-  if (at <= 0) return address;
-  return `${address.trim().slice(0, at)}@${domain}`;
-}
+export { swapDomain };
 
 export function heirContactTitle(heirName?: string | null): string {
   const name = heirName?.trim();

@@ -72,6 +72,7 @@
  *     server stores only that public key and never anything spendable.
  *     Strictly non-custodial; the residual above does not apply.
  */
+import { DidYouMean } from "./DidYouMean";
 import { useEffect, useState, type ReactNode } from "react";
 import { GOAL_PRESETS } from "./savings";
 import { ReceiveCard } from "./ReceiveCard";
@@ -1220,6 +1221,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
                     inputMode="email"
                   />
                 </Field2>
+                <DidYouMean address={draft.ownerEmail} onUse={(v) => patch({ ownerEmail: v })} />
               </>
             ) : null}
 
@@ -1300,6 +1302,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
                     autoComplete="off"
                   />
                 </Field2>
+                <DidYouMean address={heir.contact} onUse={(v) => updateHeir({ contact: v, channel: "email" })} />
                 <Field2 id="owner-name" label="Your name, as they know you" hint="So they know the message is really from you.">
                   <input
                     id="owner-name"

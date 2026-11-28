@@ -26,6 +26,7 @@
  * have independent countdowns — exactly as intended. A single check-in
  * on the dashboard still resets every sibling at once.
  */
+import { DidYouMean } from "./DidYouMean";
 import { useState } from "react";
 
 import { Button, Field, InlineAlert } from "./ui";
@@ -460,6 +461,11 @@ export function AddHeirPortal({
                     disabled={busy}
                   />
                 </div>
+                {channel === "email" ? (
+                  <div className="mt-2">
+                    <DidYouMean address={contact} onUse={setContact} />
+                  </div>
+                ) : null}
               </Field>
 
               <div>
