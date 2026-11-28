@@ -3,35 +3,25 @@
  * and "+ Lock a goal" while the server has locked goals switched on.
  * Shows nothing at all when there are no plans and locking is off.
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { Route } from "./App";
-import { api } from "./api";
+import { useLockedGoals } from "./features";
 import { PLAN_KEY } from "./lockedGoals";
 import { getLockedGoals } from "./vaultStore";
 
 export function LockedPlansCard({ parentId, onNavigate }: { parentId: string; onNavigate: (r: Route) => void }) {
-  const [enabled, setEnabled] = useState(false);
+  const enabled = useLockedGoals();
   const [now] = useState(() => Date.now());
   const plans = getLockedGoals(parentId);
-  useEffect(() => {
-    let live = true;
-    api
-      .health()
-      .then((h) => live && setEnabled(Boolean(h.locked_goals_enabled)))
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, []);
 
   if (plans.length === 0 && !enabled) return null;
 
   return (
-    <section aria-labelledby="plans-h" className="mt-5 rounded-[20px] border border-app bg-surface p-5" data-testid="your-plans">
-      <h2 id="plans-h" className="m-0 font-display text-lg font-bold text-[var(--text)]">
+    <section aria-labelledby="plans-h" className="card-flat mt-4 p-5" data-testid="your-plans">
+      <h2 id="plans-h" className="m-0 mb-3 text-sm font-bold uppercase tracking-[0.06em] text-muted">
         Your plans
       </h2>
-      <ul className="m-0 mt-3 flex list-none flex-col gap-2 p-0">
+      <ul className="m-0 flex list-none flex-col gap-2 p-0">
         {plans.map((p) => {
           const until = p.locked!.until * 1000;
           const days = Math.ceil((until - now) / 86_400_000);

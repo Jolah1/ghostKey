@@ -761,8 +761,6 @@ export const api = {
       /** The git commit the server was built from, or "unknown". */
       commit?: string;
       demo_mode: boolean;
-      /** Whether locked goals are switched on (GHOSTKEY_LOCKED_GOALS). */
-      locked_goals_enabled?: boolean;
       /** Which Bitcoin network the server wants the UI to default
        *  new vaults to. Mirrors GHOSTKEY_DEFAULT_NETWORK on the
        *  server side. Falls back to `"testnet"` on older servers
