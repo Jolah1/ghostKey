@@ -489,3 +489,129 @@ fn locked_goal_end_to_end() -> Result<()> {
     println!("alternative heir rule (after + older) compiles too");
     Ok(())
 }
+
+/// The real code path, not the spike's: a locked goal made with
+/// `Vault::new_locked`, spent with `sign_owner_sweep` / `sign_heir_sweep`
+/// (what the browser's wasm signer runs). Owner and heir are each refused
+/// before their date and accepted after; a partial owner send keeps the
+/// change in the vault.
+#[test]
+#[ignore]
+fn locked_goal_through_the_signer() -> Result<()> {
+    use ghostkey_core::keys::{account_xpub, descriptor_key_fragment, vault_account_path, Chain};
+    use ghostkey_core::sweep::{sign_heir_sweep, sign_owner_sweep, ConfirmedTx};
+    use ghostkey_core::vault::{Vault, VaultRole};
+
+    let node = Bitcoind::spawn()?;
+    let rpc = node.client()?;
+    let miner = ensure_node_wallet(&node, "miner")?;
+    mine_blocks(&miner, 101)?;
+    let mut clock: u64 = mtp(&rpc)? + 3_600;
+    let _: Value = rpc.call("setmocktime", &[json!(clock)])?;
+    let t_owner = (clock + 6 * 3_600) as u32;
+    let t_heir = (clock + 12 * 3_600) as u32;
+
+    let net = Network::Regtest;
+    let secp = Secp256k1::new();
+    let owner_m = Xpriv::new_master(net, &[0xC1; 32])?;
+    let heir_m = Xpriv::new_master(net, &[0xD2; 32])?;
+    let (ofp, op, ox) = account_xpub(&owner_m, net)?;
+    let (hfp, hp, hx) = account_xpub(&heir_m, net)?;
+    let owner_acct = owner_m.derive_priv(&secp, &vault_account_path(net))?;
+    let heir_acct = heir_m.derive_priv(&secp, &vault_account_path(net))?;
+    let vault = Vault::new_locked(
+        &descriptor_key_fragment(ofp, &op, &ox, Chain::External),
+        &descriptor_key_fragment(ofp, &op, &ox, Chain::Internal),
+        &descriptor_key_fragment(hfp, &hp, &hx, Chain::External),
+        &descriptor_key_fragment(hfp, &hp, &hx, Chain::Internal),
+        t_owner,
+        t_heir,
+        net,
+        VaultRole::Owner,
+        Some("locked".into()),
+    )?;
+    assert_eq!(vault.locked_dates(), Some((t_owner, t_heir)));
+
+    let mut watch = ghostkey_core::wallet::build_watch_only(&vault)?;
+    let a = watch.reveal_next_address(KeychainKind::External).address;
+    let b = watch.reveal_next_address(KeychainKind::External).address;
+    let ta = miner.send_to_address(
+        &a,
+        Amount::from_sat(100_000),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )?;
+    let tb = miner.send_to_address(
+        &b,
+        Amount::from_sat(60_000),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )?;
+    let h1 = mine_blocks(&miner, 1)?;
+    let mut history = vec![
+        ConfirmedTx {
+            tx: miner.get_transaction(&ta, None)?.transaction()?,
+            confirmation_height: h1,
+        },
+        ConfirmedTx {
+            tx: miner.get_transaction(&tb, None)?.transaction()?,
+            confirmation_height: h1,
+        },
+    ];
+    let dest = miner
+        .get_new_address(None, Some(AddressType::Bech32m))?
+        .require_network(net)
+        .map_err(|e| anyhow!("{e}"))?;
+    let fee = FeeRate::from_sat_per_vb(2).unwrap();
+
+    // Owner, partial send, before the date: signed, but refused.
+    let send = sign_owner_sweep(
+        &vault,
+        &owner_acct,
+        history.clone(),
+        h1,
+        &dest,
+        Some(50_000),
+        fee,
+    )?;
+    println!(
+        "owner send: fee {} sat, {} outputs",
+        send.fee_sat,
+        send.tx.output.len()
+    );
+    assert_eq!(send.tx.output.len(), 2, "change comes back to the vault");
+    match broadcast(&rpc, &send.tx) {
+        Ok(_) => bail!("an owner send before the unlock date was ACCEPTED"),
+        Err(e) => println!("  refused before the date: {e}"),
+    }
+    advance_past(&rpc, &miner, &mut clock, t_owner as u64)?;
+    broadcast(&rpc, &send.tx).map_err(|e| anyhow!("owner send after the date refused: {e}"))?;
+    let h2 = mine_blocks(&miner, 1)?;
+    history.push(ConfirmedTx {
+        tx: send.tx.clone(),
+        confirmation_height: h2,
+    });
+    println!("  owner send accepted after the date");
+
+    // Heir: after the owner's date but before the heir's, refused.
+    let claim = sign_heir_sweep(&vault, &heir_acct, history.clone(), h2, &dest, fee)?;
+    match broadcast(&rpc, &claim.tx) {
+        Ok(_) => bail!("an heir claim before the heir date was ACCEPTED"),
+        Err(e) => println!("heir claim refused before its date: {e}"),
+    }
+    advance_past(&rpc, &miner, &mut clock, t_heir as u64)?;
+    broadcast(&rpc, &claim.tx).map_err(|e| anyhow!("heir claim after its date refused: {e}"))?;
+    println!(
+        "heir claim accepted after its date: {} inputs",
+        claim.tx.input.len()
+    );
+    Ok(())
+}

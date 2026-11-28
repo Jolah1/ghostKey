@@ -121,6 +121,46 @@ impl Vault {
     }
 
     /// Reconstruct a vault from a previously stored configuration.
+    /// A locked goal: the owner can spend from `owner_after`, the heir
+    /// from `heir_after` (Unix times). It has no per-deposit wait, so
+    /// `timelock_blocks` is 0.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_locked(
+        owner_external: &str,
+        owner_internal: &str,
+        heir_external: &str,
+        heir_internal: &str,
+        owner_after: u32,
+        heir_after: u32,
+        network: bitcoin::Network,
+        role: VaultRole,
+        label: Option<String>,
+    ) -> Result<Self> {
+        let pair = crate::descriptor::build_locked_descriptor_pair(
+            owner_external,
+            owner_internal,
+            heir_external,
+            heir_internal,
+            owner_after,
+            heir_after,
+        )?;
+        Ok(Self {
+            config: VaultConfig {
+                descriptor_external: pair.external,
+                descriptor_internal: pair.internal,
+                timelock_blocks: 0,
+                network,
+                role,
+                label,
+            },
+        })
+    }
+
+    /// The locked goal's dates, `(owner_after, heir_after)`, or `None`.
+    pub fn locked_dates(&self) -> Option<(u32, u32)> {
+        crate::descriptor::locked_dates(&self.config.descriptor_external)
+    }
+
     pub fn from_config(config: VaultConfig) -> Result<Self> {
         // Validate both descriptors parse.
         let _ = parse_descriptor(&config.descriptor_external)?;

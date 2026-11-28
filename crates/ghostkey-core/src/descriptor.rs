@@ -133,6 +133,77 @@ pub fn build_descriptor_pair(
     })
 }
 
+/// The earliest absolute lock that is a date, not a block height
+/// (Bitcoin reads values below 500,000,000 as heights).
+pub const LOCKTIME_THRESHOLD: u32 = 500_000_000;
+
+/// A locked goal's descriptor for one chain: the owner can spend from
+/// `owner_after`, the heir from `heir_after`, both Unix times, and nobody
+/// before. Two Taproot leaves under the unspendable NUMS key:
+///
+/// ```text
+/// tr(NUMS, { and_v(v:pk(OWNER), after(owner_after)),
+///            and_v(v:pk(HEIR),  after(heir_after)) })
+/// ```
+///
+/// Proved on regtest and in Bitcoin Core by `tests/locked_spike.rs`.
+pub fn build_locked_descriptor_string(
+    owner_key: &str,
+    heir_key: &str,
+    owner_after: u32,
+    heir_after: u32,
+) -> Result<String> {
+    if owner_after < LOCKTIME_THRESHOLD {
+        return Err(Error::InvalidDescriptor(
+            "a locked goal's unlock must be a date (Unix time), not a block height".into(),
+        ));
+    }
+    if heir_after <= owner_after {
+        return Err(Error::InvalidDescriptor(
+            "the heir's date must come after the owner's unlock date".into(),
+        ));
+    }
+    Ok(format!(
+        "tr({UNSPENDABLE_NUMS_XONLY},{{and_v(v:pk({owner_key}),after({owner_after})),and_v(v:pk({heir_key}),after({heir_after}))}})"
+    ))
+}
+
+/// The receive and change descriptors of a locked goal.
+pub fn build_locked_descriptor_pair(
+    owner_external: &str,
+    owner_internal: &str,
+    heir_external: &str,
+    heir_internal: &str,
+    owner_after: u32,
+    heir_after: u32,
+) -> Result<DescriptorPair> {
+    let ext =
+        build_locked_descriptor_string(owner_external, heir_external, owner_after, heir_after)?;
+    let int_ =
+        build_locked_descriptor_string(owner_internal, heir_internal, owner_after, heir_after)?;
+    let _ = parse_descriptor(&ext)?;
+    let _ = parse_descriptor(&int_)?;
+    Ok(DescriptorPair {
+        external: ext,
+        internal: int_,
+    })
+}
+
+/// A locked goal's two dates, read back from its descriptor:
+/// `(owner_after, heir_after)`. `None` for any other kind of vault.
+pub fn locked_dates(descriptor: &str) -> Option<(u32, u32)> {
+    let mut dates = descriptor.match_indices("after(").filter_map(|(i, m)| {
+        let rest = &descriptor[i + m.len()..];
+        rest.split(')').next()?.parse::<u32>().ok()
+    });
+    let owner = dates.next()?;
+    let heir = dates.next()?;
+    if dates.next().is_some() || owner < LOCKTIME_THRESHOLD || heir <= owner {
+        return None;
+    }
+    Some((owner, heir))
+}
+
 /// A vault in the standard format (#386), as one multipath descriptor and
 /// the receive/change pair derived from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -445,5 +516,55 @@ mod tests {
         // Mismatched chains or keys are refused.
         assert!(build_standard_descriptor_from_fragments(&oi, &oe, &he, &hi, 144).is_err());
         assert!(build_standard_descriptor_from_fragments(&oe, &hi, &he, &hi, 144).is_err());
+    }
+}
+
+#[cfg(test)]
+mod locked_tests {
+    use super::*;
+    use crate::keys::{account_xpub, descriptor_key_fragment, Chain};
+    use bitcoin::bip32::Xpriv;
+    use bitcoin::Network;
+
+    fn keys() -> (String, String) {
+        let net = Network::Regtest;
+        let o = Xpriv::new_master(net, &[0x31; 32]).unwrap();
+        let h = Xpriv::new_master(net, &[0x32; 32]).unwrap();
+        let (ofp, op, ox) = account_xpub(&o, net).unwrap();
+        let (hfp, hp, hx) = account_xpub(&h, net).unwrap();
+        (
+            descriptor_key_fragment(ofp, &op, &ox, Chain::External),
+            descriptor_key_fragment(hfp, &hp, &hx, Chain::External),
+        )
+    }
+
+    #[test]
+    fn a_locked_goal_builds_two_dated_leaves_and_reads_its_dates_back() {
+        let (o, h) = keys();
+        let d = build_locked_descriptor_string(&o, &h, 1_800_000_000, 1_808_000_000).unwrap();
+        assert!(d.starts_with(&format!("tr({UNSPENDABLE_NUMS_XONLY},{{")));
+        assert!(d.contains("after(1800000000)") && d.contains("after(1808000000)"));
+        parse_descriptor(&d).expect("compiles");
+        assert_eq!(locked_dates(&d), Some((1_800_000_000, 1_808_000_000)));
+    }
+
+    #[test]
+    fn a_locked_goal_refuses_heights_and_an_heir_before_the_owner() {
+        let (o, h) = keys();
+        assert!(build_locked_descriptor_string(&o, &h, 900_000, 1_800_000_000).is_err());
+        assert!(build_locked_descriptor_string(&o, &h, 1_800_000_000, 1_800_000_000).is_err());
+        assert!(build_locked_descriptor_string(&o, &h, 1_800_000_000, 1_700_000_000).is_err());
+    }
+
+    #[test]
+    fn other_vaults_have_no_locked_dates() {
+        let (o, h) = keys();
+        let legacy = build_descriptor_string(&DescriptorParams {
+            owner_key: o,
+            heir_key: h,
+            timelock_blocks: 144,
+        })
+        .unwrap();
+        assert_eq!(locked_dates(&legacy), None);
     }
 }
