@@ -753,6 +753,25 @@ export function Dashboard({ onNavigate, view = "home" }: Props) {
               </div>
             ) : null}
 
+            {vault?.upgrade_available && !isClosed && !isClaiming ? (
+              <button
+                type="button"
+                onClick={() => onNavigate("upgrade")}
+                data-testid="upgrade-available"
+                className="mt-5 flex w-full items-center gap-3 rounded-[20px] border border-app bg-surface px-4 py-4 text-left"
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[15px] font-semibold text-[var(--text)]">Move to the new vault format</span>
+                  <span className="block text-sm text-[var(--text-body)]">
+                    Other wallets can open it, and sending costs less.
+                  </span>
+                </span>
+                <span aria-hidden="true" className="shrink-0 text-lg text-dim">
+                  ›
+                </span>
+              </button>
+            ) : null}
+
             {vault?.refresh_due && !isClosed && !isClaiming ? (
               <button
                 type="button"

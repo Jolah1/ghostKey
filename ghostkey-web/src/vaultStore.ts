@@ -193,6 +193,17 @@ export function pinVaultDescriptors(
   return true;
 }
 
+/** Move a vault's pin to its upgraded descriptors (#389). Only for a
+ *  pair the caller has checked is the same keys in the new format
+ *  (vaultUpgrade.ts `isUpgradeOf`): this is the one way a pin changes. */
+export function repinVaultDescriptors(id: string, pair: { external: string; internal: string }): void {
+  const map = readAll();
+  const meta = map[id];
+  if (!meta) return;
+  map[id] = { ...meta, pinnedDescriptors: pair };
+  writeAll(map);
+}
+
 export function getVaultMeta(id: string): VaultMeta | null {
   return readAll()[id] ?? null;
 }

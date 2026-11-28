@@ -303,6 +303,39 @@ pub fn build_standard_descriptor_from_fragments(
     build_standard_descriptor(owner, heir, timelock_blocks)
 }
 
+/// The standard-format vault (#386) a legacy vault upgrades to (#389):
+/// the same owner key, heir key and wait, written the way other wallets
+/// open. `None` when `external`/`internal` aren't a legacy pair, or don't
+/// rebuild byte for byte from the keys read out of them, so a vault is
+/// only ever upgraded to exactly its own keys.
+///
+/// ```text
+/// tr(NUMS, or_d(pk(OWNER), and_v(v:pk(HEIR), older(N))))   legacy
+/// tr(OWNER, and_v(v:pk(HEIR), older(N)))                   standard
+/// ```
+pub fn upgrade_legacy_pair(external: &str, internal: &str) -> Option<StandardDescriptor> {
+    fn read(d: &str) -> Option<(&str, &str, u32)> {
+        let d = d.split('#').next()?;
+        let prefix = format!("tr({UNSPENDABLE_NUMS_XONLY},or_d(pk(");
+        let rest = d.strip_prefix(prefix.as_str())?;
+        let (owner, rest) = rest.split_once("),and_v(v:pk(")?;
+        let (heir, rest) = rest.split_once("),older(")?;
+        let n = rest.strip_suffix("))))")?.parse().ok()?;
+        Some((owner, heir, n))
+    }
+    let (oe, he, n) = read(external)?;
+    let (oi, hi, n_int) = read(internal)?;
+    if n != n_int {
+        return None;
+    }
+    let rebuilt = build_descriptor_pair(oe, oi, he, hi, n).ok()?;
+    let bare = |d: &str| d.split('#').next().unwrap_or(d).to_string();
+    if rebuilt.external != bare(external) || rebuilt.internal != bare(internal) {
+        return None;
+    }
+    build_standard_descriptor_from_fragments(oe, oi, he, hi, n).ok()
+}
+
 /// `[fp/path]xpub/0/*` + `[fp/path]xpub/1/*` -> `[fp/path]xpub`.
 fn account_key_from_fragments<'a>(who: &str, external: &'a str, internal: &str) -> Result<&'a str> {
     let ext = external.strip_suffix("/0/*");
@@ -366,6 +399,42 @@ mod tests {
             descriptor_key_fragment(hfp, &hp, &hx, Chain::External),
             descriptor_key_fragment(hfp, &hp, &hx, Chain::Internal),
         )
+    }
+
+    #[test]
+    fn a_legacy_vault_upgrades_to_the_standard_format_with_its_own_keys() {
+        let (oe, oi, he, hi) = fragments(Network::Regtest);
+        let legacy = build_descriptor_pair(&oe, &oi, &he, &hi, 4320).unwrap();
+        let up = upgrade_legacy_pair(&legacy.external, &legacy.internal).expect("upgrades");
+        let want = build_standard_descriptor_from_fragments(&oe, &oi, &he, &hi, 4320).unwrap();
+        assert_eq!(up, want);
+        // A checksum on the stored strings doesn't matter.
+        let with_sum = |d: &str| parse_descriptor(d).unwrap().to_string();
+        assert_eq!(
+            upgrade_legacy_pair(&with_sum(&legacy.external), &with_sum(&legacy.internal)),
+            Some(want.clone())
+        );
+        // Already standard, a locked goal, a mixed pair, or a mismatched
+        // wait: nothing to upgrade.
+        assert_eq!(
+            upgrade_legacy_pair(&want.pair.external, &want.pair.internal),
+            None
+        );
+        let locked =
+            build_locked_descriptor_pair(&oe, &oi, &he, &hi, 1_800_000_000, 1_808_000_000).unwrap();
+        assert_eq!(
+            upgrade_legacy_pair(&locked.external, &locked.internal),
+            None
+        );
+        assert_eq!(
+            upgrade_legacy_pair(&legacy.external, &legacy.external),
+            None
+        );
+        let other_wait = build_descriptor_pair(&oe, &oi, &he, &hi, 144).unwrap();
+        assert_eq!(
+            upgrade_legacy_pair(&legacy.external, &other_wait.internal),
+            None
+        );
     }
 
     #[test]

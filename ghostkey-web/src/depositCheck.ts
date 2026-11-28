@@ -12,6 +12,7 @@
  * which is the realistic case. Rebuilding the descriptor from keys only
  * the browser holds closes the rest, with the browser-signing work.
  */
+import { trustedDescriptors } from "./vaultUpgrade";
 import { api } from "./api";
 import { getVaultMeta, getVaultOwnerToken, pinVaultDescriptors } from "./vaultStore";
 import { deriveVaultAddress } from "./vaultAddress";
@@ -66,5 +67,21 @@ export async function checkDepositAddress(
     }
     if (!pinned) return { kind: "unchecked", why: "this device has no record of the vault" };
   }
-  return compareDepositAddress(address, pinned.external, network);
+  const first = compareDepositAddress(address, pinned.external, network);
+  if (first.kind !== "mismatch") return first;
+  // The vault may have moved to the new format (#389): the same keys in
+  // a new shape, so a new address. The pin moves only if this device can
+  // see the server's new descriptors are exactly that.
+  const token = getVaultOwnerToken(vaultId);
+  if (!token) return first;
+  try {
+    const v = await api.getVault(vaultId, token);
+    const trusted = trustedDescriptors(vaultId, v, network);
+    if (trusted && trusted.external !== pinned.external) {
+      return compareDepositAddress(address, trusted.external, network);
+    }
+  } catch {
+    // Keep the refusal: a mismatch we can't explain stays a mismatch.
+  }
+  return first;
 }

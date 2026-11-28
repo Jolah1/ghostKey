@@ -50,6 +50,10 @@ pub async fn run(state: Arc<AppState>, tick: Duration) {
 /// affected vaults wait, the same safe outcome as a failed scan.
 pub async fn run_chain_refresher(state: Arc<AppState>, tick: Duration) {
     loop {
+        // Upgrade transactions that didn't reach the network (#389).
+        if let Err(e) = crate::psbt_routes::rebroadcast_upgrade_txs(&state.db).await {
+            tracing::warn!(error = ?e, "upgrade rebroadcast pass failed");
+        }
         if let Err(e) = refresh_chain_caches(&state).await {
             tracing::warn!(error = ?e, "chain refresher pass failed");
         }

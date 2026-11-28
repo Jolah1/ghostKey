@@ -5,6 +5,7 @@
  * device); the exact fee; done. Each step is a history entry, so the
  * phone's back button steps back.
  */
+import { trustedDescriptors } from "./vaultUpgrade";
 import { useEffect, useState } from "react";
 import { Transaction } from "@scure/btc-signer";
 import { hexToBytes } from "@noble/hashes/utils.js";
@@ -27,7 +28,6 @@ import { formatAmount, useUnit } from "./units";
 import { unlockErrorMessage } from "./unlockErrors";
 import { useActiveVault } from "./useActiveVault";
 import { deriveVaultAddress } from "./vaultAddress";
-import { getVaultMeta } from "./vaultStore";
 
 type Step = "list" | "confirm" | "password" | "review" | "done";
 const TITLES: Record<Step, string> = {
@@ -157,9 +157,9 @@ export function ProtectPage({ onNavigate }: { onNavigate: (r: Route) => void }) 
       // The descriptors this device pinned when it first saw the vault: the
       // refresh address must come from them, so a tampered server can't
       // send the deposit anywhere else.
-      const pinned = getVaultMeta(activeId)?.pinnedDescriptors;
-      const external = pinned?.external ?? v.descriptor_external;
-      const internal = pinned?.internal ?? v.descriptor_internal;
+      const pinned = trustedDescriptors(activeId, v, v.network);
+      const external = pinned?.external;
+      const internal = pinned?.internal;
       const target = fresh.refresh_address;
       if (!external || !internal || !target) throw new Error("Couldn't load your vault's details. Try again.");
       if (deriveVaultAddress(internal, v.network, target.index) !== target.address) {

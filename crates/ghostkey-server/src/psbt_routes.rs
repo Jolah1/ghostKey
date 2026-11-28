@@ -1973,7 +1973,7 @@ pub(crate) async fn record_spent_deposits(
     // which errs toward reporting rather than staying quiet.
     let last_server_spend: Option<String> = sqlx::query_scalar(
         "SELECT MAX(created_at) FROM events \
-          WHERE vault_id = ? AND kind IN ('owner_send', 'claim_broadcast', 'coins_refreshed')",
+          WHERE vault_id = ? AND kind IN ('owner_send', 'claim_broadcast', 'coins_refreshed', 'vault_upgraded')",
     )
     .bind(vault_id)
     .fetch_one(db)
@@ -1981,9 +1981,27 @@ pub(crate) async fn record_spent_deposits(
     .unwrap_or(None);
 
     let live: std::collections::HashSet<&str> = still_unspent.iter().map(String::as_str).collect();
+    // An upgrade transaction still waiting to reach the network (#389):
+    // its deposit has been carried to a coin the scan can't see yet. Not
+    // spent, just not there yet.
+    let waiting: std::collections::HashSet<String> = sqlx::query_scalar(
+        "SELECT txid FROM vault_upgrade_txs WHERE vault_id = ? AND broadcast_at IS NULL",
+    )
+    .bind(vault_id)
+    .fetch_all(db)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .collect();
 
     for (outpoint, amount_sat, seen_at) in recorded {
         if live.contains(outpoint.as_str()) {
+            continue;
+        }
+        if outpoint
+            .split_once(':')
+            .is_some_and(|(txid, _)| waiting.contains(txid))
+        {
             continue;
         }
         // CAS on spent_at: whichever concurrent scan wins gets the row,
@@ -2667,6 +2685,414 @@ pub async fn owner_refresh_signed(
             fee_sat: summary.fee_sat,
         }),
     ))
+}
+
+/* -------------------------------------------------------------------------- *
+ *  Upgrading a legacy vault to the standard format (#389)                    *
+ *                                                                            *
+ *  Same owner key, heir key and wait; only the script's shape changes, so    *
+ *  other wallets (Liana) can open it and owner sends are cheaper. Coins      *
+ *  can't change format in place, so each deposit moves, in its own           *
+ *  transaction (no merging them on-chain), signed in the owner's browser,    *
+ *  to the new format's change addresses. The server checks every old coin    *
+ *  is covered and every output pays the new format, broadcasts, then         *
+ *  switches the vault to the new descriptors and keeps the old on record.    *
+ *  A transaction that failed to broadcast is kept and retried by the         *
+ *  scheduler (`rebroadcast_upgrade_txs`) until it is on the network.         *
+ * -------------------------------------------------------------------------- */
+
+/// The standard pair a vault would upgrade to, when it can: a legacy
+/// standard vault (not a locked goal or guardian vault) with no claim
+/// running.
+pub(crate) fn upgrade_target(
+    external: &str,
+    internal: &str,
+    vault_kind: &str,
+    status: &str,
+) -> Option<ghostkey_core::descriptor::StandardDescriptor> {
+    if vault_kind != "standard" || matches!(status, "timelock_started" | "claiming" | "claimed") {
+        return None;
+    }
+    ghostkey_core::descriptor::upgrade_legacy_pair(external, internal)
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpgradeView {
+    pub available: bool,
+    /// The new pair, for the browser to check against what it derives
+    /// itself from the descriptors it pinned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub descriptor_external: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub descriptor_internal: Option<String>,
+}
+
+async fn load_upgrade(
+    state: &AppState,
+    id: &str,
+) -> Result<
+    (
+        String,
+        String,
+        Option<ghostkey_core::descriptor::StandardDescriptor>,
+        Network,
+        i64,
+    ),
+    ApiError,
+> {
+    type Row = (String, String, String, String, String, i64);
+    let (ext, int_, kind, status, net, timelock): Row = sqlx::query_as(
+        "SELECT descriptor_external, descriptor_internal, vault_kind, status, network, timelock_blocks \
+           FROM vaults WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    let network = crate::config::parse_network(&net)
+        .map_err(|name| ApiError::Validation(format!("unknown network {name}")))?;
+    let target = upgrade_target(&ext, &int_, &kind, &status);
+    Ok((ext, int_, target, network, timelock))
+}
+
+/// `GET /vaults/:id/upgrade` (owner).
+pub async fn get_upgrade(
+    auth: crate::auth::OwnerAuth,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<UpgradeView>, ApiError> {
+    let (_, _, target, _, _) = load_upgrade(&state, &auth.vault_id).await?;
+    Ok(Json(UpgradeView {
+        available: target.is_some(),
+        descriptor_external: target.as_ref().map(|t| t.pair.external.clone()),
+        descriptor_internal: target.as_ref().map(|t| t.pair.internal.clone()),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SignedUpgradeRequest {
+    /// One signed transaction per deposit.
+    pub txs: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpgradeResultView {
+    /// Transactions on the network now.
+    pub moved: usize,
+    /// Transactions that will be retried until they are.
+    pub pending: usize,
+    pub fee_sat: u64,
+}
+
+/// What the network said about each upgrade transaction.
+struct UpgradeOutcome {
+    summaries: Vec<RefreshSummary>,
+    txs: Vec<(bitcoin::Txid, String)>,
+    sent: Vec<bool>,
+    first_error: Option<String>,
+}
+
+/// Is `tx` known to the network (in the mempool or a block)? Used after a
+/// broadcast error: "already known" is success.
+fn network_has(client: &esplora_client::BlockingClient, txid: &bitcoin::Txid) -> bool {
+    matches!(client.get_tx(txid), Ok(Some(_)))
+}
+
+/// Check a set of upgrade transactions without the network: each moves
+/// only old-vault coins, pays only the new format, with a sane fee; no
+/// coin is spent twice; and every old coin moves, so nothing is left in
+/// a format the vault no longer watches.
+fn plan_upgrade(
+    txs: &[bitcoin::Transaction],
+    utxos: &std::collections::HashMap<bitcoin::OutPoint, u64>,
+    is_new: impl Fn(&bitcoin::ScriptBuf) -> bool,
+) -> Result<Vec<RefreshSummary>, String> {
+    let mut summaries = Vec::with_capacity(txs.len());
+    let mut covered = std::collections::HashSet::new();
+    for tx in txs {
+        let summary = summarize_refresh(tx, |op| utxos.get(op).copied(), &is_new)
+            .map_err(|e| e.replace("pay back into this vault", "pay the new vault"))?;
+        for op in &summary.spent {
+            if !covered.insert(*op) {
+                return Err("Two transactions spend the same deposit.".into());
+            }
+        }
+        summaries.push(summary);
+    }
+    if utxos.keys().any(|op| !covered.contains(op)) {
+        return Err("Every deposit has to move. Go back, then try again.".into());
+    }
+    Ok(summaries)
+}
+
+/// `POST /vaults/:id/upgrade/signed` (owner).
+pub async fn owner_upgrade_signed(
+    auth: crate::auth::OwnerAuth,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SignedUpgradeRequest>,
+) -> Result<(StatusCode, Json<UpgradeResultView>), ApiError> {
+    let id = auth.vault_id;
+    let (old_ext, old_int, target, network, timelock) = load_upgrade(&state, &id).await?;
+    let Some(target) = target else {
+        return Err(ApiError::Conflict(
+            "This vault is already in the new format.".into(),
+        ));
+    };
+    // None for an empty vault: nothing to move, only the format changes.
+    // `plan_upgrade` refuses an empty list for a vault that holds coins.
+    if req.txs.len() > 100 {
+        return Err(ApiError::Validation(
+            "Send one transaction per deposit.".into(),
+        ));
+    }
+    let mut txs = Vec::with_capacity(req.txs.len());
+    for hex_tx in &req.txs {
+        let raw = hex::decode(hex_tx.trim())
+            .map_err(|_| ApiError::Validation("That isn't a transaction.".into()))?;
+        if raw.len() > 100_000 {
+            return Err(ApiError::Validation("That transaction is too big.".into()));
+        }
+        let tx: bitcoin::Transaction = bitcoin::consensus::deserialize(&raw)
+            .map_err(|_| ApiError::Validation("That isn't a transaction.".into()))?;
+        txs.push(tx);
+    }
+    let old = Vault::from_config(VaultConfig {
+        descriptor_external: old_ext.clone(),
+        descriptor_internal: old_int.clone(),
+        timelock_blocks: timelock as u32,
+        network,
+        role: VaultRole::Watchonly,
+        label: None,
+    })
+    .map_err(|e| ApiError::Validation(format!("stored vault descriptors invalid: {e}")))?;
+    let new = Vault::from_config(VaultConfig {
+        descriptor_external: target.pair.external.clone(),
+        descriptor_internal: target.pair.internal.clone(),
+        timelock_blocks: timelock as u32,
+        network,
+        role: VaultRole::Watchonly,
+        label: None,
+    })
+    .map_err(|e| ApiError::Validation(format!("new vault descriptors invalid: {e}")))?;
+    let urls = esplora_urls(network)?;
+    let _permit = crate::concurrency::acquire_esplora().await;
+    let outcome = tokio::task::spawn_blocking(move || -> Result<UpgradeOutcome, BlockingErr> {
+        let mut wallet = ghostkey_core::wallet::build_watch_only(&old)
+            .map_err(|e| BlockingErr::Vault(e.to_string()))?;
+        let update = try_each_esplora(&urls, |client| {
+            client
+                .full_scan(wallet.start_full_scan(), 5, 1)
+                .map_err(|e| clean_esplora_err("full_scan", &e))
+        })?;
+        wallet
+            .apply_update(update)
+            .map_err(|e| BlockingErr::Esplora(format!("apply_update: {e}")))?;
+        let coins: Vec<_> = wallet.list_unspent().collect();
+        if coins.iter().any(|u| {
+            !matches!(
+                u.chain_position,
+                bdk_wallet::chain::ChainPosition::Confirmed { .. }
+            )
+        }) {
+            return Err(BlockingErr::Build(
+                "A deposit is still confirming. Wait about 10 minutes, then upgrade.".into(),
+            ));
+        }
+        // The new format's scripts, far enough ahead for one per deposit.
+        let new_wallet = ghostkey_core::wallet::build_watch_only(&new)
+            .map_err(|e| BlockingErr::Vault(e.to_string()))?;
+        let reach = (txs.len() as u32) + 25;
+        let mut new_spks = std::collections::HashSet::new();
+        for keychain in [
+            bdk_wallet::KeychainKind::External,
+            bdk_wallet::KeychainKind::Internal,
+        ] {
+            for i in 0..reach {
+                new_spks.insert(new_wallet.peek_address(keychain, i).address.script_pubkey());
+            }
+        }
+        let utxos: std::collections::HashMap<bitcoin::OutPoint, u64> = coins
+            .iter()
+            .map(|u| (u.outpoint, u.txout.value.to_sat()))
+            .collect();
+        let summaries =
+            plan_upgrade(&txs, &utxos, |spk| new_spks.contains(spk)).map_err(BlockingErr::Build)?;
+        let mut sent = Vec::with_capacity(txs.len());
+        let mut first_error = None;
+        for tx in &txs {
+            let txid = tx.compute_txid();
+            let r = try_each_esplora(&urls, |client| match client.broadcast(tx) {
+                Ok(()) => Ok(()),
+                Err(_) if network_has(client, &txid) => Ok(()),
+                Err(e) => Err(clean_esplora_err("broadcast", &e)),
+            });
+            if let Err(e) = &r {
+                first_error.get_or_insert_with(|| e.to_string());
+            }
+            sent.push(r.is_ok());
+        }
+        Ok(UpgradeOutcome {
+            summaries,
+            txs: txs
+                .iter()
+                .map(|t| {
+                    (
+                        t.compute_txid(),
+                        bitcoin::consensus::encode::serialize_hex(t),
+                    )
+                })
+                .collect(),
+            sent,
+            first_error,
+        })
+    })
+    .await
+    .map_err(|e| ApiError::Validation(format!("worker panic: {e}")))??;
+
+    let moved = outcome.sent.iter().filter(|s| **s).count();
+    if moved == 0 && !outcome.txs.is_empty() {
+        // Nothing reached the network: nothing changed.
+        return Err(ApiError::Validation(format!(
+            "Couldn't send the upgrade to the Bitcoin network. Nothing moved. {}",
+            outcome.first_error.unwrap_or_default()
+        )));
+    }
+    let fee_sat: u64 = outcome.summaries.iter().map(|s| s.fee_sat).sum();
+    let now = Utc::now().to_rfc3339();
+
+    // The switch, and the record of every transaction (sent or still to
+    // send), together.
+    let mut db = state.db.begin().await?;
+    let switched = sqlx::query(
+        "UPDATE vaults SET descriptor_external = ?, descriptor_internal = ?, \
+                legacy_descriptor_external = ?, legacy_descriptor_internal = ?, \
+                upgraded_at = ?, chain_scanned_at = NULL \
+          WHERE id = ? AND descriptor_external = ?",
+    )
+    .bind(&target.pair.external)
+    .bind(&target.pair.internal)
+    .bind(&old_ext)
+    .bind(&old_int)
+    .bind(&now)
+    .bind(&id)
+    .bind(&old_ext)
+    .execute(&mut *db)
+    .await?;
+    if switched.rows_affected() != 1 {
+        return Err(ApiError::Conflict(
+            "This vault changed while upgrading. Refresh and look again.".into(),
+        ));
+    }
+    for ((txid, hex_tx), sent) in outcome.txs.iter().zip(&outcome.sent) {
+        sqlx::query(
+            "INSERT OR REPLACE INTO vault_upgrade_txs (vault_id, txid, tx_hex, created_at, broadcast_at, attempts) \
+             VALUES (?, ?, ?, ?, ?, 1)",
+        )
+        .bind(&id)
+        .bind(txid.to_string())
+        .bind(hex_tx)
+        .bind(&now)
+        .bind(sent.then_some(&now))
+        .execute(&mut *db)
+        .await?;
+    }
+    db.commit().await?;
+
+    // The event first, so a scan in between reads the vanished coins as
+    // the owner's own move (record_spent_deposits).
+    crate::routes::record_event(
+        &state.db,
+        &id,
+        "vault_upgraded",
+        Some(serde_json::json!({
+            "coins": outcome.summaries.iter().map(|s| s.spent.len()).sum::<usize>(),
+            "transactions": outcome.txs.len(),
+            "pending": outcome.txs.len() - moved,
+            "fee_sats": fee_sat,
+        })),
+    )
+    .await?;
+    for summary in &outcome.summaries {
+        if let Err(e) = carry_deposits_over(&state.db, &id, summary).await {
+            tracing::warn!(vault_id = %id, error = ?e, "could not carry deposits over an upgrade");
+        }
+    }
+    Ok((
+        StatusCode::OK,
+        Json(UpgradeResultView {
+            moved,
+            pending: outcome.txs.len() - moved,
+            fee_sat,
+        }),
+    ))
+}
+
+/// Retry upgrade transactions that didn't reach the network. They are
+/// fully signed, so this needs nothing from the owner. Called from the
+/// scheduler; best effort, one pass.
+pub(crate) async fn rebroadcast_upgrade_txs(db: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    type Row = (String, String, String, String);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT u.vault_id, u.txid, u.tx_hex, v.network \
+           FROM vault_upgrade_txs u JOIN vaults v ON v.id = u.vault_id \
+          WHERE u.broadcast_at IS NULL AND u.attempts < 200",
+    )
+    .fetch_all(db)
+    .await?;
+    for (vault_id, txid_s, hex_tx, net) in rows {
+        let Ok(network) = crate::config::parse_network(&net) else {
+            continue;
+        };
+        let Ok(urls) = esplora_urls(network) else {
+            continue;
+        };
+        let tx: bitcoin::Transaction = match bitcoin::consensus::encode::deserialize_hex(&hex_tx) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let _permit = crate::concurrency::acquire_esplora().await;
+        let result = tokio::task::spawn_blocking(move || {
+            let txid = tx.compute_txid();
+            try_each_esplora(&urls, |client| match client.broadcast(&tx) {
+                Ok(()) => Ok(()),
+                Err(_) if network_has(client, &txid) => Ok(()),
+                Err(e) => Err(clean_esplora_err("broadcast", &e)),
+            })
+        })
+        .await;
+        let now = Utc::now().to_rfc3339();
+        match result {
+            Ok(Ok(())) => {
+                sqlx::query(
+                    "UPDATE vault_upgrade_txs SET broadcast_at = ?, attempts = attempts + 1, last_error = NULL \
+                      WHERE vault_id = ? AND txid = ?",
+                )
+                .bind(&now)
+                .bind(&vault_id)
+                .bind(&txid_s)
+                .execute(db)
+                .await?;
+                sqlx::query("UPDATE vaults SET chain_scanned_at = NULL WHERE id = ?")
+                    .bind(&vault_id)
+                    .execute(db)
+                    .await?;
+                tracing::info!(vault_id = %vault_id, txid = %txid_s, "upgrade transaction sent on retry");
+            }
+            Ok(Err(e)) => {
+                sqlx::query(
+                    "UPDATE vault_upgrade_txs SET attempts = attempts + 1, last_error = ? \
+                      WHERE vault_id = ? AND txid = ?",
+                )
+                .bind(e.to_string())
+                .bind(&vault_id)
+                .bind(&txid_s)
+                .execute(db)
+                .await?;
+                tracing::warn!(vault_id = %vault_id, txid = %txid_s, error = %e, "upgrade transaction still not sent");
+            }
+            Err(e) => tracing::warn!(error = %e, "upgrade rebroadcast worker failed"),
+        }
+    }
+    Ok(())
 }
 
 /* -------------------------------------------------------------------------- *
@@ -4056,6 +4482,132 @@ mod tests {
         .fetch_one(pool)
         .await
         .expect("count funds_spent events")
+    }
+
+    #[test]
+    fn an_upgrade_moves_every_deposit_into_the_new_format_and_nothing_else() {
+        use bitcoin::hashes::Hash;
+        use bitcoin::{OutPoint, ScriptBuf, Txid};
+        let new = ScriptBuf::from_bytes(vec![0x51, 0x20, 8, 8, 8]);
+        let old = ScriptBuf::from_bytes(vec![0x51, 0x20, 9, 9, 9]);
+        let a = OutPoint::new(Txid::from_byte_array([1; 32]), 0);
+        let b = OutPoint::new(Txid::from_byte_array([2; 32]), 0);
+        let utxos: std::collections::HashMap<OutPoint, u64> =
+            [(a, 50_000), (b, 30_000)].into_iter().collect();
+        let is_new = |spk: &ScriptBuf| *spk == new;
+
+        // One transaction per deposit: fine.
+        let per_coin = [
+            refresh_tx(vec![(new.clone(), 49_800)], vec![a]),
+            refresh_tx(vec![(new.clone(), 29_800)], vec![b]),
+        ];
+        let plan = plan_upgrade(&per_coin, &utxos, is_new).unwrap();
+        assert_eq!(plan.iter().map(|s| s.fee_sat).sum::<u64>(), 400);
+        // An empty vault moves nothing and only changes format; a vault
+        // with coins can't skip them.
+        assert!(plan_upgrade(&[], &std::collections::HashMap::new(), is_new)
+            .unwrap()
+            .is_empty());
+        assert!(plan_upgrade(&[], &utxos, is_new).is_err());
+
+        for (txs, why) in [
+            // A deposit left behind in the old format.
+            (
+                vec![refresh_tx(vec![(new.clone(), 49_800)], vec![a])],
+                "Every deposit has to move",
+            ),
+            // The same deposit twice.
+            (
+                vec![
+                    refresh_tx(vec![(new.clone(), 49_800)], vec![a]),
+                    refresh_tx(vec![(new.clone(), 79_000)], vec![a, b]),
+                ],
+                "same deposit",
+            ),
+            // Back into the old format, not the new one.
+            (
+                vec![
+                    refresh_tx(vec![(old.clone(), 49_800)], vec![a]),
+                    refresh_tx(vec![(new.clone(), 29_800)], vec![b]),
+                ],
+                "pay the new vault",
+            ),
+        ] {
+            let err = plan_upgrade(&txs, &utxos, is_new).expect_err(why);
+            assert!(err.contains(why), "{err}");
+        }
+    }
+
+    #[test]
+    fn only_a_legacy_standard_vault_without_a_claim_can_upgrade() {
+        use bitcoin::bip32::Xpriv;
+        use ghostkey_core::keys::{account_xpub, descriptor_key_fragment, Chain};
+        let net = Network::Regtest;
+        let frag = |seed: u8, chain| {
+            let m = Xpriv::new_master(net, &[seed; 32]).unwrap();
+            let (fp, path, x) = account_xpub(&m, net).unwrap();
+            descriptor_key_fragment(fp, &path, &x, chain)
+        };
+        let legacy = ghostkey_core::descriptor::build_descriptor_pair(
+            &frag(1, Chain::External),
+            &frag(1, Chain::Internal),
+            &frag(2, Chain::External),
+            &frag(2, Chain::Internal),
+            4320,
+        )
+        .unwrap();
+        let (e, i) = (&legacy.external, &legacy.internal);
+        assert!(upgrade_target(e, i, "standard", "ok").is_some());
+        assert!(upgrade_target(e, i, "standard", "unfunded").is_some());
+        assert!(upgrade_target(e, i, "guardian", "ok").is_none());
+        for claim in ["timelock_started", "claiming", "claimed"] {
+            assert!(upgrade_target(e, i, "standard", claim).is_none(), "{claim}");
+        }
+        let up = upgrade_target(e, i, "standard", "ok").unwrap();
+        assert!(upgrade_target(&up.pair.external, &up.pair.internal, "standard", "ok").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_deposit_whose_upgrade_is_still_waiting_is_not_reported_spent() {
+        let pool = memory_db().await;
+        seed_vault(&pool, "vault-up").await;
+        let now = Utc::now();
+        let waiting_txid = "ab".repeat(32);
+        let sent_txid = "cd".repeat(32);
+        // Two deposits already carried over to their upgrade outputs: one
+        // whose transaction is on the network, one still being retried.
+        record_new_deposits(
+            &pool,
+            "vault-up",
+            &[
+                deposit(&format!("{waiting_txid}:0"), 10_000, 800_000),
+                deposit(&format!("{sent_txid}:0"), 20_000, 800_001),
+            ],
+            now,
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO vault_upgrade_txs (vault_id, txid, tx_hex, created_at, broadcast_at) \
+             VALUES ('vault-up', ?, '00', ?, NULL), ('vault-up', ?, '00', ?, ?)",
+        )
+        .bind(&waiting_txid)
+        .bind(now.to_rfc3339())
+        .bind(&sent_txid)
+        .bind(now.to_rfc3339())
+        .bind(now.to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+        // The scan sees neither yet.
+        record_spent_deposits(&pool, "vault-up", &[], now).await;
+        let spent: Vec<String> = sqlx::query_scalar(
+            "SELECT outpoint FROM vault_deposits WHERE vault_id = 'vault-up' AND spent_at IS NOT NULL",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        // Only the one whose transaction is out and still missing counts.
+        assert_eq!(spent, vec![format!("{sent_txid}:0")]);
     }
 
     #[tokio::test]

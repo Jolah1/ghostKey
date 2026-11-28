@@ -6,6 +6,7 @@
  * Signed in this browser (#442): the server sends the vault's history and
  * broadcasts the finished transaction, but never sees the key.
  */
+import { trustedDescriptors } from "./vaultUpgrade";
 import { SEND_FROM_KEY } from "./lockedGoals";
 import { useEffect, useMemo, useState } from "react";
 
@@ -24,7 +25,6 @@ import { fiatAmount, formatAmount, useFiat, useUnit } from "./units";
 import { unlockErrorMessage } from "./unlockErrors";
 import { retryIfBusy } from "./coinProtection";
 import { useActiveVault } from "./useActiveVault";
-import { getVaultMeta } from "./vaultStore";
 import { Address, NETWORK, OutScript, TEST_NETWORK, Transaction } from "@scure/btc-signer";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
@@ -219,9 +219,10 @@ export function SendPage({ onNavigate }: { onNavigate: (r: Route) => void }) {
       }
       // The descriptors this device pinned the first time it saw the
       // vault, so a tampered server can't redirect the change.
-      const pinned = getVaultMeta(activeId)?.pinnedDescriptors;
-      const descriptorExternal = pinned?.external ?? vault.descriptor_external;
-      const descriptorInternal = pinned?.internal ?? vault.descriptor_internal;
+      // An upgraded vault (#389) moves the pin, once checked.
+      const pinned = trustedDescriptors(activeId, vault, vault.network);
+      const descriptorExternal = pinned?.external;
+      const descriptorInternal = pinned?.internal;
       if (!descriptorExternal || !descriptorInternal) {
         throw new Error("Couldn't load your vault's details. Try again.");
       }
