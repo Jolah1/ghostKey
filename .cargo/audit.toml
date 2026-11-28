@@ -128,39 +128,6 @@ ignore = [
   "RUSTSEC-2026-0346",
   "RUSTSEC-2026-0349",
 
-  # RUSTSEC-2026-0387: crypto-bigint timing variability in operations
-  # intended to be constant-time.
-  #
-  # Why we can't fix this in a lockfile bump:
-  #   It reaches us through a direct dependency we chose:
-  #     ghostkey-server
-  #       └── p256 0.13          ← ours
-  #             └── elliptic-curve 0.13.8
-  #                   └── crypto-bigint 0.5.5 (vulnerable)
-  #   The advisory wants >=0.7.6. `p256 = "0.14"` does resolve
-  #   crypto-bigint to 0.7.10 (verified 2026-10-26), but it is not a
-  #   drop-in: it moves to rand_core 0.10, so `ThreadRng` no longer
-  #   satisfies `CryptoRng` at push.rs:346, and `to_encoded_point` is
-  #   gone from `PublicKey` at push.rs:129 and push.rs:449.
-  # Why the impact in our case is low:
-  #   p256 is the Web Push crypto in `push.rs`: ECDSA to sign the VAPID
-  #   JWT, ECDH to encrypt the payload. A timing sidechannel needs
-  #   precise, repeated measurement of those operations, and the VAPID
-  #   key signs when the notifier decides to send rather than when a
-  #   caller asks, so there is no way to drive it on demand. The worst
-  #   case is disclosure of the VAPID signing key, which would let
-  #   someone send push notifications to subscribers. It is not a
-  #   Bitcoin key: it cannot move funds or affect a claim.
-  # Status:
-  #   Tracked in issue #380, with the three compile errors written out.
-  #   Deliberately not bundled into a dependency bump, because item one
-  #   is about where key-generation randomness comes from and getting
-  #   that wrong would be worse than the advisory.
-  # Revisit when:
-  #   #380 lands, or p256 publishes a 0.13.x that takes crypto-bigint
-  #   >=0.7.6.
-  "RUSTSEC-2026-0387",
-
   # RUSTSEC-2026-0459: libsqlite3-sys bundles SQLite < 3.54.0, which can
   # return uninitialized page-cache memory when opening a database whose
   # sibling -wal file has a different page size (CVE-2026-119375).
@@ -169,8 +136,8 @@ ignore = [
   #   ghostkey-server -> sqlx 0.8.6 -> sqlx-sqlite 0.8.6, which pins
   #   libsqlite3-sys ^0.30.1. The fix is libsqlite3-sys >=0.39, which
   #   only sqlx 0.9.1 accepts. That is a major sqlx upgrade across the
-  #   whole database layer. libsqlite3-sys 0.39 also needs Rust 1.88,
-  #   and the Docker image builds with 1.86.
+  #   whole database layer. (libsqlite3-sys 0.39 needs Rust 1.88, which
+  #   the Docker image has used since #380.)
   # Why the impact in our case is low:
   #   The attack needs the process to open a database file and -wal
   #   that a less trusted party wrote. The server only opens its own
