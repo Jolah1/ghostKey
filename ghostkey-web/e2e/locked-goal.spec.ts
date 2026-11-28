@@ -259,6 +259,11 @@ test("lock a goal: one step per screen, the owner's key, a spare heir key only t
   expect(body.sealed.heir_code).toBeUndefined();
   expect(body.sealed.heir_xprv_ct_b64).toBeUndefined();
   expect(body.claim_token).toBeUndefined();
+  // Sealed under the same password key as the main savings (same salt and
+  // settings), so locking costs one Argon2 run, not two.
+  expect(body.sealed.password_salt_b64).toBe(blobs.password_salt_b64);
+  expect(body.sealed.password_kdf_mem_kib).toBe(blobs.password_kdf_mem_kib);
+  expect(body.sealed.password_kdf_iters).toBe(blobs.password_kdf_iters);
   // The spare heir key opens with the owner's password and is the heir
   // key in the request.
   const newKek = await deriveOwnerKek(PASSWORD, b64decode(body.sealed.password_salt_b64), {
