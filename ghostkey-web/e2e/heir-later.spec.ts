@@ -83,30 +83,30 @@ const HEALTH = {
 const PAST = new Date(Date.now() - 5 * 86400_000).toISOString();
 const PASSWORD = "Okra-lantern-harbour-quietly-92";
 
-/** Setup up to "Should someone get your savings?", one screen at a time,
- *  checking the phone's back button steps back on the way. */
+/** Setup up to "Pass it on?", one screen at a time, checking the
+ *  phone's back button steps back on the way. */
 async function walkToHeirQuestion(page: Page) {
   await page.goto(`${base}/#/setup`);
+  await expect(page.getByText("Step 1 of 7")).toBeVisible();
   await page.getByRole("button", { name: "School fees" }).click();
-  await page.getByRole("button", { name: "Next" }).click();
-  await page.getByLabel("Your email").fill("owner@example.com");
-  await page.getByRole("button", { name: "Next" }).click();
+  await page.getByLabel("Target (optional)").fill("1000000");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByLabel("Email address").fill("owner@example.com");
+  await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Create a password" })).toBeVisible();
   await page.goBack();
-  await expect(page.getByLabel("Your email")).toHaveValue("owner@example.com");
-  await page.getByRole("button", { name: "Next" }).click();
+  await expect(page.getByLabel("Email address")).toHaveValue("owner@example.com");
+  await page.getByRole("button", { name: "Continue" }).click();
   await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
-  await page.getByRole("button", { name: "Next" }).click();
-  await page.getByLabel("Password again").fill(PASSWORD);
-  await page.getByRole("button", { name: "Next" }).click();
-  await page.getByRole("button", { name: "I've saved it" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Should someone get your savings if you stop signing in?" }),
-  ).toBeVisible();
+  await page.getByLabel("Type it again").fill(PASSWORD);
+  await expect(page.getByText("Save it in a password manager now.")).toBeVisible();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Pass it on?" })).toBeVisible();
 }
 
 test("setup: 'Do this later' creates savings with nothing that reaches an heir", async ({ page }) => {
   test.setTimeout(120_000);
+  let goalBody: { title: string; amount_sat: number | null } | null = null;
   let created: Record<string, any> | null = null;
   await page.route("**/api/**", (route) => {
     const req = route.request();
@@ -134,19 +134,29 @@ test("setup: 'Do this later' creates savings with nothing that reaches an heir",
     if (p === "/vaults/v-new/seal-owner-token") return route.fulfill({ status: 204, body: "" });
     if (p === "/vaults/v-new/address")
       return route.fulfill(json({ vault_id: "v-new", network: "signet", address: "tb1qexample" }));
-    if (p === "/vaults/v-new/savings/goal") return route.fulfill(json({}));
+    if (p === "/vaults/v-new/savings/goal") {
+      goalBody = req.postDataJSON();
+      return route.fulfill(json({}));
+    }
     return route.fulfill(json({}, 404));
   });
 
   await walkToHeirQuestion(page);
 
   await expectNoSerious(page);
-  await page.getByRole("button", { name: "Not now" }).click();
+  await page.getByRole("button", { name: "Not now, just save" }).click();
   await expect.poll(() => created, { timeout: 60_000 }).not.toBeNull();
-  await expect(page.getByRole("heading", { name: "Add money" })).toBeVisible({ timeout: 30_000 });
+  // No heir: only the owner's spare key to save, then Add bitcoin.
+  await expect(page.getByRole("heading", { name: "Save your spare key" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("Step 5 of 6")).toBeVisible();
+  await page.getByLabel("I saved it somewhere safe").check();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Add bitcoin" })).toBeVisible();
 
   const body = created!;
   expect(body.heir_contact).toBeNull();
+  // The goal and its optional target are saved with the new vault.
+  expect(goalBody).toEqual({ title: "School fees", amount_sat: 1_000_000, target_date: null });
   // No heir, so the wait was never asked: the 3-month default.
   expect(body.timelock_blocks).toBe(3 * 30 * 144);
   expect(body.checkin_period_secs).toBe(3 * 30 * 86_400);
@@ -202,21 +212,21 @@ test("setup with an heir: the key is locked with an heir code; the server gets n
 
   await walkToHeirQuestion(page);
 
-  await page.getByRole("button", { name: "Choose someone" }).click();
   await page.getByLabel("Their name").fill("Sarah");
-  await page.getByRole("button", { name: "Next" }).click();
   await page.getByLabel("Their email").fill("sarah@example.com");
-  await page.getByRole("button", { name: "Next" }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
   // The wait is asked only on the heir path.
-  await expect(page.getByRole("heading", { name: /how long until Sarah can claim/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "How long should we wait?" })).toBeVisible();
+  await expect(page.getByText("If you don't sign in for this long, Sarah can claim.")).toBeVisible();
   await page.getByRole("button", { name: "6 months" }).click();
-  await page.getByRole("button", { name: "Next" }).click();
   await page.getByRole("button", { name: "Create my vault" }).click();
   await expect.poll(() => created, { timeout: 90_000 }).not.toBeNull();
 
   const card = page.getByTestId("heir-card");
   await expect(card).toBeVisible({ timeout: 60_000 });
-  await expect(page.getByRole("heading", { name: "Give Sarah this code" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Save (two files|your spare key and the code)$/ })).toBeVisible();
+  // Continue waits until they say both are saved.
+  await expect(page.getByRole("button", { name: "Continue" })).toBeDisabled();
   await expectNoSerious(page, '[data-testid="heir-card"]');
   const code = (await card.getByTestId("heir-code").textContent())!.trim();
   expect(code.split(" ")).toHaveLength(5);

@@ -72,13 +72,12 @@
  *     server stores only that public key and never anything spendable.
  *     Strictly non-custodial; the residual above does not apply.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { GOAL_PRESETS } from "./savings";
 import { ReceiveCard } from "./ReceiveCard";
 import {
   Button,
   ProgressBar,
-  Tile,
   InlineAlert,
   Disclosure,
 } from "./ui";
@@ -89,12 +88,8 @@ import {
   type SealedSetup,
   type VaultBalanceView,
 } from "./api";
-import { saveVaultMeta } from "./vaultStore";
+import { getVaultOwnerToken, saveVaultMeta } from "./vaultStore";
 import type { HeirContactChannel } from "./heirChannels";
-import {
-  useChannelCapability,
-  CHANNEL_UNAVAILABLE_NOTE,
-} from "./useChannelCapability";
 import {
   buildHeirEnvelope,
   type HeirEnvelope,
@@ -193,6 +188,8 @@ interface Draft {
   /** "What are you saving for?" (#367). Optional. Saved as each new
    *  share's savings goal title once the vaults exist. */
   savingsGoal: string;
+  /** The goal's target, as typed (sats). Optional. */
+  savingsTarget: string;
   // Step 1 — heirs + timing
   heirs: HeirDraft[];
   waitingMonths: number;
@@ -238,6 +235,7 @@ const EMPTY_HEIR: HeirDraft = {
 
 const EMPTY: Draft = {
   savingsGoal: "",
+  savingsTarget: "",
   heirs: [{ ...EMPTY_HEIR }],
   waitingMonths: 3,
   cadenceId: DEFAULT_CADENCE_ID,
@@ -252,50 +250,11 @@ const EMPTY: Draft = {
   trustedContactChannel: "email",
 };
 
-/** One question per screen. The first group runs before the vault
- *  exists; the last two after. */
-type Screen =
-  | "goal"
-  | "email"
-  | "password"
-  | "confirm"
-  | "saved"
-  | "heir-ask"
-  | "heir-name"
-  | "heir-email"
-  | "wait"
-  | "heir-note"
-  | "heir-code"
-  | "fund";
+/** One task per screen. Everything up to "wait" happens before the vault
+ *  exists; "files" and "fund" come after it is made. */
+type Screen = "goal" | "email" | "password" | "heir" | "wait" | "files" | "fund";
 
-const PRE_CREATE: Screen[] = [
-  "goal",
-  "email",
-  "password",
-  "confirm",
-  "saved",
-  "heir-ask",
-  "heir-name",
-  "heir-email",
-  "wait",
-  "heir-note",
-];
-
-const PRIMARY_LABEL: Record<Screen, (d: { savingsGoal: string }) => string> = {
-  goal: (d) => (d.savingsGoal.trim() ? "Next" : "Skip"),
-  email: () => "Next",
-  password: () => "Next",
-  confirm: () => "Next",
-  saved: () => "I've saved it",
-  "heir-ask": () => "Choose someone",
-  "heir-name": () => "Next",
-  "heir-email": () => "Next",
-  wait: () => "Next",
-  "heir-note": () => "Create my vault",
-  "heir-code": () => "Next",
-  fund: () => "Go to Home",
-};
-
+const PRE_CREATE: Screen[] = ["goal", "email", "password", "heir", "wait"];
 
 /** The waiting periods setup offers. It is written into the vault's
  *  address, so it can only change later by moving the money. */
@@ -308,13 +267,15 @@ async function saveInitialGoal(
   vaultId: string,
   ownerToken: string,
   title: string | undefined,
+  target?: string,
 ): Promise<void> {
   const t = (title ?? "").trim();
   if (!t) return;
+  const sats = Number((target ?? "").replace(/[^0-9]/g, ""));
   try {
     await api.setSavingsGoal(vaultId, ownerToken, {
       title: t,
-      amount_sat: null,
+      amount_sat: Number.isSafeInteger(sats) && sats > 0 ? sats : null,
       target_date: null,
     });
   } catch {
@@ -349,7 +310,9 @@ function checkinSecsFor(draft: { cadenceId: string; waitingMonths: number }, dem
 export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
   const [screen, setScreen] = useState<Screen>("goal");
   const [showPassword, setShowPassword] = useState(false);
-  const cap = useChannelCapability();
+  // The files screen: both saved, and whether the spare key was downloaded.
+  const [filesSaved, setFilesSaved] = useState(false);
+  const [spareSaved, setSpareSaved] = useState(false);
   const [draft, setDraft] = useState<Draft>(EMPTY);
   const [error, setError] = useState<string | null>(null);
   // True when create failed because this email already has a vault —
@@ -550,6 +513,26 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
     window.scrollTo(0, 0);
   }
 
+  /** The owner's spare key file, made from the vault that was just created. */
+  async function downloadSpareKey() {
+    const v = created?.vaults[0];
+    if (!v) return;
+    const token = getVaultOwnerToken(v.vaultId);
+    if (!token) {
+      setError("Sign in again before downloading your spare key.");
+      return;
+    }
+    try {
+      setError(null);
+      const vault = await api.getVault(v.vaultId, token);
+      const { downloadIndependenceProof } = await import("./independenceProof");
+      await downloadIndependenceProof(vault, token);
+      setSpareSaved(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't make the file. Try again.");
+    }
+  }
+
   function onPrimary() {
     if (busy) return;
     switch (screen) {
@@ -558,23 +541,15 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
       case "email":
         return go("password");
       case "password":
-        return go("confirm");
-      case "confirm":
-        return go("saved");
-      case "saved":
+        // The screen asks them to save it in a password manager; going on
+        // is the moment they've had the chance.
         patch({ savedPassword: true });
-        return go("heir-ask");
-      case "heir-ask":
-        return go("heir-name");
-      case "heir-name":
-        return go("heir-email");
-      case "heir-email":
+        return go("heir");
+      case "heir":
         return go("wait");
       case "wait":
-        return go("heir-note");
-      case "heir-note":
         return void activate(false);
-      case "heir-code":
+      case "files":
         return go("fund");
       case "fund":
         return onCancel();
@@ -730,7 +705,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
         } catch (e) {
           console.warn("address fetch failed for vault", resp.id, e);
         }
-        await saveInitialGoal(resp.id, resp.owner_token, draft.savingsGoal);
+        await saveInitialGoal(resp.id, resp.owner_token, draft.savingsGoal, draft.savingsTarget);
         onCreated({
           id: resp.id,
           label: resp.label,
@@ -742,7 +717,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           vaults: [{ vaultId: resp.id, heirName: "", address }],
           heirLater: true,
         });
-        go("fund");
+        go("files");
         return;
       }
 
@@ -1006,7 +981,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
           heirCode: heirLock?.code,
         });
 
-        await saveInitialGoal(resp.id, resp.owner_token, draft.savingsGoal);
+        await saveInitialGoal(resp.id, resp.owner_token, draft.savingsGoal, draft.savingsTarget);
         // Notify the parent once per vault. The parent uses this to
         // update its own state but doesn't navigate.
         onCreated({
@@ -1018,7 +993,7 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
       }
 
       setCreated({ groupId, vaults: createdEntries });
-      go(createdEntries.some((v) => v.heirCode || v.envelope) ? "heir-code" : "fund");
+      go("files");
     } catch (e) {
       // Partial failure: any vaults already created above are real
       // on the server AND in localStorage; we leave them alone. The
@@ -1064,12 +1039,12 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
     ownerEmail: draft.ownerEmail,
     password: draft.password,
     passwordConfirm: draft.passwordConfirm,
-    savedPassword: draft.savedPassword,
+    savedPassword: true,
     strength,
   });
 
   const heir = draft.heirs[0];
-  const heirName = heir.name.trim() || "them";
+  const heirName = heir.name.trim() || "they";
   const updateHeir = (p: Partial<HeirDraft>) =>
     patch({ heirs: draft.heirs.map((h, i) => (i === 0 ? { ...h, ...p } : h)) });
 
@@ -1079,316 +1054,343 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
       case "email":
         return emailError(draft.ownerEmail);
       case "password":
-        return newPasswordError(draft.password, strength);
-      case "confirm":
-        return confirmError(draft.password, draft.passwordConfirm);
-      case "heir-name":
-        return heir.name.trim() ? null : "Add their name.";
-      case "heir-email":
+        return (
+          newPasswordError(draft.password, strength) ??
+          (draft.passwordConfirm ? confirmError(draft.password, draft.passwordConfirm) : "Type it again.")
+        );
+      case "heir":
+        if (!heir.name.trim()) return "Add their name.";
         if (heir.ownKey && !isValidHeirXpub(heir.heirXpub)) {
           return "Paste their wallet key with the part in [brackets] at the front.";
         }
-        if (!heir.contact.trim()) return "Add a way to reach them.";
-        if (heir.channel === "email" && !/^.+@.+\..+$/.test(heir.contact.trim())) {
-          return "That email looks off. Double-check it.";
-        }
+        if (!/^.+@.+\..+$/.test(heir.contact.trim())) return "Add their email.";
         if (heir.contact.trim().toLowerCase() === draft.ownerEmail.trim().toLowerCase()) {
           return "That's your own email. Add theirs.";
         }
         return null;
+      case "files":
+        return filesSaved ? null : "Save the files first.";
       default:
         return null;
     }
   })();
-  // Only say why once they've typed something: an empty screen doesn't shout.
-  const touched: Record<string, string> = {
+  // Say why only once they've typed something: an empty screen doesn't shout.
+  const typed: Partial<Record<Screen, string>> = {
     email: draft.ownerEmail,
-    password: draft.password,
-    confirm: draft.passwordConfirm,
-    "heir-name": heir.name,
-    "heir-email": heir.contact,
+    password: draft.passwordConfirm,
+    heir: heir.contact,
   };
-  const showScreenError = Boolean(screenError && touched[screen]);
+  const showScreenError = Boolean(screenError && typed[screen]);
 
-  const preCreate = PRE_CREATE.indexOf(screen);
-  const progress = preCreate >= 0 ? ((preCreate + 1) / PRE_CREATE.length) * 100 : 100;
+  // The steps for the counter: no wait without an heir.
+  const order: Screen[] = created?.heirLater
+    ? ["goal", "email", "password", "heir", "files", "fund"]
+    : ["goal", "email", "password", "heir", "wait", "files", "fund"];
+  const stepNo = order.indexOf(screen) + 1;
   const firstVault = created?.vaults[0];
-  const busyLabel = `Making your vault… ${kdfProgress > 0 ? `${kdfProgress}%` : ""}`;
+  const canGoBack = PRE_CREATE.includes(screen) && screen !== "goal" && !busy;
+
+  const PRIMARY: Record<Screen, string> = {
+    goal: draft.savingsGoal.trim() ? "Continue" : "Skip for now",
+    email: "Continue",
+    password: "Continue",
+    heir: "Continue",
+    wait: "Create my vault",
+    files: "Continue",
+    fund: "Done",
+  };
 
   return (
-    <main className="bg-app fade-in">
-      <div className="mx-auto max-w-xl px-5 pt-8 pb-28 md:pt-14">
-        {preCreate >= 0 ? <ProgressBar value={progress} label="Setup progress" /> : null}
-
-        <div className="mt-6 h-6">
-          {screen === "goal" ? (
-            <button type="button" onClick={onCancel} className="text-sm text-muted underline hover:text-[var(--text)]">
-              Cancel
-            </button>
-          ) : preCreate >= 0 && !busy ? (
+    <main className="bg-app">
+      <div className="mx-auto flex min-h-[calc(100dvh-4rem)] max-w-md flex-col gap-6 px-6 pb-8 pt-4">
+        <div className="flex h-12 items-center justify-between">
+          {canGoBack ? (
             <button
               type="button"
+              aria-label="Back"
               onClick={() => window.history.back()}
-              className="text-sm text-muted underline hover:text-[var(--text)]"
+              className="flex h-11 w-11 items-center justify-center rounded-full bg-surface text-[var(--text)]"
             >
-              ← Back
+              <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M15 18l-6-6 6-6" />
+              </svg>
             </button>
-          ) : null}
+          ) : screen === "goal" ? (
+            <button type="button" onClick={onCancel} className="h-11 text-[15px] font-semibold text-muted">
+              Cancel
+            </button>
+          ) : (
+            <span className="w-11" />
+          )}
+          <span className="text-sm font-semibold text-muted">
+            {screen === "fund" ? "Last step" : `Step ${stepNo} of ${order.length}`}
+          </span>
+          {screen === "goal" ? (
+            <button type="button" onClick={() => go("email")} className="h-11 text-[15px] font-semibold text-[var(--accent-text)]">
+              Skip
+            </button>
+          ) : screen === "heir" ? (
+            <button
+              type="button"
+              disabled={busy || gateReason !== null}
+              onClick={() => void activate(true)}
+              className="h-11 text-[15px] font-semibold text-[var(--accent-text)] disabled:opacity-50"
+            >
+              Skip
+            </button>
+          ) : (
+            <span className="w-11" />
+          )}
+        </div>
+        <div aria-hidden="true" className="h-1 rounded-full bg-[var(--surface-2)]">
+          <div
+            className="h-full rounded-full bg-[var(--accent)] transition-[width] duration-500"
+            style={{ width: `${(stepNo / order.length) * 100}%` }}
+          />
         </div>
 
         <form
-          className="mt-6"
+          key={screen}
+          className="gk-rise flex flex-1 flex-col gap-6"
           onSubmit={(e) => {
             e.preventDefault();
-            onPrimary();
+            if (!screenError) onPrimary();
           }}
         >
-          {screen === "goal" ? (
-            <>
-              <h1 className="font-serif text-3xl md:text-4xl">What are you saving for?</h1>
-              <div className="mt-6 flex flex-wrap gap-2" role="group" aria-label="Savings goal ideas">
-                {GOAL_PRESETS.map((g) => (
-                  <button
-                    key={g}
-                    type="button"
-                    aria-pressed={draft.savingsGoal.trim() === g}
-                    onClick={() => patch({ savingsGoal: draft.savingsGoal.trim() === g ? "" : g })}
-                    className={`rounded-full border px-4 py-2 text-sm transition-colors ${
-                      draft.savingsGoal.trim() === g
-                        ? "border-[var(--accent)] bg-[color-mix(in_srgb,var(--accent)_18%,transparent)] font-medium text-[var(--text)]"
-                        : "border-app text-[var(--text)] hover:bg-[var(--surface-2)]"
-                    }`}
-                  >
-                    {g}
-                  </button>
-                ))}
-              </div>
-              <input
-                className="input mt-4 w-full"
-                aria-label="Or type your own goal"
-                maxLength={60}
-                placeholder="Or type your own"
-                value={(GOAL_PRESETS as readonly string[]).includes(draft.savingsGoal.trim()) ? "" : draft.savingsGoal}
-                onChange={(e) => patch({ savingsGoal: e.target.value })}
-              />
-            </>
-          ) : null}
-
-          {screen === "email" ? (
-            <>
-              <h1 className="font-serif text-3xl md:text-4xl">Your email</h1>
-              <p className="mt-2 text-sm text-muted">To sign in on another device.</p>
-              <input
-                type="email"
-                aria-label="Your email"
-                value={draft.ownerEmail}
-                onChange={(e) => patch({ ownerEmail: e.target.value })}
-                placeholder="you@example.com"
-                autoComplete="email"
-                inputMode="email"
-                className="input mt-6 w-full"
-              />
-            </>
-          ) : null}
-
-          {screen === "password" ? (
-            <>
-              <h1 className="font-serif text-3xl md:text-4xl">Create a password</h1>
-              <p className="mt-2 text-sm text-muted">Three or four unrelated words work well.</p>
-              <div className="relative mt-6">
-                <input
-                  type={showPassword ? "text" : "password"}
-                  aria-label="Password"
-                  value={draft.password}
-                  onChange={(e) => patch({ password: e.target.value })}
-                  autoComplete="new-password"
-                  className="input w-full pr-16"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((s) => !s)}
-                  className="absolute inset-y-0 right-3 my-auto h-6 text-xs text-muted underline-offset-2 hover:underline"
-                  aria-pressed={showPassword}
-                >
-                  {showPassword ? "Hide" : "Show"}
-                </button>
-              </div>
-              {draft.password && strength ? (
-                <div className="mt-3 flex items-center gap-2" aria-live="polite">
-                  <StrengthBar score={strength.score} tone={strength.tone} />
-                  <span className="text-xs text-muted">{strength.label}</span>
+          <div className="flex flex-1 flex-col gap-6">
+            {screen === "goal" ? (
+              <>
+                <Heading title="What are you saving for?" help="Optional. A goal helps you keep going." />
+                <div className="flex flex-wrap gap-2" role="group" aria-label="Savings goal ideas">
+                  {GOAL_PRESETS.map((g) => {
+                    const on = draft.savingsGoal.trim() === g;
+                    return (
+                      <button
+                        key={g}
+                        type="button"
+                        aria-pressed={on}
+                        onClick={() => patch({ savingsGoal: on ? "" : g })}
+                        className={`min-h-11 rounded-full border px-4 text-[15px] font-semibold transition-colors ${
+                          on
+                            ? "border-[var(--accent)] bg-[var(--accent)] text-[var(--text-on-accent)]"
+                            : "border-[var(--border-hi)] bg-surface text-[var(--text)]"
+                        }`}
+                      >
+                        {g}
+                      </button>
+                    );
+                  })}
                 </div>
-              ) : null}
-            </>
-          ) : null}
-
-          {screen === "confirm" ? (
-            <>
-              <h1 className="font-serif text-3xl md:text-4xl">Type it again</h1>
-              <input
-                type={showPassword ? "text" : "password"}
-                aria-label="Password again"
-                value={draft.passwordConfirm}
-                onChange={(e) => patch({ passwordConfirm: e.target.value })}
-                autoComplete="new-password"
-                className="input mt-6 w-full"
-              />
-            </>
-          ) : null}
-
-          {screen === "saved" ? (
-            <>
-              <h1 className="font-serif text-3xl md:text-4xl">Save your password now</h1>
-              <p className="mt-3 text-muted">
-                It&apos;s the only way into your savings. We can&apos;t reset it.
-              </p>
-            </>
-          ) : null}
-
-          {screen === "heir-ask" ? (
-            <>
-              <h1 className="font-serif text-3xl md:text-4xl">
-                Should someone get your savings if you stop signing in?
-              </h1>
-              <p className="mt-3 text-muted">You can choose later.</p>
-            </>
-          ) : null}
-
-          {screen === "heir-name" ? (
-            <>
-              <h1 className="font-serif text-3xl md:text-4xl">Who should get it?</h1>
-              <input
-                type="text"
-                aria-label="Their name"
-                value={heir.name}
-                onChange={(e) => updateHeir({ name: e.target.value })}
-                placeholder="Their name"
-                autoComplete="off"
-                className="input mt-6 w-full"
-              />
-            </>
-          ) : null}
-
-          {screen === "heir-email" ? (
-            <>
-              <h1 className="font-serif text-3xl md:text-4xl">
-                {heir.channel === "email" ? `${heirName}'s email` : `${heirName}'s phone number`}
-              </h1>
-              <p className="mt-2 text-sm text-muted">We only contact them if you stop signing in.</p>
-              {cap.sms || cap.whatsapp ? (
-                <div className="mt-6 grid grid-cols-3 gap-2">
-                  {CHANNELS.map((c) => (
-                    <Tile
-                      key={c.id}
-                      title={c.title}
-                      sub={cap[c.id] ? c.sub : CHANNEL_UNAVAILABLE_NOTE}
-                      selected={heir.channel === c.id}
-                      onClick={() => updateHeir({ channel: c.id })}
-                      disabled={!cap[c.id]}
-                    />
-                  ))}
-                </div>
-              ) : null}
-              <input
-                type={heir.channel === "email" ? "email" : "tel"}
-                aria-label={heir.channel === "email" ? "Their email" : "Their phone number"}
-                value={heir.contact}
-                onChange={(e) => updateHeir({ contact: e.target.value })}
-                placeholder={(CHANNELS.find((c) => c.id === heir.channel) ?? CHANNELS[0]).placeholder}
-                autoComplete="off"
-                inputMode={heir.channel === "email" ? "email" : "tel"}
-                className="input mt-6 w-full"
-              />
-              <Disclosure summary={<span>{heirName === "them" ? "They" : heirName} already has a Bitcoin wallet</span>}>
-                <label className="flex items-start gap-2 text-sm text-muted">
+                <Field2 id="goal-own" label="Or type your own">
                   <input
-                    type="checkbox"
-                    checked={Boolean(heir.ownKey)}
-                    onChange={(e) => updateHeir({ ownKey: e.target.checked })}
-                    className="mt-1"
+                    id="goal-own"
+                    className="setup-input"
+                    maxLength={60}
+                    value={(GOAL_PRESETS as readonly string[]).includes(draft.savingsGoal.trim()) ? "" : draft.savingsGoal}
+                    onChange={(e) => patch({ savingsGoal: e.target.value })}
                   />
-                  <span>Use their own wallet key, so GhostKey never holds anything that can spend.</span>
-                </label>
-                {heir.ownKey ? (
-                  <textarea
-                    aria-label="Their wallet key"
-                    value={heir.heirXpub ?? ""}
-                    onChange={(e) => updateHeir({ heirXpub: e.target.value })}
-                    placeholder="[a1b2c3d4/86'/0'/0']xpub6..."
+                </Field2>
+                <Field2 id="goal-target" label="Target (optional)">
+                  <div className="setup-input flex items-center gap-2 pr-4">
+                    <input
+                      id="goal-target"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      className="min-w-0 flex-1 bg-transparent outline-none"
+                      value={draft.savingsTarget}
+                      onChange={(e) => patch({ savingsTarget: e.target.value.replace(/[^0-9,]/g, "") })}
+                    />
+                    <span className="text-muted">sats</span>
+                  </div>
+                </Field2>
+              </>
+            ) : null}
+
+            {screen === "email" ? (
+              <>
+                <Heading title="Your email" help="We remind you here before each check-in." />
+                <Field2 id="owner-email" label="Email address" hint="Stored encrypted. No marketing.">
+                  <input
+                    id="owner-email"
+                    type="email"
+                    className="setup-input"
+                    value={draft.ownerEmail}
+                    onChange={(e) => patch({ ownerEmail: e.target.value })}
+                    autoComplete="email"
+                    inputMode="email"
+                  />
+                </Field2>
+              </>
+            ) : null}
+
+            {screen === "password" ? (
+              <>
+                <Heading title="Create a password" help="It locks your key on this device. We never see it, so we can't reset it." />
+                <Field2 id="pw" label="Password">
+                  <div className="setup-input flex items-center gap-2 pr-1.5">
+                    <input
+                      id="pw"
+                      type={showPassword ? "text" : "password"}
+                      className="min-w-0 flex-1 bg-transparent outline-none"
+                      value={draft.password}
+                      onChange={(e) => patch({ password: e.target.value })}
+                      autoComplete="new-password"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((v) => !v)}
+                      aria-pressed={showPassword}
+                      className="min-h-11 px-3 text-[15px] font-semibold text-[var(--accent-text)]"
+                    >
+                      {showPassword ? "Hide" : "Show"}
+                    </button>
+                  </div>
+                  {draft.password && strength ? (
+                    <div className="flex items-center gap-3 pt-1" aria-live="polite">
+                      <StrengthBar score={strength.score} tone={strength.tone} />
+                      <span className="text-sm font-semibold text-muted">{strength.label}</span>
+                    </div>
+                  ) : null}
+                </Field2>
+                <Field2 id="pw2" label="Type it again">
+                  <input
+                    id="pw2"
+                    type={showPassword ? "text" : "password"}
+                    className="setup-input"
+                    value={draft.passwordConfirm}
+                    onChange={(e) => patch({ passwordConfirm: e.target.value })}
+                    autoComplete="new-password"
+                  />
+                </Field2>
+                <div className="flex items-start gap-3 rounded-2xl border border-[color-mix(in_srgb,var(--warning)_35%,transparent)] bg-[var(--warning-tint)] p-4">
+                  <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--warning)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="mt-0.5 shrink-0">
+                    <path d="M12 9v4M12 17h.01" />
+                    <path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+                  </svg>
+                  <p className="m-0 text-[15px] leading-normal text-[var(--text-body)]">Save it in a password manager now.</p>
+                </div>
+              </>
+            ) : null}
+
+            {screen === "heir" ? (
+              <>
+                <div className="flex flex-col gap-2.5">
+                  <span className="self-start rounded-full bg-[color-mix(in_srgb,var(--brand-blue)_18%,transparent)] px-2.5 py-1 text-[13px] font-bold text-[var(--blue-text)]">
+                    Optional
+                  </span>
+                  <Heading title="Pass it on?" help="Name someone who gets it if you ever stop showing up. You can add this later." />
+                </div>
+                <Field2 id="heir-name" label="Their name">
+                  <input
+                    id="heir-name"
+                    className="setup-input"
+                    value={heir.name}
+                    onChange={(e) => updateHeir({ name: e.target.value })}
                     autoComplete="off"
-                    spellCheck={false}
-                    rows={3}
-                    className="input mt-3 font-mono text-xs"
                   />
-                ) : null}
-              </Disclosure>
-            </>
-          ) : null}
+                </Field2>
+                <Field2 id="heir-email" label="Their email">
+                  <input
+                    id="heir-email"
+                    type="email"
+                    inputMode="email"
+                    className="setup-input"
+                    value={heir.contact}
+                    onChange={(e) => updateHeir({ contact: e.target.value, channel: "email" })}
+                    autoComplete="off"
+                  />
+                </Field2>
+                <Field2 id="owner-name" label="Your name, as they know you" hint="So they know the message is really from you.">
+                  <input
+                    id="owner-name"
+                    className="setup-input"
+                    value={draft.ownerName}
+                    onChange={(e) => patch({ ownerName: e.target.value })}
+                    autoComplete="name"
+                    maxLength={80}
+                  />
+                </Field2>
+                <Disclosure summary={<span>They already have a Bitcoin wallet</span>}>
+                  <label className="flex items-start gap-2 text-sm text-muted">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(heir.ownKey)}
+                      onChange={(e) => updateHeir({ ownKey: e.target.checked })}
+                      className="mt-1"
+                    />
+                    <span>Use their own wallet key, so GhostKey never holds anything that can spend.</span>
+                  </label>
+                  {heir.ownKey ? (
+                    <textarea
+                      aria-label="Their wallet key"
+                      value={heir.heirXpub ?? ""}
+                      onChange={(e) => updateHeir({ heirXpub: e.target.value })}
+                      placeholder="[a1b2c3d4/86'/0'/0']xpub6..."
+                      autoComplete="off"
+                      spellCheck={false}
+                      rows={3}
+                      className="input mt-3 font-mono text-xs"
+                    />
+                  ) : null}
+                </Disclosure>
+              </>
+            ) : null}
 
-          {screen === "wait" ? (
-            <>
-              <h1 className="font-serif text-3xl md:text-4xl">
-                If you stop signing in, how long until {heirName} can claim?
-              </h1>
-              <p className="mt-2 text-sm text-muted">We email you first. Signing in starts it again.</p>
-              <div className={`mt-6 grid gap-2 ${demoMode ? "grid-cols-3" : "grid-cols-2 sm:grid-cols-4"}`}>
-                {demoMode
-                  ? DEMO_WAITING_PRESETS.map((w) => (
-                      <Tile
+            {screen === "wait" ? (
+              <>
+                <Heading
+                  title="How long should we wait?"
+                  help={`If you don't sign in for this long, ${heirName} can claim.`}
+                />
+                <div role="group" aria-label="Waiting period" className="grid grid-cols-2 gap-3">
+                  {(demoMode ? DEMO_WAITING_PRESETS.map((w) => ({ id: w.id, label: w.label })) : WAIT_CHOICES.map((m) => ({ id: String(m), label: monthsLabel(m) }))).map((w) => {
+                    const on = demoMode ? draft.demoWaitingId === w.id : String(draft.waitingMonths) === w.id;
+                    return (
+                      <button
                         key={w.id}
-                        title={w.label}
-                        sub={w.sub}
-                        selected={draft.demoWaitingId === w.id}
-                        onClick={() => patch({ demoWaitingId: w.id })}
-                      />
-                    ))
-                  : WAIT_CHOICES.map((m) => (
-                      <Tile
-                        key={m}
-                        title={monthsLabel(m)}
-                        selected={draft.waitingMonths === m}
-                        onClick={() => patch({ waitingMonths: m })}
-                      />
-                    ))}
-              </div>
-            </>
-          ) : null}
+                        type="button"
+                        aria-pressed={on}
+                        onClick={() =>
+                          demoMode ? patch({ demoWaitingId: w.id }) : patch({ waitingMonths: Number(w.id) })
+                        }
+                        className={`min-h-14 rounded-2xl border text-[17px] font-bold transition-colors ${
+                          on
+                            ? "border-[var(--accent)] bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] text-[var(--text)]"
+                            : "border-[var(--border-hi)] bg-surface text-[var(--text)]"
+                        }`}
+                      >
+                        {w.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="m-0 text-[15px] leading-normal text-muted">
+                  We email you 7, 3 and 1 day before. Signing in resets the clock.
+                </p>
+              </>
+            ) : null}
 
-          {screen === "heir-note" ? (
-            <>
-              <h1 className="font-serif text-3xl md:text-4xl">A word for {heirName}</h1>
-              <p className="mt-2 text-sm text-muted">Optional. They see it if they ever claim.</p>
-              <input
-                type="text"
-                aria-label="Your name"
-                value={draft.ownerName}
-                onChange={(e) => patch({ ownerName: e.target.value })}
-                placeholder="Your name"
-                autoComplete="name"
-                maxLength={80}
-                className="input mt-6 w-full"
-              />
-              <textarea
-                aria-label="A short note"
-                value={heir.note ?? ""}
-                onChange={(e) => updateHeir({ note: e.target.value })}
-                placeholder="A short note"
-                rows={3}
-                maxLength={500}
-                className="input mt-3 w-full"
-              />
-            </>
-          ) : null}
-
-          {screen === "heir-code" && created ? (
-            <>
-              <h1 className="font-serif text-3xl md:text-4xl">
-                Give {firstVault?.heirName || "your heir"} this code
-              </h1>
-              <p className="mt-2 text-sm text-muted">
-                They need it to claim. Only you two know it, so we can&apos;t send it for you.
-              </p>
-              <div className="mt-6 flex flex-col gap-4">
+            {screen === "files" && created ? (
+              <>
+                <Heading
+                  title={
+                    firstVault?.envelope
+                      ? "Save two files"
+                      : firstVault?.heirCode
+                        ? "Save your spare key and the code"
+                        : "Save your spare key"
+                  }
+                  help="They reach your money even if GhostKey is gone."
+                />
+                <div className="flex items-center justify-between gap-3 rounded-2xl border border-app bg-surface p-4">
+                  <div className="flex flex-col">
+                    <span className="font-semibold text-[var(--text)]">Your spare key</span>
+                    <span className="text-sm text-muted">Opens with your password</span>
+                  </div>
+                  <Button type="button" variant="ghost" size="sm" onClick={() => void downloadSpareKey()}>
+                    {spareSaved ? "Saved" : "Download"}
+                  </Button>
+                </div>
                 {created.vaults.map((v) =>
                   v.heirCode || v.envelope ? (
                     <HeirCodeCard
@@ -1399,73 +1401,85 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
                     />
                   ) : null,
                 )}
-              </div>
-            </>
-          ) : null}
+                <label className="flex items-start gap-3 text-[15px] text-[var(--text-body)]">
+                  <input
+                    type="checkbox"
+                    checked={filesSaved}
+                    onChange={(e) => setFilesSaved(e.target.checked)}
+                    className="mt-1 h-5 w-5"
+                  />
+                  <span>
+                    {firstVault?.envelope
+                      ? "I saved both somewhere safe"
+                      : firstVault?.heirCode
+                        ? "I saved them somewhere safe"
+                        : "I saved it somewhere safe"}
+                  </span>
+                </label>
+              </>
+            ) : null}
 
-          {screen === "fund" && created ? (
-            <>
-              <h1 className="font-serif text-3xl md:text-4xl">Add money</h1>
-              <p className="mt-2 text-sm text-muted">Any amount, any time. Only you can spend it.</p>
-              <div className="mt-6 flex flex-col gap-6">
+            {screen === "fund" && created ? (
+              <>
+                <Heading title="Add bitcoin" help="Any amount, from any wallet." />
                 {created.vaults.map((v) => (
                   <div key={v.vaultId} className="flex flex-col gap-3">
-                    {created.vaults.length > 1 ? (
-                      <p className="text-xs uppercase tracking-wider text-dim">{v.heirName}&apos;s share</p>
-                    ) : null}
                     <ReceiveCard vaultId={v.vaultId} embedded autoShow />
                     <FundingBalanceLine vaultId={v.vaultId} />
                   </div>
                 ))}
-              </div>
-            </>
-          ) : null}
+              </>
+            ) : null}
 
-          {showScreenError ? (
-            <p className="mt-4 text-sm text-alarm" role="alert">
-              {screenError}
-            </p>
-          ) : null}
-          {error ? (
-            <div className="mt-6">
-              <InlineAlert tone="alarm">{error}</InlineAlert>
-              {emailTaken ? (
-                <div className="mt-3">
-                  <Button variant="ghost" size="sm" type="button" onClick={onSignIn}>
-                    Sign in
-                  </Button>
+            {showScreenError ? (
+              <p className="m-0 text-sm text-alarm" role="alert">
+                {screenError}
+              </p>
+            ) : null}
+            {error ? (
+              <div>
+                <InlineAlert tone="alarm">{error}</InlineAlert>
+                {emailTaken ? (
+                  <div className="mt-3">
+                    <Button variant="ghost" size="sm" type="button" onClick={onSignIn}>
+                      Sign in
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+            {busy ? (
+              <div aria-live="polite">
+                <p className="text-sm text-muted">Making your vault… {kdfProgress > 0 ? `${kdfProgress}%` : ""}</p>
+                <div className="mt-2">
+                  <ProgressBar value={Math.max(5, kdfProgress)} label="Vault progress" />
                 </div>
-              ) : null}
-            </div>
-          ) : null}
-          {busy ? (
-            <div className="mt-6" aria-live="polite">
-              <p className="text-sm text-muted">{busyLabel}</p>
-              <div className="mt-2">
-                <ProgressBar value={Math.max(5, kdfProgress)} label="Vault progress" />
               </div>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
 
-          <div className="mt-10 flex flex-col gap-3">
-            <Button
+          <div className="flex flex-col gap-2.5">
+            <button
               type="submit"
-              size="lg"
-              loading={busy}
-              disabled={Boolean(screenError) || ((screen === "heir-note" || screen === "heir-ask") && gateReason !== null)}
+              disabled={busy || Boolean(screenError) || (screen === "wait" && gateReason !== null)}
+              className="btn btn-primary h-14 w-full text-[17px]"
             >
-              {PRIMARY_LABEL[screen](draft)}
-            </Button>
-            {screen === "heir-ask" ? (
-              <Button
+              {busy ? "Making your vault…" : PRIMARY[screen]}
+            </button>
+            {screen === "email" ? (
+              <button type="button" onClick={onSignIn} className="min-h-11 text-[15px] font-semibold text-[var(--accent-text)]">
+                I already have a vault
+              </button>
+            ) : null}
+            {screen === "heir" ? (
+              <button
                 type="button"
-                variant="ghost"
-                size="lg"
                 disabled={busy || gateReason !== null}
                 onClick={() => void activate(true)}
+                className="min-h-11 text-[15px] font-semibold text-[var(--accent-text)] disabled:opacity-50"
               >
-                Not now
-              </Button>
+                Not now, just save
+              </button>
             ) : null}
           </div>
         </form>
@@ -1474,39 +1488,31 @@ export function PasswordSetupPortal({ onCancel, onCreated, onSignIn }: Props) {
   );
 }
 
-/* ============================================================ */
-/* Heir contact channels                                          */
-/* ============================================================ */
-
-const CHANNELS: {
-  id: ContactChannel;
-  title: string;
-  sub: string;
-  placeholder: string;
-}[] = [
-  {
-    id: "email",
-    title: "Email",
-    sub: "Inbox",
-    placeholder: "sarah@example.com",
-  },
-  {
-    id: "sms",
-    title: "SMS",
-    sub: "Phone number",
-    placeholder: "+234 800 000 0000",
-  },
-  {
-    id: "whatsapp",
-    title: "WhatsApp",
-    sub: "Same number",
-    placeholder: "+234 800 000 0000",
-  },
-];
-
 function monthsLabel(n: number): string {
-  if (n === 12) return "1 year";
-  return `${n} month${n === 1 ? "" : "s"}`;
+  return n === 12 ? "1 year" : `${n} months`;
+}
+
+/** A screen's title and its one line of help. */
+function Heading({ title, help }: { title: string; help?: string }) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      <h1 className="m-0 font-display text-[32px] font-extrabold leading-[1.1] tracking-[-0.02em] text-[var(--text)]">{title}</h1>
+      {help ? <p className="m-0 text-[17px] leading-normal text-muted">{help}</p> : null}
+    </div>
+  );
+}
+
+/** A label, the field, and an optional hint under it. */
+function Field2({ id, label, hint, children }: { id: string; label: string; hint?: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <label htmlFor={id} className="text-[15px] font-semibold text-[var(--text-body)]">
+        {label}
+      </label>
+      {children}
+      {hint ? <span className="text-sm text-muted">{hint}</span> : null}
+    </div>
+  );
 }
 
 /* ============================================================ */

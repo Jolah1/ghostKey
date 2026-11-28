@@ -841,3 +841,26 @@
     .gk-lift:hover { transform: none; }
   }
 }
+
+/* ---- Setup fields: tall, rounded, one per row ------------------------ */
+@layer components {
+  .setup-input {
+    display: block;
+    width: 100%;
+    height: 56px;
+    box-sizing: border-box;
+    background: var(--surface);
+    border: 1px solid var(--border-hi);
+    border-radius: 14px;
+    padding: 0 16px;
+    font: inherit;
+    font-size: 17px;
+    color: var(--text);
+    outline: none;
+    transition: border-color .15s ease;
+  }
+  .setup-input:focus,
+  .setup-input:focus-within {
+    border-color: var(--accent);
+  }
+}
