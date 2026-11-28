@@ -318,6 +318,14 @@ export interface InheritPortalVocab {
   linkPlaceholder: string;
   openIt: string;
   noLinkYet: string;
+  /** #393: claiming by typing the code from the message. */
+  codeTitle: string;
+  codeLabel: string;
+  codeHint: string;
+  codeButton: string;
+  codeWrong: string;
+  codeTooMany: string;
+  haveLinkInstead: string;
 }
 
 export interface PracticeCardVocab {

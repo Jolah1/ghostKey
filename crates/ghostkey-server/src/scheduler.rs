@@ -783,18 +783,40 @@ async fn send_claim_ready_notices(state: &AppState) -> anyhow::Result<()> {
         // Password vaults keep the raw token at rest, so we can embed
         // the link again; legacy vaults can't (the raw token only ever
         // lived in the first email), so we point back at it.
-        let link_line = match token_at_rest.as_deref().filter(|t| !t.is_empty()) {
-            Some(stored) => {
-                // Door A keeps the token at rest, sealed under the per-vault
-                // AEAD (legacy rows are plaintext and pass through). Decrypt
-                // it back to the bearer value for the link.
-                let token = crate::crypto::open_claim_token_at_rest(&vault_id, stored)?;
-                let base = public_base_url();
-                format!("Pick up where you left off:\n\n{base}/#/claim/{token}")
-            }
-            None => "Pick up where you left off by opening the link from our \
+        // A claim minted with a code (#393) can be reopened by code, and
+        // its sealed copy carries the token, so the link works again too.
+        let code_sealed: Option<String> =
+            sqlx::query_scalar("SELECT claim_code_sealed FROM vaults WHERE id = ?")
+                .bind(&vault_id)
+                .fetch_one(&state.db)
+                .await?;
+        let by_code = match code_sealed.as_deref() {
+            Some(sealed) => Some(crate::crypto::open_claim_code(&vault_id, sealed)?),
+            None => None,
+        };
+        let link_line = if let Some((code, token)) = by_code {
+            let base = public_base_url();
+            let site = site_name(&base);
+            format!(
+                "Pick up where you left off: go to {site} yourself, tap \
+                 \"I was left something\" and enter your code again:\n\n\
+                 {code}\n\n\
+                 Or open:\n\n{base}/#/claim/{token}"
+            )
+        } else {
+            match token_at_rest.as_deref().filter(|t| !t.is_empty()) {
+                Some(stored) => {
+                    // Door A keeps the token at rest, sealed under the per-vault
+                    // AEAD (legacy rows are plaintext and pass through). Decrypt
+                    // it back to the bearer value for the link.
+                    let token = crate::crypto::open_claim_token_at_rest(&vault_id, stored)?;
+                    let base = public_base_url();
+                    format!("Pick up where you left off:\n\n{base}/#/claim/{token}")
+                }
+                None => "Pick up where you left off by opening the link from our \
                      earlier email again."
-                .to_string(),
+                    .to_string(),
+            }
         };
         let heir_name = contact.name.as_deref().unwrap_or("there");
         let body = format!(
@@ -2479,6 +2501,11 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
         // hash is already on disk and we only advance the status +
         // issued_at timestamp. An observer must never see a row in
         // `timelock_started` without a matching `claim_token_hash`.
+        // The code the heir can type at the site instead of opening the
+        // link (#393), stored with the token it stands for.
+        let code = crate::crypto::issue_claim_code()?;
+        let code_sealed = crate::crypto::seal_claim_code(&id, &code.code, &raw_token)?;
+
         let mut tx = state.db.begin().await?;
         if reused {
             // Re-bind the hash too: a prior owner check-in may have nulled
@@ -2489,12 +2516,16 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
                       SET status                = 'timelock_started',
                           claim_token_hash      = ?,
                           claim_token_issued_at = ?,
-                          claim_token_used_at   = NULL
+                          claim_token_used_at   = NULL,
+                          claim_code_lookup     = ?,
+                          claim_code_sealed     = ?
                     WHERE id = ?
                       AND status = 'alarmed'"#,
             )
             .bind(&token_hash)
             .bind(now_iso)
+            .bind(&code.lookup)
+            .bind(&code_sealed)
             .bind(&id)
             .execute(&mut *tx)
             .await?;
@@ -2504,13 +2535,17 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
                       SET status                = 'timelock_started',
                           claim_token_hash      = ?,
                           claim_token_issued_at = ?,
-                          claim_token_used_at   = NULL
+                          claim_token_used_at   = NULL,
+                          claim_code_lookup     = ?,
+                          claim_code_sealed     = ?
                     WHERE id = ?
                       AND status = 'alarmed'
                       AND claim_token_hash IS NULL"#,
             )
             .bind(&token_hash)
             .bind(now_iso)
+            .bind(&code.lookup)
+            .bind(&code_sealed)
             .bind(&id)
             .execute(&mut *tx)
             .await?;
@@ -2551,6 +2586,7 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
             ct.as_deref(),
             nn.as_deref(),
             &raw_token,
+            &code.code,
         )
         .await
         {
@@ -2559,6 +2595,14 @@ async fn transition_alarmed_to_claimable(state: &AppState, now_iso: &str) -> any
     }
 
     Ok(())
+}
+
+/// "ghostkeyapp.com" from "https://ghostkeyapp.com": what a person types.
+pub(crate) fn site_name(base: &str) -> String {
+    base.trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_string()
 }
 
 /// Build a claim URL and enqueue a delivery for the heir. Returns
@@ -2571,6 +2615,7 @@ async fn enqueue_claim_link(
     contact_ct: Option<&str>,
     contact_nn: Option<&str>,
     token: &str,
+    code: &str,
 ) -> anyhow::Result<()> {
     let Some(contact) = parse_heir_contact(vault_id, contact_ct, contact_nn)? else {
         tracing::info!(vault_id = %vault_id, "no heir contact on file; skipping notification");
@@ -2606,6 +2651,7 @@ async fn enqueue_claim_link(
 
     let base = public_base_url();
     let claim_url = format!("{base}/#/claim/{token}");
+    let site = site_name(&base);
 
     // Demo mode has no real delivery channel in a local run (no SMTP /
     // Twilio), so the claim link would otherwise stay sealed in the
@@ -2680,14 +2726,14 @@ async fn enqueue_claim_link(
              {email_opener}, and asked us to reach out to you if they ever \
              stopped checking in. That has happened.\n\n\
              {note_block}\
-             Before you open anything: a message like this can look like a \
-             scam, and you are right to be careful. Look up GhostKey on your \
-             own and make sure it is genuine first. Don't take this message's \
-             word for it.\n\n\
-             When you are ready, open this link on any phone or computer to \
-             see what they left you and the next steps:\n\n\
+             A message like this can look like a scam, and you are right to \
+             be careful. You don't need to click anything in it. When you are \
+             ready, go to {site} yourself (type it, or search for GhostKey), \
+             tap \"I was left something\", and enter this code:\n\n\
+             {code}\n\n\
+             Or, if you prefer, open this link on any phone or computer:\n\n\
              {claim_url}\n\n\
-             The link works once. You don't need an account.\n\n\
+             You don't need an account.\n\n\
              {never_ask}\
              If this message reached you by mistake, you can ignore it. \
              Nothing happens until you open the link.\n\n\
@@ -2697,9 +2743,9 @@ async fn enqueue_claim_link(
         _ => format!(
             "Hello {heir_name}, {sms_opener} and asked us to reach you if \
              they ever stopped checking in. A message like this can look \
-             like a scam, so please check GhostKey is genuine before you \
-             open anything. When you're ready:\n\n{claim_url}\n\nThe link \
-             works once. You don't need an account. {never_ask}",
+             like a scam, so you don't need to click anything: go to {site} \
+             yourself, tap \"I was left something\" and enter {code}. Or \
+             open:\n\n{claim_url}\n\nYou don't need an account. {never_ask}",
             never_ask = notifier::NEVER_ASK_SHORT,
         ),
     };
@@ -3847,6 +3893,83 @@ mod tests {
         let (status, hash) = read_status_and_token_hash(&pool, "vault-b").await;
         assert_eq!(status, "timelock_started");
         assert!(hash.is_some(), "claim token hash must be set");
+    }
+
+    /// The last queued message of `kind` for a vault, opened.
+    async fn queued_body(pool: &SqlitePool, id: &str, kind: &str) -> String {
+        let (ct, nn): (String, String) = sqlx::query_as(
+            "SELECT body_ciphertext, body_nonce FROM notifications \
+              WHERE vault_id = ? AND kind = ? ORDER BY id DESC LIMIT 1",
+        )
+        .bind(id)
+        .bind(kind)
+        .fetch_one(pool)
+        .await
+        .expect("a queued message");
+        String::from_utf8(
+            crate::crypto::open_for_vault(
+                id,
+                &crate::crypto::SealedContact {
+                    ciphertext_b64: ct,
+                    nonce_b64: nn,
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// #393: a claim comes with a code the heir can type at the site
+    /// instead of opening the link. It is stored with its token, and the
+    /// message leads with it.
+    #[tokio::test]
+    async fn a_claim_comes_with_a_code_that_stands_for_its_link() {
+        ensure_test_master_key();
+        let pool = fresh_db().await;
+        let state = AppState { db: pool.clone() };
+        insert_vault(
+            &pool,
+            "vault-code",
+            "alarmed",
+            "2026-04-01T00:00:00Z",
+            Some("2026-04-08T00:00:00Z"),
+        )
+        .await;
+        let contact =
+            serde_json::json!({ "name": "Ada", "contact": "ada@example.com", "channel": "email" })
+                .to_string();
+        let sealed = crate::crypto::seal_for_vault("vault-code", contact.as_bytes()).unwrap();
+        sqlx::query(
+            "UPDATE vaults SET heir_contact_ciphertext = ?, heir_contact_nonce = ?, \
+                    heir_contact_channel = 'email' WHERE id = 'vault-code'",
+        )
+        .bind(&sealed.ciphertext_b64)
+        .bind(&sealed.nonce_b64)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        tick_once(&state).await.expect("tick");
+        let (lookup, code_sealed, hash): (String, String, String) = sqlx::query_as(
+            "SELECT claim_code_lookup, claim_code_sealed, claim_token_hash FROM vaults WHERE id = 'vault-code'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let (code, token) = crate::crypto::open_claim_code("vault-code", &code_sealed).unwrap();
+        assert!(
+            crate::crypto::claim_token_matches(&token, &hash),
+            "the code's token is the live one"
+        );
+        let norm = crate::crypto::normalize_claim_code(&code).unwrap();
+        assert_eq!(crate::crypto::claim_code_lookup(&norm).unwrap(), lookup);
+
+        let body = queued_body(&pool, "vault-code", "claim_link").await;
+        assert!(body.contains(&code), "{body}");
+        assert!(body.contains("I was left something"), "{body}");
+        assert!(body.contains(&format!("#/claim/{token}")), "{body}");
+        // The code comes before the link.
+        assert!(body.find(&code).unwrap() < body.find("#/claim/").unwrap());
     }
 
     /// A leftover guardian vault (#81, no longer supported) never gets a

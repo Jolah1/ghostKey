@@ -24,6 +24,7 @@ mod analytics;
 mod assist;
 mod auth;
 mod challenges;
+mod claim_code;
 mod concurrency;
 mod config;
 mod crypto;

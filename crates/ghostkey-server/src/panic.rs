@@ -37,6 +37,8 @@ pub(crate) async fn freeze_in_tx(
               SET status                       = 'frozen',
                   panic_frozen_until           = ?,
                   claim_token_hash             = NULL,
+                  claim_code_lookup            = NULL,
+                  claim_code_sealed            = NULL,
                   claim_token_issued_at        = NULL,
                   claim_token_used_at          = NULL,
                   claim_opened_at              = NULL,

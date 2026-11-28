@@ -206,6 +206,8 @@ pub async fn upgrade(
                   heir_code_shared_at = NULL,
                   claim_token_at_rest_b64 = NULL,
                   claim_token_hash = NULL,
+                  claim_code_lookup = NULL,
+                  claim_code_sealed = NULL,
                   claim_token_issued_at = NULL,
                   claim_token_used_at = NULL
             WHERE id = ?

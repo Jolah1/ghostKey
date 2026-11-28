@@ -351,6 +351,13 @@ export const en: Vocab = {
     linkPlaceholder: "https://www.ghostkeyapp.com/#/claim/…",
     openIt: "Open it",
     noLinkYet: "Don't have a link yet? That's normal. You'll only receive one if the person who set up the vault stops checking in. Until then, there is nothing on this site for you to do.",
+    codeTitle: "Got a message from GhostKey?",
+    codeLabel: "Enter the code from your message",
+    codeHint: "12 letters and numbers, like ABCD-EFGH-JKMN. You don't need to click anything in the message.",
+    codeButton: "Continue",
+    codeWrong: "That code didn't match. Check it against your message and try again.",
+    codeTooMany: "Too many tries. Wait a minute, then try again.",
+    haveLinkInstead: "Have a link instead?",
   },
   practiceCard: {
     title: "Practice claim",

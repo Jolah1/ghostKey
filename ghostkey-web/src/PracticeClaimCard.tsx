@@ -227,6 +227,15 @@ export function PracticeClaimCard({
                 ? pc.sentNotified(who)
                 : pc.sentNotNotified(who)}
             </p>
+            {result.code ? (
+              <p className="mt-2 text-sm">
+                Practice code:{" "}
+                <strong className="font-mono tracking-[0.08em]" data-testid="practice-code">
+                  {result.code}
+                </strong>
+                . They type it at the site, under &quot;I was left something&quot;.
+              </p>
+            ) : null}
             {!result.heir_notified ? (
               <p className="mt-2 break-all font-mono text-xs">
                 {result.claim_url}

@@ -50,6 +50,8 @@ pub struct DrillStartResponse {
     /// the owner already holds the keys, and a drill token cannot reach
     /// key material or move coins on any endpoint.
     pub claim_url: String,
+    /// The practice code, for the owner to read out or pass on (#393).
+    pub code: String,
 }
 
 /// What the heir did with their heir code in the practice run. Sent only
@@ -95,6 +97,10 @@ pub async fn start_drill(
     }
 
     let issued = issue_claim_token();
+    // The practice gets a code too (#393), so the heir rehearses what a
+    // real claim will ask: type the site, enter the code.
+    let code = crate::crypto::issue_claim_code()?;
+    let code_sealed = crate::crypto::seal_claim_code(&id, &code.code, &issued.token)?;
     let now = Utc::now();
     sqlx::query(
         r#"UPDATE vaults
@@ -102,11 +108,15 @@ pub async fn start_drill(
                   drill_started_at   = ?,
                   drill_opened_at    = NULL,
                   drill_completed_at = NULL,
-                  drill_code_ok      = NULL
+                  drill_code_ok      = NULL,
+                  drill_code_lookup  = ?,
+                  drill_code_sealed  = ?
             WHERE id = ?"#,
     )
     .bind(&issued.hash_hex)
     .bind(now.to_rfc3339())
+    .bind(&code.lookup)
+    .bind(&code_sealed)
     .bind(&id)
     .execute(&state.db)
     .await?;
@@ -115,13 +125,15 @@ pub async fn start_drill(
 
     let base = public_base_url();
     let claim_url = format!("{base}/#/claim/{}", issued.token);
-    let heir_notified = enqueue_drill_invite(&state, &id, heir_ct, heir_nn, &claim_url).await?;
+    let heir_notified =
+        enqueue_drill_invite(&state, &id, heir_ct, heir_nn, &claim_url, &code.code).await?;
 
     Ok(Json(DrillStartResponse {
         vault_id: id,
         started_at: now,
         heir_notified,
         claim_url,
+        code: code.code,
     }))
 }
 
@@ -135,6 +147,7 @@ async fn enqueue_drill_invite(
     heir_ct: Option<String>,
     heir_nn: Option<String>,
     claim_url: &str,
+    code: &str,
 ) -> Result<bool, ApiError> {
     let Some(contact) =
         notifier::parse_heir_contact(vault_id, heir_ct.as_deref(), heir_nn.as_deref())?
@@ -159,6 +172,7 @@ async fn enqueue_drill_invite(
     }
 
     let heir_name = contact.name.as_deref().unwrap_or("there");
+    let site = crate::scheduler::site_name(&public_base_url());
     let intro = crate::scheduler::load_heir_intro(state, vault_id).await;
     let from_name = intro
         .as_ref()
@@ -191,8 +205,12 @@ async fn enqueue_drill_invite(
              GhostKey, and asked us to send you this practice run while \
              they are here to help, so the real thing is not the first \
              time you see it.\n\n\
-             Open this link on any phone or computer and follow the \
-             steps. A practice link cannot move any money.\n\n\
+             Go to {site} yourself (type it, or search for GhostKey), tap \
+             \"I was left something\", and enter this practice code. It's \
+             how the real thing will work, and a practice cannot move any \
+             money:\n\n\
+             {code}\n\n\
+             Or open this link on any phone or computer:\n\n\
              {claim_url}\n\n\
              When you finish, they will see that the practice worked.\n\n\
              {never_ask}\
@@ -202,7 +220,9 @@ async fn enqueue_drill_invite(
         _ => format!(
             "Hello {heir_name}, {opener}. {who} set something up for you \
              through GhostKey and asked you to do a quick practice run \
-             while they can help. It cannot move any money:\n\n{claim_url}\n\n\
+             while they can help. It cannot move any money. Go to {site}, \
+             tap \"I was left something\" and enter {code}, or open:\n\n\
+             {claim_url}\n\n\
              {never_ask}",
             never_ask = notifier::NEVER_ASK_SHORT,
         ),

@@ -102,6 +102,14 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
     let find_limiter = crate::rate_limit::Limiter::from_env("find", "GHOSTKEY_RL_FIND", 30, 0.5);
     let claim_limiter =
         crate::rate_limit::Limiter::from_env("claim", "GHOSTKEY_RL_CLAIM", 20, 1.0 / 3.0);
+    // CLAIM CODE (#393): typed codes. A person types a few; nobody needs
+    // more than one a minute after the first ten.
+    let claim_code_limiter = crate::rate_limit::Limiter::from_env(
+        "claim_code",
+        "GHOSTKEY_RL_CLAIM_CODE",
+        10,
+        1.0 / 60.0,
+    );
     // RECOVERY now covers only the unauthenticated UUID-keyed funding
     // address read. Sealed blobs require OwnerAuth or a one-time email
     // recovery exchange.
@@ -169,6 +177,13 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
         .route("/price", get(crate::price::get_price))
         .layer(axum::middleware::from_fn_with_state(
             analytics_limiter,
+            crate::rate_limit::enforce,
+        ));
+
+    let claim_code_routes: Router<Arc<AppState>> = Router::new()
+        .route("/claim-code", post(crate::claim_code::exchange_claim_code))
+        .layer(axum::middleware::from_fn_with_state(
+            claim_code_limiter,
             crate::rate_limit::enforce,
         ));
 
@@ -377,6 +392,7 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
         .merge(find_routes)
         .merge(recovery_routes)
         .merge(claim_routes)
+        .merge(claim_code_routes)
         .merge(video_routes)
         .merge(analytics_routes)
         // API responses can contain sealed key material or bearer-gated
@@ -3397,6 +3413,8 @@ async fn checkin(
                   status               = 'ok',
                   claim_eligible_at    = ?,
                   claim_token_hash     = NULL,
+                  claim_code_lookup    = NULL,
+                  claim_code_sealed    = NULL,
                   claim_token_issued_at = NULL,
                   claim_token_used_at  = NULL,
                   claim_opened_at      = NULL,
@@ -3522,6 +3540,8 @@ async fn checkin_from_link(
                   status               = 'ok',
                   claim_eligible_at    = ?,
                   claim_token_hash     = NULL,
+                  claim_code_lookup    = NULL,
+                  claim_code_sealed    = NULL,
                   claim_token_issued_at = NULL,
                   claim_token_used_at  = NULL,
                   claim_opened_at      = NULL,
@@ -3674,7 +3694,9 @@ async fn issue_claim(
                   claim_token_issued_at = ?,
                   claim_token_used_at   = NULL,
                   claim_opened_at       = NULL,
-                  claim_ready_notified_at = NULL
+                  claim_ready_notified_at = NULL,
+                  claim_code_lookup     = NULL,
+                  claim_code_sealed     = NULL
             WHERE id = ?"#,
     )
     .bind(&issued.hash_hex)
