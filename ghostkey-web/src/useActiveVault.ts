@@ -29,8 +29,10 @@ export interface ActiveVault {
   loading: boolean;
 }
 
-export function useActiveVault(): ActiveVault {
-  const activeId = useMemo(() => getActiveVaultId(), []);
+/** The vault in use, or `overrideId` when a page works on another one
+ *  (sending from a locked goal). */
+export function useActiveVault(overrideId?: string | null): ActiveVault {
+  const activeId = useMemo(() => overrideId || getActiveVaultId(), [overrideId]);
   const meta = useMemo(
     () => (activeId ? getVaultMeta(activeId) : null),
     [activeId],

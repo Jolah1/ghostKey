@@ -6,6 +6,7 @@
  * Signed in this browser (#442): the server sends the vault's history and
  * broadcasts the finished transaction, but never sees the key.
  */
+import { SEND_FROM_KEY } from "./lockedGoals";
 import { useEffect, useMemo, useState } from "react";
 
 import type { Route } from "./App";
@@ -82,7 +83,11 @@ function amountText(sats: number, to: AmountIn, rate: number | null): string {
 }
 
 export function SendPage({ onNavigate }: { onNavigate: (r: Route) => void }) {
-  const { activeId, ownerToken, vault, loading } = useActiveVault();
+  // Sending from a locked goal: the plan page names it for this visit.
+  const [fromId] = useState(() => sessionStorage.getItem(SEND_FROM_KEY));
+  useEffect(() => () => sessionStorage.removeItem(SEND_FROM_KEY), []);
+  const { activeId, ownerToken, vault, loading } = useActiveVault(fromId);
+  const [openedAt] = useState(() => Date.now());
   const unit = useUnit();
   const fiat = useFiat();
   const prices = usePrices();
@@ -296,6 +301,18 @@ export function SendPage({ onNavigate }: { onNavigate: (r: Route) => void }) {
     return (
       <PageShell title="Send" onNavigate={onNavigate}>
         <p className="text-sm text-muted">Sign in to send.</p>
+      </PageShell>
+    );
+  }
+
+  if (vault.locked_until && vault.locked_until * 1000 > openedAt) {
+    return (
+      <PageShell title="Send" onNavigate={onNavigate}>
+        <p className="text-sm text-muted">
+          This goal is locked until{" "}
+          {new Date(vault.locked_until * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}
+          . Nobody can send from it before then.
+        </p>
       </PageShell>
     );
   }

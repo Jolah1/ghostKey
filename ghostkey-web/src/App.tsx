@@ -162,6 +162,12 @@ const HelpPage = lazyRoute(() =>
 const SendPage = lazyRoute(() =>
   import("./SendPage").then((m) => ({ default: m.SendPage })),
 );
+const LockGoalPage = lazyRoute(() =>
+  import("./LockGoalPage").then((m) => ({ default: m.LockGoalPage })),
+);
+const LockedPlanPage = lazyRoute(() =>
+  import("./LockedPlanPage").then((m) => ({ default: m.LockedPlanPage })),
+);
 const AddMoneyPage = lazyRoute(() =>
   import("./AddMoneyPage").then((m) => ({ default: m.AddMoneyPage })),
 );
@@ -237,6 +243,8 @@ export type Route =
   | "dashboard"
   | "send"
   | "add-money"
+  | "lock"
+  | "plan"
   | "activity"
   | "challenges"
   | "heir-message"
@@ -264,6 +272,8 @@ const VALID: Route[] = [
   "dashboard",
   "send",
   "add-money",
+  "lock",
+  "plan",
   "activity",
   "challenges",
   "heir-message",
@@ -294,6 +304,8 @@ const OWNER_ROUTES: Route[] = [
   "dashboard",
   "send",
   "add-money",
+  "lock",
+  "plan",
   "activity",
   "challenges",
   "heir-message",
@@ -694,6 +706,8 @@ export default function App() {
       {location.kind === "route" && location.route === "dashboard" && <Dashboard onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "send"      && <SendPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "add-money" && <AddMoneyPage onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "lock"      && <LockGoalPage onNavigate={setRoute} />}
+      {location.kind === "route" && location.route === "plan"      && <LockedPlanPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "activity"  && <ActivityPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "challenges" && <ChallengesPage onNavigate={setRoute} />}
       {location.kind === "route" && location.route === "heir-message" && <HeirMessagePage onNavigate={setRoute} />}

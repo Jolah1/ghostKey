@@ -18,6 +18,7 @@
  * If there is no active vault on this device, we offer the two paths
  * out: set one up, or sign in with email + password.
  */
+import { LockedPlansCard } from "./LockedPlansCard";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Avatar,
@@ -739,6 +740,8 @@ export function Dashboard({ onNavigate, view = "home" }: Props) {
                 onNavigate={onNavigate}
               />
             ) : null}
+
+            {vault && !isClosed ? <LockedPlansCard parentId={vault.id} onNavigate={onNavigate} /> : null}
 
             {vault && !isClosed && !isClaiming && !statusUnfunded && !isPastDeadline ? (
               <div className="mt-5">

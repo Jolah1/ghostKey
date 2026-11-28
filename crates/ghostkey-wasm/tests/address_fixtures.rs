@@ -83,6 +83,19 @@ fn build() -> Value {
             &liana_short.external,
             &liana_short.internal,
         ));
+
+        // A locked goal: two dated leaves under the NUMS key, so the
+        // output commits to a TapBranch of two leaf hashes.
+        let locked = ghostkey_core::descriptor::build_locked_descriptor_pair(
+            &owner.0,
+            &owner.1,
+            &heir.0,
+            &heir.1,
+            1_800_000_000,
+            1_808_000_000,
+        )
+        .unwrap();
+        cases.push(case("locked", net_s, &locked.external, &locked.internal));
     }
     Value::Array(cases)
 }

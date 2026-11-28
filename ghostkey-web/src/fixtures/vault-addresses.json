@@ -64,6 +64,22 @@
     "network": "bitcoin"
   },
   {
+    "descriptor_external": "tr(50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0,{and_v(v:pk([71348c8a/86'/0'/0']xpub6DFZDsNy61s3bCWp3BF23fQjtMsxE43ftjhQb3EPRJjdMwcdD5uvUmxxU8G1TS39WQJKVu2AvwEUcBQVeA5rT7UB5vurwMAQE82896hBWVd/0/*),after(1800000000)),and_v(v:pk([df614949/86'/0'/0']xpub6D5G1c3GKxJp4se2Bh7yMU1eApYaBsDzaVNve7uRbDEs8G613AZGyqFjiJF8jXPhQ9cEM85R8nV9EzkzRJNhCjmPmEHWXRZoN7y36LGTBwB/0/*),after(1808000000))})",
+    "descriptor_internal": "tr(50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0,{and_v(v:pk([71348c8a/86'/0'/0']xpub6DFZDsNy61s3bCWp3BF23fQjtMsxE43ftjhQb3EPRJjdMwcdD5uvUmxxU8G1TS39WQJKVu2AvwEUcBQVeA5rT7UB5vurwMAQE82896hBWVd/1/*),after(1800000000)),and_v(v:pk([df614949/86'/0'/0']xpub6D5G1c3GKxJp4se2Bh7yMU1eApYaBsDzaVNve7uRbDEs8G613AZGyqFjiJF8jXPhQ9cEM85R8nV9EzkzRJNhCjmPmEHWXRZoN7y36LGTBwB/1/*),after(1808000000))})",
+    "external": [
+      "bc1pzzxel8a7qmsd88ruwpftayh6veuej0uekxxql3fzrj49swkyuahshlgc96",
+      "bc1pp7s9e256z0zr6g98t7sd2r5luajj8wjy9zu7mxcgd6hf42pvukuqes6dme",
+      "bc1phav4dsplzcy6pu9dkyac8tgr7wkym6tp3pl2l97cneh3wd75ywlq8cc3cz"
+    ],
+    "internal": [
+      "bc1pp760j3ayx27vafp048m4et55cyh88f7y797sat9f83nwuyl4sw8qlh8957",
+      "bc1pml8puxv27d9rdqf64gdwxre3c8ec0chqmdk5m32d4cgt5q3dq4tqay6arx",
+      "bc1pxsmeay2s3c9797eld5jxz7g38pj6ykashq3tc2uzzcdgt3j9lmeqt6fwg6"
+    ],
+    "name": "locked",
+    "network": "bitcoin"
+  },
+  {
     "descriptor_external": "tr(50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0,or_d(pk([71348c8a/86'/1'/0']tpubDDUsQgYyM6ZFoPMN8ktqG9d37Hn2SjG9sSa1mri5GdTBW2L3Z8CPaoCbJ6jLcEjzuLRWg13bkSZXGzv6WYiFsVGprjN48uhSt7hUvXRmtrf/0/*),and_v(v:pk([df614949/86'/1'/0']tpubDDVSLfWt84GCUagjoJrcL9NoCa8YD7B9J45KpqExgfUb3td61Eswx9hahs1eYGzX7iUBWCjY7Ery2Pmv788ijATbdZESLMAgabzQovNftRT/0/*),older(4320))))",
     "descriptor_internal": "tr(50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0,or_d(pk([71348c8a/86'/1'/0']tpubDDUsQgYyM6ZFoPMN8ktqG9d37Hn2SjG9sSa1mri5GdTBW2L3Z8CPaoCbJ6jLcEjzuLRWg13bkSZXGzv6WYiFsVGprjN48uhSt7hUvXRmtrf/1/*),and_v(v:pk([df614949/86'/1'/0']tpubDDVSLfWt84GCUagjoJrcL9NoCa8YD7B9J45KpqExgfUb3td61Eswx9hahs1eYGzX7iUBWCjY7Ery2Pmv788ijATbdZESLMAgabzQovNftRT/1/*),older(4320))))",
     "external": [
@@ -125,6 +141,22 @@
       "tb1p39ssnhqj6hp0zkgfytdfs0a8f920jkvgx0q8xvuq76gmwx9kyqdsgeunyh"
     ],
     "name": "liana-1-block",
+    "network": "signet"
+  },
+  {
+    "descriptor_external": "tr(50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0,{and_v(v:pk([71348c8a/86'/1'/0']tpubDDUsQgYyM6ZFoPMN8ktqG9d37Hn2SjG9sSa1mri5GdTBW2L3Z8CPaoCbJ6jLcEjzuLRWg13bkSZXGzv6WYiFsVGprjN48uhSt7hUvXRmtrf/0/*),after(1800000000)),and_v(v:pk([df614949/86'/1'/0']tpubDDVSLfWt84GCUagjoJrcL9NoCa8YD7B9J45KpqExgfUb3td61Eswx9hahs1eYGzX7iUBWCjY7Ery2Pmv788ijATbdZESLMAgabzQovNftRT/0/*),after(1808000000))})",
+    "descriptor_internal": "tr(50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0,{and_v(v:pk([71348c8a/86'/1'/0']tpubDDUsQgYyM6ZFoPMN8ktqG9d37Hn2SjG9sSa1mri5GdTBW2L3Z8CPaoCbJ6jLcEjzuLRWg13bkSZXGzv6WYiFsVGprjN48uhSt7hUvXRmtrf/1/*),after(1800000000)),and_v(v:pk([df614949/86'/1'/0']tpubDDVSLfWt84GCUagjoJrcL9NoCa8YD7B9J45KpqExgfUb3td61Eswx9hahs1eYGzX7iUBWCjY7Ery2Pmv788ijATbdZESLMAgabzQovNftRT/1/*),after(1808000000))})",
+    "external": [
+      "tb1p59u39pkcrh3ltsc92p4yejx79pmm4l0d0t2n2n2uesrva7w584jql2tu5h",
+      "tb1psqy7elhn2zxjjsmj7vf7jaz05ehh6nksxt6zk5q7mvwe3g4wrjlsn8t6u6",
+      "tb1p79uvhyhq2hqnsuq2x6qkas7a5483gpjx3dz3lhte57quzlngdjmqprffgd"
+    ],
+    "internal": [
+      "tb1pecm9dcq5a05mpklymt6m3d9vj925m6ksyuwns3fkum73nz4mz48s3lglpp",
+      "tb1py27fy98ej5mtyx2fhefluc6l2r9nl8dzfyxtyx3x3g3mmcaq33ps084t0q",
+      "tb1pazft58w7emhyru6akhlkuuzp5zd0uwwew3qyth00ry9jwmxccepqkekxvc"
+    ],
+    "name": "locked",
     "network": "signet"
   }
 ]
