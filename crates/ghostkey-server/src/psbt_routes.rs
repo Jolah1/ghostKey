@@ -2688,6 +2688,82 @@ pub async fn owner_refresh_signed(
 }
 
 /* -------------------------------------------------------------------------- *
+ *  Using the vault in another wallet (#387)                                  *
+ *                                                                            *
+ *  The vault's public descriptors, in the forms other wallets import: one   *
+ *  multipath descriptor for Liana (standard format only) and an             *
+ *  `importdescriptors` command for Bitcoin Core (any format). They let a    *
+ *  wallet see the money and its addresses; spending still needs the key.    *
+ * -------------------------------------------------------------------------- */
+
+#[derive(Debug, Serialize)]
+pub struct ExportView {
+    /// "standard" (Liana and Core), "legacy" (Core only; can move to the
+    /// standard format, #389), "locked" (a locked goal; Core only).
+    pub format: &'static str,
+    pub network: String,
+    pub descriptor_external: String,
+    pub descriptor_internal: String,
+    /// The one descriptor Liana imports, when the vault is standard.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub liana_descriptor: Option<String>,
+    /// The JSON for Bitcoin Core's `importdescriptors`.
+    pub core_import: String,
+}
+
+/// `GET /vaults/:id/export` (owner).
+pub async fn get_export(
+    auth: crate::auth::OwnerAuth,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<ExportView>, ApiError> {
+    let (ext, int_, net, created): (String, String, String, String) = sqlx::query_as(
+        "SELECT descriptor_external, descriptor_internal, network, created_at FROM vaults WHERE id = ?",
+    )
+    .bind(&auth.vault_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    Ok(Json(build_export(&ext, &int_, net, &created)?))
+}
+
+/// The export for a stored vault; pure, so it's tested without a server.
+fn build_export(ext: &str, int_: &str, net: String, created: &str) -> Result<ExportView, ApiError> {
+    use ghostkey_core::descriptor::{
+        locked_dates, standard_multipath, upgrade_legacy_pair, with_checksum,
+    };
+    let liana = standard_multipath(ext, int_);
+    let format = if liana.is_some() {
+        "standard"
+    } else if upgrade_legacy_pair(ext, int_).is_some() {
+        "legacy"
+    } else if locked_dates(ext).is_some() {
+        "locked"
+    } else {
+        return Err(ApiError::Conflict("This vault can't be exported.".into()));
+    };
+    let bad = |e: ghostkey_core::Error| {
+        ApiError::Validation(format!("stored vault descriptors invalid: {e}"))
+    };
+    let ext_c = with_checksum(ext).map_err(bad)?;
+    let int_c = with_checksum(int_).map_err(bad)?;
+    // Core rescans from here: a day before the vault existed, to be safe.
+    let since = crate::config::parse_rfc(created).timestamp() - 86_400;
+    let core_import = serde_json::json!([
+        { "desc": ext_c, "timestamp": since, "active": true, "internal": false, "range": [0, 999] },
+        { "desc": int_c, "timestamp": since, "active": true, "internal": true, "range": [0, 999] },
+    ])
+    .to_string();
+    Ok(ExportView {
+        format,
+        network: net,
+        descriptor_external: ext_c,
+        descriptor_internal: int_c,
+        liana_descriptor: liana,
+        core_import,
+    })
+}
+
+/* -------------------------------------------------------------------------- *
  *  Upgrading a legacy vault to the standard format (#389)                    *
  *                                                                            *
  *  Same owner key, heir key and wait; only the script's shape changes, so    *
@@ -4536,6 +4612,66 @@ mod tests {
             let err = plan_upgrade(&txs, &utxos, is_new).expect_err(why);
             assert!(err.contains(why), "{err}");
         }
+    }
+
+    #[test]
+    fn the_export_gives_liana_the_standard_format_and_core_every_format() {
+        use bitcoin::bip32::Xpriv;
+        use ghostkey_core::descriptor::{
+            build_descriptor_pair, build_locked_descriptor_pair,
+            build_standard_descriptor_from_fragments,
+        };
+        use ghostkey_core::keys::{account_xpub, descriptor_key_fragment, Chain};
+        let net = Network::Regtest;
+        let frag = |seed: u8, chain| {
+            let m = Xpriv::new_master(net, &[seed; 32]).unwrap();
+            let (fp, path, x) = account_xpub(&m, net).unwrap();
+            descriptor_key_fragment(fp, &path, &x, chain)
+        };
+        let (oe, oi, he, hi) = (
+            frag(1, Chain::External),
+            frag(1, Chain::Internal),
+            frag(2, Chain::External),
+            frag(2, Chain::Internal),
+        );
+        let created = "2026-11-01T00:00:00+00:00";
+
+        let std_ = build_standard_descriptor_from_fragments(&oe, &oi, &he, &hi, 4320).unwrap();
+        let x = build_export(
+            &std_.pair.external,
+            &std_.pair.internal,
+            "regtest".into(),
+            created,
+        )
+        .unwrap();
+        assert_eq!(x.format, "standard");
+        assert_eq!(x.liana_descriptor.as_deref(), Some(std_.multipath.as_str()));
+        let core: serde_json::Value = serde_json::from_str(&x.core_import).unwrap();
+        assert_eq!(core[0]["desc"], x.descriptor_external.as_str());
+        assert_eq!(core[1]["internal"], true);
+        assert_eq!(core[0]["timestamp"], 1_793_491_200 - 86_400); // 2026-11-01, a day early
+        assert!(x.descriptor_external.contains('#'));
+
+        let legacy = build_descriptor_pair(&oe, &oi, &he, &hi, 4320).unwrap();
+        let x = build_export(
+            &legacy.external,
+            &legacy.internal,
+            "regtest".into(),
+            created,
+        )
+        .unwrap();
+        assert_eq!((x.format, x.liana_descriptor.is_none()), ("legacy", true));
+
+        let locked =
+            build_locked_descriptor_pair(&oe, &oi, &he, &hi, 1_800_000_000, 1_808_000_000).unwrap();
+        let x = build_export(
+            &locked.external,
+            &locked.internal,
+            "regtest".into(),
+            created,
+        )
+        .unwrap();
+        assert_eq!((x.format, x.liana_descriptor.is_none()), ("locked", true));
     }
 
     #[test]

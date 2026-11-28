@@ -353,6 +353,7 @@ fn router_with_legacy_recovery(state: Arc<AppState>, legacy_public_recovery: boo
             post(crate::psbt_routes::owner_refresh_signed),
         )
         .route("/vaults/:id/upgrade", get(crate::psbt_routes::get_upgrade))
+        .route("/vaults/:id/export", get(crate::psbt_routes::get_export))
         .route(
             "/vaults/:id/upgrade/signed",
             post(crate::psbt_routes::owner_upgrade_signed),

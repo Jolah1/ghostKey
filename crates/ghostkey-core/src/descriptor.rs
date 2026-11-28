@@ -336,6 +336,41 @@ pub fn upgrade_legacy_pair(external: &str, internal: &str) -> Option<StandardDes
     build_standard_descriptor_from_fragments(oe, oi, he, hi, n).ok()
 }
 
+/// The one multipath descriptor (with checksum) that Liana and other
+/// Miniscript wallets import, for a vault stored as a standard-format pair
+/// (#387). `None` for any other shape, or a pair that doesn't rebuild
+/// exactly from the keys read out of it.
+pub fn standard_multipath(external: &str, internal: &str) -> Option<String> {
+    fn read(d: &str, chain: &str) -> Option<(String, String, u32)> {
+        let d = d.split('#').next()?;
+        let rest = d.strip_prefix("tr(")?;
+        let (owner, rest) = rest.split_once(",and_v(v:pk(")?;
+        let (heir, rest) = rest.split_once("),older(")?;
+        let n = rest.strip_suffix(")))")?.parse().ok()?;
+        let suffix = format!("/{chain}/*");
+        Some((
+            owner.strip_suffix(suffix.as_str())?.to_string(),
+            heir.strip_suffix(suffix.as_str())?.to_string(),
+            n,
+        ))
+    }
+    let (o, h, n) = read(external, "0")?;
+    let (o2, h2, n2) = read(internal, "1")?;
+    if o != o2 || h != h2 || n != n2 {
+        return None;
+    }
+    let built = build_standard_descriptor(&o, &h, n).ok()?;
+    let bare = |d: &str| d.split('#').next().unwrap_or(d).to_string();
+    (built.pair.external == bare(external) && built.pair.internal == bare(internal))
+        .then_some(built.multipath)
+}
+
+/// A descriptor with its checksum, as Bitcoin Core's `importdescriptors`
+/// wants it.
+pub fn with_checksum(descriptor: &str) -> Result<String> {
+    Ok(parse_descriptor(descriptor.split('#').next().unwrap_or(descriptor))?.to_string())
+}
+
 /// `[fp/path]xpub/0/*` + `[fp/path]xpub/1/*` -> `[fp/path]xpub`.
 fn account_key_from_fragments<'a>(who: &str, external: &'a str, internal: &str) -> Result<&'a str> {
     let ext = external.strip_suffix("/0/*");
@@ -435,6 +470,27 @@ mod tests {
             upgrade_legacy_pair(&legacy.external, &other_wait.internal),
             None
         );
+    }
+
+    #[test]
+    fn a_standard_vault_exports_as_the_one_descriptor_liana_imports() {
+        let (oe, oi, he, hi) = fragments(Network::Regtest);
+        let std_ = build_standard_descriptor_from_fragments(&oe, &oi, &he, &hi, 4320).unwrap();
+        let mp = standard_multipath(&std_.pair.external, &std_.pair.internal).expect("standard");
+        assert_eq!(mp, std_.multipath);
+        assert!(mp.contains("/<0;1>/*") && mp.contains('#'));
+        // Not the standard format: nothing to give Liana.
+        let legacy = build_descriptor_pair(&oe, &oi, &he, &hi, 4320).unwrap();
+        assert_eq!(standard_multipath(&legacy.external, &legacy.internal), None);
+        assert_eq!(
+            standard_multipath(&std_.pair.external, &std_.pair.external),
+            None
+        );
+        // Checksums for Core, for any shape we build.
+        for d in [&std_.pair.external, &legacy.internal] {
+            let c = with_checksum(d).unwrap();
+            assert!(c.starts_with(d.as_str()) && c.len() == d.len() + 9, "{c}");
+        }
     }
 
     #[test]

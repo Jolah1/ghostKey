@@ -131,6 +131,21 @@ export function RecoveryKitPage({ onNavigate }: Props) {
             Read the full guide
           </button>
         </section>
+
+        <button
+          type="button"
+          onClick={() => onNavigate("export")}
+          data-testid="export-link"
+          className="mt-5 flex w-full items-center gap-3 rounded-[20px] border border-app bg-surface px-4 py-4 text-left"
+        >
+          <span className="min-w-0 flex-1">
+            <span className="block text-[15px] font-semibold text-[var(--text)]">Use this vault in another wallet</span>
+            <span className="block text-sm text-[var(--text-body)]">See your savings in Liana or Bitcoin Core too.</span>
+          </span>
+          <span aria-hidden="true" className="shrink-0 text-lg text-dim">
+            ›
+          </span>
+        </button>
     </PageShell>
   );
 }
